@@ -4,7 +4,6 @@ using CassandraMigrationProcessor.Helpers.Cassandra;
 using CassandraMigrationProcessor.Models;
 using CassandraMigrationProcessor.Workers;
 using System;
-using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
 
@@ -124,36 +123,23 @@ namespace CassandraMigrationProcessor.Processors
                 $"Found {feedRanges.Count} feed ranges " +
                 $"for {context.KeyspaceName}.{context.TableName}");
 
-            TaskResult result;
-            if (feedRanges.Count > 1)
+            if (_job.IsSimulatedRun)
             {
                 _log.WriteLine(
-                    $"Parallel copy: {feedRanges.Count} " +
-                    $"feed ranges for " +
-                    $"{context.KeyspaceName}.{context.TableName}");
-                result = await CopyWithFeedRangesAsync(
-                    migrationUnit, chunkIndex,
-                    initialPercent, contributionFactor,
-                    rowCount, context, feedRanges);
+                    $"Simulated: would copy {rowCount} rows " +
+                    $"from {context.KeyspaceName}.{context.TableName}");
+                return TaskResult.Success;
             }
-            else
-            {
-                var copier = new SingleRangeCopyWorker();
-                copier.Initialize(
-                    _log,
-                    _sourceSession!,
-                    _targetSession!,
-                    context.KeyspaceName,
-                    context.TableName,
-                    context.TargetKeyspaceName,
-                    context.TargetTableName,
-                    _config.CqlCopyPageSize);
-                result = await copier.CopyRowsAsync(
-                    migrationUnit, chunkIndex,
-                    initialPercent, contributionFactor,
-                    rowCount, _cancellation.Token,
-                    _job.IsSimulatedRun);
-            }
+
+            TaskResult result;
+            _log.WriteLine(
+                $"Pipeline copy: {feedRanges.Count} " +
+                $"feed range(s) for " +
+                $"{context.KeyspaceName}.{context.TableName}");
+            result = await CopyWithFeedRangesAsync(
+                migrationUnit, chunkIndex,
+                initialPercent, contributionFactor,
+                rowCount, context, feedRanges);
             
             if (result == TaskResult.Success)
             {
