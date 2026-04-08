@@ -165,9 +165,7 @@ namespace CassandraMigrationProcessor.Processors
                     : 5000;
             bool useFullFidelity = _config.ChangeFeedFullFidelity;
             int consecutiveErrors = 0;
-            const int MaxReconnectAttempts = 3;
-
-            // Per-range continuation state
+            const int MaxReconnectAttempts = 50;
             byte[]? continuationState = null;
             if (mu.FeedRangeContinuationTokens != null
                 && mu.FeedRangeContinuationTokens.TryGetValue(
@@ -344,11 +342,26 @@ namespace CassandraMigrationProcessor.Processors
                 catch (Exception ex)
                 {
                     consecutiveErrors++;
+                    _log.WriteLine(
+                        $"Change feed error ({consecutiveErrors}): " +
+                        $"{ex.GetType().Name}: {ex.Message}",
+                        LogType.Warning);
 
                     if (consecutiveErrors > MaxReconnectAttempts)
                     {
+                        _log.WriteLine(
+                            $"Change feed giving up after " +
+                            $"{consecutiveErrors} errors",
+                            LogType.Error);
                         break;
                     }
+
+                    // Exponential backoff on errors (cap 60s)
+                    int errorDelay = Math.Min(
+                        intervalMs * consecutiveErrors, 60_000);
+                    try { await Task.Delay(errorDelay, ct); }
+                    catch (OperationCanceledException) { break; }
+                    continue;
                 }
 
                 try { await Task.Delay(intervalMs, ct); }
@@ -382,7 +395,7 @@ namespace CassandraMigrationProcessor.Processors
                     : 5000;
 
             int consecutiveErrors = 0;
-            const int MaxReconnectAttempts = 3;
+            const int MaxReconnectAttempts = 50;
             bool useFullFidelity = _config.ChangeFeedFullFidelity;
 
             byte[]? continuationState =
@@ -675,8 +688,19 @@ namespace CassandraMigrationProcessor.Processors
                     else if (consecutiveErrors
                         > MaxReconnectAttempts)
                     {
+                        _log.WriteLine(
+                            $"Change feed giving up after " +
+                            $"{consecutiveErrors} errors",
+                            LogType.Error);
                         break;
                     }
+
+                    // Exponential backoff on errors
+                    int errorDelay = Math.Min(
+                        intervalMs * consecutiveErrors, 60_000);
+                    try { await Task.Delay(errorDelay, ct); }
+                    catch (OperationCanceledException) { break; }
+                    continue;
                 }
 
                 try { await Task.Delay(intervalMs, ct); }
