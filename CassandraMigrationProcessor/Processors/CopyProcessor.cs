@@ -932,16 +932,20 @@ namespace CassandraMigrationProcessor.Processors
             mu.CopyRowsCopied = finalWritten;
             mu.ActualRowCount = Math.Max(
                 mu.ActualRowCount, finalRead);
+            // Only mark segments as processed if ALL feed
+            // ranges actually completed (not cancelled/paused)
+            bool allRangesComplete =
+                completed.Count >= feedRanges.Count;
             if (fc.Segments.Count == 0)
             {
                 fc.Segments.Add(new Segment
                 {
                     Id = "0",
-                    IsProcessed = true,
+                    IsProcessed = allRangesComplete,
                     ResultDocCount = finalWritten
                 });
             }
-            else
+            else if (allRangesComplete)
             {
                 foreach (var seg in fc.Segments)
                     seg.IsProcessed = true;
