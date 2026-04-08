@@ -99,7 +99,7 @@ namespace CassandraMigrationProcessor.Workers
                 $"{_sourceKeyspace}.{_sourceTable}, " +
                 $"total={totalRowCount}");
 
-            _successCount = 0;
+            _successCount = mu.CopyRowsCopied;
             _failureCount = 0;
             _skippedCount = 0;
             _nonRetriableErrorHit = false;

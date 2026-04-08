@@ -103,13 +103,16 @@ namespace CassandraMigrationProcessor.Workers
             string keyspace,
             string table,
             int workerCount,
-            int totalRanges = 0)
+            int totalRanges = 0,
+            long initialCopied = 0)
         {
             _log = log;
             _keyspace = keyspace;
             _table = table;
             _workerCount = workerCount;
             _totalRanges = totalRanges;
+            _totalCopied = initialCopied;
+            _windowCopied = initialCopied;
             _sw = Stopwatch.StartNew();
         }
 

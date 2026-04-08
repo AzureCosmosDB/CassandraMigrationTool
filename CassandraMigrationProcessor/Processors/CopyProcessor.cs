@@ -1,4 +1,4 @@
-using Cassandra;
+﻿using Cassandra;
 using CassandraMigrationProcessor.Context;
 using CassandraMigrationProcessor.Helpers.Cassandra;
 using CassandraMigrationProcessor.Helpers.JobManagement;
@@ -205,18 +205,19 @@ namespace CassandraMigrationProcessor.Processors
         }
 
         /// <summary>
-        /// Unified worker pipeline with feed range state objects:
+        /// Split reader/writer pipeline with feed range state objects:
         ///
-        ///  workChannel ──► Worker (read 1 page, write rows)
-        ///       ▲               │
-        ///       └── recycle ◄───┘  (if more pages)
+        ///  workCh ──► Reader (read 1 page) ──► dataCh ──► Writer (write rows)
+        ///    ▲             │
+        ///    └── recycle ◄─┘ (if more pages)
         ///
-        /// Each worker pulls a FeedRangeState, reads ONE page
-        /// from source, writes the rows to target, then either
-        /// recycles the range back (with updated paging state)
-        /// or marks it complete. Single worker pool = simpler,
-        /// natural backpressure (slow writes slow reads).
-        /// Continuation state persisted periodically for resume.
+        /// Readers pull FeedRangeState, read ONE page from source,
+        /// extract rows, recycle the range, and push ReadPage to
+        /// dataCh. Writers consume ReadPage objects and fire
+        /// concurrent INSERTs. Separating read from write lets
+        /// readers prefetch the next page while writes are in
+        /// flight. Continuation state persisted periodically
+        /// for resume.
         /// </summary>
         private async Task<TaskResult> CopyWithFeedRangesAsync(
             MigrationUnit mu,
@@ -232,6 +233,8 @@ namespace CassandraMigrationProcessor.Processors
             int rawValue = MigrationJobContext
                 .CurrentlyActiveJob.MaxFeedRangeParallelism;
             int workerCount = Math.Max(1, rawValue);
+            int readerCount = workerCount;
+            int writerCount = Math.Max(4, workerCount / 2);
 
             // ── Resume: filter out completed ranges ─────────
             var completed = mu.CompletedCopyFeedRanges
@@ -261,11 +264,11 @@ namespace CassandraMigrationProcessor.Processors
             _log.WriteLine(
                 $"Pipeline copy: {pendingRanges.Count} ranges " +
                 $"({completed.Count} already done), " +
-                $"{workerCount} workers " +
+                $"{readerCount} readers + {writerCount} writers " +
                 $"for {ctx.KeyspaceName}.{ctx.TableName}");
             Console.WriteLine(
                 $"  Pipeline: {pendingRanges.Count} ranges, " +
-                $"workers={workerCount}");
+                $"readers={readerCount}, writers={writerCount}");
 
             // ── Schema setup (once) ─────────────────────────
             _log.WriteLine(
@@ -390,12 +393,16 @@ namespace CassandraMigrationProcessor.Processors
                     $"All {pendingRanges.Count} ranges " +
                     $"starting fresh");
 
+            // Seed counters from prior run for resume
+            long priorCopied = mu.CopyRowsCopied;
+
             var tracker = new CopyProgressTracker(
                 _log, ctx.KeyspaceName, ctx.TableName,
-                workerCount, pendingRanges.Count);
+                readerCount, pendingRanges.Count,
+                priorCopied);
 
             long totalRead = 0;
-            long totalWritten = 0;
+            long totalWritten = priorCopied;
             long totalFailed = 0;
             int nonRetriableHitFlag = 0;
             var workerErrors = new ConcurrentBag<TaskResult>();
@@ -429,15 +436,23 @@ namespace CassandraMigrationProcessor.Processors
                     workCh.Writer.TryComplete();
             }
 
-            // ── UNIFIED WORKERS ─────────────────────────────
+            // ── DATA CHANNEL ────────────────────────────────
+            var dataCh = Channel.CreateBounded<ReadPage>(
+                new BoundedChannelOptions(workerCount * 2)
+                {
+                    FullMode = BoundedChannelFullMode.Wait
+                });
+
+            // ── READER + WRITER POOLS ───────────────────────
             _log.WriteLine(
-                $"Launching {workerCount} workers " +
+                $"Launching {readerCount} readers + " +
+                $"{writerCount} writers " +
                 $"for {ctx.KeyspaceName}.{ctx.TableName} " +
                 $"({pendingRanges.Count} feed ranges, " +
                 $"page size={configuredPageSize}" +
                 $"{(configuredPageSize != adaptivePageSize ? $"→{adaptivePageSize} adaptive" : "")})...");
-            var workers = Enumerable.Range(0, workerCount)
-                .Select(wid => Task.Run(async () =>
+            var readers = Enumerable.Range(0, readerCount)
+                .Select(rid => Task.Run(async () =>
                 {
                     tracker.WorkerStarted();
                     try
@@ -448,8 +463,6 @@ namespace CassandraMigrationProcessor.Processors
                         if (_cts.Token.IsCancellationRequested
                             || Volatile.Read(ref nonRetriableHitFlag) != 0)
                         {
-                            // On cancel/abort, mark range done
-                            // so we can close the channel
                             lock (checkpoints)
                             {
                                 completed.Add(state.FeedRange);
@@ -460,15 +473,12 @@ namespace CassandraMigrationProcessor.Processors
 
                         bool isLastPage = false;
                         bool recycledToChannel = false;
-                        byte[]? nextPaging = null;
                         try
                         {
                             // ── READ one page ───────────────
                             var readSw = Stopwatch.StartNew();
                             var stmt = new SimpleStatement(
                                 BuildSelectCql(state.FeedRange));
-                            // Adaptive page size: use shared
-                            // estimate updated after each page
                             int effectivePageSize = Volatile.Read(
                                 ref adaptivePageSize);
                             stmt.SetPageSize(effectivePageSize);
@@ -512,11 +522,10 @@ namespace CassandraMigrationProcessor.Processors
                                 workerErrors.Add(
                                     TaskResult.Retry);
                                 isLastPage = true;
-                                // fall through to finally
                             }
                             else
                             {
-                                nextPaging = rs.PagingState;
+                                byte[]? nextPaging = rs.PagingState;
 
                                 // Extract row values
                                 var rows = new List<object[]>();
@@ -572,9 +581,7 @@ namespace CassandraMigrationProcessor.Processors
 
                                 // ── RECYCLE immediately after
                                 // read so next page can be read
-                                // by another worker in parallel
-                                // while this one writes ──────
-                                bool recycled = false;
+                                // by another reader in parallel
                                 if (!isLastPage)
                                 {
                                     try
@@ -589,10 +596,6 @@ namespace CassandraMigrationProcessor.Processors
                                     }
                                     catch (OperationCanceledException)
                                     {
-                                        // Cancelled during
-                                        // recycle — treat as
-                                        // last page so range
-                                        // doesn't get lost
                                         isLastPage = true;
                                     }
                                 }
@@ -618,123 +621,32 @@ namespace CassandraMigrationProcessor.Processors
                                     }
                                 }
 
-                                // ── WRITE rows concurrently ──
-                                var writeSw = Stopwatch.StartNew();
-                                int writeDone = 0;
-                                int writeFail = 0;
-                                long semWaitMs = 0;
-                                long writeLatencySum = 0;
-                                var writeTasks =
-                                    new List<Task>(rows.Count);
-
-                                foreach (var vals in rows)
-                                {
-                                    if (_cts.Token
-                                        .IsCancellationRequested
-                                        || Volatile.Read(ref nonRetriableHitFlag) != 0)
-                                        break;
-                                    long semStart = Stopwatch.GetTimestamp();
-                                    await writeSem.WaitAsync(
-                                        _cts.Token);
-                                    semWaitMs += (Stopwatch.GetTimestamp() - semStart)
-                                        * 1000 / Stopwatch.Frequency;
-                                    try
-                                    {
-                                        var bound = ps.Bind(vals);
-                                        bound
-                                            .SetReadTimeoutMillis(
-                                                60_000);
-                                        // Use LocalOne for bulk writes
-                                        // (faster, replicated async)
-                                        bound.SetConsistencyLevel(
-                                            ConsistencyLevel.LocalOne);
-                                        var wStart = Stopwatch.GetTimestamp();
-                                        writeTasks.Add(
-                                            _targetSession!
-                                            .ExecuteAsync(bound)
-                                            .ContinueWith(t =>
-                                        {
-                                            long wElapsed = (Stopwatch.GetTimestamp() - wStart)
-                                                * 1000 / Stopwatch.Frequency;
-                                            Interlocked.Add(ref writeLatencySum, wElapsed);
-                                            writeSem.Release();
-                                            if (t.IsFaulted)
-                                            {
-                                                var ex =
-                                                    t.Exception!
-                                                    .InnerException!;
-                                                Interlocked
-                                                    .Increment(
-                                                    ref totalFailed);
-                                                Interlocked
-                                                    .Increment(
-                                                    ref writeFail);
-                                                _log.WriteLine(
-                                                    $"INSERT failed"
-                                                    + $": {ex.GetType().Name}"
-                                                    + $": {ex.Message}",
-                                                    LogType.Error);
-                                                if (!IsRetriableWriteError(
-                                                    ex))
-                                                    Interlocked.Exchange(
-                                                        ref nonRetriableHitFlag, 1);
-                                            }
-                                            else
-                                            {
-                                                Interlocked
-                                                    .Increment(
-                                                    ref totalWritten);
-                                                Interlocked
-                                                    .Increment(
-                                                    ref writeDone);
-                                            }
-                                        }, TaskContinuationOptions
-                                            .ExecuteSynchronously));
-                                    }
-                                    catch
-                                    {
-                                        writeSem.Release();
-                                        throw;
-                                    }
-                                }
-                                // Snapshot in-flight before
-                                // waiting for completion
-                                tracker.SetSemCurrent(
-                                    maxInFlight - writeSem.CurrentCount);
-                                tracker.SetPipelineState(
-                                    feedRanges.Count - completed.Count,
-                                    Volatile.Read(ref adaptivePageSize));
-                                await Task.WhenAll(writeTasks);
-                                writeSw.Stop();
-                                tracker.AddWriteTime(
-                                    writeLatencySum,
-                                    rows.Count);
-                                tracker.AddSemWaitTime(semWaitMs);
-                                tracker.AddCopied(writeDone);
-                                tracker.AddFailed(writeFail);
-
-                                // Estimate data volume
-                                long pageBytes = 0;
-                                foreach (var r in rows)
-                                    foreach (var v in r)
-                                    {
-                                        if (v is byte[] b)
-                                            pageBytes += b.Length;
-                                        else if (v is string s)
-                                            pageBytes += s.Length * 2;
-                                        else if (v != null)
-                                            pageBytes += 8;
-                                    }
-                                tracker.AddBytes(pageBytes);
-
-                                // ── LAST PAGE: signal
-                                // completion AFTER writes ─────
+                                // Signal range completion
                                 if (isLastPage)
                                 {
+                                    _log.WriteLine(
+                                        $"Range complete: " +
+                                        $"{TruncRange(state.FeedRange)} " +
+                                        $"[{completed.Count}" +
+                                        $"/{feedRanges.Count}]");
                                     tracker.RangeCompleted(
                                         state.FeedRange,
                                         TaskResult.Success);
                                     TryCloseChannel();
+                                }
+
+                                // Push rows to data channel
+                                // for writers to consume
+                                if (rows.Count > 0)
+                                {
+                                    await dataCh.Writer
+                                        .WriteAsync(
+                                            new ReadPage(
+                                                rows,
+                                                state.FeedRange,
+                                                isLastPage,
+                                                readSw.ElapsedMilliseconds),
+                                            _cts.Token);
                                 }
                             }
                         }
@@ -747,7 +659,7 @@ namespace CassandraMigrationProcessor.Processors
                         catch (Exception ex)
                         {
                             _log.WriteLine(
-                                $"Worker error: " +
+                                $"Reader error: " +
                                 $"{ex.GetType().Name}: " +
                                 $"{ex.Message}",
                                 LogType.Error);
@@ -756,13 +668,6 @@ namespace CassandraMigrationProcessor.Processors
                         }
                         finally
                         {
-                            // Handle error/cancel cases where
-                            // range wasn't recycled or completed
-                            // in the normal path above.
-                            // If recycledToChannel is true, the
-                            // range is back in the channel — do
-                            // NOT mark it completed (another
-                            // worker owns it).
                             if (!recycledToChannel
                                 && !completed.Contains(
                                     state.FeedRange))
@@ -774,12 +679,156 @@ namespace CassandraMigrationProcessor.Processors
                                     completed.Add(
                                         state.FeedRange);
                                 }
+                                _log.WriteLine(
+                                    $"Range failed: " +
+                                    $"{TruncRange(state.FeedRange)} " +
+                                    $"[{completed.Count}" +
+                                    $"/{feedRanges.Count}]");
                                 tracker.RangeCompleted(
                                     state.FeedRange,
                                     TaskResult.Retry);
                                 TryCloseChannel();
                             }
+                        }
+                    }
+                    }
+                    finally
+                    {
+                        tracker.WorkerExited();
+                    }
+                })).ToArray();
 
+            // ── WRITER WORKERS ──────────────────────────────
+            var writers = Enumerable.Range(0, writerCount)
+                .Select(wid => Task.Run(async () =>
+                {
+                    await foreach (var page in dataCh.Reader
+                        .ReadAllAsync(_cts.Token))
+                    {
+                        try
+                        {
+                            // ── WRITE rows concurrently ──
+                            var writeSw = Stopwatch.StartNew();
+                            int writeDone = 0;
+                            int writeFail = 0;
+                            long semWaitMs = 0;
+                            long writeLatencySum = 0;
+                            var writeTasks =
+                                new List<Task>(page.Rows.Count);
+
+                            foreach (var vals in page.Rows)
+                            {
+                                if (_cts.Token
+                                    .IsCancellationRequested
+                                    || Volatile.Read(ref nonRetriableHitFlag) != 0)
+                                    break;
+                                long semStart = Stopwatch.GetTimestamp();
+                                await writeSem.WaitAsync(
+                                    _cts.Token);
+                                semWaitMs += (Stopwatch.GetTimestamp() - semStart)
+                                    * 1000 / Stopwatch.Frequency;
+                                try
+                                {
+                                    var bound = ps.Bind(vals);
+                                    bound
+                                        .SetReadTimeoutMillis(
+                                            60_000);
+                                    bound.SetConsistencyLevel(
+                                        ConsistencyLevel.LocalOne);
+                                    var wStart = Stopwatch.GetTimestamp();
+                                    writeTasks.Add(
+                                        _targetSession!
+                                        .ExecuteAsync(bound)
+                                        .ContinueWith(t =>
+                                    {
+                                        long wElapsed = (Stopwatch.GetTimestamp() - wStart)
+                                            * 1000 / Stopwatch.Frequency;
+                                        Interlocked.Add(ref writeLatencySum, wElapsed);
+                                        writeSem.Release();
+                                        if (t.IsFaulted)
+                                        {
+                                            var ex =
+                                                t.Exception!
+                                                .InnerException!;
+                                            Interlocked
+                                                .Increment(
+                                                ref totalFailed);
+                                            Interlocked
+                                                .Increment(
+                                                ref writeFail);
+                                            _log.WriteLine(
+                                                $"INSERT failed"
+                                                + $": {ex.GetType().Name}"
+                                                + $": {ex.Message}",
+                                                LogType.Error);
+                                            if (!IsRetriableWriteError(
+                                                ex))
+                                                Interlocked.Exchange(
+                                                    ref nonRetriableHitFlag, 1);
+                                        }
+                                        else
+                                        {
+                                            Interlocked
+                                                .Increment(
+                                                ref totalWritten);
+                                            Interlocked
+                                                .Increment(
+                                                ref writeDone);
+                                        }
+                                    }, TaskContinuationOptions
+                                        .ExecuteSynchronously));
+                                }
+                                catch
+                                {
+                                    writeSem.Release();
+                                    throw;
+                                }
+                            }
+                            // Snapshot in-flight before
+                            // waiting for completion
+                            tracker.SetSemCurrent(
+                                maxInFlight - writeSem.CurrentCount);
+                            tracker.SetPipelineState(
+                                feedRanges.Count - completed.Count,
+                                Volatile.Read(ref adaptivePageSize));
+                            await Task.WhenAll(writeTasks);
+                            writeSw.Stop();
+                            tracker.AddWriteTime(
+                                writeLatencySum,
+                                page.Rows.Count);
+                            tracker.AddSemWaitTime(semWaitMs);
+                            tracker.AddCopied(writeDone);
+                            tracker.AddFailed(writeFail);
+
+                            // Estimate data volume
+                            long pageBytes = 0;
+                            foreach (var r in page.Rows)
+                                foreach (var v in r)
+                                {
+                                    if (v is byte[] b)
+                                        pageBytes += b.Length;
+                                    else if (v is string s)
+                                        pageBytes += s.Length * 2;
+                                    else if (v != null)
+                                        pageBytes += 8;
+                                }
+                            tracker.AddBytes(pageBytes);
+                        }
+                        catch (OperationCanceledException)
+                        {
+                            // Writer cancelled
+                        }
+                        catch (Exception ex)
+                        {
+                            _log.WriteLine(
+                                $"Writer error: " +
+                                $"{ex.GetType().Name}: " +
+                                $"{ex.Message}",
+                                LogType.Error);
+                            workerErrors.Add(TaskResult.Retry);
+                        }
+                        finally
+                        {
                             // Update progress
                             long written = Interlocked.Read(
                                 ref totalWritten);
@@ -805,7 +854,6 @@ namespace CassandraMigrationProcessor.Processors
                             mu.UpdateParentJob();
 
                             // Save checkpoint every 10s
-                            // (atomic CAS for thread safety)
                             long prevTicks = Interlocked.Read(
                                 ref lastCheckpointTicks);
                             var now = DateTime.UtcNow;
@@ -822,23 +870,30 @@ namespace CassandraMigrationProcessor.Processors
                             }
                         }
                     }
-                    }
-                    finally
-                    {
-                        tracker.WorkerExited();
-                    }
                 })).ToArray();
 
+            // Wait for readers, then close data channel
             try
             {
-                await Task.WhenAll(workers);
+                await Task.WhenAll(readers);
             }
             catch (OperationCanceledException)
             {
-                // Workers exited due to cancellation
+                // Readers exited due to cancellation
+            }
+            dataCh.Writer.TryComplete();
+
+            // Wait for writers to drain remaining pages
+            try
+            {
+                await Task.WhenAll(writers);
+            }
+            catch (OperationCanceledException)
+            {
+                // Writers exited due to cancellation
             }
 
-            // Ensure channel is closed
+            // Ensure channels are closed
             workCh.Writer.TryComplete();
 
             // ── Final stats ─────────────────────────────────
@@ -867,7 +922,7 @@ namespace CassandraMigrationProcessor.Processors
             _log.WriteLine(
                 $"  Avg speed:     {avgSpeed:F0} rows/sec");
             _log.WriteLine(
-                $"  Workers used:  {workerCount}");
+                $"  Workers used:  {readerCount} readers + {writerCount} writers");
 
             // Final chunk update
             var fc = mu.MigrationChunks[chunkIndex];
@@ -910,6 +965,12 @@ namespace CassandraMigrationProcessor.Processors
         private record FeedRangeState(
             string FeedRange,
             byte[]? PagingState);
+
+        private record ReadPage(
+            List<object[]> Rows,
+            string FeedRange,
+            bool IsLastPage,
+            long ReadTimeMs);
 
         private static string TruncRange(string r) =>
             r.Length > 30 ? r[..15] + "..." : r;

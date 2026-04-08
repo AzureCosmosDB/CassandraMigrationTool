@@ -336,7 +336,7 @@ namespace CassandraMigrationProcessor.Workers
                     }
                 }
 
-                mu.BulkCopyStartedOn = DateTime.UtcNow;
+                mu.BulkCopyStartedOn ??= DateTime.UtcNow;
 
                 // Log feed range count for this table
                 if (!job.IsSimulatedRun)
