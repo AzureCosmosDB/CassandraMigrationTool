@@ -80,18 +80,7 @@ namespace CassandraMigrationProcessor.Workers
         public void RangeCompleted(
             string range, TaskResult result)
         {
-            int done = Interlocked.Increment(ref _completedRanges);
-            string status = result == TaskResult.Success ? "OK"
-                : result.ToString();
-            string rangeShort = range.Length > 40
-                ? range[..20] + "..." + range[^17..]
-                : range;
-            _log.WriteLine(
-                $"Range done: {_keyspace}.{_table} " +
-                $"[{done}/{_totalRanges}] " +
-                $"range={rangeShort} " +
-                $"status={status}, " +
-                $"{_activeWorkers} still active");
+            Interlocked.Increment(ref _completedRanges);
         }
 
         /// <summary>

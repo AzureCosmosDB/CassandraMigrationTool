@@ -731,11 +731,6 @@ namespace CassandraMigrationProcessor.Processors
                                 // completion AFTER writes ─────
                                 if (isLastPage)
                                 {
-                                    _log.WriteLine(
-                                        $"Range complete: " +
-                                        $"{TruncRange(state.FeedRange)} " +
-                                        $"[{completed.Count}" +
-                                        $"/{feedRanges.Count}]");
                                     tracker.RangeCompleted(
                                         state.FeedRange,
                                         TaskResult.Success);
@@ -779,11 +774,6 @@ namespace CassandraMigrationProcessor.Processors
                                     completed.Add(
                                         state.FeedRange);
                                 }
-                                _log.WriteLine(
-                                    $"Range failed: " +
-                                    $"{TruncRange(state.FeedRange)} " +
-                                    $"[{completed.Count}" +
-                                    $"/{feedRanges.Count}]");
                                 tracker.RangeCompleted(
                                     state.FeedRange,
                                     TaskResult.Retry);
