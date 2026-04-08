@@ -345,26 +345,45 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
                 table, StringComparer.OrdinalIgnoreCase))
                 return false;
 
-            // Probe actual data read to catch ghost tables
-            try
+            // Probe actual data read with retry for 429s
+            for (int attempt = 1; attempt <= 3; attempt++)
             {
-                var probe = new SimpleStatement(
-                    $"SELECT * FROM \"{keyspace}\".\"{table}\"" +
-                    " WHERE COSMOS_CHANGEFEED_FROM_START() = true");
-                probe.SetPageSize(1);
-                probe.SetAutoPage(false);
-                probe.SetReadTimeoutMillis(15_000);
-                await session.ExecuteAsync(probe)
-                    .ConfigureAwait(false);
-                return true;
+                try
+                {
+                    var probe = new SimpleStatement(
+                        $"SELECT * FROM \"{keyspace}\".\"{table}\"" +
+                        " WHERE COSMOS_CHANGEFEED_FROM_START() = true");
+                    probe.SetPageSize(1);
+                    probe.SetAutoPage(false);
+                    probe.SetReadTimeoutMillis(15_000);
+                    await session.ExecuteAsync(probe)
+                        .ConfigureAwait(false);
+                    return true;
+                }
+                catch (Exception ex)
+                {
+                    bool isThrottle = ex.Message?.Contains("429") == true
+                        || ex.Message?.Contains("rate", StringComparison.OrdinalIgnoreCase) == true
+                        || ex.Message?.Contains("TooMany", StringComparison.OrdinalIgnoreCase) == true;
+
+                    if (isThrottle && attempt < 3)
+                    {
+                        Console.WriteLine(
+                            $"  TableExists: {keyspace}.{table}" +
+                            $" probe throttled (attempt {attempt}/3)," +
+                            $" retrying in {attempt * 3}s...");
+                        await Task.Delay(attempt * 3000)
+                            .ConfigureAwait(false);
+                        continue;
+                    }
+
+                    Console.WriteLine(
+                        $"  TableExists: {keyspace}.{table}" +
+                        $" probe failed: {ex.GetType().Name}: {ex.Message}");
+                    return false;
+                }
             }
-            catch
-            {
-                Console.WriteLine(
-                    $"  TableExists: {keyspace}.{table}" +
-                    $" metadata OK but data probe failed");
-                return false;
-            }
+            return false;
         }
 
         /// <summary>

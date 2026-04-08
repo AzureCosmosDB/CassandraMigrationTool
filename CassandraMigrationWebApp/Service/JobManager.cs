@@ -390,25 +390,38 @@ namespace CassandraMigrationWebApp.Service
                             Console.WriteLine($"Found {tables.Count} tables in {ks}");
                             foreach (var tableName in tables)
                             {
-                                // Validate table is accessible by doing a
-                                // small data read (metadata queries can
-                                // succeed for tables that 404 on reads)
-                                try
+                                // Validate table is accessible with retry for 429s
+                                bool accessible = false;
+                                for (int att = 1; att <= 3; att++)
                                 {
-                                    var probe = new Cassandra.SimpleStatement(
-                                        $"SELECT * FROM \"{ks}\".\"{tableName}\"" +
-                                        " WHERE COSMOS_CHANGEFEED_FROM_START() = true");
-                                    probe.SetPageSize(1);
-                                    probe.SetAutoPage(false);
-                                    probe.SetReadTimeoutMillis(15_000);
-                                    session.Execute(probe);
+                                    try
+                                    {
+                                        var probe = new Cassandra.SimpleStatement(
+                                            $"SELECT * FROM \"{ks}\".\"{tableName}\"" +
+                                            " WHERE COSMOS_CHANGEFEED_FROM_START() = true");
+                                        probe.SetPageSize(1);
+                                        probe.SetAutoPage(false);
+                                        probe.SetReadTimeoutMillis(15_000);
+                                        session.Execute(probe);
+                                        accessible = true;
+                                        break;
+                                    }
+                                    catch (Exception vex)
+                                    {
+                                        bool isThrottle = vex.Message?.Contains("429") == true
+                                            || vex.Message?.Contains("rate", StringComparison.OrdinalIgnoreCase) == true
+                                            || vex.Message?.Contains("TooMany", StringComparison.OrdinalIgnoreCase) == true;
+                                        if (isThrottle && att < 3)
+                                        {
+                                            Console.WriteLine($"  Probe {ks}.{tableName} throttled (attempt {att}/3), retrying...");
+                                            Thread.Sleep(att * 3000);
+                                            continue;
+                                        }
+                                        Console.WriteLine($"  Skipping {ks}.{tableName} — not accessible: {vex.GetType().Name}: {vex.Message}");
+                                        _log.WriteLine($"Skipping {ks}.{tableName}: {vex.Message}", LogType.Warning);
+                                    }
                                 }
-                                catch (Exception vex)
-                                {
-                                    Console.WriteLine($"  Skipping {ks}.{tableName} — not accessible: {vex.GetType().Name}: {vex.Message}");
-                                    _log.WriteLine($"Skipping {ks}.{tableName}: {vex.Message}", LogType.Warning);
-                                    continue;
-                                }
+                                if (!accessible) continue;
 
                                 var mu = new MigrationUnit(
                                     job, ks, tableName,
