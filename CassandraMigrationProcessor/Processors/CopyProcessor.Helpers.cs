@@ -1,3 +1,4 @@
+using Cassandra;
 using CassandraMigrationProcessor.Context;
 using CassandraMigrationProcessor.Models;
 using CassandraMigrationProcessor.Workers;
@@ -18,56 +19,60 @@ namespace CassandraMigrationProcessor.Processors
         private static string TruncRange(string r) =>
             r.Length > 30 ? r[..15] + "..." : r;
 
+        /// <summary>
+        /// Determines if a write error is transient and should
+        /// be retried. Uses concrete driver exception types.
+        /// </summary>
         private static bool IsRetriableWriteError(Exception ex)
         {
-            var msg = ex.Message ?? string.Empty;
-            var typeName = ex.GetType().Name;
-            if (msg.Contains("429")
-                || msg.Contains("TooManyRequests",
-                    StringComparison.OrdinalIgnoreCase)
-                || msg.Contains("rate",
-                    StringComparison.OrdinalIgnoreCase))
+            if (ex is AggregateException agg
+                && agg.InnerException != null)
+                ex = agg.InnerException;
+
+            // Transient Cassandra driver errors
+            if (ex is Cassandra.NoHostAvailableException
+                || ex is Cassandra.WriteTimeoutException
+                || ex is Cassandra.ReadTimeoutException
+                || ex is Cassandra.UnavailableException
+                || ex is Cassandra.OverloadedException)
                 return true;
+
+            // Transient system errors
             if (ex is TimeoutException
                 || ex is System.IO.IOException
-                || msg.Contains("timeout",
-                    StringComparison.OrdinalIgnoreCase)
-                || typeName.Contains("Timeout"))
+                || ex is System.Net.Sockets.SocketException)
                 return true;
-            if (ex is System.Net.Sockets.SocketException
-                || typeName.Contains("NoHostAvailable")
-                || typeName.Contains("BusyPool")
-                || msg.Contains("connection",
-                    StringComparison.OrdinalIgnoreCase)
-                || msg.Contains("All hosts tried",
+
+            // Cosmos DB 429 (may appear as wrapped message)
+            var msg = ex.Message ?? string.Empty;
+            if (msg.Contains("429")
+                || msg.Contains("TooManyRequests",
                     StringComparison.OrdinalIgnoreCase))
                 return true;
+
             return false;
         }
 
         /// <summary>
-        /// Errors that should immediately fail the entire job
-        /// (not just the current table). These indicate config
-        /// or permissions problems that won't self-resolve.
+        /// Errors that should immediately fail the entire job.
+        /// Uses concrete driver exception types.
         /// </summary>
         private static bool IsFatalError(Exception ex)
         {
-            var msg = ex.Message ?? string.Empty;
-            var typeName = ex.GetType().Name;
-            if (typeName.Contains("Authentication")
-                || typeName.Contains("Unauthorized")
-                || msg.Contains("authentication",
-                    StringComparison.OrdinalIgnoreCase)
-                || msg.Contains("credentials",
-                    StringComparison.OrdinalIgnoreCase))
+            if (ex is AggregateException agg
+                && agg.InnerException != null)
+                ex = agg.InnerException;
+
+            // Auth failures
+            if (ex is Cassandra.AuthenticationException
+                || ex is Cassandra.UnauthorizedException)
                 return true;
-            if (typeName.Contains("InvalidQuery")
-                || typeName.Contains("SyntaxError")
-                || msg.Contains("unconfigured table",
-                    StringComparison.OrdinalIgnoreCase)
-                || msg.Contains("Unknown identifier",
-                    StringComparison.OrdinalIgnoreCase))
+
+            // Schema/syntax errors
+            if (ex is Cassandra.InvalidQueryException
+                || ex is Cassandra.SyntaxError)
                 return true;
+
             return false;
         }
 
