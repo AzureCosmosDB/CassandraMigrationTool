@@ -1,16 +1,8 @@
-using Cassandra;
 using CassandraMigrationProcessor.Context;
-using CassandraMigrationProcessor.Helpers.Cassandra;
 using CassandraMigrationProcessor.Helpers.JobManagement;
 using CassandraMigrationProcessor.Models;
-using CassandraMigrationProcessor.Workers;
 using System;
-using System.Collections.Concurrent;
-using System.Collections.Generic;
-using System.Diagnostics;
 using System.Linq;
-using System.Threading;
-using System.Threading.Channels;
 using System.Threading.Tasks;
 
 namespace CassandraMigrationProcessor.Processors
@@ -39,7 +31,7 @@ namespace CassandraMigrationProcessor.Processors
                 $"{context.KeyspaceName}.{context.TableName} Copy started");
 
             if (!migrationUnit.CopyComplete
-                && !_cts.Token.IsCancellationRequested)
+                && !_cancellation.Token.IsCancellationRequested)
             {
                 // Ensure at least one chunk exists
                 if (migrationUnit.MigrationChunks == null
@@ -61,7 +53,7 @@ namespace CassandraMigrationProcessor.Processors
                         break;
                     }
 
-                    _cts.Token.ThrowIfCancellationRequested();
+                    _cancellation.Token.ThrowIfCancellationRequested();
 
                     double initialPercent =
                         ((double)100 / migrationUnit.MigrationChunks.Count) * chunkIndex;
@@ -84,7 +76,7 @@ namespace CassandraMigrationProcessor.Processors
                                         context.TableName,
                                         chunkIndex, currentBackoff),
                                 _log,
-                                ct: _cts.Token);
+                                ct: _cancellation.Token);
 
                         if (result == TaskResult.Canceled)
                         {

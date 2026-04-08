@@ -1,7 +1,6 @@
 using Cassandra;
 using CassandraMigrationProcessor.Context;
 using CassandraMigrationProcessor.Helpers.Cassandra;
-using CassandraMigrationProcessor.Helpers.JobManagement;
 using CassandraMigrationProcessor.Models;
 using CassandraMigrationProcessor.Workers;
 using System;
@@ -38,8 +37,6 @@ namespace CassandraMigrationProcessor.Processors
             ProcessorContext processorContext,
             List<string> feedRanges)
         {
-            // Calculate workers: configured or auto
-            // Target ~100 total workers on 8 vCPU, scaled by cores
             int totalBudget = Environment.ProcessorCount * 13;
             int parallelTables = Math.Max(1, _job.ParallelThreads);
             int autoWorkers = Math.Max(4, totalBudget / parallelTables);
@@ -47,7 +44,6 @@ namespace CassandraMigrationProcessor.Processors
                 ? _job.MaxFeedRangeParallelism
                 : autoWorkers;
 
-            // ── Resume: filter out completed ranges ─────────
             var completed = migrationUnit.CompletedCopyFeedRanges
                 ?? new HashSet<string>();
             var checkpoints = migrationUnit.CopyFeedRangeCheckpoints
@@ -74,7 +70,6 @@ namespace CassandraMigrationProcessor.Processors
                 $"{workerCount} workers " +
                 $"for {processorContext.KeyspaceName}.{processorContext.TableName}");
 
-            // Schema setup
             if (!await CassandraHelper.TableExistsAsync(
                 _targetSession!, processorContext.TargetKeyspaceName,
                 processorContext.TargetTableName)
@@ -115,7 +110,6 @@ namespace CassandraMigrationProcessor.Processors
 
             var columnNames = columns.Select(c => c.Name).ToList();
 
-            // ── Partition pool channel ───────────────────────
             var partitionPool = Channel.CreateBounded<Partition>(
                 new BoundedChannelOptions(
                     pendingRanges.Count + workerCount)
@@ -123,7 +117,6 @@ namespace CassandraMigrationProcessor.Processors
                     FullMode = BoundedChannelFullMode.Wait
                 });
 
-            // Seed channel with pending ranges (resume-aware)
             int resumedCount = 0;
             foreach (var range in pendingRanges)
             {
@@ -142,10 +135,8 @@ namespace CassandraMigrationProcessor.Processors
                     $"Resuming {resumedCount}/{pendingRanges.Count}" +
                     $" ranges from checkpoint");
 
-            // Seed counters from prior run for resume
             long priorCopied = migrationUnit.CopyRowsCopied;
 
-            // Page size
             int jobPageSize = _job?.PageSize ?? 0;
             int configuredPageSize = jobPageSize > 0
                 ? jobPageSize
@@ -160,8 +151,7 @@ namespace CassandraMigrationProcessor.Processors
 
             var stopwatch = Stopwatch.StartNew();
 
-            // ── Build shared context ────────────────────────
-            var pipeline = new PipelineContext
+            var ctx = new PipelineContext
             {
                 PartitionPool = partitionPool,
                 ColumnNames = columnNames,
@@ -173,7 +163,7 @@ namespace CassandraMigrationProcessor.Processors
                 TotalRead = 0,
                 TotalWritten = priorCopied,
                 TotalFailed = 0,
-                NonRetriableHitFlag = 0,
+                FatalErrorFlag = 0,
                 WorkerErrors = new ConcurrentBag<TaskResult>(),
                 ConfiguredPageSize = configuredPageSize,
                 Context = processorContext,
@@ -186,7 +176,6 @@ namespace CassandraMigrationProcessor.Processors
                 LastCheckpointTicks = DateTime.UtcNow.Ticks,
             };
 
-            // ── LAUNCH UNIFIED WORKERS ──────────────────────
             _log.WriteLine(
                 $"Launching {workerCount} workers " +
                 $"for {processorContext.KeyspaceName}.{processorContext.TableName} " +
@@ -194,30 +183,26 @@ namespace CassandraMigrationProcessor.Processors
                 $"page size={configuredPageSize})...");
             var workers = Enumerable.Range(0, workerCount)
                 .Select(workerId => Task.Run(
-                    () => RunWorkerAsync(workerId, pipeline)))
+                    () => RunWorkerAsync(workerId, ctx)))
                 .ToArray();
 
-            // Wait for all workers
             try
             {
                 await Task.WhenAll(workers);
             }
             catch (OperationCanceledException)
             {
-                // Workers exited due to cancellation
             }
 
-            // Ensure channel is closed
-            pipeline.PartitionPool.Writer.TryComplete();
+            ctx.PartitionPool.Writer.TryComplete();
 
-            // ── Final stats ─────────────────────────────────
-            pipeline.Tracker.LogFinal();
+            ctx.Tracker.LogFinal();
             long finalWritten = Interlocked.Read(
-                ref pipeline.TotalWritten);
+                ref ctx.TotalWritten);
             long finalFailed = Interlocked.Read(
-                ref pipeline.TotalFailed);
+                ref ctx.TotalFailed);
             long finalRead = Interlocked.Read(
-                ref pipeline.TotalRead);
+                ref ctx.TotalRead);
 
             var elapsed = stopwatch.Elapsed;
             double avgSpeed = elapsed.TotalSeconds > 0
@@ -233,7 +218,7 @@ namespace CassandraMigrationProcessor.Processors
                 $"  Total failed:  {finalFailed:N0} rows");
             _log.WriteLine(
                 $"  Ranges:        " +
-                $"{pipeline.Completed.Count}/{feedRanges.Count} completed");
+                $"{ctx.Completed.Count}/{feedRanges.Count} completed");
             _log.WriteLine(
                 $"  Duration:      {elapsed.TotalSeconds:F1}s");
             _log.WriteLine(
@@ -241,7 +226,6 @@ namespace CassandraMigrationProcessor.Processors
             _log.WriteLine(
                 $"  Workers used:  {workerCount}");
 
-            // Final chunk update
             var chunk = migrationUnit.MigrationChunks[chunkIndex];
             chunk.SourceResultRowCount = finalWritten;
             chunk.TargetInsertedRowCount = finalWritten;
@@ -250,7 +234,7 @@ namespace CassandraMigrationProcessor.Processors
             migrationUnit.ActualRowCount = Math.Max(
                 migrationUnit.ActualRowCount, finalRead);
             bool allRangesComplete =
-                pipeline.Completed.Count >= feedRanges.Count;
+                ctx.Completed.Count >= feedRanges.Count;
             if (chunk.Segments.Count == 0)
             {
                 chunk.Segments.Add(new Segment
@@ -267,14 +251,11 @@ namespace CassandraMigrationProcessor.Processors
             }
             MigrationJobContext.SaveMigrationUnit(migrationUnit, true);
 
-            if (Volatile.Read(
-                ref pipeline.NonRetriableHitFlag) != 0)
+            if (Volatile.Read(ref ctx.FatalErrorFlag) != 0)
                 return TaskResult.Abort;
-            if (pipeline.WorkerErrors.Any(
-                r => r == TaskResult.Abort))
+            if (ctx.WorkerErrors.Any(r => r == TaskResult.Abort))
                 return TaskResult.Abort;
-            if (pipeline.WorkerErrors.Any(
-                r => r == TaskResult.Canceled))
+            if (ctx.WorkerErrors.Any(r => r == TaskResult.Canceled))
                 return TaskResult.Canceled;
             if (finalFailed > 0)
                 return TaskResult.Retry;

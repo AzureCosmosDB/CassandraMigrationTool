@@ -1,22 +1,20 @@
-using Cassandra;
 using CassandraMigrationProcessor.Context;
-using CassandraMigrationProcessor.Helpers.Cassandra;
-using CassandraMigrationProcessor.Helpers.JobManagement;
 using CassandraMigrationProcessor.Models;
 using CassandraMigrationProcessor.Workers;
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
-using System.Diagnostics;
-using System.Linq;
 using System.Threading;
 using System.Threading.Channels;
-using System.Threading.Tasks;
 
 namespace CassandraMigrationProcessor.Processors
 {
     internal partial class CopyProcessor
     {
+        private const int ReadTimeoutMs = 60_000;
+        private const int MaxReadRetries = 3;
+        private const int RetryDelayMs = 5000;
+
         private static string TruncRange(string r) =>
             r.Length > 30 ? r[..15] + "..." : r;
 
@@ -24,21 +22,18 @@ namespace CassandraMigrationProcessor.Processors
         {
             var msg = ex.Message ?? string.Empty;
             var typeName = ex.GetType().Name;
-            // Transient: throttling
             if (msg.Contains("429")
                 || msg.Contains("TooManyRequests",
                     StringComparison.OrdinalIgnoreCase)
                 || msg.Contains("rate",
                     StringComparison.OrdinalIgnoreCase))
                 return true;
-            // Transient: timeout
             if (ex is TimeoutException
                 || ex is System.IO.IOException
                 || msg.Contains("timeout",
                     StringComparison.OrdinalIgnoreCase)
                 || typeName.Contains("Timeout"))
                 return true;
-            // Transient: network/connection
             if (ex is System.Net.Sockets.SocketException
                 || typeName.Contains("NoHostAvailable")
                 || typeName.Contains("BusyPool")
@@ -47,7 +42,6 @@ namespace CassandraMigrationProcessor.Processors
                 || msg.Contains("All hosts tried",
                     StringComparison.OrdinalIgnoreCase))
                 return true;
-            // Non-retriable: auth, schema, syntax errors
             return false;
         }
 
@@ -60,7 +54,6 @@ namespace CassandraMigrationProcessor.Processors
         {
             var msg = ex.Message ?? string.Empty;
             var typeName = ex.GetType().Name;
-            // Auth failures — wrong credentials, expired token
             if (typeName.Contains("Authentication")
                 || typeName.Contains("Unauthorized")
                 || msg.Contains("authentication",
@@ -68,7 +61,6 @@ namespace CassandraMigrationProcessor.Processors
                 || msg.Contains("credentials",
                     StringComparison.OrdinalIgnoreCase))
                 return true;
-            // Schema errors — table doesn't exist, wrong types
             if (typeName.Contains("InvalidQuery")
                 || typeName.Contains("SyntaxError")
                 || msg.Contains("unconfigured table",
@@ -107,7 +99,6 @@ namespace CassandraMigrationProcessor.Processors
             /// </summary>
             public byte[]? LastPagingState { get; set; }
 
-            // Linked list of work chunks (head = oldest pending)
             private WorkChunk? _head;
             private WorkChunk? _tail;
             private readonly object _lock = new();
@@ -141,11 +132,9 @@ namespace CassandraMigrationProcessor.Processors
                 };
                 lock (_lock)
                 {
-                    // Trim completed chunks from head
                     while (_head != null && _head.IsCompleted)
                         _head = _head.Next;
 
-                    // Append new chunk
                     if (_tail == null)
                         _head = _tail = chunk;
                     else
@@ -220,7 +209,7 @@ namespace CassandraMigrationProcessor.Processors
             public long TotalRead;
             public long TotalWritten;
             public long TotalFailed;
-            public int NonRetriableHitFlag;
+            public int FatalErrorFlag;
             public ConcurrentBag<TaskResult> WorkerErrors = null!;
             public int ConfiguredPageSize;
             public ProcessorContext Context = null!;

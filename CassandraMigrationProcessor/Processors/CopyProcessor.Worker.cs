@@ -1,14 +1,10 @@
-using Cassandra;
+﻿using Cassandra;
 using CassandraMigrationProcessor.Context;
 using CassandraMigrationProcessor.Helpers.Cassandra;
-using CassandraMigrationProcessor.Helpers.JobManagement;
 using CassandraMigrationProcessor.Models;
-using CassandraMigrationProcessor.Workers;
 using System;
-using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
-using System.Linq;
 using System.Threading;
 using System.Threading.Channels;
 using System.Threading.Tasks;
@@ -24,169 +20,96 @@ namespace CassandraMigrationProcessor.Processors
         /// then writes rows to target and marks the chunk done.
         /// </summary>
         private async Task RunWorkerAsync(
-            int workerId, PipelineContext pipeline)
+            int workerId, PipelineContext ctx)
         {
-            pipeline.Tracker.WorkerStarted();
+            ctx.Tracker.WorkerStarted();
             ISession? workerTargetSession = null;
             ISession? workerSourceSession = null;
             try
             {
-            // Create per-worker sessions (1 conn/host each)
-            var job = pipeline.Job;
-            workerTargetSession = CassandraClientFactory
-                .CreateTargetSession(_log, job, "");
-            workerSourceSession = CassandraClientFactory
-                .CreateSourceSession(_log, job,
-                    pipeline.Context.KeyspaceName);
+                var job = ctx.Job;
+                workerTargetSession = CassandraClientFactory
+                    .CreateTargetSession(_log, job, "");
+                workerSourceSession = CassandraClientFactory
+                    .CreateSourceSession(_log, job,
+                        ctx.Context.KeyspaceName);
 
-            // Prepare INSERT for this worker's session
-            var (ps, _) = await CassandraHelper.PrepareInsertAsync(
-                workerTargetSession,
-                pipeline.Context.TargetKeyspaceName,
-                pipeline.Context.TargetTableName,
-                pipeline.Columns).ConfigureAwait(false);
+                var (preparedInsert, _) = await CassandraHelper
+                    .PrepareInsertAsync(
+                        workerTargetSession,
+                        ctx.Context.TargetKeyspaceName,
+                        ctx.Context.TargetTableName,
+                        ctx.Columns).ConfigureAwait(false);
 
-            while (!_cts.Token.IsCancellationRequested
-                && Volatile.Read(ref pipeline.NonRetriableHitFlag) == 0)
-            {
-                Partition partition;
-                try
+                while (!_cancellation.Token.IsCancellationRequested
+                    && Volatile.Read(ref ctx.FatalErrorFlag) == 0)
                 {
-                    partition = await pipeline.PartitionPool
-                        .Reader.ReadAsync(_cts.Token);
-                }
-                catch (OperationCanceledException) { break; }
-                catch (ChannelClosedException) { break; }
-
-                if (_cts.Token.IsCancellationRequested
-                    || Volatile.Read(
-                        ref pipeline.NonRetriableHitFlag) != 0)
-                {
-                    lock (pipeline.Checkpoints)
+                    Partition partition;
+                    try
                     {
-                        pipeline.Completed.Add(
-                            partition.FeedRange);
+                        partition = await ctx.PartitionPool
+                            .Reader.ReadAsync(_cancellation.Token);
                     }
-                    TryCloseChannel(pipeline);
-                    continue;
-                }
+                    catch (OperationCanceledException) { break; }
+                    catch (ChannelClosedException) { break; }
 
-                if (partition.IsExhausted)
-                {
-                    lock (pipeline.Checkpoints)
+                    if (_cancellation.Token.IsCancellationRequested
+                        || Volatile.Read(
+                            ref ctx.FatalErrorFlag) != 0)
                     {
-                        pipeline.Completed.Add(
-                            partition.FeedRange);
-                    }
-                    TryCloseChannel(pipeline);
-                    continue;
-                }
-
-                bool isLastPage = false;
-                try
-                {
-                    // ── STEP 2: READ one page ───────
-                    var readSw = Stopwatch.StartNew();
-                    var stmt = new SimpleStatement(
-                        BuildSelectCql(
-                            pipeline.Context, partition.FeedRange));
-                    stmt.SetPageSize(pipeline.ConfiguredPageSize);
-                    stmt.SetAutoPage(false);
-                    stmt.SetReadTimeoutMillis(60_000);
-                    stmt.SetConsistencyLevel(
-                        ConsistencyLevel.One);
-
-                    // Use partition's latest paging state
-                    // (not GetResumeToken — that's for
-                    // checkpoint persistence only)
-                    if (partition.LastPagingState != null)
-                        stmt.SetPagingState(
-                            partition.LastPagingState);
-
-                    RowSet resultSet = null;
-                    for (int attempt = 1; attempt <= 3; attempt++)
-                    {
-                        try
+                        lock (ctx.Checkpoints)
                         {
-                            resultSet = await workerSourceSession!
-                                .ExecuteAsync(stmt)
-                                .ConfigureAwait(false);
-                            break;
+                            ctx.Completed.Add(
+                                partition.FeedRange);
                         }
-                        catch (Exception ex) when (
-                            attempt < 3 &&
-                            (ex is TimeoutException ||
-                             ex.GetType().Name
-                                 .Contains("Timeout") ||
-                             ex.GetType().Name
-                                 .Contains("NoHostAvail")))
-                        {
-                            _log.WriteLine(
-                                $"[W{workerId}] Read timeout " +
-                                $"(attempt {attempt}/3)",
-                                LogType.Warning);
-                            await Task.Delay(
-                                attempt * 5000, _cts.Token);
-                        }
+                        TryCloseChannel(ctx);
+                        continue;
                     }
 
-                    if (resultSet == null)
+                    if (partition.IsExhausted)
                     {
-                        pipeline.WorkerErrors.Add(
-                            TaskResult.Retry);
-                        isLastPage = true;
+                        lock (ctx.Checkpoints)
+                        {
+                            ctx.Completed.Add(
+                                partition.FeedRange);
+                        }
+                        TryCloseChannel(ctx);
+                        continue;
                     }
-                    else
+
+                    bool isLastPage = false;
+                    try
                     {
-                        byte[]? nextPaging = resultSet.PagingState;
-                        // Update partition's read cursor
+                        var (rows, nextPaging, lastPage, readTimeMs) =
+                            await ReadPageAsync(
+                                partition, workerSourceSession!, ctx,
+                                workerId);
+
+                        if (rows == null)
+                        {
+                            // Read failed after all retries
+                            continue;
+                        }
+
+                        isLastPage = lastPage;
                         partition.LastPagingState = nextPaging;
-
-                        // Extract row values
-                        var rows = new List<object[]>();
-                        int avail = resultSet
-                            .GetAvailableWithoutFetching();
-                        int consumed = 0;
-                        foreach (var row in resultSet)
-                        {
-                            if (consumed >= avail) break;
-                            consumed++;
-                            var rowValues =
-                                new object[pipeline.ColumnNames.Count];
-                            for (int i = 0;
-                                i < pipeline.ColumnNames.Count; i++)
-                                rowValues[i] =
-                                    row[pipeline.ColumnNames[i]];
-                            rows.Add(rowValues);
-                        }
-
                         Interlocked.Add(
-                            ref pipeline.TotalRead, rows.Count);
-                        readSw.Stop();
-                        pipeline.Tracker.AddReadTime(
-                            readSw.ElapsedMilliseconds);
+                            ref ctx.TotalRead, rows.Count);
+                        ctx.Tracker.AddReadTime(readTimeMs);
 
-                        if (rows.Count == 0
-                            || nextPaging == null)
-                            isLastPage = true;
-
-                        // ── STEP 3+4: Create WorkChunk ──
                         var workChunk =
-                            partition.AddChunkAndTrim(
-                                nextPaging);
+                            partition.AddChunkAndTrim(nextPaging);
 
                         if (isLastPage)
                             partition.IsExhausted = true;
 
-                        // ── STEP 5: Recycle partition ────
                         if (!isLastPage)
                         {
                             try
                             {
-                                await pipeline.PartitionPool
+                                await ctx.PartitionPool
                                     .Writer.WriteAsync(
-                                        partition,
-                                        _cts.Token);
+                                        partition, _cancellation.Token);
                             }
                             catch (OperationCanceledException)
                             {
@@ -195,150 +118,25 @@ namespace CassandraMigrationProcessor.Processors
                             }
                         }
 
-                        // ── STEP 6: WRITE rows ──────────
                         if (rows.Count > 0)
                         {
-                            var writeSw =
-                                Stopwatch.StartNew();
-                            int writeDone = 0;
-                            int writeFail = 0;
-                            long writeLatencySum = 0;
-                            var writeTasks =
-                                new List<Task>(rows.Count);
-
-                            foreach (var rowValues in rows)
-                            {
-                                if (_cts.Token
-                                    .IsCancellationRequested
-                                    || Volatile.Read(
-                                        ref pipeline
-                                            .NonRetriableHitFlag)
-                                        != 0)
-                                    break;
-                                var bound =
-                                    ps.Bind(rowValues);
-                                bound
-                                    .SetReadTimeoutMillis(
-                                        60_000);
-                                bound.SetConsistencyLevel(
-                                    ConsistencyLevel
-                                        .LocalOne);
-                                var writeStart = Stopwatch
-                                    .GetTimestamp();
-                                writeTasks.Add(
-                                    workerTargetSession!
-                                    .ExecuteAsync(bound)
-                                    .ContinueWith(writeTask =>
-                                {
-                                    long wElapsed =
-                                        (Stopwatch
-                                            .GetTimestamp()
-                                            - writeStart)
-                                        * 1000
-                                        / Stopwatch
-                                            .Frequency;
-                                    Interlocked.Add(
-                                        ref writeLatencySum,
-                                        wElapsed);
-                                    if (writeTask.IsFaulted)
-                                    {
-                                        var ex =
-                                            writeTask.Exception!
-                                            .InnerException!;
-                                        Interlocked
-                                            .Increment(
-                                            ref pipeline
-                                                .TotalFailed);
-                                        Interlocked
-                                            .Increment(
-                                            ref writeFail);
-                                        _log.WriteLine(
-                                            $"[W{workerId}] INSERT failed"
-                                            + $": {ex.GetType().Name}"
-                                            + $": {ex.Message}",
-                                            LogType.Error);
-                                        if (IsFatalError(ex))
-                                        {
-                                            _log.WriteLine(
-                                                $"[W{workerId}] FATAL: {ex.GetType().Name}" +
-                                                $" — failing job",
-                                                LogType.Error);
-                                            Interlocked.Exchange(
-                                                ref pipeline
-                                                    .NonRetriableHitFlag,
-                                                1);
-                                            try { _cts.Cancel(); }
-                                            catch { }
-                                        }
-                                        else if (!IsRetriableWriteError(
-                                            ex))
-                                            Interlocked
-                                                .Exchange(
-                                                ref pipeline
-                                                    .NonRetriableHitFlag,
-                                                1);
-                                    }
-                                    else
-                                    {
-                                        Interlocked
-                                            .Increment(
-                                            ref pipeline
-                                                .TotalWritten);
-                                        Interlocked
-                                            .Increment(
-                                            ref writeDone);
-                                    }
-                                }, TaskContinuationOptions
-                                    .ExecuteSynchronously));
-                            }
-
-                            pipeline.Tracker.SetPipelineState(
-                                pipeline.FeedRanges.Count
-                                    - pipeline.Completed.Count,
-                                pipeline.ConfiguredPageSize);
-                            await Task.WhenAll(writeTasks);
-
-                            // ── STEP 7: Mark completed ──
-                            workChunk.IsCompleted = true;
-
-                            writeSw.Stop();
-                            pipeline.Tracker.AddWriteTime(
-                                writeLatencySum,
-                                rows.Count);
-                            pipeline.Tracker.AddCopied(
-                                writeDone);
-                            pipeline.Tracker.AddFailed(
-                                writeFail);
-
-                            // Estimate data volume
-                            long pageBytes = 0;
-                            foreach (var r in rows)
-                                foreach (var v in r)
-                                {
-                                    if (v is byte[] b)
-                                        pageBytes += b.Length;
-                                    else if (v is string s)
-                                        pageBytes +=
-                                            s.Length * 2;
-                                    else if (v != null)
-                                        pageBytes += 8;
-                                }
-                            pipeline.Tracker.AddBytes(pageBytes);
+                            await WriteRowsAsync(
+                                rows, preparedInsert,
+                                workerTargetSession!, workChunk,
+                                ctx, workerId);
                         }
                         else
                         {
-                            // Empty page — mark done
                             workChunk.IsCompleted = true;
                         }
 
-                        // Update checkpoint from partition
-                        lock (pipeline.Checkpoints)
+                        lock (ctx.Checkpoints)
                         {
                             if (partition.IsExhausted)
                             {
-                                pipeline.Checkpoints.Remove(
+                                ctx.Checkpoints.Remove(
                                     partition.FeedRange);
-                                pipeline.Completed.Add(
+                                ctx.Completed.Add(
                                     partition.FeedRange);
                             }
                             else
@@ -346,7 +144,7 @@ namespace CassandraMigrationProcessor.Processors
                                 var token =
                                     partition.GetResumeToken();
                                 if (token != null)
-                                    pipeline.Checkpoints[
+                                    ctx.Checkpoints[
                                         partition.FeedRange] =
                                         Convert.ToBase64String(
                                             token);
@@ -355,133 +153,332 @@ namespace CassandraMigrationProcessor.Processors
 
                         if (partition.IsExhausted)
                         {
-                            pipeline.Tracker.RangeCompleted(
+                            ctx.Tracker.RangeCompleted(
                                 partition.FeedRange,
                                 TaskResult.Success);
-                            TryCloseChannel(pipeline);
+                            TryCloseChannel(ctx);
                         }
                     }
-                }
-                catch (OperationCanceledException)
-                {
-                    pipeline.WorkerErrors.Add(
-                        TaskResult.Canceled);
-                    if (!partition.IsExhausted)
+                    catch (OperationCanceledException)
                     {
-                        lock (pipeline.Checkpoints)
+                        ctx.WorkerErrors.Add(
+                            TaskResult.Canceled);
+                        if (!partition.IsExhausted)
                         {
-                            pipeline.Completed.Add(
-                                partition.FeedRange);
+                            lock (ctx.Checkpoints)
+                            {
+                                ctx.Completed.Add(
+                                    partition.FeedRange);
+                            }
+                            TryCloseChannel(ctx);
                         }
-                        TryCloseChannel(pipeline);
                     }
-                }
-                catch (Exception ex)
-                {
-                    _log.WriteLine(
-                        $"[W{workerId}] Worker error: " +
-                        $"{ex.GetType().Name}: " +
-                        $"{ex.Message}",
-                        LogType.Error);
-
-                    if (IsFatalError(ex))
+                    catch (Exception ex)
                     {
                         _log.WriteLine(
-                            $"[W{workerId}] FATAL: {ex.GetType().Name}" +
-                            $" — failing job",
+                            $"[W{workerId}] Worker error: " +
+                            $"{ex.GetType().Name}: " +
+                            $"{ex.Message}",
                             LogType.Error);
-                        Interlocked.Exchange(
-                            ref pipeline.NonRetriableHitFlag, 1);
-                        try { _cts.Cancel(); } catch { }
-                        pipeline.WorkerErrors.Add(
-                            TaskResult.Abort);
-                    }
-                    else
-                    {
-                        pipeline.WorkerErrors.Add(
-                            TaskResult.Retry);
-                    }
 
-                    if (!pipeline.Completed.Contains(
-                        partition.FeedRange))
-                    {
-                        lock (pipeline.Checkpoints)
+                        if (IsFatalError(ex))
                         {
-                            pipeline.Completed.Add(
-                                partition.FeedRange);
+                            _log.WriteLine(
+                                $"[W{workerId}] FATAL: {ex.GetType().Name}" +
+                                $" — failing job",
+                                LogType.Error);
+                            Interlocked.Exchange(
+                                ref ctx.FatalErrorFlag, 1);
+                            try { _cancellation.Cancel(); } catch { }
+                            ctx.WorkerErrors.Add(
+                                TaskResult.Abort);
                         }
-                        pipeline.Tracker.RangeCompleted(
-                            partition.FeedRange,
-                            TaskResult.Retry);
-                        TryCloseChannel(pipeline);
-                    }
-                }
-                finally
-                {
-                    // Update progress
-                    long written = Interlocked.Read(
-                        ref pipeline.TotalWritten);
-                    long failed = Interlocked.Read(
-                        ref pipeline.TotalFailed);
-                    var chunk =
-                        pipeline.MigrationUnit.MigrationChunks[
-                            pipeline.ChunkIndex];
-                    chunk.SourceResultRowCount = written;
-                    chunk.TargetInsertedRowCount =
-                        written;
-                    chunk.TargetFailedRowCount = failed;
-                    pipeline.MigrationUnit.CopyRowsCopied = written;
-                    pipeline.MigrationUnit.CopyRowsPerSecond =
-                        pipeline.Tracker.RecentSpeed;
-                    if (pipeline.TotalRowCount > 0)
-                    {
-                        pipeline.MigrationUnit.CopyPercent =
-                            pipeline.InitialPercent +
-                            (Math.Min(99.9,
-                                (double)written
-                                / pipeline.TotalRowCount * 100)
-                            * pipeline.ContributionFactor);
-                    }
-                    pipeline.MigrationUnit.UpdateParentJob();
+                        else
+                        {
+                            ctx.WorkerErrors.Add(
+                                TaskResult.Retry);
+                        }
 
-                    // Save checkpoint every 10s
-                    long prevTicks = Interlocked.Read(
-                        ref pipeline.LastCheckpointTicks);
-                    var now = DateTime.UtcNow;
-                    if ((now.Ticks - prevTicks)
-                        / TimeSpan.TicksPerSecond >= 10
-                        && Interlocked.CompareExchange(
-                            ref pipeline.LastCheckpointTicks,
-                            now.Ticks, prevTicks)
-                            == prevTicks)
+                        if (!ctx.Completed.Contains(
+                            partition.FeedRange))
+                        {
+                            lock (ctx.Checkpoints)
+                            {
+                                ctx.Completed.Add(
+                                    partition.FeedRange);
+                            }
+                            ctx.Tracker.RangeCompleted(
+                                partition.FeedRange,
+                                TaskResult.Retry);
+                            TryCloseChannel(ctx);
+                        }
+                    }
+                    finally
                     {
-                        MigrationJobContext
-                            .SaveMigrationUnit(
-                                pipeline.MigrationUnit, true);
+                        long written = Interlocked.Read(
+                            ref ctx.TotalWritten);
+                        long failed = Interlocked.Read(
+                            ref ctx.TotalFailed);
+                        var chunk =
+                            ctx.MigrationUnit.MigrationChunks[
+                                ctx.ChunkIndex];
+                        chunk.SourceResultRowCount = written;
+                        chunk.TargetInsertedRowCount = written;
+                        chunk.TargetFailedRowCount = failed;
+                        ctx.MigrationUnit.CopyRowsCopied = written;
+                        ctx.MigrationUnit.CopyRowsPerSecond =
+                            ctx.Tracker.RecentSpeed;
+                        if (ctx.TotalRowCount > 0)
+                        {
+                            ctx.MigrationUnit.CopyPercent =
+                                ctx.InitialPercent +
+                                (Math.Min(99.9,
+                                    (double)written
+                                    / ctx.TotalRowCount * 100)
+                                * ctx.ContributionFactor);
+                        }
+                        ctx.MigrationUnit.UpdateParentJob();
+
+                        long prevTicks = Interlocked.Read(
+                            ref ctx.LastCheckpointTicks);
+                        var now = DateTime.UtcNow;
+                        if ((now.Ticks - prevTicks)
+                            / TimeSpan.TicksPerSecond >= 10
+                            && Interlocked.CompareExchange(
+                                ref ctx.LastCheckpointTicks,
+                                now.Ticks, prevTicks)
+                                == prevTicks)
+                        {
+                            MigrationJobContext
+                                .SaveMigrationUnit(
+                                    ctx.MigrationUnit, true);
+                        }
                     }
                 }
-            }
             }
             finally
             {
                 try { workerTargetSession?.Dispose(); } catch { }
                 try { workerSourceSession?.Dispose(); } catch { }
-                pipeline.Tracker.WorkerExited();
+                ctx.Tracker.WorkerExited();
             }
         }
 
+        /// <summary>
+        /// Reads a single page of rows from the source
+        /// partition, retrying on transient timeouts.
+        /// Returns null rows when all retries are exhausted.
+        /// </summary>
+        private async Task<(List<object[]>? rows,
+            byte[]? nextPaging, bool isLastPage,
+            long readTimeMs)> ReadPageAsync(
+            Partition partition,
+            ISession sourceSession,
+            PipelineContext ctx,
+            int workerId)
+        {
+            var stopwatch = Stopwatch.StartNew();
+            var stmt = new SimpleStatement(
+                BuildSelectCql(
+                    ctx.Context, partition.FeedRange));
+            stmt.SetPageSize(ctx.ConfiguredPageSize);
+            stmt.SetAutoPage(false);
+            stmt.SetReadTimeoutMillis(ReadTimeoutMs);
+            stmt.SetConsistencyLevel(ConsistencyLevel.One);
+
+            if (partition.LastPagingState != null)
+                stmt.SetPagingState(
+                    partition.LastPagingState);
+
+            RowSet resultSet = null;
+            for (int attempt = 1;
+                attempt <= MaxReadRetries; attempt++)
+            {
+                try
+                {
+                    resultSet = await sourceSession
+                        .ExecuteAsync(stmt)
+                        .ConfigureAwait(false);
+                    break;
+                }
+                catch (Exception ex) when (
+                    attempt < MaxReadRetries &&
+                    (ex is TimeoutException ||
+                     ex.GetType().Name
+                         .Contains("Timeout") ||
+                     ex.GetType().Name
+                         .Contains("NoHostAvail")))
+                {
+                    _log.WriteLine(
+                        $"[W{workerId}] Read timeout " +
+                        $"(attempt {attempt}/{MaxReadRetries})",
+                        LogType.Warning);
+                    await Task.Delay(
+                        attempt * RetryDelayMs, _cancellation.Token);
+                }
+            }
+
+            if (resultSet == null)
+            {
+                ctx.WorkerErrors.Add(TaskResult.Retry);
+                stopwatch.Stop();
+                return (null, null, true,
+                    stopwatch.ElapsedMilliseconds);
+            }
+
+            byte[]? nextPaging = resultSet.PagingState;
+
+            var rows = new List<object[]>();
+            int available =
+                resultSet.GetAvailableWithoutFetching();
+            int consumed = 0;
+            foreach (var row in resultSet)
+            {
+                if (consumed >= available) break;
+                consumed++;
+                var rowValues =
+                    new object[ctx.ColumnNames.Count];
+                for (int i = 0;
+                    i < ctx.ColumnNames.Count; i++)
+                    rowValues[i] =
+                        row[ctx.ColumnNames[i]];
+                rows.Add(rowValues);
+            }
+
+            stopwatch.Stop();
+            bool isLastPage =
+                rows.Count == 0 || nextPaging == null;
+            return (rows, nextPaging, isLastPage,
+                stopwatch.ElapsedMilliseconds);
+        }
+
+        /// <summary>
+        /// Writes extracted rows to the target cluster in
+        /// parallel, tracking progress and handling errors.
+        /// </summary>
+        private async Task WriteRowsAsync(
+            List<object[]> rows,
+            PreparedStatement preparedInsert,
+            ISession targetSession,
+            WorkChunk workChunk,
+            PipelineContext ctx,
+            int workerId)
+        {
+            var stopwatch = Stopwatch.StartNew();
+            int writeDone = 0;
+            int writeFail = 0;
+            long writeLatencySum = 0;
+            var writeTasks = new List<Task>(rows.Count);
+
+            foreach (var rowValues in rows)
+            {
+                if (_cancellation.Token.IsCancellationRequested
+                    || Volatile.Read(
+                        ref ctx.FatalErrorFlag) != 0)
+                    break;
+
+                var bound = preparedInsert.Bind(rowValues);
+                bound.SetReadTimeoutMillis(ReadTimeoutMs);
+                bound.SetConsistencyLevel(
+                    ConsistencyLevel.LocalOne);
+
+                var writeStart = Stopwatch.GetTimestamp();
+                writeTasks.Add(
+                    targetSession
+                    .ExecuteAsync(bound)
+                    .ContinueWith(task =>
+                {
+                    long elapsed =
+                        (Stopwatch.GetTimestamp()
+                            - writeStart)
+                        * 1000
+                        / Stopwatch.Frequency;
+                    Interlocked.Add(
+                        ref writeLatencySum, elapsed);
+
+                    if (task.IsFaulted)
+                    {
+                        var ex =
+                            task.Exception!
+                            .InnerException!;
+                        Interlocked.Increment(
+                            ref ctx.TotalFailed);
+                        Interlocked.Increment(
+                            ref writeFail);
+                        _log.WriteLine(
+                            $"[W{workerId}] INSERT failed"
+                            + $": {ex.GetType().Name}"
+                            + $": {ex.Message}",
+                            LogType.Error);
+
+                        if (IsFatalError(ex))
+                        {
+                            _log.WriteLine(
+                                $"[W{workerId}] FATAL: {ex.GetType().Name}" +
+                                $" — failing job",
+                                LogType.Error);
+                            Interlocked.Exchange(
+                                ref ctx.FatalErrorFlag, 1);
+                            try { _cancellation.Cancel(); }
+                            catch { }
+                        }
+                        else if (!IsRetriableWriteError(ex))
+                        {
+                            Interlocked.Exchange(
+                                ref ctx.FatalErrorFlag, 1);
+                        }
+                    }
+                    else
+                    {
+                        Interlocked.Increment(
+                            ref ctx.TotalWritten);
+                        Interlocked.Increment(
+                            ref writeDone);
+                    }
+                }, TaskContinuationOptions
+                    .ExecuteSynchronously));
+            }
+
+            ctx.Tracker.SetPipelineState(
+                ctx.FeedRanges.Count
+                    - ctx.Completed.Count,
+                ctx.ConfiguredPageSize);
+            await Task.WhenAll(writeTasks);
+
+            workChunk.IsCompleted = true;
+
+            stopwatch.Stop();
+            ctx.Tracker.AddWriteTime(
+                writeLatencySum, rows.Count);
+            ctx.Tracker.AddCopied(writeDone);
+            ctx.Tracker.AddFailed(writeFail);
+
+            long pageBytes = 0;
+            foreach (var r in rows)
+                foreach (var v in r)
+                {
+                    if (v is byte[] b)
+                        pageBytes += b.Length;
+                    else if (v is string s)
+                        pageBytes += s.Length * 2;
+                    else if (v != null)
+                        pageBytes += 8;
+                }
+            ctx.Tracker.AddBytes(pageBytes);
+        }
+
         private static string BuildSelectCql(
-            ProcessorContext ctx, string range) =>
+            ProcessorContext context, string range) =>
             $"SELECT * FROM " +
-            $"\"{ctx.KeyspaceName}\".\"{ctx.TableName}\"" +
+            $"\"{context.KeyspaceName}\".\"{context.TableName}\"" +
             $" WHERE COSMOS_CHANGEFEED_FROM_START() = true" +
             $" AND COSMOS_FEEDRANGE() = '{range}'";
 
         private static void TryCloseChannel(
-            PipelineContext pipeline)
+            PipelineContext ctx)
         {
-            if (pipeline.Completed.Count >= pipeline.FeedRanges.Count)
-                pipeline.PartitionPool.Writer.TryComplete();
+            if (ctx.Completed.Count >= ctx.FeedRanges.Count)
+                ctx.PartitionPool.Writer.TryComplete();
         }
     }
 }

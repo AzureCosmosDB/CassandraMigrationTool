@@ -1,16 +1,11 @@
 using Cassandra;
 using CassandraMigrationProcessor.Context;
 using CassandraMigrationProcessor.Helpers.Cassandra;
-using CassandraMigrationProcessor.Helpers.JobManagement;
 using CassandraMigrationProcessor.Models;
 using CassandraMigrationProcessor.Workers;
 using System;
-using System.Collections.Concurrent;
 using System.Collections.Generic;
-using System.Diagnostics;
 using System.Linq;
-using System.Threading;
-using System.Threading.Channels;
 using System.Threading.Tasks;
 
 namespace CassandraMigrationProcessor.Processors
@@ -57,6 +52,11 @@ namespace CassandraMigrationProcessor.Processors
             }
         }
 
+        /// <summary>
+        /// Processes a single migration chunk: counts source
+        /// rows, discovers feed ranges, and copies data to
+        /// the target cluster.
+        /// </summary>
         private async Task<TaskResult> ProcessChunkAsync(
             MigrationUnit migrationUnit,
             int chunkIndex,
@@ -85,7 +85,6 @@ namespace CassandraMigrationProcessor.Processors
                       $"for {context.KeyspaceName}.{context.TableName} " +
                       $"(COUNT timed out)");
 
-            // Persist row count on migration unit
             if (rowCount > 0)
             {
                 migrationUnit.EstimatedRowCount = rowCount;
@@ -113,7 +112,6 @@ namespace CassandraMigrationProcessor.Processors
                     .ConfigureAwait(false);
             }
 
-            // Discover feed ranges for parallel copy
             _log.WriteLine(
                 $"Discovering feed ranges for " +
                 $"{context.KeyspaceName}.{context.TableName}...");
@@ -153,13 +151,13 @@ namespace CassandraMigrationProcessor.Processors
                 result = await copier.CopyRowsAsync(
                     migrationUnit, chunkIndex,
                     initialPercent, contributionFactor,
-                    rowCount, _cts.Token,
+                    rowCount, _cancellation.Token,
                     _job.IsSimulatedRun);
             }
             
             if (result == TaskResult.Success)
             {
-                if (!_cts.Token.IsCancellationRequested
+                if (!_cancellation.Token.IsCancellationRequested
                     && !MigrationJobContext.ControlledPauseRequested
                     && migrationUnit.MigrationChunks[chunkIndex].Segments
                         .All(seg => seg.IsProcessed == true))
