@@ -131,9 +131,9 @@ namespace CassandraMigrationProcessor
 
         /// <summary>
         /// Max concurrent feed-range workers per table.
-        /// Higher = more throughput but more RU consumption.
+        /// 0 = auto (CPU cores × 15 / parallel tables).
         /// </summary>
-        public int MaxFeedRangeParallelism { get; set; } = 16;
+        public int MaxFeedRangeParallelism { get; set; } = 0;
 
         /// <summary>
         /// Max Cassandra driver connections per host.

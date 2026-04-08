@@ -136,7 +136,7 @@ namespace CassandraMigrationProcessor.Context
             }
         }
 
-        public static PersistenceStorage? Store { get; private set; }
+        public static IPersistenceStorage? Store { get; private set; }
         public static string? AppId { get; set; }
 
         public static void Initialize(IConfiguration configuration)

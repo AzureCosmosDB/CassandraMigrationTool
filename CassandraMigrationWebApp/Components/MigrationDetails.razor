@@ -172,8 +172,8 @@
                                 <input type="number" id="parallelThreads" class="form-control" @bind="parallelThreads" min="1" max="500" placeholder="@($"Default ({defaultParallelThreads})")"/>
                             </div>
                             <div class="col-md-6">
-                                <label for="feedRangeWorkers" class="form-label" title="Max concurrent feed-range workers per table. Higher = more throughput but more RU on source. Default = 16.">Feed range workers</label>
-                                <input type="number" id="feedRangeWorkers" class="form-control" @bind="feedRangeWorkers" min="1" max="256" placeholder="Default (16)"/>
+                                <label for="feedRangeWorkers" class="form-label" title="Workers per table. 0 = auto (CPU cores × 15 / parallel tables).">Feed range workers</label>
+                                <input type="number" id="feedRangeWorkers" class="form-control" @bind="feedRangeWorkers" min="0" max="500" placeholder="Auto"/>
                             </div>
                         </div>
                         <div class="row mb-3">
@@ -378,7 +378,7 @@
             appendMode = Job?.AppendMode ?? false;
             dropTargetTableBeforeStart = Job?.DropTargetTableBeforeStart ?? false;
             parallelThreads = Job?.ParallelThreads == defaultParallelThreads ? null : Job?.ParallelThreads;
-            feedRangeWorkers = Job?.MaxFeedRangeParallelism == 16 ? null : Job?.MaxFeedRangeParallelism;
+            feedRangeWorkers = Job?.MaxFeedRangeParallelism == 0 ? null : Job?.MaxFeedRangeParallelism;
             connectionsPerHost = Job?.MaxConnectionsPerHost == 0 ? null : Job?.MaxConnectionsPerHost;
             pageSize = Job?.PageSize == 0 ? null : Job?.PageSize;
             logLevel = Job?.LogLevel ?? LogType.Info;
@@ -483,7 +483,7 @@
             AppendMode = appendMode,
             DropTargetTableBeforeStart = dropTargetTableBeforeStart,
             ParallelThreads = parallelThreads ?? defaultParallelThreads,
-            MaxFeedRangeParallelism = feedRangeWorkers ?? 16,
+            MaxFeedRangeParallelism = feedRangeWorkers ?? 0,
             MaxConnectionsPerHost = connectionsPerHost ?? 0,
             PageSize = pageSize ?? 0,
             LogLevel = logLevel,

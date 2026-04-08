@@ -18,7 +18,7 @@ namespace CassandraMigrationProcessor.Persistence
     /// Disk-based implementation of PersistenceStorage.
     /// Stores documents as JSON files on the local file system.
     /// </summary>
-    public class DiskPersistence : PersistenceStorage
+    public class DiskPersistence : IPersistenceStorage
     {
         private static string? _storagePath;
         private static string? _appId;
@@ -34,7 +34,7 @@ namespace CassandraMigrationProcessor.Persistence
         /// <param name="connectionStringOrPath">Directory path where files will be stored</param>
         /// <exception cref="ArgumentException">Thrown when path is null or empty</exception>
         /// <exception cref="InvalidOperationException">Thrown when initialization fails</exception>
-        public override void Initialize(string connectionStringOrPath,string appId)
+        public void Initialize(string connectionStringOrPath,string appId)
         {
 
             if (_isInitialized)
@@ -149,7 +149,7 @@ namespace CassandraMigrationProcessor.Persistence
         /// <param name="id">Unique identifier for the document (must include .json extension, e.g., "job1\mu1.json")</param>
         /// <param name="jsonContent">JSON content to store</param>
         /// <returns>True if successful, false otherwise</returns>
-        public override bool UpsertDocument(string id, string jsonContent)
+        public bool UpsertDocument(string id, string jsonContent)
         {
             EnsureInitialized();
 
@@ -180,7 +180,7 @@ namespace CassandraMigrationProcessor.Persistence
         /// </summary>
         /// <param name="id">Unique identifier of the document (must include .json extension, e.g., "job1\mu1.json")</param>
         /// <returns>JSON content if found, null otherwise</returns>
-        public override string ReadDocument(string id)
+        public string ReadDocument(string id)
         {
             EnsureInitialized();
 
@@ -208,7 +208,7 @@ namespace CassandraMigrationProcessor.Persistence
         /// </summary>
         /// <param name="id">Unique identifier of the document (must include .json extension, e.g., "job1\mu1.json")</param>
         /// <returns>True if document exists, false otherwise</returns>
-        public override bool DocumentExists(string id)
+        public bool DocumentExists(string id)
         {
             EnsureInitialized();
 
@@ -236,7 +236,7 @@ namespace CassandraMigrationProcessor.Persistence
         /// </summary>
         /// <param name="id">Unique identifier of the document/folder (e.g., "job1\mu1.json" for file, "job1" for folder)</param>
         /// <returns>True if deleted, false otherwise</returns>
-        public override bool DeleteDocument(string id)
+        public bool DeleteDocument(string id)
         {
             EnsureInitialized();
 
@@ -275,7 +275,7 @@ namespace CassandraMigrationProcessor.Persistence
         /// Returns IDs with .json extension included.
         /// </summary>
         /// <returns>List of document IDs (e.g., "job1\mu1.json", "settings.json")</returns>
-        public override List<string> ListDocumentIds()
+        public List<string> ListDocumentIds()
         {
             EnsureInitialized();
 
@@ -320,7 +320,7 @@ namespace CassandraMigrationProcessor.Persistence
         /// Tests the connection to the storage
         /// </summary>
         /// <returns>True if connection is successful, false otherwise</returns>
-        public override bool TestConnection()
+        public bool TestConnection()
         {
             if (!_isInitialized || string.IsNullOrEmpty(_storagePath))
                 return false;
@@ -341,12 +341,12 @@ namespace CassandraMigrationProcessor.Persistence
         /// <summary>
         /// Checks if the storage is initialized
         /// </summary>
-        public override bool IsInitialized => _isInitialized;
+        public bool IsInitialized => _isInitialized;
 
         private static readonly object _readLock = new object();
         
 
-        public override void PushLogEntry(string jobId, LogObject logObject)
+        public void PushLogEntry(string jobId, LogObject logObject)
         {           
             EnsureInitialized();
 
@@ -380,7 +380,7 @@ namespace CassandraMigrationProcessor.Persistence
             }
         }
 
-        public override int GetLogCount(string id)
+        public int GetLogCount(string id)
         {
             var folder = Path.Combine(_storagePath, "migrationlogs");
             var binPath = Path.Combine(folder, $"{id}.bin");
@@ -413,25 +413,21 @@ namespace CassandraMigrationProcessor.Persistence
                         br.BaseStream.Seek(bytesToSkip, SeekOrigin.Current);
                         count++;
                     }
-                    catch (Exception ex)
+                    catch (Exception)
                     {
-                        Console.WriteLine(
-                            $"GetLogCount inner: {ex.Message}");
                         break;
                     }
                 }
             }
-            catch (Exception ex)
+            catch (Exception)
             {
-                Console.WriteLine(
-                    $"GetLogCount outer: {ex.Message}");
                 return 0;
             }
             
             return count;
         }
 
-        public override byte[] DownloadLogsPaginated(string id, int skip, int take)
+        public byte[] DownloadLogsPaginated(string id, int skip, int take)
         {
             var folder = Path.Combine(_storagePath, "migrationlogs");
             var binPath = Path.Combine(folder, $"{id}.bin");
@@ -467,10 +463,8 @@ namespace CassandraMigrationProcessor.Persistence
                         br.BaseStream.Seek(bytesToSkip, SeekOrigin.Current);
                         offsets.Add(offset);
                     }
-                    catch (Exception ex)
+                    catch (Exception)
                     {
-                        Console.WriteLine(
-                            $"DownloadLogsPaginated: {ex.Message}");
                         break;
                     }
                 }
@@ -513,7 +507,7 @@ namespace CassandraMigrationProcessor.Persistence
             return System.Text.Encoding.UTF8.GetBytes(sb.ToString());
         }
 
-        public override byte[] DownloadLogsAsJsonBytes(string id, int topEntries = 20, int bottomEntries = 230)
+        public byte[] DownloadLogsAsJsonBytes(string id, int topEntries = 20, int bottomEntries = 230)
         {
             var folder = Path.Combine(_storagePath, "migrationlogs");
             var binPath = Path.Combine(folder, $"{id}.bin");
@@ -545,7 +539,7 @@ namespace CassandraMigrationProcessor.Persistence
             
             return System.Text.Encoding.UTF8.GetBytes(sb.ToString());
         }
-        public override LogBucket ReadLogs(string id, out string fileName)
+        public LogBucket ReadLogs(string id, out string fileName)
         {
             fileName = id;
 
@@ -553,7 +547,6 @@ namespace CassandraMigrationProcessor.Persistence
             {
                 lock (_readLock)
                 {
-                    Console.WriteLine($"Reading log file for ID: {id}");
                     var folder = Path.Combine(_storagePath, "migrationlogs");
                     var binPath = Path.Combine(folder, $"{id}.bin");
 
@@ -617,10 +610,8 @@ namespace CassandraMigrationProcessor.Persistence
                         bw.Write((byte)log.Type);
                         bw.Write(log.Datetime.ToBinary());
                     }
-                    catch (Exception ex)
+                    catch (Exception)
                     {
-                        Helper.LogToFile($"Failed to write log entry. Details: {ex}", "DiskPersistence.txt");
-
                         // Continue writing other logs
                     }
                 }
@@ -672,10 +663,8 @@ namespace CassandraMigrationProcessor.Persistence
                         br.BaseStream.Seek(bytesToSkip, SeekOrigin.Current);
                         offsets.Add(offset);
                     }
-                    catch (Exception ex)
+                    catch (Exception)
                     {
-                        Console.WriteLine(
-                            $"ReadLogs offset scan: {ex.Message}");
                         break;
                     }
                 }
@@ -737,21 +726,18 @@ namespace CassandraMigrationProcessor.Persistence
 
                 if (len < 0 || len > MaxReasonableLength)
                 {
-                    Helper.LogToFile($"Invalid message length: {len}", "DiskPersistence.txt");
                     return null;
                 }
 
                 long requiredBytes = len + 1 + 8;
                 if (br.BaseStream.Position + requiredBytes > br.BaseStream.Length)
                 {
-                    Helper.LogToFile($"Incomplete log entry. Message length={len}, remaining={br.BaseStream.Length - br.BaseStream.Position}", "DiskPersistence.txt");
                     return null;
                 }
 
                 byte[] bytes = br.ReadBytes(len);
                 if (bytes.Length != len)
                 {
-                    Helper.LogToFile($"ReadBytes returned {bytes.Length}, expected {len}", "DiskPersistence.txt");
                     return null;
                 }
 
@@ -799,7 +785,7 @@ namespace CassandraMigrationProcessor.Persistence
         /// </summary>
         /// <param name="jobId">Job ID to delete logs for</param>
         /// <returns>1 if file was deleted, 0 if file didn't exist, -1 if error occurred</returns>
-        public override long DeleteLogs(string jobId)
+        public long DeleteLogs(string jobId)
         {
 
             EnsureInitialized();
@@ -815,12 +801,10 @@ namespace CassandraMigrationProcessor.Persistence
                 if (StorageStreamFactory.Exists(binPath))
                 {
                     StorageStreamFactory.DeleteIfExists(binPath);
-                    Helper.LogToFile($"[DiskPersistence] Deleted log file for job {jobId}", "DiskPersistence.txt");
                     return 1;
                 }
                 else
                 {
-                    Helper.LogToFile($"[DiskPersistence] Log file for job {jobId} does not exist", "DiskPersistence.txt");
                     return 0;
                 }
             }

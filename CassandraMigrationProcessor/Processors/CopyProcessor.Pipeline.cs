@@ -38,8 +38,13 @@ namespace CassandraMigrationProcessor.Processors
             ProcessorContext processorContext,
             List<string> feedRanges)
         {
-            int rawValue = _job.MaxFeedRangeParallelism;
-            int workerCount = Math.Max(1, rawValue);
+            // Calculate workers: configured or auto (CPU × 15 / parallel tables)
+            int totalBudget = Environment.ProcessorCount * 15;
+            int parallelTables = Math.Max(1, _job.ParallelThreads);
+            int autoWorkers = Math.Max(4, totalBudget / parallelTables);
+            int workerCount = _job.MaxFeedRangeParallelism > 0
+                ? _job.MaxFeedRangeParallelism
+                : autoWorkers;
 
             // ── Resume: filter out completed ranges ─────────
             var completed = migrationUnit.CompletedCopyFeedRanges
