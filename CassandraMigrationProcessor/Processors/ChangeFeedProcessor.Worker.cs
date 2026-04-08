@@ -195,15 +195,9 @@ namespace CassandraMigrationProcessor.Processors
                             }
                         }
 
-                        if (batchTotal > 0 || errorCount > 0)
-                        {
-                            mu.UpdateParentJob();
-                            MigrationJobContext.SaveMigrationUnit(mu, true);
-                        }
-                        else
-                        {
-                            MigrationJobContext.SaveMigrationUnit(mu, false);
-                        }
+                        mu.UpdateParentJob();
+                        MigrationJobContext.SaveMigrationUnit(
+                            mu, batchTotal > 0 || errorCount > 0);
 
                         consecutiveErrors = 0;
                     }
@@ -348,11 +342,10 @@ namespace CassandraMigrationProcessor.Processors
                                 / batchTotal;
                         }
 
+                        mu.UpdateParentJob();
                         if (batchTotal > 0 || errorCount > 0)
                         {
-                            mu.UpdateParentJob();
                             MigrationJobContext.SaveMigrationUnit(mu, true);
-
                             _log.WriteLine($"CF {mu.KeyspaceName}.{mu.TableName}: ins={insertCount}, err={errorCount}, total={totalApplied}");
                         }
                         else
