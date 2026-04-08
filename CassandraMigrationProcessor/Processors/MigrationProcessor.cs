@@ -24,6 +24,7 @@ namespace CassandraMigrationProcessor.Processors
         protected MigrationJob _job;
         protected MigrationWorker? _worker;
         protected ChangeFeedProcessor? _changeFeedProcessor;
+        private readonly object _changeFeedLock = new();
 
         public volatile bool ProcessRunning;
         public volatile bool IsChangeFeedRunning;
@@ -102,7 +103,8 @@ namespace CassandraMigrationProcessor.Processors
         /// <summary>
         /// Enqueue a single table for change-feed processing.
         /// Creates the target session and <see cref="ChangeFeedProcessor"/>
-        /// on first call.
+        /// on first call. Thread-safe for concurrent calls from
+        /// parallel bulk-copy threads.
         /// </summary>
         public bool AddTableToChangeFeedQueue(MigrationUnit mu)
         {
@@ -110,19 +112,22 @@ namespace CassandraMigrationProcessor.Processors
 
             if (!Helper.IsOnline(_job)) return false;
 
-            if (_targetSession == null)
+            lock (_changeFeedLock)
             {
-                _targetSession = CassandraClientFactory.CreateTargetSession(_log, _job, string.Empty);
-                CassandraHelper.EnsureKeyspaceExists(_targetSession, mu.GetEffectiveTargetKeyspaceName());
-            }
+                if (_targetSession == null)
+                {
+                    _targetSession = CassandraClientFactory.CreateTargetSession(_log, _job, string.Empty);
+                    CassandraHelper.EnsureKeyspaceExists(_targetSession, mu.GetEffectiveTargetKeyspaceName());
+                }
 
-            if (_changeFeedProcessor == null
-                && _sourceSession != null)
-            {
-                var freshSourceSession = CassandraClientFactory.CreateSourceSession(_log, _job, mu.KeyspaceName);
-                _changeFeedProcessor = new ChangeFeedProcessor(_log, freshSourceSession, _targetSession!,
-                    MigrationJobContext.MigrationUnitsCache, _config,
-                    _job);
+                if (_changeFeedProcessor == null
+                    && _sourceSession != null)
+                {
+                    var freshSourceSession = CassandraClientFactory.CreateSourceSession(_log, _job, mu.KeyspaceName);
+                    _changeFeedProcessor = new ChangeFeedProcessor(_log, freshSourceSession, _targetSession!,
+                        MigrationJobContext.MigrationUnitsCache, _config,
+                        _job);
+                }
             }
 
             _log.WriteLine($"Adding {mu.KeyspaceName}.{mu.TableName} to change feed queue", LogType.Debug);

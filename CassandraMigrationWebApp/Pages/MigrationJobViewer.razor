@@ -362,6 +362,8 @@
                                 { copyStatus = "Failed"; barColor = "bg-danger"; pct = 100; }
                                 else if (mu.SkippedDueToMaxRetries)
                                 { copyStatus = "Skipped (Max Retries)"; barColor = "bg-warning"; pct = 100; }
+                                else if (mu.CopyComplete && CurrentlyLoadedMigrationJob != null && Helper.IsOnline(CurrentlyLoadedMigrationJob))
+                                { copyStatus = "Replaying"; barColor = "bg-info"; pct = 100; }
                                 else if (mu.CopyComplete)
                                 { copyStatus = "Complete"; barColor = "bg-success"; pct = 100; }
                                 else if (mu.CopyPercent > 0)

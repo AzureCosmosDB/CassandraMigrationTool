@@ -68,7 +68,15 @@ namespace CassandraMigrationProcessor.Workers
                         EnsureSourceSession(job, job.MigrationUnitBasics!.First().KeyspaceName);
 
                         _activeProcessor = new CopyProcessor(_log, _sourceSession!, config, job, this);
-                        _activeProcessor.RunChangeFeedForAllTables();
+
+                        foreach (var mub in job.MigrationUnitBasics)
+                        {
+                            if (!Helper.IsMigrationUnitValid(mub) || !mub.CopyComplete)
+                                continue;
+                            var mu = MigrationJobContext.GetMigrationUnit(mub.Id);
+                            if (mu != null)
+                                _activeProcessor.AddTableToChangeFeedQueue(mu);
+                        }
 
                         // Keep worker alive while CF runs
                         while (!cancellationToken.IsCancellationRequested
@@ -142,10 +150,32 @@ namespace CassandraMigrationProcessor.Workers
                     return TaskResult.Abort;
                 }
 
-                // All tables processed — check job completion
-                // (must be after Parallel.ForEachAsync, not per-table)
-                if (_activeProcessor != null)
-                    _activeProcessor.StopOfflineOrInvokeChangeFeed();
+                // All tables processed — handle completion by mode
+                if (Helper.IsOnline(job))
+                {
+                    // Online: change feed already started per-table
+                    // as each completed. Keep worker alive until
+                    // pause/cancel.
+                    _log.WriteLine("All tables copied. Change feed replaying.");
+                    while (!cancellationToken.IsCancellationRequested
+                        && !MigrationJobContext.ControlledPauseRequested)
+                    {
+                        await Task.Delay(2000, cancellationToken);
+                    }
+                }
+                else
+                {
+                    // Offline mode — mark completed
+                    if (Helper.IsOfflineJobCompleted(job)
+                        && !MigrationJobContext.ControlledPauseRequested
+                        && job.Status != JobStatus.Cancelled
+                        && job.Status != JobStatus.Paused)
+                    {
+                        _log.WriteLine($"Job {job.Id} Completed");
+                        job.Status = JobStatus.Completed;
+                        MigrationJobContext.SaveMigrationJob(job);
+                    }
+                }
 
                 return TaskResult.Success;
             }
