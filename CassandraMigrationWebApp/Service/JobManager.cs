@@ -390,21 +390,22 @@ namespace CassandraMigrationWebApp.Service
                             Console.WriteLine($"Found {tables.Count} tables in {ks}");
                             foreach (var tableName in tables)
                             {
-                                // Validate table is accessible before adding
+                                // Validate table is accessible by doing a
+                                // small data read (metadata queries can
+                                // succeed for tables that 404 on reads)
                                 try
                                 {
-                                    var cols = CassandraMigrationProcessor.Helpers.Cassandra.CassandraHelper
-                                        .GetTableColumns(session, ks, tableName);
-                                    if (cols.Count == 0)
-                                    {
-                                        Console.WriteLine($"  Skipping {ks}.{tableName} — no columns found");
-                                        _log.WriteLine($"Skipping {ks}.{tableName}: no columns", LogType.Warning);
-                                        continue;
-                                    }
+                                    var probe = new Cassandra.SimpleStatement(
+                                        $"SELECT * FROM \"{ks}\".\"{tableName}\"" +
+                                        " WHERE COSMOS_CHANGEFEED_FROM_START() = true");
+                                    probe.SetPageSize(1);
+                                    probe.SetAutoPage(false);
+                                    probe.SetReadTimeoutMillis(15_000);
+                                    session.Execute(probe);
                                 }
                                 catch (Exception vex)
                                 {
-                                    Console.WriteLine($"  Skipping {ks}.{tableName} — not accessible: {vex.GetType().Name}");
+                                    Console.WriteLine($"  Skipping {ks}.{tableName} — not accessible: {vex.GetType().Name}: {vex.Message}");
                                     _log.WriteLine($"Skipping {ks}.{tableName}: {vex.Message}", LogType.Warning);
                                     continue;
                                 }
