@@ -52,6 +52,34 @@ namespace CassandraMigrationProcessor.Processors
         }
 
         /// <summary>
+        /// Errors that should immediately fail the entire job
+        /// (not just the current table). These indicate config
+        /// or permissions problems that won't self-resolve.
+        /// </summary>
+        private static bool IsFatalError(Exception ex)
+        {
+            var msg = ex.Message ?? string.Empty;
+            var typeName = ex.GetType().Name;
+            // Auth failures — wrong credentials, expired token
+            if (typeName.Contains("Authentication")
+                || typeName.Contains("Unauthorized")
+                || msg.Contains("authentication",
+                    StringComparison.OrdinalIgnoreCase)
+                || msg.Contains("credentials",
+                    StringComparison.OrdinalIgnoreCase))
+                return true;
+            // Schema errors — table doesn't exist, wrong types
+            if (typeName.Contains("InvalidQuery")
+                || typeName.Contains("SyntaxError")
+                || msg.Contains("unconfigured table",
+                    StringComparison.OrdinalIgnoreCase)
+                || msg.Contains("Unknown identifier",
+                    StringComparison.OrdinalIgnoreCase))
+                return true;
+            return false;
+        }
+
+        /// <summary>
         /// Tracks a pending or completed read-write cycle.
         /// Forms a linked list per partition.
         /// </summary>
@@ -181,9 +209,10 @@ namespace CassandraMigrationProcessor.Processors
         private class PipelineContext
         {
             public Channel<Partition> PartitionPool = null!;
-            public SemaphoreSlim WriteSem = null!;
-            public PreparedStatement Ps = null!;
-            public List<string> ColNames = null!;
+            public List<string> ColumnNames = null!;
+            public List<(string Name, string Type,
+                string Kind, string ClusteringOrder,
+                int Position)> Columns = null!;
             public HashSet<string> Completed = null!;
             public Dictionary<string, string?> Checkpoints = null!;
             public List<string> FeedRanges = null!;
@@ -194,9 +223,8 @@ namespace CassandraMigrationProcessor.Processors
             public int NonRetriableHitFlag;
             public ConcurrentBag<TaskResult> WorkerErrors = null!;
             public int ConfiguredPageSize;
-            public int MaxInFlight;
-            public ProcessorContext Ctx = null!;
-            public MigrationUnit Mu = null!;
+            public ProcessorContext Context = null!;
+            public MigrationUnit MigrationUnit = null!;
             public int ChunkIndex;
             public double InitialPercent;
             public double ContributionFactor;

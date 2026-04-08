@@ -16,7 +16,7 @@ namespace CassandraMigrationProcessor.Workers
         private readonly string _keyspace;
         private readonly string _table;
         private readonly int _workerCount;
-        private readonly Stopwatch _sw;
+        private readonly Stopwatch _stopwatch;
 
         private long _totalCopied;
         private long _totalFailed;
@@ -30,7 +30,7 @@ namespace CassandraMigrationProcessor.Workers
         // Sliding window for recent speed
         private long _windowCopied;
         private double _windowTime;
-        private double _recentRps;
+        private double _recentRowsPerSecond;
 
         // Data volume tracking
         private long _totalBytes;
@@ -38,10 +38,8 @@ namespace CassandraMigrationProcessor.Workers
         // Pipeline diagnostics (accumulated ms)
         private long _readTimeMs;
         private long _writeTimeMs;
-        private long _semWaitTimeMs;
         private long _readPages;
         private long _writeOps;
-        private int _semCurrent;   // current semaphore usage
         private int _activeRanges; // feed ranges with pages in-flight
         private int _adaptivePageSize; // current adaptive page size
 
@@ -92,8 +90,8 @@ namespace CassandraMigrationProcessor.Workers
         {
             get
             {
-                if (_recentRps > 0) return _recentRps;
-                double e = _sw.Elapsed.TotalSeconds;
+                if (_recentRowsPerSecond > 0) return _recentRowsPerSecond;
+                double e = _stopwatch.Elapsed.TotalSeconds;
                 return e > 0 ? TotalCopied / e : 0;
             }
         }
@@ -113,7 +111,7 @@ namespace CassandraMigrationProcessor.Workers
             _totalRanges = totalRanges;
             _totalCopied = initialCopied;
             _windowCopied = initialCopied;
-            _sw = Stopwatch.StartNew();
+            _stopwatch = Stopwatch.StartNew();
         }
 
         /// <summary>
@@ -147,18 +145,6 @@ namespace CassandraMigrationProcessor.Workers
             Interlocked.Add(ref _writeOps, ops);
         }
 
-        /// <summary>Track semaphore wait duration.</summary>
-        public void AddSemWaitTime(long ms)
-        {
-            Interlocked.Add(ref _semWaitTimeMs, ms);
-        }
-
-        /// <summary>Set current semaphore in-use count.</summary>
-        public void SetSemCurrent(int current)
-        {
-            Volatile.Write(ref _semCurrent, current);
-        }
-
         /// <summary>Set active feed range count and adaptive page size.</summary>
         public void SetPipelineState(int activeRanges, int pageSize)
         {
@@ -186,29 +172,27 @@ namespace CassandraMigrationProcessor.Workers
 
             long copied = TotalCopied;
             long failed = TotalFailed;
-            double elapsed = _sw.Elapsed.TotalSeconds;
+            double elapsed = _stopwatch.Elapsed.TotalSeconds;
 
             // Recent speed (since last log)
             double windowSec = elapsed - _windowTime;
             long windowRows = copied - _windowCopied;
             if (windowSec > 0)
-                _recentRps = windowRows / windowSec;
+                _recentRowsPerSecond = windowRows / windowSec;
             else if (elapsed > 0)
-                _recentRps = copied / elapsed;
+                _recentRowsPerSecond = copied / elapsed;
             _windowCopied = copied;
             _windowTime = elapsed;
 
-            string speedStr = _recentRps >= 1000
-                ? $"{_recentRps / 1000:F1}k/s"
-                : $"{_recentRps:F0}/s";
+            string speedStr = _recentRowsPerSecond >= 1000
+                ? $"{_recentRowsPerSecond / 1000:F1}k/s"
+                : $"{_recentRowsPerSecond:F0}/s";
 
             // Pipeline diagnostics
             long pages = Interlocked.Read(ref _readPages);
             long rMs = Interlocked.Read(ref _readTimeMs);
             long wMs = Interlocked.Read(ref _writeTimeMs);
-            long sMs = Interlocked.Read(ref _semWaitTimeMs);
             long wOps = Interlocked.Read(ref _writeOps);
-            int sem = Volatile.Read(ref _semCurrent);
             string avgRead = pages > 0
                 ? $"{rMs / pages}ms" : "-";
             string avgWrite = wOps > 0
@@ -224,7 +208,6 @@ namespace CassandraMigrationProcessor.Workers
             int pgSz = Volatile.Read(ref _adaptivePageSize);
 
             string bottleneck =
-                sMs > rMs && sMs > wMs ? "TARGET-SATURATED" :
                 rMs > wMs * 2          ? "READ-BOUND" :
                 wMs > rMs * 2          ? "WRITE-BOUND" :
                                          "BALANCED";
@@ -237,9 +220,7 @@ namespace CassandraMigrationProcessor.Workers
                 $"{failed:N0} failed " +
                 $"({elapsed:F1}s) | " +
                 $"avg read={avgRead}/page, " +
-                $"avg write={avgWrite}/row, " +
-                $"sem wait={sMs:N0}ms, " +
-                $"in-flight={sem} | " +
+                $"avg write={avgWrite}/row | " +
                 $"{bottleneck}");
         }
 
@@ -251,7 +232,7 @@ namespace CassandraMigrationProcessor.Workers
             long copied = TotalCopied;
             long failed = TotalFailed;
             long skipped = TotalSkipped;
-            double elapsed = _sw.Elapsed.TotalSeconds;
+            double elapsed = _stopwatch.Elapsed.TotalSeconds;
             double rps = elapsed > 0
                 ? copied / elapsed : 0;
             string speedStr = rps >= 1000

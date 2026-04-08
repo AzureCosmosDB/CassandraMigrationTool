@@ -20,69 +20,69 @@ namespace CassandraMigrationProcessor.Processors
         public override async Task<TaskResult> StartProcessAsync(
             string migrationUnitId)
         {
-            var mu = MigrationJobContext
+            var migrationUnit = MigrationJobContext
                 .GetMigrationUnit(migrationUnitId);
-            mu.ParentJob = MigrationJobContext.CurrentlyActiveJob;
+            migrationUnit.ParentJob = MigrationJobContext.CurrentlyActiveJob;
             ProcessRunning = true;
 
-            var ctx = SetProcessorContext(mu);
+            var context = SetProcessorContext(migrationUnit);
 
-            if (mu.CopyComplete)
+            if (migrationUnit.CopyComplete)
             {
                 _log.WriteLine(
-                    $"Copy for {ctx.KeyspaceName}.{ctx.TableName} " +
+                    $"Copy for {context.KeyspaceName}.{context.TableName} " +
                     $"already completed.", LogType.Debug);
                 return TaskResult.Success;
             }
 
             _log.WriteLine(
-                $"{ctx.KeyspaceName}.{ctx.TableName} Copy started");
+                $"{context.KeyspaceName}.{context.TableName} Copy started");
 
-            if (!mu.CopyComplete
+            if (!migrationUnit.CopyComplete
                 && !_cts.Token.IsCancellationRequested)
             {
                 // Ensure at least one chunk exists
-                if (mu.MigrationChunks == null
-                    || mu.MigrationChunks.Count == 0)
+                if (migrationUnit.MigrationChunks == null
+                    || migrationUnit.MigrationChunks.Count == 0)
                 {
-                    mu.MigrationChunks =
+                    migrationUnit.MigrationChunks =
                         new System.Collections.Generic.List<MigrationChunk>
                         {
                             new MigrationChunk()
                         };
                 }
 
-                for (int i = 0; i < mu.MigrationChunks.Count; i++)
+                for (int chunkIndex = 0; chunkIndex < migrationUnit.MigrationChunks.Count; chunkIndex++)
                 {
                     if (MigrationJobContext.ControlledPauseRequested)
                     {
                         _log.WriteLine(
-                            $"Controlled pause before chunk {i}");
+                            $"Controlled pause before chunk {chunkIndex}");
                         break;
                     }
 
                     _cts.Token.ThrowIfCancellationRequested();
 
                     double initialPercent =
-                        ((double)100 / mu.MigrationChunks.Count) * i;
+                        ((double)100 / migrationUnit.MigrationChunks.Count) * chunkIndex;
                     double contributionFactor =
-                        1.0 / mu.MigrationChunks.Count;
+                        1.0 / migrationUnit.MigrationChunks.Count;
 
-                    if (mu.MigrationChunks[i].IsDownloaded != true)
+                    if (migrationUnit.MigrationChunks[chunkIndex].IsDownloaded != true)
                     {
                         TaskResult result =
                             await new RetryHelper().ExecuteTask(
                                 () => ProcessChunkAsync(
-                                    mu, i, ctx,
+                                    migrationUnit, chunkIndex, context,
                                     initialPercent,
                                     contributionFactor),
                                 (ex, attemptCount, currentBackoff) =>
                                     CopyProcess_ExceptionHandler(
                                         ex, attemptCount,
                                         "Chunk processor",
-                                        ctx.KeyspaceName,
-                                        ctx.TableName,
-                                        i, currentBackoff),
+                                        context.KeyspaceName,
+                                        context.TableName,
+                                        chunkIndex, currentBackoff),
                                 _log,
                                 ct: _cts.Token);
 
@@ -90,8 +90,8 @@ namespace CassandraMigrationProcessor.Processors
                         {
                             _log.WriteLine(
                                 $"Copy paused for " +
-                                $"{ctx.KeyspaceName}.{ctx.TableName}" +
-                                $"[{i}].");
+                                $"{context.KeyspaceName}.{context.TableName}" +
+                                $"[{chunkIndex}].");
                             StopProcessing(isPause: true);
                             return TaskResult.Canceled;
                         }
@@ -101,8 +101,8 @@ namespace CassandraMigrationProcessor.Processors
                         {
                             _log.WriteLine(
                                 $"Copy failed for " +
-                                $"{ctx.KeyspaceName}.{ctx.TableName}" +
-                                $"[{i}] after retries.",
+                                $"{context.KeyspaceName}.{context.TableName}" +
+                                $"[{chunkIndex}] after retries.",
                                 LogType.Error);
                             StopProcessing();
                             return result;
@@ -110,8 +110,8 @@ namespace CassandraMigrationProcessor.Processors
                     }
                     else
                     {
-                        ctx.DownloadCount +=
-                            mu.MigrationChunks[i].SourceQueryRowCount;
+                        context.DownloadCount +=
+                            migrationUnit.MigrationChunks[chunkIndex].SourceQueryRowCount;
                     }
                 }
 
@@ -124,23 +124,23 @@ namespace CassandraMigrationProcessor.Processors
                     return TaskResult.Success;
                 }
 
-                mu.SourceCountDuringCopy = mu.MigrationChunks
+                migrationUnit.SourceCountDuringCopy = migrationUnit.MigrationChunks
                     .Sum(c => c.SourceQueryRowCount);
 
-                long failed = mu.MigrationChunks
+                long failed = migrationUnit.MigrationChunks
                     .Sum(c => c.TargetFailedRowCount);
 
                 if (failed <= 0
-                    && mu.MigrationChunks
+                    && migrationUnit.MigrationChunks
                         .All(c => c.IsDownloaded == true))
                 {
-                    mu.BulkCopyEndedOn = DateTime.UtcNow;
-                    mu.CopyPercent = 100;
-                    mu.CopyComplete = true;
-                    mu.UpdateParentJob();
+                    migrationUnit.BulkCopyEndedOn = DateTime.UtcNow;
+                    migrationUnit.CopyPercent = 100;
+                    migrationUnit.CopyComplete = true;
+                    migrationUnit.UpdateParentJob();
 
-                    AddTableToChangeFeedQueue(mu);
-                    MigrationJobContext.SaveMigrationUnit(mu, true);
+                    AddTableToChangeFeedQueue(migrationUnit);
+                    MigrationJobContext.SaveMigrationUnit(migrationUnit, true);
 
                     // Only remove from cache if offline — online mode
                     // needs the MU in cache for ChangeFeedProcessor
@@ -148,14 +148,14 @@ namespace CassandraMigrationProcessor.Processors
                         MigrationJobContext.CurrentlyActiveJob))
                     {
                         MigrationJobContext.MigrationUnitsCache
-                            .RemoveMigrationUnit(mu.Id);
+                            .RemoveMigrationUnit(migrationUnit.Id);
                     }
                 }
                 else
                 {
                     _log.WriteLine(
-                        $"Copy for {ctx.KeyspaceName}" +
-                        $".{ctx.TableName} had failures.",
+                        $"Copy for {context.KeyspaceName}" +
+                        $".{context.TableName} had failures.",
                         LogType.Error);
                     return TaskResult.Retry;
                 }

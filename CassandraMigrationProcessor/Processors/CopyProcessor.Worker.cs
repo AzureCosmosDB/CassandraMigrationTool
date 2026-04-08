@@ -24,18 +24,31 @@ namespace CassandraMigrationProcessor.Processors
         /// then writes rows to target and marks the chunk done.
         /// </summary>
         private async Task RunWorkerAsync(
-            int workerId, PipelineContext pctx)
+            int workerId, PipelineContext pipeline)
         {
-            pctx.Tracker.WorkerStarted();
+            pipeline.Tracker.WorkerStarted();
+            ISession? workerSession = null;
             try
             {
+            // Create per-worker target session
+            var job = MigrationJobContext.CurrentlyActiveJob;
+            workerSession = CassandraClientFactory
+                .CreateTargetSession(_log, job, "");
+
+            // Prepare INSERT for this worker's session
+            var (ps, _) = await CassandraHelper.PrepareInsertAsync(
+                workerSession,
+                pipeline.Context.TargetKeyspaceName,
+                pipeline.Context.TargetTableName,
+                pipeline.Columns).ConfigureAwait(false);
+
             while (!_cts.Token.IsCancellationRequested
-                && Volatile.Read(ref pctx.NonRetriableHitFlag) == 0)
+                && Volatile.Read(ref pipeline.NonRetriableHitFlag) == 0)
             {
                 Partition partition;
                 try
                 {
-                    partition = await pctx.PartitionPool
+                    partition = await pipeline.PartitionPool
                         .Reader.ReadAsync(_cts.Token);
                 }
                 catch (OperationCanceledException) { break; }
@@ -43,25 +56,25 @@ namespace CassandraMigrationProcessor.Processors
 
                 if (_cts.Token.IsCancellationRequested
                     || Volatile.Read(
-                        ref pctx.NonRetriableHitFlag) != 0)
+                        ref pipeline.NonRetriableHitFlag) != 0)
                 {
-                    lock (pctx.Checkpoints)
+                    lock (pipeline.Checkpoints)
                     {
-                        pctx.Completed.Add(
+                        pipeline.Completed.Add(
                             partition.FeedRange);
                     }
-                    TryCloseChannel(pctx);
+                    TryCloseChannel(pipeline);
                     continue;
                 }
 
                 if (partition.IsExhausted)
                 {
-                    lock (pctx.Checkpoints)
+                    lock (pipeline.Checkpoints)
                     {
-                        pctx.Completed.Add(
+                        pipeline.Completed.Add(
                             partition.FeedRange);
                     }
-                    TryCloseChannel(pctx);
+                    TryCloseChannel(pipeline);
                     continue;
                 }
 
@@ -72,8 +85,8 @@ namespace CassandraMigrationProcessor.Processors
                     var readSw = Stopwatch.StartNew();
                     var stmt = new SimpleStatement(
                         BuildSelectCql(
-                            pctx.Ctx, partition.FeedRange));
-                    stmt.SetPageSize(pctx.ConfiguredPageSize);
+                            pipeline.Context, partition.FeedRange));
+                    stmt.SetPageSize(pipeline.ConfiguredPageSize);
                     stmt.SetAutoPage(false);
                     stmt.SetReadTimeoutMillis(60_000);
                     stmt.SetConsistencyLevel(
@@ -86,18 +99,18 @@ namespace CassandraMigrationProcessor.Processors
                         stmt.SetPagingState(
                             partition.LastPagingState);
 
-                    RowSet rs = null;
-                    for (int att = 1; att <= 3; att++)
+                    RowSet resultSet = null;
+                    for (int attempt = 1; attempt <= 3; attempt++)
                     {
                         try
                         {
-                            rs = await _sourceSession!
+                            resultSet = await _sourceSession!
                                 .ExecuteAsync(stmt)
                                 .ConfigureAwait(false);
                             break;
                         }
                         catch (Exception ex) when (
-                            att < 3 &&
+                            attempt < 3 &&
                             (ex is TimeoutException ||
                              ex.GetType().Name
                                  .Contains("Timeout") ||
@@ -106,47 +119,47 @@ namespace CassandraMigrationProcessor.Processors
                         {
                             _log.WriteLine(
                                 $"Read timeout " +
-                                $"(att {att}/3)",
+                                $"(attempt {attempt}/3)",
                                 LogType.Warning);
                             await Task.Delay(
-                                att * 5000, _cts.Token);
+                                attempt * 5000, _cts.Token);
                         }
                     }
 
-                    if (rs == null)
+                    if (resultSet == null)
                     {
-                        pctx.WorkerErrors.Add(
+                        pipeline.WorkerErrors.Add(
                             TaskResult.Retry);
                         isLastPage = true;
                     }
                     else
                     {
-                        byte[]? nextPaging = rs.PagingState;
+                        byte[]? nextPaging = resultSet.PagingState;
                         // Update partition's read cursor
                         partition.LastPagingState = nextPaging;
 
                         // Extract row values
                         var rows = new List<object[]>();
-                        int avail = rs
+                        int avail = resultSet
                             .GetAvailableWithoutFetching();
                         int consumed = 0;
-                        foreach (var row in rs)
+                        foreach (var row in resultSet)
                         {
                             if (consumed >= avail) break;
                             consumed++;
-                            var vals =
-                                new object[pctx.ColNames.Count];
+                            var rowValues =
+                                new object[pipeline.ColumnNames.Count];
                             for (int i = 0;
-                                i < pctx.ColNames.Count; i++)
-                                vals[i] =
-                                    row[pctx.ColNames[i]];
-                            rows.Add(vals);
+                                i < pipeline.ColumnNames.Count; i++)
+                                rowValues[i] =
+                                    row[pipeline.ColumnNames[i]];
+                            rows.Add(rowValues);
                         }
 
                         Interlocked.Add(
-                            ref pctx.TotalRead, rows.Count);
+                            ref pipeline.TotalRead, rows.Count);
                         readSw.Stop();
-                        pctx.Tracker.AddReadTime(
+                        pipeline.Tracker.AddReadTime(
                             readSw.ElapsedMilliseconds);
 
                         if (rows.Count == 0
@@ -166,7 +179,7 @@ namespace CassandraMigrationProcessor.Processors
                         {
                             try
                             {
-                                await pctx.PartitionPool
+                                await pipeline.PartitionPool
                                     .Writer.WriteAsync(
                                         partition,
                                         _cts.Token);
@@ -185,126 +198,112 @@ namespace CassandraMigrationProcessor.Processors
                                 Stopwatch.StartNew();
                             int writeDone = 0;
                             int writeFail = 0;
-                            long semWaitMs = 0;
                             long writeLatencySum = 0;
                             var writeTasks =
                                 new List<Task>(rows.Count);
 
-                            foreach (var vals in rows)
+                            foreach (var rowValues in rows)
                             {
                                 if (_cts.Token
                                     .IsCancellationRequested
                                     || Volatile.Read(
-                                        ref pctx
+                                        ref pipeline
                                             .NonRetriableHitFlag)
                                         != 0)
                                     break;
-                                long semStart =
-                                    Stopwatch.GetTimestamp();
-                                await pctx.WriteSem
-                                    .WaitAsync(_cts.Token);
-                                semWaitMs +=
-                                    (Stopwatch.GetTimestamp()
-                                        - semStart)
-                                    * 1000
-                                    / Stopwatch.Frequency;
-                                try
+                                var bound =
+                                    ps.Bind(rowValues);
+                                bound
+                                    .SetReadTimeoutMillis(
+                                        60_000);
+                                bound.SetConsistencyLevel(
+                                    ConsistencyLevel
+                                        .LocalOne);
+                                var writeStart = Stopwatch
+                                    .GetTimestamp();
+                                writeTasks.Add(
+                                    workerSession!
+                                    .ExecuteAsync(bound)
+                                    .ContinueWith(writeTask =>
                                 {
-                                    var bound =
-                                        pctx.Ps.Bind(vals);
-                                    bound
-                                        .SetReadTimeoutMillis(
-                                            60_000);
-                                    bound.SetConsistencyLevel(
-                                        ConsistencyLevel
-                                            .LocalOne);
-                                    var wStart = Stopwatch
-                                        .GetTimestamp();
-                                    writeTasks.Add(
-                                        _targetSession!
-                                        .ExecuteAsync(bound)
-                                        .ContinueWith(t =>
+                                    long wElapsed =
+                                        (Stopwatch
+                                            .GetTimestamp()
+                                            - writeStart)
+                                        * 1000
+                                        / Stopwatch
+                                            .Frequency;
+                                    Interlocked.Add(
+                                        ref writeLatencySum,
+                                        wElapsed);
+                                    if (writeTask.IsFaulted)
                                     {
-                                        long wElapsed =
-                                            (Stopwatch
-                                                .GetTimestamp()
-                                                - wStart)
-                                            * 1000
-                                            / Stopwatch
-                                                .Frequency;
-                                        Interlocked.Add(
-                                            ref writeLatencySum,
-                                            wElapsed);
-                                        pctx.WriteSem
-                                            .Release();
-                                        if (t.IsFaulted)
+                                        var ex =
+                                            writeTask.Exception!
+                                            .InnerException!;
+                                        Interlocked
+                                            .Increment(
+                                            ref pipeline
+                                                .TotalFailed);
+                                        Interlocked
+                                            .Increment(
+                                            ref writeFail);
+                                        _log.WriteLine(
+                                            $"INSERT failed"
+                                            + $": {ex.GetType().Name}"
+                                            + $": {ex.Message}",
+                                            LogType.Error);
+                                        if (IsFatalError(ex))
                                         {
-                                            var ex =
-                                                t.Exception!
-                                                .InnerException!;
-                                            Interlocked
-                                                .Increment(
-                                                ref pctx
-                                                    .TotalFailed);
-                                            Interlocked
-                                                .Increment(
-                                                ref writeFail);
                                             _log.WriteLine(
-                                                $"INSERT failed"
-                                                + $": {ex.GetType().Name}"
-                                                + $": {ex.Message}",
+                                                $"FATAL: {ex.GetType().Name}" +
+                                                $" — failing job",
                                                 LogType.Error);
-                                            if (!IsRetriableWriteError(
-                                                ex))
-                                                Interlocked
-                                                    .Exchange(
-                                                    ref pctx
-                                                        .NonRetriableHitFlag,
-                                                    1);
+                                            Interlocked.Exchange(
+                                                ref pipeline
+                                                    .NonRetriableHitFlag,
+                                                1);
+                                            try { _cts.Cancel(); }
+                                            catch { }
                                         }
-                                        else
-                                        {
+                                        else if (!IsRetriableWriteError(
+                                            ex))
                                             Interlocked
-                                                .Increment(
-                                                ref pctx
-                                                    .TotalWritten);
-                                            Interlocked
-                                                .Increment(
-                                                ref writeDone);
-                                        }
-                                    }, TaskContinuationOptions
-                                        .ExecuteSynchronously));
-                                }
-                                catch
-                                {
-                                    pctx.WriteSem.Release();
-                                    throw;
-                                }
+                                                .Exchange(
+                                                ref pipeline
+                                                    .NonRetriableHitFlag,
+                                                1);
+                                    }
+                                    else
+                                    {
+                                        Interlocked
+                                            .Increment(
+                                            ref pipeline
+                                                .TotalWritten);
+                                        Interlocked
+                                            .Increment(
+                                            ref writeDone);
+                                    }
+                                }, TaskContinuationOptions
+                                    .ExecuteSynchronously));
                             }
 
-                            // Snapshot in-flight before wait
-                            pctx.Tracker.SetSemCurrent(
-                                pctx.MaxInFlight
-                                    - pctx.WriteSem
-                                        .CurrentCount);
-                            pctx.Tracker.SetPipelineState(
-                                pctx.FeedRanges.Count
-                                    - pctx.Completed.Count,
-                                pctx.ConfiguredPageSize);
+                            pipeline.Tracker.SetPipelineState(
+                                pipeline.FeedRanges.Count
+                                    - pipeline.Completed.Count,
+                                pipeline.ConfiguredPageSize);
                             await Task.WhenAll(writeTasks);
 
                             // ── STEP 7: Mark completed ──
                             workChunk.IsCompleted = true;
 
                             writeSw.Stop();
-                            pctx.Tracker.AddWriteTime(
+                            pipeline.Tracker.AddWriteTime(
                                 writeLatencySum,
                                 rows.Count);
-                            pctx.Tracker.AddSemWaitTime(
-                                semWaitMs);
-                            pctx.Tracker.AddCopied(
+                            pipeline.Tracker.AddCopied(
                                 writeDone);
-                            pctx.Tracker.AddFailed(
+                            pipeline.Tracker.AddFailed(
                                 writeFail);
 
                             // Estimate data volume
@@ -320,7 +319,7 @@ namespace CassandraMigrationProcessor.Processors
                                     else if (v != null)
                                         pageBytes += 8;
                                 }
-                            pctx.Tracker.AddBytes(pageBytes);
+                            pipeline.Tracker.AddBytes(pageBytes);
                         }
                         else
                         {
@@ -329,13 +328,13 @@ namespace CassandraMigrationProcessor.Processors
                         }
 
                         // Update checkpoint from partition
-                        lock (pctx.Checkpoints)
+                        lock (pipeline.Checkpoints)
                         {
                             if (partition.IsExhausted)
                             {
-                                pctx.Checkpoints.Remove(
+                                pipeline.Checkpoints.Remove(
                                     partition.FeedRange);
-                                pctx.Completed.Add(
+                                pipeline.Completed.Add(
                                     partition.FeedRange);
                             }
                             else
@@ -343,7 +342,7 @@ namespace CassandraMigrationProcessor.Processors
                                 var token =
                                     partition.GetResumeToken();
                                 if (token != null)
-                                    pctx.Checkpoints[
+                                    pipeline.Checkpoints[
                                         partition.FeedRange] =
                                         Convert.ToBase64String(
                                             token);
@@ -352,25 +351,25 @@ namespace CassandraMigrationProcessor.Processors
 
                         if (partition.IsExhausted)
                         {
-                            pctx.Tracker.RangeCompleted(
+                            pipeline.Tracker.RangeCompleted(
                                 partition.FeedRange,
                                 TaskResult.Success);
-                            TryCloseChannel(pctx);
+                            TryCloseChannel(pipeline);
                         }
                     }
                 }
                 catch (OperationCanceledException)
                 {
-                    pctx.WorkerErrors.Add(
+                    pipeline.WorkerErrors.Add(
                         TaskResult.Canceled);
                     if (!partition.IsExhausted)
                     {
-                        lock (pctx.Checkpoints)
+                        lock (pipeline.Checkpoints)
                         {
-                            pctx.Completed.Add(
+                            pipeline.Completed.Add(
                                 partition.FeedRange);
                         }
-                        TryCloseChannel(pctx);
+                        TryCloseChannel(pipeline);
                     }
                 }
                 catch (Exception ex)
@@ -380,70 +379,89 @@ namespace CassandraMigrationProcessor.Processors
                         $"{ex.GetType().Name}: " +
                         $"{ex.Message}",
                         LogType.Error);
-                    pctx.WorkerErrors.Add(TaskResult.Retry);
-                    if (!pctx.Completed.Contains(
+
+                    if (IsFatalError(ex))
+                    {
+                        _log.WriteLine(
+                            $"FATAL: {ex.GetType().Name}" +
+                            $" — failing job",
+                            LogType.Error);
+                        Interlocked.Exchange(
+                            ref pipeline.NonRetriableHitFlag, 1);
+                        try { _cts.Cancel(); } catch { }
+                        pipeline.WorkerErrors.Add(
+                            TaskResult.Abort);
+                    }
+                    else
+                    {
+                        pipeline.WorkerErrors.Add(
+                            TaskResult.Retry);
+                    }
+
+                    if (!pipeline.Completed.Contains(
                         partition.FeedRange))
                     {
-                        lock (pctx.Checkpoints)
+                        lock (pipeline.Checkpoints)
                         {
-                            pctx.Completed.Add(
+                            pipeline.Completed.Add(
                                 partition.FeedRange);
                         }
-                        pctx.Tracker.RangeCompleted(
+                        pipeline.Tracker.RangeCompleted(
                             partition.FeedRange,
                             TaskResult.Retry);
-                        TryCloseChannel(pctx);
+                        TryCloseChannel(pipeline);
                     }
                 }
                 finally
                 {
                     // Update progress
                     long written = Interlocked.Read(
-                        ref pctx.TotalWritten);
+                        ref pipeline.TotalWritten);
                     long failed = Interlocked.Read(
-                        ref pctx.TotalFailed);
+                        ref pipeline.TotalFailed);
                     var chunk =
-                        pctx.Mu.MigrationChunks[
-                            pctx.ChunkIndex];
+                        pipeline.MigrationUnit.MigrationChunks[
+                            pipeline.ChunkIndex];
                     chunk.SourceResultRowCount = written;
                     chunk.TargetInsertedRowCount =
                         written;
                     chunk.TargetFailedRowCount = failed;
-                    pctx.Mu.CopyRowsCopied = written;
-                    pctx.Mu.CopyRowsPerSecond =
-                        pctx.Tracker.RecentSpeed;
-                    if (pctx.TotalRowCount > 0)
+                    pipeline.MigrationUnit.CopyRowsCopied = written;
+                    pipeline.MigrationUnit.CopyRowsPerSecond =
+                        pipeline.Tracker.RecentSpeed;
+                    if (pipeline.TotalRowCount > 0)
                     {
-                        pctx.Mu.CopyPercent =
-                            pctx.InitialPercent +
+                        pipeline.MigrationUnit.CopyPercent =
+                            pipeline.InitialPercent +
                             (Math.Min(99.9,
                                 (double)written
-                                / pctx.TotalRowCount * 100)
-                            * pctx.ContributionFactor);
+                                / pipeline.TotalRowCount * 100)
+                            * pipeline.ContributionFactor);
                     }
-                    pctx.Mu.UpdateParentJob();
+                    pipeline.MigrationUnit.UpdateParentJob();
 
                     // Save checkpoint every 10s
                     long prevTicks = Interlocked.Read(
-                        ref pctx.LastCheckpointTicks);
+                        ref pipeline.LastCheckpointTicks);
                     var now = DateTime.UtcNow;
                     if ((now.Ticks - prevTicks)
                         / TimeSpan.TicksPerSecond >= 10
                         && Interlocked.CompareExchange(
-                            ref pctx.LastCheckpointTicks,
+                            ref pipeline.LastCheckpointTicks,
                             now.Ticks, prevTicks)
                             == prevTicks)
                     {
                         MigrationJobContext
                             .SaveMigrationUnit(
-                                pctx.Mu, true);
+                                pipeline.MigrationUnit, true);
                     }
                 }
             }
             }
             finally
             {
-                pctx.Tracker.WorkerExited();
+                try { workerSession?.Dispose(); } catch { }
+                pipeline.Tracker.WorkerExited();
             }
         }
 
@@ -455,10 +473,10 @@ namespace CassandraMigrationProcessor.Processors
             $" AND COSMOS_FEEDRANGE() = '{range}'";
 
         private static void TryCloseChannel(
-            PipelineContext pctx)
+            PipelineContext pipeline)
         {
-            if (pctx.Completed.Count >= pctx.FeedRanges.Count)
-                pctx.PartitionPool.Writer.TryComplete();
+            if (pipeline.Completed.Count >= pipeline.FeedRanges.Count)
+                pipeline.PartitionPool.Writer.TryComplete();
         }
     }
 }

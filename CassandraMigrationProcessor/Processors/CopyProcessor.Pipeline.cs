@@ -30,12 +30,12 @@ namespace CassandraMigrationProcessor.Processors
         /// page), then writes rows and marks the chunk done.
         /// </summary>
         private async Task<TaskResult> CopyWithFeedRangesAsync(
-            MigrationUnit mu,
+            MigrationUnit migrationUnit,
             int chunkIndex,
             double initialPercent,
             double contributionFactor,
             long totalRowCount,
-            ProcessorContext ctx,
+            ProcessorContext processorContext,
             List<string> feedRanges)
         {
             int rawValue = MigrationJobContext
@@ -43,12 +43,12 @@ namespace CassandraMigrationProcessor.Processors
             int workerCount = Math.Max(1, rawValue);
 
             // ── Resume: filter out completed ranges ─────────
-            var completed = mu.CompletedCopyFeedRanges
+            var completed = migrationUnit.CompletedCopyFeedRanges
                 ?? new HashSet<string>();
-            var checkpoints = mu.CopyFeedRangeCheckpoints
+            var checkpoints = migrationUnit.CopyFeedRangeCheckpoints
                 ?? new Dictionary<string, string?>();
-            mu.CompletedCopyFeedRanges = completed;
-            mu.CopyFeedRangeCheckpoints = checkpoints;
+            migrationUnit.CompletedCopyFeedRanges = completed;
+            migrationUnit.CopyFeedRangeCheckpoints = checkpoints;
 
             var pendingRanges = feedRanges
                 .Where(r => !completed.Contains(r))
@@ -58,8 +58,8 @@ namespace CassandraMigrationProcessor.Processors
             {
                 _log.WriteLine(
                     $"All {feedRanges.Count} ranges already " +
-                    $"completed for {ctx.KeyspaceName}" +
-                    $".{ctx.TableName}");
+                    $"completed for {processorContext.KeyspaceName}" +
+                    $".{processorContext.TableName}");
                 return TaskResult.Success;
             }
 
@@ -67,61 +67,61 @@ namespace CassandraMigrationProcessor.Processors
                 $"Pipeline copy: {pendingRanges.Count} ranges " +
                 $"({completed.Count} already done), " +
                 $"{workerCount} workers " +
-                $"for {ctx.KeyspaceName}.{ctx.TableName}");
+                $"for {processorContext.KeyspaceName}.{processorContext.TableName}");
 
             // ── Schema setup (once) ─────────────────────────
             _log.WriteLine(
                 $"Detecting target table " +
-                $"{ctx.TargetKeyspaceName}" +
-                $".{ctx.TargetTableName}...",
+                $"{processorContext.TargetKeyspaceName}" +
+                $".{processorContext.TargetTableName}...",
                 LogType.Debug);
             if (!await CassandraHelper.TableExistsAsync(
-                _targetSession!, ctx.TargetKeyspaceName,
-                ctx.TargetTableName)
+                _targetSession!, processorContext.TargetKeyspaceName,
+                processorContext.TargetTableName)
                 .ConfigureAwait(false))
             {
                 _log.WriteLine(
                     $"Target table not found — creating " +
-                    $"{ctx.TargetKeyspaceName}" +
-                    $".{ctx.TargetTableName} from source schema");
+                    $"{processorContext.TargetKeyspaceName}" +
+                    $".{processorContext.TargetTableName} from source schema");
                 await CassandraHelper.EnsureKeyspaceExistsAsync(
-                    _targetSession!, ctx.TargetKeyspaceName)
+                    _targetSession!, processorContext.TargetKeyspaceName)
                     .ConfigureAwait(false);
                 await CassandraHelper.CreateTableFromSourceAsync(
                     _sourceSession!, _targetSession!,
-                    ctx.KeyspaceName, ctx.TableName,
-                    ctx.TargetKeyspaceName, ctx.TargetTableName)
+                    processorContext.KeyspaceName, processorContext.TableName,
+                    processorContext.TargetKeyspaceName, processorContext.TargetTableName)
                     .ConfigureAwait(false);
                 _log.WriteLine(
                     $"Created target table " +
-                    $"{ctx.TargetKeyspaceName}" +
-                    $".{ctx.TargetTableName}");
+                    $"{processorContext.TargetKeyspaceName}" +
+                    $".{processorContext.TargetTableName}");
             }
             else
             {
                 _log.WriteLine(
                     $"Target table exists — syncing schema " +
-                    $"for {ctx.TargetKeyspaceName}" +
-                    $".{ctx.TargetTableName}",
+                    $"for {processorContext.TargetKeyspaceName}" +
+                    $".{processorContext.TargetTableName}",
                     LogType.Debug);
                 await CassandraHelper.CreateTableFromSourceAsync(
                     _sourceSession!, _targetSession!,
-                    ctx.KeyspaceName, ctx.TableName,
-                    ctx.TargetKeyspaceName, ctx.TargetTableName)
+                    processorContext.KeyspaceName, processorContext.TableName,
+                    processorContext.TargetKeyspaceName, processorContext.TargetTableName)
                     .ConfigureAwait(false);
             }
 
             _log.WriteLine(
                 $"Discovering source columns for " +
-                $"{ctx.KeyspaceName}.{ctx.TableName}...");
+                $"{processorContext.KeyspaceName}.{processorContext.TableName}...");
             var columns = await CassandraHelper.GetTableColumnsAsync(
-                _sourceSession!, ctx.KeyspaceName, ctx.TableName)
+                _sourceSession!, processorContext.KeyspaceName, processorContext.TableName)
                 .ConfigureAwait(false);
             if (columns.Count == 0)
             {
                 _log.WriteLine(
-                    $"No columns for {ctx.KeyspaceName}" +
-                    $".{ctx.TableName}", LogType.Error);
+                    $"No columns for {processorContext.KeyspaceName}" +
+                    $".{processorContext.TableName}", LogType.Error);
                 return TaskResult.Abort;
             }
             _log.WriteLine(
@@ -129,16 +129,7 @@ namespace CassandraMigrationProcessor.Processors
                 $"[{string.Join(", ", columns.Select(c => c.Name))}]",
                 LogType.Debug);
 
-            _log.WriteLine(
-                $"Preparing INSERT statement for " +
-                $"{ctx.TargetKeyspaceName}" +
-                $".{ctx.TargetTableName}...");
-            var (ps, colNames) = await CassandraHelper.PrepareInsertAsync(
-                _targetSession!, ctx.TargetKeyspaceName,
-                ctx.TargetTableName, columns)
-                .ConfigureAwait(false);
-            _log.WriteLine(
-                $"INSERT prepared with {colNames.Count} columns");
+            var columnNames = columns.Select(c => c.Name).ToList();
 
             // ── Partition pool channel ───────────────────────
             var partitionPool = Channel.CreateBounded<Partition>(
@@ -148,17 +139,9 @@ namespace CassandraMigrationProcessor.Processors
                     FullMode = BoundedChannelFullMode.Wait
                 });
 
-            // Write throttle: cap total in-flight INSERTs.
-            int jobWriteConcurrency = MigrationJobContext
-                .CurrentlyActiveJob.MaxWriteConcurrency;
-            int maxInFlight = jobWriteConcurrency > 0
-                ? jobWriteConcurrency
-                : Math.Min(workerCount * 64, 8000);
-            var writeSem = new SemaphoreSlim(maxInFlight);
             _log.WriteLine(
-                $"Write: concurrent INSERTs, " +
-                $"max {maxInFlight} in-flight" +
-                $"{(jobWriteConcurrency > 0 ? " (configured)" : " (auto)")}");
+                $"Write: per-worker sessions, " +
+                $"no shared semaphore");
 
             // Seed channel with pending ranges (resume-aware)
             _log.WriteLine(
@@ -169,10 +152,10 @@ namespace CassandraMigrationProcessor.Processors
             foreach (var range in pendingRanges)
             {
                 byte[]? pagingState = null;
-                if (checkpoints.TryGetValue(range, out var b64)
-                    && b64 != null)
+                if (checkpoints.TryGetValue(range, out var base64Token)
+                    && base64Token != null)
                 {
-                    pagingState = Convert.FromBase64String(b64);
+                    pagingState = Convert.FromBase64String(base64Token);
                     resumedCount++;
                     _log.WriteLine(
                         $"Resuming range from checkpoint: " +
@@ -193,7 +176,7 @@ namespace CassandraMigrationProcessor.Processors
                     $"starting fresh");
 
             // Seed counters from prior run for resume
-            long priorCopied = mu.CopyRowsCopied;
+            long priorCopied = migrationUnit.CopyRowsCopied;
 
             // Page size
             int jobPageSize = MigrationJobContext
@@ -205,19 +188,18 @@ namespace CassandraMigrationProcessor.Processors
                     : 500;
 
             var tracker = new CopyProgressTracker(
-                _log, ctx.KeyspaceName, ctx.TableName,
+                _log, processorContext.KeyspaceName, processorContext.TableName,
                 workerCount, pendingRanges.Count,
                 priorCopied);
 
-            var sw = Stopwatch.StartNew();
+            var stopwatch = Stopwatch.StartNew();
 
             // ── Build shared context ────────────────────────
-            var pctx = new PipelineContext
+            var pipeline = new PipelineContext
             {
                 PartitionPool = partitionPool,
-                WriteSem = writeSem,
-                Ps = ps,
-                ColNames = colNames,
+                ColumnNames = columnNames,
+                Columns = columns,
                 Completed = completed,
                 Checkpoints = checkpoints,
                 FeedRanges = feedRanges,
@@ -228,9 +210,8 @@ namespace CassandraMigrationProcessor.Processors
                 NonRetriableHitFlag = 0,
                 WorkerErrors = new ConcurrentBag<TaskResult>(),
                 ConfiguredPageSize = configuredPageSize,
-                MaxInFlight = maxInFlight,
-                Ctx = ctx,
-                Mu = mu,
+                Context = processorContext,
+                MigrationUnit = migrationUnit,
                 ChunkIndex = chunkIndex,
                 InitialPercent = initialPercent,
                 ContributionFactor = contributionFactor,
@@ -241,12 +222,12 @@ namespace CassandraMigrationProcessor.Processors
             // ── LAUNCH UNIFIED WORKERS ──────────────────────
             _log.WriteLine(
                 $"Launching {workerCount} workers " +
-                $"for {ctx.KeyspaceName}.{ctx.TableName} " +
+                $"for {processorContext.KeyspaceName}.{processorContext.TableName} " +
                 $"({pendingRanges.Count} feed ranges, " +
                 $"page size={configuredPageSize})...");
             var workers = Enumerable.Range(0, workerCount)
-                .Select(wid => Task.Run(
-                    () => RunWorkerAsync(wid, pctx)))
+                .Select(workerId => Task.Run(
+                    () => RunWorkerAsync(workerId, pipeline)))
                 .ToArray();
 
             // Wait for all workers
@@ -260,23 +241,23 @@ namespace CassandraMigrationProcessor.Processors
             }
 
             // Ensure channel is closed
-            pctx.PartitionPool.Writer.TryComplete();
+            pipeline.PartitionPool.Writer.TryComplete();
 
             // ── Final stats ─────────────────────────────────
-            pctx.Tracker.LogFinal();
+            pipeline.Tracker.LogFinal();
             long finalWritten = Interlocked.Read(
-                ref pctx.TotalWritten);
+                ref pipeline.TotalWritten);
             long finalFailed = Interlocked.Read(
-                ref pctx.TotalFailed);
+                ref pipeline.TotalFailed);
             long finalRead = Interlocked.Read(
-                ref pctx.TotalRead);
+                ref pipeline.TotalRead);
 
-            var elapsed = sw.Elapsed;
+            var elapsed = stopwatch.Elapsed;
             double avgSpeed = elapsed.TotalSeconds > 0
                 ? finalWritten / elapsed.TotalSeconds : 0;
             _log.WriteLine(
-                $"Pipeline complete for {ctx.KeyspaceName}" +
-                $".{ctx.TableName}:");
+                $"Pipeline complete for {processorContext.KeyspaceName}" +
+                $".{processorContext.TableName}:");
             _log.WriteLine(
                 $"  Total read:    {finalRead:N0} rows");
             _log.WriteLine(
@@ -285,7 +266,7 @@ namespace CassandraMigrationProcessor.Processors
                 $"  Total failed:  {finalFailed:N0} rows");
             _log.WriteLine(
                 $"  Ranges:        " +
-                $"{pctx.Completed.Count}/{feedRanges.Count} completed");
+                $"{pipeline.Completed.Count}/{feedRanges.Count} completed");
             _log.WriteLine(
                 $"  Duration:      {elapsed.TotalSeconds:F1}s");
             _log.WriteLine(
@@ -294,18 +275,18 @@ namespace CassandraMigrationProcessor.Processors
                 $"  Workers used:  {workerCount}");
 
             // Final chunk update
-            var fc = mu.MigrationChunks[chunkIndex];
-            fc.SourceResultRowCount = finalWritten;
-            fc.TargetInsertedRowCount = finalWritten;
-            fc.TargetFailedRowCount = finalFailed;
-            mu.CopyRowsCopied = finalWritten;
-            mu.ActualRowCount = Math.Max(
-                mu.ActualRowCount, finalRead);
+            var chunk = migrationUnit.MigrationChunks[chunkIndex];
+            chunk.SourceResultRowCount = finalWritten;
+            chunk.TargetInsertedRowCount = finalWritten;
+            chunk.TargetFailedRowCount = finalFailed;
+            migrationUnit.CopyRowsCopied = finalWritten;
+            migrationUnit.ActualRowCount = Math.Max(
+                migrationUnit.ActualRowCount, finalRead);
             bool allRangesComplete =
-                pctx.Completed.Count >= feedRanges.Count;
-            if (fc.Segments.Count == 0)
+                pipeline.Completed.Count >= feedRanges.Count;
+            if (chunk.Segments.Count == 0)
             {
-                fc.Segments.Add(new Segment
+                chunk.Segments.Add(new Segment
                 {
                     Id = "0",
                     IsProcessed = allRangesComplete,
@@ -314,18 +295,18 @@ namespace CassandraMigrationProcessor.Processors
             }
             else if (allRangesComplete)
             {
-                foreach (var seg in fc.Segments)
+                foreach (var seg in chunk.Segments)
                     seg.IsProcessed = true;
             }
-            MigrationJobContext.SaveMigrationUnit(mu, true);
+            MigrationJobContext.SaveMigrationUnit(migrationUnit, true);
 
             if (Volatile.Read(
-                ref pctx.NonRetriableHitFlag) != 0)
+                ref pipeline.NonRetriableHitFlag) != 0)
                 return TaskResult.Abort;
-            if (pctx.WorkerErrors.Any(
+            if (pipeline.WorkerErrors.Any(
                 r => r == TaskResult.Abort))
                 return TaskResult.Abort;
-            if (pctx.WorkerErrors.Any(
+            if (pipeline.WorkerErrors.Any(
                 r => r == TaskResult.Canceled))
                 return TaskResult.Canceled;
             if (finalFailed > 0)

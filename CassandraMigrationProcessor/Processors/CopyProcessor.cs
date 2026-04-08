@@ -1,4 +1,4 @@
-﻿using Cassandra;
+using Cassandra;
 using CassandraMigrationProcessor.Context;
 using CassandraMigrationProcessor.Helpers.Cassandra;
 using CassandraMigrationProcessor.Helpers.JobManagement;
@@ -57,46 +57,46 @@ namespace CassandraMigrationProcessor.Processors
         }
 
         private async Task<TaskResult> ProcessChunkAsync(
-            MigrationUnit mu,
+            MigrationUnit migrationUnit,
             int chunkIndex,
-            ProcessorContext ctx,
+            ProcessorContext context,
             double initialPercent,
             double contributionFactor)
         {
             MigrationJobContext.AddVerboseLog(
                 $"CopyProcessor.ProcessChunkAsync: " +
-                $"{mu.KeyspaceName}.{mu.TableName}[{chunkIndex}]");
+                $"{migrationUnit.KeyspaceName}.{migrationUnit.TableName}[{chunkIndex}]");
 
             _log.WriteLine(
                 $"Counting source documents for " +
-                $"{ctx.KeyspaceName}.{ctx.TableName} " +
+                $"{context.KeyspaceName}.{context.TableName} " +
                 $"(SELECT COUNT(*) with 120s timeout)...");
             long rowCount = await CassandraHelper.GetRowCountAsync(
-                ctx.SourceSession,
-                ctx.KeyspaceName,
-                ctx.TableName)
+                context.SourceSession,
+                context.KeyspaceName,
+                context.TableName)
                 .ConfigureAwait(false);
             _log.WriteLine(
                 rowCount >= 0
                     ? $"Source document count: {rowCount:N0} " +
-                      $"for {ctx.KeyspaceName}.{ctx.TableName}"
+                      $"for {context.KeyspaceName}.{context.TableName}"
                     : $"Could not determine document count " +
-                      $"for {ctx.KeyspaceName}.{ctx.TableName} " +
+                      $"for {context.KeyspaceName}.{context.TableName} " +
                       $"(COUNT timed out)");
 
             // Persist row count on migration unit
             if (rowCount > 0)
             {
-                mu.EstimatedRowCount = rowCount;
-                mu.UpdateParentJob();
+                migrationUnit.EstimatedRowCount = rowCount;
+                migrationUnit.UpdateParentJob();
             }
 
-            mu.MigrationChunks[chunkIndex].SourceQueryRowCount =
+            migrationUnit.MigrationChunks[chunkIndex].SourceQueryRowCount =
                 rowCount;
-            ctx.DownloadCount += rowCount;
+            context.DownloadCount += rowCount;
 
             _log.WriteLine(
-                $"Count for {ctx.KeyspaceName}.{ctx.TableName}" +
+                $"Count for {context.KeyspaceName}.{context.TableName}" +
                 $"[{chunkIndex}] is {rowCount}");
 
             if (_targetSession == null
@@ -110,22 +110,22 @@ namespace CassandraMigrationProcessor.Processors
                         string.Empty);
                 await CassandraHelper.EnsureKeyspaceExistsAsync(
                     _targetSession,
-                    ctx.TargetKeyspaceName)
+                    context.TargetKeyspaceName)
                     .ConfigureAwait(false);
             }
 
             // Discover feed ranges for parallel copy
             _log.WriteLine(
                 $"Discovering feed ranges for " +
-                $"{ctx.KeyspaceName}.{ctx.TableName}...");
+                $"{context.KeyspaceName}.{context.TableName}...");
             var feedRanges = await CassandraHelper.GetFeedRangesAsync(
                 _sourceSession!,
-                ctx.KeyspaceName,
-                ctx.TableName)
+                context.KeyspaceName,
+                context.TableName)
                 .ConfigureAwait(false);
             _log.WriteLine(
                 $"Found {feedRanges.Count} feed ranges " +
-                $"for {ctx.KeyspaceName}.{ctx.TableName}");
+                $"for {context.KeyspaceName}.{context.TableName}");
 
             TaskResult result;
             if (feedRanges.Count > 1)
@@ -133,11 +133,11 @@ namespace CassandraMigrationProcessor.Processors
                 _log.WriteLine(
                     $"Parallel copy: {feedRanges.Count} " +
                     $"feed ranges for " +
-                    $"{ctx.KeyspaceName}.{ctx.TableName}");
+                    $"{context.KeyspaceName}.{context.TableName}");
                 result = await CopyWithFeedRangesAsync(
-                    mu, chunkIndex,
+                    migrationUnit, chunkIndex,
                     initialPercent, contributionFactor,
-                    rowCount, ctx, feedRanges);
+                    rowCount, context, feedRanges);
             }
             else
             {
@@ -146,13 +146,13 @@ namespace CassandraMigrationProcessor.Processors
                     _log,
                     _sourceSession!,
                     _targetSession!,
-                    ctx.KeyspaceName,
-                    ctx.TableName,
-                    ctx.TargetKeyspaceName,
-                    ctx.TargetTableName,
+                    context.KeyspaceName,
+                    context.TableName,
+                    context.TargetKeyspaceName,
+                    context.TargetTableName,
                     _config.CqlCopyPageSize);
                 result = await copier.CopyRowsAsync(
-                    mu, chunkIndex,
+                    migrationUnit, chunkIndex,
                     initialPercent, contributionFactor,
                     rowCount, _cts.Token,
                     MigrationJobContext
@@ -163,27 +163,27 @@ namespace CassandraMigrationProcessor.Processors
             {
                 if (!_cts.Token.IsCancellationRequested
                     && !MigrationJobContext.ControlledPauseRequested
-                    && mu.MigrationChunks[chunkIndex].Segments
+                    && migrationUnit.MigrationChunks[chunkIndex].Segments
                         .All(seg => seg.IsProcessed == true))
                 {
-                    mu.MigrationChunks[chunkIndex].IsDownloaded = true;
-                    mu.MigrationChunks[chunkIndex].IsUploaded = true;
+                    migrationUnit.MigrationChunks[chunkIndex].IsDownloaded = true;
+                    migrationUnit.MigrationChunks[chunkIndex].IsUploaded = true;
                 }
-                MigrationJobContext.SaveMigrationUnit(mu, false);
+                MigrationJobContext.SaveMigrationUnit(migrationUnit, false);
                 return TaskResult.Success;
             }
             else if (result == TaskResult.Canceled)
             {
                 _log.WriteLine(
-                    $"Copy paused for {ctx.KeyspaceName}" +
-                    $".{ctx.TableName}[{chunkIndex}].");
+                    $"Copy paused for {context.KeyspaceName}" +
+                    $".{context.TableName}[{chunkIndex}].");
                 return TaskResult.Canceled;
             }
             else
             {
                 _log.WriteLine(
-                    $"Copy failed for {ctx.KeyspaceName}" +
-                    $".{ctx.TableName}[{chunkIndex}].",
+                    $"Copy failed for {context.KeyspaceName}" +
+                    $".{context.TableName}[{chunkIndex}].",
                     LogType.Error);
                 return TaskResult.Retry;
             }
