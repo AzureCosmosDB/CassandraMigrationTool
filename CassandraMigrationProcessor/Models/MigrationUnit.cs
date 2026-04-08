@@ -35,7 +35,7 @@ namespace CassandraMigrationProcessor
         public bool CopyComplete { get; set; }
         public long CopyRowsCopied { get; set; }
         public double CopyRowsPerSecond { get; set; }
-        public long TotalDocCount { get; set; }
+        public long TotalRowCount { get; set; }
 
         public CollectionStatus SourceStatus { get; set; }
 
@@ -66,18 +66,6 @@ namespace CassandraMigrationProcessor
             {
                 return false;
             }
-        }
-
-        public bool Persist()
-        {
-            var filePath =
-                $"migrationjobs\\{this.JobId}\\{this.Id}.json";
-
-            string json = JsonConvert.SerializeObject(
-                this, Formatting.Indented);
-
-            return MigrationJobContext.Store
-                .UpsertDocument(filePath, json);
         }
 
         public string GetEffectiveTargetKeyspaceName()
@@ -269,7 +257,7 @@ namespace CassandraMigrationProcessor
             mub.CopyComplete = this.CopyComplete;
             mub.CopyRowsCopied = this.CopyRowsCopied;
             mub.CopyRowsPerSecond = this.CopyRowsPerSecond;
-            mub.TotalDocCount = Math.Max(
+            mub.TotalRowCount = Math.Max(
                 this.EstimatedRowCount, this.ActualRowCount);
             mub.SourceStatus = this.SourceStatus;
             mub.SkippedDueToMaxRetries =

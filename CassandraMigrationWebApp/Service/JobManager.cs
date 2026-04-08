@@ -307,11 +307,6 @@ namespace CassandraMigrationWebApp.Service
             var config = new MigrationSettings();
             config.Load();
 
-            Console.WriteLine(
-                $"StartMigration: job.MaxFeedRangeParallelism={job.MaxFeedRangeParallelism}, " +
-                $"job.ParallelThreads={job.ParallelThreads}, " +
-                $"config.MaxFeedRangeParallelism={config.MaxFeedRangeParallelism}");
-
             // Fire-and-forget: UI should not block on long-running migration
             _ = Task.Run(async () =>
             {
@@ -393,13 +388,11 @@ namespace CassandraMigrationWebApp.Service
                     // Connect to source and list all tables in this keyspace
                     try
                     {
-                        Console.WriteLine($"Discovering tables in keyspace: {ks}");
                         using (var session = CassandraMigrationProcessor.Helpers.Cassandra.CassandraClientFactory
                             .CreateSourceSession(_log, job, ks))
                         {
                             var tables = CassandraMigrationProcessor.Helpers.Cassandra.CassandraHelper
                                 .ListTables(session, ks);
-                            Console.WriteLine($"Found {tables.Count} tables in {ks}");
                             foreach (var tableName in tables)
                             {
                                 // Validate table is accessible with retry for 429s
@@ -426,11 +419,9 @@ namespace CassandraMigrationWebApp.Service
                                         if (isThrottle && att < 10)
                                         {
                                             int delaySec = Math.Min(att * 3, 30);
-                                            Console.WriteLine($"  Probe {ks}.{tableName} throttled (attempt {att}/10), retrying in {delaySec}s...");
                                             Thread.Sleep(delaySec * 1000);
                                             continue;
                                         }
-                                        Console.WriteLine($"  Skipping {ks}.{tableName} — not accessible: {vex.GetType().Name}: {vex.Message}");
                                         _log.WriteLine($"Skipping {ks}.{tableName}: {vex.Message}", LogType.Warning);
                                     }
                                 }
@@ -446,7 +437,6 @@ namespace CassandraMigrationWebApp.Service
                     }
                     catch (Exception ex)
                     {
-                        Console.WriteLine($"Failed to discover tables in {ks}: {ex}");
                         _log.WriteLine($"Failed to discover tables in keyspace {ks}: {ex.Message}", LogType.Error);
                     }
                 }
@@ -465,7 +455,6 @@ namespace CassandraMigrationWebApp.Service
                 // Clear any wildcard entries
                 job.MigrationUnitBasics?.RemoveAll(m => m.TableName == "*");
                 Helper.AddMigrationUnits(expandedUnits, job, _log);
-                Console.WriteLine($"Added {expandedUnits.Count} tables to job");
             }
         }
 

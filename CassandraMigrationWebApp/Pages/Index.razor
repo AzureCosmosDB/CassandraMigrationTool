@@ -97,7 +97,7 @@
                                 <td style="font-size: 12px; white-space: nowrap;">
                                     @{
                                         long copiedRows = migration.MigrationUnitBasics?.Sum(mu => mu.CopyRowsCopied) ?? 0;
-                                        long totalDocs = migration.MigrationUnitBasics?.Sum(mu => mu.TotalDocCount) ?? 0;
+                                        long totalDocs = migration.MigrationUnitBasics?.Sum(mu => mu.TotalRowCount) ?? 0;
                                     }
                                     @if (totalDocs > 0)
                                     {

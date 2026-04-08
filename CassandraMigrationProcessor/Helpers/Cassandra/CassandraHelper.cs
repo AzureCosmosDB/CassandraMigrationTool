@@ -18,7 +18,7 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
         /// </summary>
         public static async Task<List<string>> ListKeyspacesAsync(ISession session)
         {
-            var rs = await session.ExecuteAsync(
+            var resultSet = await session.ExecuteAsync(
                 new SimpleStatement(
                     "SELECT keyspace_name FROM system_schema.keyspaces"))
                 .ConfigureAwait(false);
@@ -32,7 +32,7 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
                 "system_cosmos", "system_cosmos_internal"
             };
 
-            return rs
+            return resultSet
                 .Select(r => r.GetValue<string>("keyspace_name"))
                 .Where(k => !systemKeyspaces.Contains(k))
                 .OrderBy(k => k)
@@ -53,13 +53,13 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
         public static async Task<List<string>> ListTablesAsync(
             ISession session, string keyspace)
         {
-            var rs = await session.ExecuteAsync(
+            var resultSet = await session.ExecuteAsync(
                 new SimpleStatement(
                     "SELECT table_name FROM system_schema.tables " +
                     "WHERE keyspace_name = ?", keyspace))
                 .ConfigureAwait(false);
 
-            return rs
+            return resultSet
                 .Select(r => r.GetValue<string>("table_name"))
                 .OrderBy(t => t)
                 .ToList();
@@ -105,17 +105,11 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
                 }
                 if (totalPartitions > 0)
                 {
-                    Console.WriteLine(
-                        $"  RowCount from size_estimates: " +
-                        $"~{totalPartitions}");
                     return totalPartitions;
                 }
             }
             catch (Exception ex)
             {
-                Console.WriteLine(
-                    $"  size_estimates not available: " +
-                    $"{ex.GetType().Name}");
             }
 
             // 2) Try COUNT(*) with short timeout (30s).
@@ -123,14 +117,14 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
             //    that's expected; migration proceeds without %.
             try
             {
-                var stmt = new SimpleStatement(
+                var statement = new SimpleStatement(
                     $"SELECT COUNT(*) FROM " +
                     $"\"{keyspace}\".\"{table}\"");
-                stmt.SetReadTimeoutMillis(30_000); // 30s max
-                stmt.SetConsistencyLevel(ConsistencyLevel.One);
-                var rs = await session.ExecuteAsync(stmt)
+                statement.SetReadTimeoutMillis(30_000); // 30s max
+                statement.SetConsistencyLevel(ConsistencyLevel.One);
+                var resultSet = await session.ExecuteAsync(statement)
                     .ConfigureAwait(false);
-                var row = rs.FirstOrDefault();
+                var row = resultSet.FirstOrDefault();
                 if (row != null)
                 {
                     long count;
@@ -138,21 +132,13 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
                     catch (ArgumentException)
                     { count = row.GetValue<long>(0); }
 
-                    Console.WriteLine(
-                        $"  RowCount from COUNT(*): {count}");
                     return count;
                 }
             }
             catch (Exception ex)
             {
-                Console.WriteLine(
-                    $"  COUNT(*) failed (expected for large " +
-                    $"tables): {ex.GetType().Name}");
             }
 
-            Console.WriteLine(
-                $"  RowCount unavailable — progress will " +
-                $"show rows copied without percentage");
             return -1;
         }
 
@@ -185,20 +171,20 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
                 string keyspace,
                 string table)
         {
-            var stmt = new SimpleStatement(
+            var statement = new SimpleStatement(
                 "SELECT column_name, type, kind, " +
                 "clustering_order, position " +
                 "FROM system_schema.columns " +
                 "WHERE keyspace_name = ? " +
                 "AND table_name = ?", keyspace, table);
-            stmt.SetReadTimeoutMillis(30_000);
+            statement.SetReadTimeoutMillis(30_000);
 
-            RowSet rs = null!;
+            RowSet resultSet = null!;
             for (int attempt = 1; attempt <= 3; attempt++)
             {
                 try
                 {
-                    rs = await session.ExecuteAsync(stmt)
+                    resultSet = await session.ExecuteAsync(statement)
                         .ConfigureAwait(false);
                     break;
                 }
@@ -213,7 +199,7 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
                 }
             }
 
-            return rs.Select(r => (
+            return resultSet.Select(r => (
                 Name: r.GetValue<string>("column_name"),
                 Type: r.GetValue<string>("type"),
                 Kind: r.GetValue<string>("kind"),
@@ -274,9 +260,6 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
         }
 
         /// <summary>
-        /// Get the CREATE TABLE statement for a table.
-        /// </summary>
-        /// <summary>
         /// Check if a table exists and is accessible.
         /// Probes actual data (not just metadata) because
         /// Cosmos DB can return metadata for ghost tables
@@ -318,18 +301,11 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
                     if (isThrottle && attempt < 10)
                     {
                         int delaySec = Math.Min(attempt * 3, 30);
-                        Console.WriteLine(
-                            $"  TableExists: {keyspace}.{table}" +
-                            $" probe throttled (attempt {attempt}/10)," +
-                            $" retrying in {delaySec}s...");
                         await Task.Delay(delaySec * 1000)
                             .ConfigureAwait(false);
                         continue;
                     }
 
-                    Console.WriteLine(
-                        $"  TableExists: {keyspace}.{table}" +
-                        $" probe failed: {ex.GetType().Name}: {ex.Message}");
                     return false;
                 }
             }
@@ -447,10 +423,6 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
 
                 if (clusteringMismatch)
                 {
-                    Console.WriteLine(
-                        $"  Clustering mismatch on " +
-                        $"{targetKeyspace}.{targetTable}" +
-                        $" — dropping and recreating.");
                     await targetSession.ExecuteAsync(
                         new SimpleStatement(
                             $"DROP TABLE " +
@@ -512,8 +484,6 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
                 $"  PRIMARY KEY ({pkClause})\n)" +
                 clusteringOrder;
 
-            Console.WriteLine(
-                $"  CreateTableFromSource CQL:\n  {cql}");
             await targetSession.ExecuteAsync(
                 new SimpleStatement(cql))
                 .ConfigureAwait(false);
@@ -564,9 +534,6 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
 
             if (missingCols.Count == 0)
             {
-                Console.WriteLine(
-                    $"  {targetKeyspace}.{targetTable}" +
-                    $" — schema up-to-date (no missing cols)");
                 return;
             }
 
@@ -580,9 +547,6 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
                     $"ALTER TABLE " +
                     $"\"{targetKeyspace}\".\"{targetTable}\" " +
                     $"ADD \"{col.Name}\" {col.Type}{staticClause}";
-                Console.WriteLine(
-                    $"  ALTER TABLE ADD: {col.Name} " +
-                    $"{col.Type}{staticClause}");
                 try
                 {
                     await targetSession.ExecuteAsync(
@@ -591,9 +555,6 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
                 }
                 catch (Exception ex)
                 {
-                    Console.WriteLine(
-                        $"  ALTER TABLE ADD failed for " +
-                        $"{col.Name}: {ex.Message}");
                     failedCols.Add((col.Name, ex));
                 }
             }
@@ -608,9 +569,6 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
                     $"Target schema may be incomplete.");
             }
 
-            Console.WriteLine(
-                $"  Added {missingCols.Count} missing column(s)" +
-                $" to {targetKeyspace}.{targetTable}");
         }
 
         /// <summary>
@@ -653,13 +611,13 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
             var ranges = new List<string>();
             try
             {
-                var rs = await session.ExecuteAsync(
+                var resultSet = await session.ExecuteAsync(
                     new SimpleStatement(
                         "SELECT range FROM system_cosmos.feedranges " +
                         "WHERE keyspace_name=? " +
                         "AND table_name=?", keyspace, table))
                     .ConfigureAwait(false);
-                foreach (var row in rs)
+                foreach (var row in resultSet)
                 {
                     var range = row.GetValue<string>("range");
                     if (!string.IsNullOrEmpty(range))
@@ -668,9 +626,6 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
             }
             catch (Exception ex)
             {
-                Console.WriteLine(
-                    $"  GetFeedRanges: {ex.GetType().Name}: " +
-                    $"{ex.Message}");
                 MigrationJobContext.AddVerboseLog(
                     $"GetFeedRanges error: {ex.Message}");
             }

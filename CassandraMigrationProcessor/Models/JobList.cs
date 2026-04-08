@@ -1,6 +1,5 @@
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
-using CassandraMigrationProcessor.Context;
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -49,16 +48,6 @@ namespace CassandraMigrationProcessor
 
             // Add this property to expose dictionary keys
             public IEnumerable<string> Keys => _dict.Keys;
-        }
-
-        public bool Persist()
-        {
-            lock (_writeLock)
-            {
-                var filePath = $"migrationjobs\\joblist.json";
-                string json = JsonConvert.SerializeObject(this, Formatting.Indented);
-                return MigrationJobContext.Store.UpsertDocument(filePath, json);
-            }
         }
 
         public void SetLog(Log _log)

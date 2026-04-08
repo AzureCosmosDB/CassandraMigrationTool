@@ -1,0 +1,702 @@
+using Cassandra;
+using CassandraMigrationProcessor.Context;
+using CassandraMigrationProcessor.Helpers.Cassandra;
+using CassandraMigrationProcessor.Models;
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
+
+namespace CassandraMigrationProcessor.Processors
+{
+    public partial class ChangeFeedProcessor
+    {
+        private async Task PollLoopAsync(
+            string muId, CancellationToken ct)
+        {
+          try
+          {
+            var mu = _muCache.GetMigrationUnit(muId, _job?.Id);
+            if (mu == null)
+            {
+                _log.WriteLine(
+                    $"ChangeFeed: MU {muId} not found",
+                    LogType.Error);
+                return;
+            }
+
+            bool useFullFidelity = _config.ChangeFeedFullFidelity;
+
+            // Discover feed ranges for parallel processing
+            var feedRanges = CassandraHelper.GetFeedRanges(
+                _sourceSession, mu.KeyspaceName, mu.TableName);
+
+            _log.WriteLine(
+                $"Feed ranges discovered: {feedRanges.Count} " +
+                $"for {mu.KeyspaceName}.{mu.TableName}");
+
+            if (feedRanges.Count > 1
+                && mu.FeedRangeContinuationTokens != null)
+            {
+                // PARALLEL: multiple feed ranges
+                _log.WriteLine(
+                    $"Change feed PARALLEL mode: " +
+                    $"{feedRanges.Count} ranges for " +
+                    $"{mu.KeyspaceName}.{mu.TableName}");
+
+                await PollLoopParallelAsync(
+                    mu, feedRanges, ct);
+            }
+            else
+            {
+                // SINGLE: one range or no feed ranges
+                await PollLoopSingleAsync(mu, null, ct);
+            }
+          }
+          catch (Exception ex)
+          {
+            Console.WriteLine(
+                $"  CF FATAL: muId={muId}: {ex.GetType().Name}: {ex.Message}");
+            Console.WriteLine($"  CF FATAL stack: {ex.StackTrace}");
+          }
+
+            _activeTasks.TryRemove(muId, out _);
+        }
+
+        /// <summary>
+        /// Run parallel change feed readers, one per feed range.
+        /// Each range reader has its own paging state and poll
+        /// loop. Stats are aggregated to the MU using Interlocked.
+        /// </summary>
+        private async Task PollLoopParallelAsync(
+            MigrationUnit mu,
+            List<string> feedRanges,
+            CancellationToken ct)
+        {
+            mu.ChangeFeedStartedOn ??= DateTime.UtcNow;
+
+            var columns = CassandraHelper.GetTableColumns(
+                _sourceSession, mu.KeyspaceName, mu.TableName);
+            var userColumns = columns
+                .Where(c => !c.Name.StartsWith(
+                    "system_", StringComparison.OrdinalIgnoreCase))
+                .ToList();
+            var pkColumns = columns
+                .Where(c => c.Kind == "partition_key"
+                         || c.Kind == "clustering")
+                .ToList();
+
+            var (ps, colNames) = CassandraHelper.PrepareInsert(
+                _targetSession!,
+                mu.GetEffectiveTargetKeyspaceName(),
+                mu.GetEffectiveTargetTableName(),
+                userColumns);
+
+            bool useFullFidelity = _config.ChangeFeedFullFidelity;
+            PreparedStatement? deletePs = null;
+            List<string>? deletePkNames = null;
+            if (useFullFidelity && pkColumns.Count > 0)
+            {
+                try
+                {
+                    var delResult = CassandraHelper.PrepareDelete(
+                        _targetSession!,
+                        mu.GetEffectiveTargetKeyspaceName(),
+                        mu.GetEffectiveTargetTableName(),
+                        userColumns);
+                    deletePs = delResult.Ps;
+                    deletePkNames = delResult.PkColumnNames;
+                }
+                catch (Exception ex)
+                {
+                }
+            }
+
+            int maxConcurrent = Math.Max(1,
+                _job.MaxFeedRangeParallelism);
+
+
+            // Throttle concurrent range tasks to avoid
+            // thread pool starvation on small App Service plans.
+            var semaphore = new SemaphoreSlim(maxConcurrent);
+            var rangeTasks = feedRanges.Select(async range =>
+            {
+                await semaphore.WaitAsync(ct);
+                try
+                {
+                    await PollRangeLoopAsync(
+                        mu, range, columns, userColumns, pkColumns,
+                        ps, colNames, deletePs, deletePkNames, ct);
+                }
+                finally { semaphore.Release(); }
+            }).ToArray();
+
+            await Task.WhenAll(rangeTasks);
+
+            _log.WriteLine(
+                $"Change feed PARALLEL stopped for " +
+                $"{mu.KeyspaceName}.{mu.TableName}, " +
+                $"ranges={feedRanges.Count}");
+        }
+
+        /// <summary>
+        /// Poll loop for a single feed range within a table.
+        /// Updates MU counters with Interlocked for thread safety.
+        /// </summary>
+        private async Task PollRangeLoopAsync(
+            MigrationUnit mu,
+            string feedRange,
+            List<(string Name, string Type, string Kind, string ClusteringOrder, int Position)> columns,
+            List<(string Name, string Type, string Kind, string ClusteringOrder, int Position)> userColumns,
+            List<(string Name, string Type, string Kind, string ClusteringOrder, int Position)> pkColumns,
+            PreparedStatement ps,
+            List<string> colNames,
+            PreparedStatement? deletePs,
+            List<string>? deletePkNames,
+            CancellationToken ct)
+        {
+          try
+          {
+            int intervalMs =
+                _config.ChangeFeedPollIntervalMs > 0
+                    ? _config.ChangeFeedPollIntervalMs
+                    : 5000;
+            bool useFullFidelity = _config.ChangeFeedFullFidelity;
+            int consecutiveErrors = 0;
+            const int MaxReconnectAttempts = 3;
+
+            // Per-range continuation state
+            byte[]? continuationState = null;
+            if (mu.FeedRangeContinuationTokens != null
+                && mu.FeedRangeContinuationTokens.TryGetValue(
+                    feedRange, out var saved)
+                && !string.IsNullOrEmpty(saved))
+            {
+                continuationState =
+                    Convert.FromBase64String(saved);
+            }
+
+            // Build CQL with COSMOS_FEEDRANGE()
+            string cql;
+            if (useFullFidelity)
+            {
+                cql =
+                    $"SELECT JSON * FROM " +
+                    $"\"{mu.KeyspaceName}\".\"{mu.TableName}\"" +
+                    $" WHERE COSMOS_CHANGEFEED_FROM_START()" +
+                    $" = false" +
+                    $" AND COSMOS_FULLFIDELITY_CHANGEFEED()" +
+                    $" = true" +
+                    $" AND COSMOS_FEEDRANGE() = '{feedRange}'";
+            }
+            else
+            {
+                string startTime =
+                    !string.IsNullOrEmpty(mu.ChangeFeedStartToken)
+                        ? mu.ChangeFeedStartToken
+                        : DateTime.UtcNow.ToString(
+                            "yyyy-MM-ddTHH:mm:ss.fffZ",
+                            System.Globalization.CultureInfo
+                                .InvariantCulture);
+                cql =
+                    $"SELECT * FROM " +
+                    $"\"{mu.KeyspaceName}\".\"{mu.TableName}\"" +
+                    $" WHERE COSMOS_CHANGEFEED_START_TIME() = " +
+                    $"'{startTime}'" +
+                    $" AND COSMOS_FEEDRANGE() = '{feedRange}'";
+            }
+
+            var rangeLabel = feedRange.Length > 40
+                ? feedRange.Substring(0, 40) + "..."
+                : feedRange;
+
+            long rangeTotalApplied = 0;
+
+            while (!ct.IsCancellationRequested
+                && !ExecutionCancelled)
+            {
+                try
+                {
+                    var statement = new SimpleStatement(cql);
+                    statement.SetPageSize(
+                        _config.CqlCopyPageSize > 0
+                            ? _config.CqlCopyPageSize : 500);
+                    statement.SetAutoPage(false);
+
+                    if (continuationState != null)
+                        statement.SetPagingState(
+                            continuationState);
+
+                    var rs = await _sourceSession.ExecuteAsync(statement)
+                        .ConfigureAwait(false);
+
+                    continuationState = rs.PagingState;
+
+                    int insertCount = 0;
+                    int updateCount = 0;
+                    int deleteCount = 0;
+                    int errorCount = 0;
+
+                    int available =
+                        rs.GetAvailableWithoutFetching();
+                    int consumed = 0;
+                    foreach (var row in rs)
+                    {
+                        if (consumed >= available) break;
+                        consumed++;
+                        if (ct.IsCancellationRequested
+                            || ExecutionCancelled) break;
+
+                        try
+                        {
+                            if (useFullFidelity)
+                            {
+                                ProcessFfcfRow(
+                                    row, mu, ps, colNames,
+                                    deletePs, deletePkNames,
+                                    userColumns, pkColumns,
+                                    ref insertCount,
+                                    ref updateCount,
+                                    ref deleteCount);
+                            }
+                            else
+                            {
+                                var values =
+                                    new object[colNames.Count];
+                                for (int i = 0;
+                                    i < colNames.Count; i++)
+                                    values[i] = row[colNames[i]];
+                                await _targetSession!.ExecuteAsync(
+                                    ps.Bind(values))
+                                    .ConfigureAwait(false);
+                                insertCount++;
+                            }
+                            rangeTotalApplied++;
+                        }
+                        catch (Exception ex)
+                        {
+                            errorCount++;
+                            Interlocked.Increment(
+                                ref mu._changeFeedErrors);
+                            MigrationJobContext.AddVerboseLog(
+                                $"CF apply fail: {ex.Message}");
+                        }
+                    }
+
+                    // Aggregate to MU with Interlocked
+                    Interlocked.Add(
+                        ref mu._changeFeedInsertEvents,
+                        insertCount);
+                    Interlocked.Add(
+                        ref mu._changeFeedRowsInserted,
+                        insertCount);
+                    Interlocked.Add(
+                        ref mu._changeFeedUpdateEvents,
+                        updateCount);
+                    Interlocked.Add(
+                        ref mu._changeFeedRowsUpdated,
+                        updateCount);
+                    Interlocked.Add(
+                        ref mu._changeFeedDeleteEvents,
+                        deleteCount);
+                    Interlocked.Add(
+                        ref mu._changeFeedRowsDeleted,
+                        deleteCount);
+
+                    int batchTotal =
+                        insertCount + updateCount + deleteCount;
+                    mu.ChangeFeedUpdatesInLastBatch = batchTotal;
+                    mu.ChangeFeedLastChecked = DateTime.UtcNow;
+
+                    // Save continuation AFTER writes so crash
+                    // doesn't skip unwritten rows
+                    if (continuationState != null
+                        && mu.FeedRangeContinuationTokens != null)
+                    {
+                        lock (mu.FeedRangeContinuationTokens)
+                        {
+                            mu.FeedRangeContinuationTokens[
+                                feedRange] = Convert
+                                .ToBase64String(continuationState);
+                        }
+                    }
+
+                    if (batchTotal > 0 || errorCount > 0)
+                    {
+                        mu.UpdateParentJob();
+                        MigrationJobContext.SaveMigrationUnit(
+                            mu, true);
+                    }
+                    else
+                    {
+                        MigrationJobContext.SaveMigrationUnit(
+                            mu, false);
+                    }
+
+                    consecutiveErrors = 0;
+                }
+                catch (OperationCanceledException)
+                {
+                    break;
+                }
+                catch (Exception ex)
+                {
+                    consecutiveErrors++;
+
+                    if (consecutiveErrors > MaxReconnectAttempts)
+                    {
+                        break;
+                    }
+                }
+
+                try { await Task.Delay(intervalMs, ct); }
+                catch (OperationCanceledException) { break; }
+            }
+
+          }
+          catch (Exception ex)
+          {
+            Console.WriteLine(
+                $"  CF RANGE FATAL: {mu.KeyspaceName}" +
+                $".{mu.TableName}: {ex.GetType().Name}: " +
+                $"{ex.Message}");
+          }
+        }
+
+        /// <summary>
+        /// Single-range poll loop (original behavior).
+        /// Also used when feed range is explicitly provided.
+        /// </summary>
+        private async Task PollLoopSingleAsync(
+            MigrationUnit mu,
+            string? feedRange,
+            CancellationToken ct)
+        {
+          try
+          {
+            int intervalMs =
+                _config.ChangeFeedPollIntervalMs > 0
+                    ? _config.ChangeFeedPollIntervalMs
+                    : 5000;
+
+            int consecutiveErrors = 0;
+            const int MaxReconnectAttempts = 3;
+            bool useFullFidelity = _config.ChangeFeedFullFidelity;
+
+            byte[]? continuationState =
+                !string.IsNullOrEmpty(
+                    mu.ChangeFeedContinuationToken)
+                    ? Convert.FromBase64String(
+                        mu.ChangeFeedContinuationToken)
+                    : null;
+
+            string startTime =
+                !string.IsNullOrEmpty(mu.ChangeFeedStartToken)
+                    ? mu.ChangeFeedStartToken
+                    : DateTime.UtcNow.ToString(
+                        "yyyy-MM-ddTHH:mm:ss.fffZ",
+                        System.Globalization.CultureInfo
+                            .InvariantCulture);
+
+            // Build CQL for change-feed query
+            string cql;
+            if (useFullFidelity)
+            {
+                cql =
+                    $"SELECT JSON * FROM " +
+                    $"\"{mu.KeyspaceName}\".\"{mu.TableName}\"" +
+                    $" WHERE COSMOS_CHANGEFEED_FROM_START()" +
+                    $" = false" +
+                    $" AND COSMOS_FULLFIDELITY_CHANGEFEED()" +
+                    $" = true";
+            }
+            else
+            {
+                cql =
+                    $"SELECT * FROM " +
+                    $"\"{mu.KeyspaceName}\".\"{mu.TableName}\"" +
+                    $" where COSMOS_CHANGEFEED_START_TIME() = " +
+                    $"'{startTime}'";
+            }
+
+            var columns = CassandraHelper.GetTableColumns(
+                _sourceSession, mu.KeyspaceName, mu.TableName);
+
+            var userColumns = columns
+                .Where(c => !c.Name.StartsWith(
+                    "system_", StringComparison.OrdinalIgnoreCase))
+                .ToList();
+            var pkColumns = columns
+                .Where(c => c.Kind == "partition_key"
+                         || c.Kind == "clustering")
+                .ToList();
+
+            var (ps, colNames) = CassandraHelper.PrepareInsert(
+                _targetSession!,
+                mu.GetEffectiveTargetKeyspaceName(),
+                mu.GetEffectiveTargetTableName(),
+                userColumns);
+
+            PreparedStatement? deletePs = null;
+            List<string>? deletePkNames = null;
+            if (useFullFidelity && pkColumns.Count > 0)
+            {
+                try
+                {
+                    var delResult = CassandraHelper.PrepareDelete(
+                        _targetSession!,
+                        mu.GetEffectiveTargetKeyspaceName(),
+                        mu.GetEffectiveTargetTableName(),
+                        userColumns);
+                    deletePs = delResult.Ps;
+                    deletePkNames = delResult.PkColumnNames;
+                }
+                catch (Exception ex)
+                {
+                    _log.WriteLine(
+                        $"CF PrepareDelete failed: {ex.Message}",
+                        LogType.Warning);
+                }
+            }
+
+            mu.ChangeFeedStartedOn ??= DateTime.UtcNow;
+            long totalApplied = 0;
+
+            _log.WriteLine(
+                $"Change feed started for " +
+                $"{mu.KeyspaceName}.{mu.TableName} " +
+                $"(FFCF={useFullFidelity}, " +
+                $"startToken={startTime})");
+
+            while (!ct.IsCancellationRequested
+                && !ExecutionCancelled)
+            {
+                try
+                {
+                    var statement = new SimpleStatement(cql);
+                    statement.SetPageSize(
+                        _config.CqlCopyPageSize > 0
+                            ? _config.CqlCopyPageSize : 500);
+                    statement.SetAutoPage(false);
+
+                    if (continuationState != null)
+                        statement.SetPagingState(
+                            continuationState);
+
+                    var rs = await _sourceSession.ExecuteAsync(statement)
+                        .ConfigureAwait(false);
+
+                    continuationState = rs.PagingState;
+                    if (continuationState != null)
+                    {
+                        mu.ChangeFeedContinuationToken =
+                            Convert.ToBase64String(
+                                continuationState);
+                    }
+
+                    var sw = Stopwatch.StartNew();
+                    int insertCount = 0;
+                    int updateCount = 0;
+                    int deleteCount = 0;
+                    int errorCount = 0;
+
+                    int available =
+                        rs.GetAvailableWithoutFetching();
+                    int consumed = 0;
+                    foreach (var row in rs)
+                    {
+                        if (consumed >= available) break;
+                        consumed++;
+                        if (ct.IsCancellationRequested
+                            || ExecutionCancelled) break;
+
+                        try
+                        {
+                            if (useFullFidelity)
+                            {
+                                ProcessFfcfRow(
+                                    row, mu, ps, colNames,
+                                    deletePs, deletePkNames,
+                                    userColumns, pkColumns,
+                                    ref insertCount,
+                                    ref updateCount,
+                                    ref deleteCount);
+                            }
+                            else
+                            {
+                                var values =
+                                    new object[colNames.Count];
+                                for (int i = 0;
+                                    i < colNames.Count; i++)
+                                    values[i] = row[colNames[i]];
+                                await _targetSession!.ExecuteAsync(
+                                    ps.Bind(values))
+                                    .ConfigureAwait(false);
+                                insertCount++;
+                            }
+                            totalApplied++;
+                        }
+                        catch (Exception ex)
+                        {
+                            errorCount++;
+                            mu.ChangeFeedErrors++;
+                            MigrationJobContext.AddVerboseLog(
+                                $"CF apply fail: {ex.Message}");
+                        }
+                    }
+
+                    mu.ChangeFeedInsertEvents += insertCount;
+                    mu.ChangeFeedRowsInserted += insertCount;
+                    mu.ChangeFeedUpdateEvents += updateCount;
+                    mu.ChangeFeedRowsUpdated += updateCount;
+                    mu.ChangeFeedDeleteEvents += deleteCount;
+                    mu.ChangeFeedRowsDeleted += deleteCount;
+                    mu.ChangeFeedUpdatesInLastBatch =
+                        insertCount + updateCount + deleteCount;
+                    mu.ChangeFeedLastChecked = DateTime.UtcNow;
+
+                    int batchTotal =
+                        insertCount + updateCount + deleteCount;
+                    if (sw.ElapsedMilliseconds > 0
+                        && batchTotal > 0)
+                    {
+                        mu.ChangeFeedAvgWriteLatencyInMS =
+                            (double)sw.ElapsedMilliseconds
+                            / batchTotal;
+                    }
+
+                    if (batchTotal > 0 || errorCount > 0)
+                    {
+                        mu.UpdateParentJob();
+                        MigrationJobContext.SaveMigrationUnit(
+                            mu, true);
+
+                        _log.WriteLine(
+                            $"CF {mu.KeyspaceName}" +
+                            $".{mu.TableName}: ins=" +
+                            $"{insertCount}, upd={updateCount}," +
+                            $" del={deleteCount}," +
+                            $" err={errorCount}," +
+                            $" total={totalApplied}");
+                    }
+                    else
+                    {
+                        MigrationJobContext.SaveMigrationUnit(
+                            mu, false);
+                    }
+
+                    consecutiveErrors = 0;
+                }
+                catch (OperationCanceledException)
+                {
+                    break;
+                }
+                catch (Exception ex)
+                {
+                    consecutiveErrors++;
+                    _log.WriteLine(
+                        $"CF error {mu.KeyspaceName}" +
+                        $".{mu.TableName}: {ex.Message}",
+                        LogType.Error);
+
+                    if (consecutiveErrors <= MaxReconnectAttempts
+                        && (ex.GetType().Name.Contains("NoHost")
+                            || ex.GetType().Name.Contains("Socket")
+                            || ex.GetType().Name.Contains("Auth")
+                            || ex.Message.Contains("disposed")
+                            || ex.Message.Contains("unauthorized")
+                            || ex.Message.Contains("401")))
+                    {
+                        try
+                        {
+                            var job = MigrationJobContext
+                                .CurrentlyActiveJob;
+                            ISession newSource;
+                            if (CassandraClientFactory
+                                .IsLikelyAadToken(
+                                    job.SourcePassword))
+                            {
+                                newSource = CassandraClientFactory
+                                    .ReconnectSourceWithFreshToken(
+                                        _log);
+                            }
+                            else
+                            {
+                                newSource = CassandraClientFactory
+                                    .CreateSourceSession(
+                                        _log, job, string.Empty);
+                            }
+                            _sourceSession = newSource;
+                            columns = CassandraHelper
+                                .GetTableColumns(
+                                    _sourceSession,
+                                    mu.KeyspaceName,
+                                    mu.TableName);
+                            userColumns = columns
+                                .Where(c => !c.Name.StartsWith(
+                                    "system_",
+                                    StringComparison
+                                        .OrdinalIgnoreCase))
+                                .ToList();
+                            var newInsert = CassandraHelper
+                                .PrepareInsert(
+                                    _targetSession!,
+                                    mu.GetEffectiveTargetKeyspaceName(),
+                                    mu.GetEffectiveTargetTableName(),
+                                    userColumns);
+                            ps = newInsert.Ps;
+                            colNames = newInsert.ColumnNames;
+                            if (useFullFidelity)
+                            {
+                                try
+                                {
+                                    var delResult = CassandraHelper
+                                        .PrepareDelete(
+                                            _targetSession!,
+                                            mu.GetEffectiveTargetKeyspaceName(),
+                                            mu.GetEffectiveTargetTableName(),
+                                            userColumns);
+                                    deletePs = delResult.Ps;
+                                    deletePkNames =
+                                        delResult.PkColumnNames;
+                                }
+                                catch (Exception prepDeleteEx)
+                                {
+                                    Console.WriteLine($"[WARN] ChangeFeed Worker PrepareDelete failed: {prepDeleteEx.Message}");
+                                }
+                            }
+                        }
+                        catch (Exception rex)
+                        {
+                        }
+                    }
+                    else if (consecutiveErrors
+                        > MaxReconnectAttempts)
+                    {
+                        break;
+                    }
+                }
+
+                try { await Task.Delay(intervalMs, ct); }
+                catch (OperationCanceledException) { break; }
+            }
+
+            _log.WriteLine(
+                $"Change feed stopped for " +
+                $"{mu.KeyspaceName}.{mu.TableName}, " +
+                $"total applied={totalApplied}");
+
+          }
+          catch (Exception ex)
+          {
+            Console.WriteLine(
+                $"  CF FATAL: {mu.KeyspaceName}.{mu.TableName}: " +
+                $"{ex.GetType().Name}: {ex.Message}");
+            Console.WriteLine(
+                $"  CF FATAL stack: {ex.StackTrace}");
+          }
+        }
+    }
+}

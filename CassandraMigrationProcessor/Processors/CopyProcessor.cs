@@ -138,7 +138,7 @@ namespace CassandraMigrationProcessor.Processors
             }
             else
             {
-                var copier = new DocumentCopyWorker();
+                var copier = new SingleRangeCopyWorker();
                 copier.Initialize(
                     _log,
                     _sourceSession!,

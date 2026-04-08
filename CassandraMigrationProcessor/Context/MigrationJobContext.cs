@@ -6,7 +6,6 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
-using System.Linq;
 using System.Threading.Tasks;
 using static CassandraMigrationProcessor.JobList;
 
@@ -14,14 +13,7 @@ namespace CassandraMigrationProcessor.Context
 {
     public static class MigrationJobContext
     {
-        private static readonly object _writeMULock = new object();
-        private static readonly object _writeJobLock = new object();
         private static readonly object _writeJobListLock = new object();
-
-        private static ConcurrentDictionary<string, MigrationJob>
-            MigrationJobs { get; set; } = new();
-
-        private static MigrationJob? _cachedCurrentlyActiveJob = null;
         private static Log _log;
 
         public static ActiveMigrationUnitsCache MigrationUnitsCache
@@ -114,22 +106,22 @@ namespace CassandraMigrationProcessor.Context
         {
             get
             {
-                if (_cachedCurrentlyActiveJob != null
+                if (JobStore.CachedActiveJob != null
                     && !string.IsNullOrEmpty(ActiveMigrationJobId)
-                    && _cachedCurrentlyActiveJob.Id
+                    && JobStore.CachedActiveJob.Id
                         == ActiveMigrationJobId)
                 {
-                    return _cachedCurrentlyActiveJob;
+                    return JobStore.CachedActiveJob;
                 }
 
                 if (!string.IsNullOrEmpty(ActiveMigrationJobId))
                 {
-                    _cachedCurrentlyActiveJob =
-                        LoadMigrationJob(ActiveMigrationJobId);
+                    JobStore.CachedActiveJob =
+                        JobStore.LoadJob(ActiveMigrationJobId);
                     if (MigrationUnitsCache == null)
                         MigrationUnitsCache =
                             new ActiveMigrationUnitsCache();
-                    return _cachedCurrentlyActiveJob;
+                    return JobStore.CachedActiveJob;
                 }
 
                 return null;
@@ -156,7 +148,10 @@ namespace CassandraMigrationProcessor.Context
                 appId = configuration["StateStore:AppID"];
                 AppId = appId;
             }
-            catch { }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[WARN] Initialize config read failed: {ex.Message}");
+            }
 
             Store = new DiskPersistence();
             var localPath =
@@ -178,80 +173,39 @@ namespace CassandraMigrationProcessor.Context
                 throw new InvalidOperationException(
                     $"Error initializing Job List: {errorMessage}");
             }
-            JobList.Persist();
+            SaveJobList();
         }
 
-        private static MigrationJob? LoadMigrationJob(string jobId)
-        {
-            if (MigrationJobs.TryGetValue(jobId, out var cached))
-                return cached;
-
-            try
-            {
-                var filePath = Path.Combine(
-                    "migrationjobs", jobId, "jobdefinition.json");
-                var json = Store.ReadDocument(filePath);
-                var loadedObject =
-                    JsonConvert.DeserializeObject<MigrationJob>(json);
-                if (loadedObject == null)
-                    return null;
-                MigrationJobs[jobId] = loadedObject;
-                return loadedObject;
-            }
-            catch { return null; }
-        }
+        // -- Facade: delegates to JobStore --
 
         public static MigrationJob? GetMigrationJob(string jobId)
-        {
-            if (jobId == ActiveMigrationJobId
-                && CurrentlyActiveJob != null)
-                return CurrentlyActiveJob;
-
-            return LoadMigrationJob(jobId);
-        }
+            => JobStore.GetJob(jobId);
 
         public static List<MigrationJob> PopulateMigrationJobs(
             List<string> ids)
-        {
-            List<MigrationJob> jobs = new();
-            foreach (var id in ids)
-            {
-                var job = GetMigrationJob(id);
-                if (job != null) jobs.Add(job);
-            }
-            return jobs;
-        }
+            => JobStore.GetAllJobs(ids);
+
+        public static bool SaveMigrationJob(MigrationJob job)
+            => JobStore.SaveJob(job);
+
+        public static void ClearCurrentlyActiveJobCache()
+            => JobStore.ClearCache();
+
+        // -- Facade: delegates to UnitStore --
 
         public static bool SaveMigrationUnit(
             MigrationUnit mu, bool updateParent)
-        {
-            try
-            {
-                if (mu == null) return false;
+            => UnitStore.SaveUnit(mu, updateParent);
 
-                if (CurrentlyActiveJob != null)
-                    mu.ParentJob = CurrentlyActiveJob;
+        public static MigrationUnit GetMigrationUnit(
+            string key, string jobId = null)
+            => UnitStore.GetUnit(key, jobId);
 
-                if (mu.ParentJob != null && updateParent)
-                    mu.UpdateParentJob();
+        public static MigrationUnit GetMigrationUnitFromStorage(
+            string jobId, string unitId)
+            => UnitStore.GetFromStorage(jobId, unitId);
 
-                lock (_writeMULock) { mu.Persist(); }
-
-                if (CurrentlyActiveJob != null && updateParent)
-                {
-                    lock (_writeJobLock)
-                    {
-                        CurrentlyActiveJob.Persist();
-                    }
-                }
-
-                if (MigrationUnitsCache != null)
-                    MigrationUnitsCache.UpdateMigrationUnit(mu);
-
-                return true;
-            }
-            catch { return false; }
-        }
+        // -- JobList (stays here: global state) --
 
         private static JobList LoadJobList(
             out bool notFound, out string errorMessage)
@@ -303,28 +257,6 @@ namespace CassandraMigrationProcessor.Context
             }
         }
 
-        public static bool SaveMigrationJob(MigrationJob job)
-        {
-            try
-            {
-                if (job != null)
-                {
-                    lock (_writeJobLock)
-                    {
-                        job.Persist();
-                        MigrationJobs[job.Id] = job;
-                        if (!string.IsNullOrEmpty(ActiveMigrationJobId)
-                            && job.Id == ActiveMigrationJobId)
-                        {
-                            _cachedCurrentlyActiveJob = job;
-                        }
-                    }
-                }
-                return true;
-            }
-            catch { return false; }
-        }
-
         public static bool SaveJobList()
         {
             try
@@ -333,49 +265,21 @@ namespace CassandraMigrationProcessor.Context
                 {
                     lock (_writeJobListLock)
                     {
-                        JobList.Persist();
+                        var filePath = Path.Combine(
+                            "migrationjobs", "joblist.json");
+                        string json =
+                            JsonConvert.SerializeObject(
+                                JobList, Formatting.Indented);
+                        Store.UpsertDocument(filePath, json);
                     }
                 }
                 return true;
             }
-            catch { return false; }
-        }
-
-        public static MigrationUnit GetMigrationUnit(
-            string key, string jobId = null)
-        {
-            if (string.IsNullOrEmpty(jobId)
-                && CurrentlyActiveJob != null)
+            catch (Exception ex)
             {
-                jobId = CurrentlyActiveJob.Id;
+                Console.WriteLine($"[WARN] SaveJobList failed: {ex.Message}");
+                return false;
             }
-
-            if (MigrationUnitsCache == null)
-                return GetMigrationUnitFromStorage(jobId, key);
-            else
-                return MigrationUnitsCache
-                    .GetMigrationUnit(key, jobId);
-        }
-
-        public static MigrationUnit GetMigrationUnitFromStorage(
-            string jobId, string unitId)
-        {
-            AddVerboseLog(
-                $"GetMigrationUnit: jobId={jobId}, unitId={unitId}");
-            try
-            {
-                var filePath = Path.Combine(
-                    "migrationjobs", jobId, $"{unitId}.json");
-                string json = Store.ReadDocument(filePath);
-                return JsonConvert
-                    .DeserializeObject<MigrationUnit>(json);
-            }
-            catch { return null; }
-        }
-
-        public static void ClearCurrentlyActiveJobCache()
-        {
-            _cachedCurrentlyActiveJob = null;
         }
     }
 }

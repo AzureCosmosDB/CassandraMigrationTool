@@ -57,7 +57,10 @@ namespace CassandraMigrationProcessor
 
                 System.IO.File.AppendAllText(path, logEntry);
             }
-            catch { }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"[WARN] LogToFile failed: {ex.Message}");
+            }
         }
 
         #endregion
@@ -210,7 +213,10 @@ namespace CassandraMigrationProcessor
                     .DeserializeObject<List<CollectionInfo>>(
                         namespacesToMigrate);
             }
-            catch { }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[WARN] PopulateJobTablesAsync JSON parse failed, trying CSV: {ex.Message}");
+            }
 
             if (loadedObject != null)
             {
@@ -326,7 +332,10 @@ namespace CassandraMigrationProcessor
                 loadedObject = JsonConvert
                     .DeserializeObject<List<CollectionInfo>>(input);
             }
-            catch { }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[WARN] ValidateNamespaceFormat JSON parse failed, trying CSV: {ex.Message}");
+            }
 
             if (loadedObject != null)
             {

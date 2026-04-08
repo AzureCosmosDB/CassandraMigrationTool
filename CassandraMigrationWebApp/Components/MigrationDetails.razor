@@ -370,7 +370,7 @@
             targetPort = Job?.TargetPort ?? 9042;
             targetUsername = Job?.TargetUsername ?? string.Empty;
             targetPassword = Job?.TargetPassword ?? string.Empty;
-            namespaces = Job?.NameSpaces ?? string.Empty;
+            namespaces = Job?.Tables ?? string.Empty;
             cdcMode = Job?.CDCMode ?? CDCMode.Offline;
             jobType = Job?.JobType ?? JobType.CqlCopy;
             selectedOption = "CQL Copy";
@@ -477,7 +477,7 @@
             TargetPort = targetPort,
             TargetUsername = targetUsername,
             TargetPassword = targetPassword,
-            NameSpaces = namespaces,
+            Tables = namespaces,
             JobType = jobType,
             IsSimulatedRun = isSimulatedRun,
             AppendMode = appendMode,

@@ -86,7 +86,7 @@ The Cassandra Migration Utility can be deployed to Azure using two different opt
 - ✅ Standard web application hosting
 - ✅ Ideal for migrations under 24 hours
 
-**[📖 Deploy to Azure Web App Guide](docs/CassandraMigrationSetupGuide.md#4-deployment)**
+**[📖 Deploy to Azure Web App Guide](WebApp/README.md)**
 
 ### Option 2: Azure Container Apps (ACA)
 
@@ -98,7 +98,7 @@ The Cassandra Migration Utility can be deployed to Azure using two different opt
 - ✅ Enterprise networking with VNet integration
 - ✅ Ideal for migrations over 24 hours
 
-**[📖 Deploy to Azure Container Apps Guide](docs/CassandraMigrationSetupGuide.md#4-deployment)**
+**[📖 Deploy to Azure Container Apps Guide](ACA/README.md)**
 
 ### Choosing the Right Deployment
 
@@ -115,8 +115,8 @@ The Cassandra Migration Utility can be deployed to Azure using two different opt
 
 ### Need Help Deciding?
 
-- **Start small?** Use [Azure Web App](docs/CassandraMigrationSetupGuide.md#4-deployment) for quick setup and testing
-- **Production migration?** Use [Azure Container Apps](docs/CassandraMigrationSetupGuide.md#4-deployment) for reliability and performance
+- **Start small?** Use [Azure Web App](WebApp/DeployToWebApp_README.md) for quick setup and testing
+- **Production migration?** Use [Azure Container Apps](ACA/DeployToACA_README.md) for reliability and performance
 - **Not sure?** Start with Web App and migrate to Container Apps if needed
 
 ## On-Premises Deployment
@@ -128,7 +128,7 @@ The Cassandra Migration Utility can be deployed to Azure using two different opt
 - ✅ Deploy on existing Windows Server infrastructure
 - ✅ Full IIS-based hosting with .NET 9
 
-**[📖 Deploy to On-Premises Windows Server Guide](docs/CassandraMigrationSetupGuide.md#4-deployment)**
+**[📖 Deploy to On-Premises Windows Server Guide](OnPremise/README.md)**
 
 ## How to Use
 
@@ -167,7 +167,7 @@ cd SchemaMigration
 python main.py --config-file <config.json> --source-uri <source_connection_string> --dest-uri <target_connection_string>
 ```
 
-**[📖 Complete Migration Guide](docs/CassandraMigrationGuide.md)**
+**[📖 Complete Schema Migration Guide](SchemaMigration/README.md)**
 
 #### Recommended Workflow
 
@@ -390,11 +390,11 @@ You can use different versions of `bulk copy` and `bulk copy` when source compat
 - **Azure Web App**
     - Configure **Cassandra tools download URL(s)** as JSON in settings:
     - `{"MongoDumpURL":"https://...dump.zip","MongoRestoreURL":"https://...restore.zip"}`
-    - See [Setup Guide](docs/CassandraMigrationSetupGuide.md).
+    - See [WebApp/README.md](WebApp/README.md).
 
 - **Azure Container Apps (ACA)**
-    - Configure separate versions at image build time in Docker.
-    - See [Setup Guide](docs/CassandraMigrationSetupGuide.md).
+    - Configure separate versions at image build time in Docker (`MongoDumpURL` and `MongoRestoreURL` build args).
+    - See [ACA/README.md](ACA/README.md).
 
 ## Job lifecycle controls in Job Viewer
 
@@ -867,4 +867,4 @@ Notes:
 
 - Change feed lag not decreasing: Confirm the job is running, source writes exist, and consider increasing plan size or reducing concurrent tables.
 - RU-optimized copy stalls: Validate source is Cosmos DB Cassandra API, ensure no partition split warnings, and verify target write capacity.
-- **ACA deployment - App not loading**: If the application is not loading in Azure Container Apps deployment, open the browser console using F12 (Developer Tools). If you see an error stating "statestore connection is invalid", update the connection string following the steps in the [Setup Guide](docs/CassandraMigrationSetupGuide.md).
+- **ACA deployment - App not loading**: If the application is not loading in Azure Container Apps deployment, open the browser console using F12 (Developer Tools). If you see an error stating "statestore connection is invalid", update the connection string following the steps provided in the [ACA README](ACA/README.md).

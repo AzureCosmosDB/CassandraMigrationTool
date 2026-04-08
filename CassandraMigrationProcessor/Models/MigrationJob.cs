@@ -2,8 +2,6 @@ using Newtonsoft.Json;
 using CassandraMigrationProcessor.Models;
 using System;
 using System.Collections.Generic;
-using CassandraMigrationProcessor.Context;
-
 #pragma warning disable CS8618
 
 namespace CassandraMigrationProcessor
@@ -55,7 +53,8 @@ namespace CassandraMigrationProcessor
         [JsonIgnore]
         public string? TargetPassword { get; set; }
 
-        public string? NameSpaces { get; set; }
+        [JsonProperty("NameSpaces")]
+        public string? Tables { get; set; }
 
         public DateTime? StartedOn { get; set; }
 
@@ -154,20 +153,5 @@ namespace CassandraMigrationProcessor
 
         public List<MigrationUnitBasic>? MigrationUnitBasics { get; set; }
 
-        public bool Persist()
-        {
-            MigrationJobContext.AddVerboseLog(
-                $"MigrationJob.Persist: jobId={this.Id}, " +
-                $"jobName={this.Name}");
-
-            var filePath =
-                $"migrationjobs\\{this.Id}\\jobdefinition.json";
-
-            string json = JsonConvert.SerializeObject(
-                this, Formatting.Indented);
-
-            return MigrationJobContext.Store
-                .UpsertDocument(filePath, json);
-        }
     }
 }

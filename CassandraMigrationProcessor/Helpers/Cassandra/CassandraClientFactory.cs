@@ -18,9 +18,6 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
     /// </summary>
     public static class CassandraClientFactory
     {
-        // Log pool config only once across all workers
-        private static bool _poolConfigLogged = false;
-
         // Cache last-used connection parameters for token refresh
         private static string? _lastSourceContactPoint;
         private static int _lastSourcePort;
@@ -79,7 +76,10 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
                     return jwt.ValidTo;
                 }
             }
-            catch { /* best-effort */ }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[WARN] GetTokenExpiry failed: {ex.Message}");
+            }
             return DateTime.MaxValue;
         }
 
@@ -149,7 +149,10 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
                             freshToken,
                             _lastSourceKeyspace ?? string.Empty);
                         try { oldSession.Dispose(); }
-                        catch { /* best-effort */ }
+                        catch (Exception ex)
+                        {
+                            Console.WriteLine($"[WARN] TokenRefresh old session dispose failed: {ex.Message}");
+                        }
                     }
 
                     // Schedule next refresh
@@ -242,14 +245,10 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
             _lastSourceKeyspace = keyspace;
             _lastLog = log;
 
-            var sslOptions= new SSLOptions(
+            var sslOptions = new SSLOptions(
                 SslProtocols.Tls12, true,
                 (sender, certificate, chain, sslPolicyErrors) =>
                 {
-                    if (sslPolicyErrors != System.Net.Security.SslPolicyErrors.None)
-                    {
-                        // Accept Azure MI/Cosmos certs with chain+name issues
-                    }
                     return true; // Azure MI/Cosmos certs may have chain+name issues
                 });
             sslOptions.SetHostNameResolver(
@@ -456,15 +455,6 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
             int localCore = Math.Max(1, localMax / 2);
             int remoteMax = Math.Max(1, localMax / 2);
             int remoteCore = Math.Max(1, remoteMax / 2);
-
-            if (!_poolConfigLogged)
-            {
-                Console.WriteLine(
-                    $"  Pool: local={localCore}-{localMax}, " +
-                    $"remote={remoteCore}-{remoteMax}, " +
-                    $"max in-flight/host={localMax * 2048}");
-                _poolConfigLogged = true;
-            }
 
             var builder = Cluster.Builder()
                 .AddContactPoint(contactPoint)
@@ -690,7 +680,11 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
                     .GetProperty("subscriptionId")
                     .GetString();
             }
-            catch { return null; }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[WARN] GetSubscriptionIdFromImds failed: {ex.Message}");
+                return null;
+            }
         }
 
         /// <summary>

@@ -32,7 +32,7 @@ Apache Cassandra). It provides:
 | Feature | Description |
 |---------|-------------|
 | **Offline Migration** | One-time bulk copy of all rows |
-| **Online Migration** | Bulk copy + live sync via Cosmos DB Cassandra change feed |
+| **Online Migration** | Bulk copy + live sync via Full Fidelity Change Feed (FFCF) |
 | **Schema Discovery** | Auto-discovers keyspaces, tables, columns, clustering keys |
 | **DDL Generation** | Creates target tables with correct schema (static columns, clustering order, etc.) |
 | **Wildcard Selection** | Migrate all tables in a keyspace with `keyspace.*` |
@@ -130,18 +130,23 @@ The migration tool must be able to reach:
 - Username + password (if authentication is enabled).
 - Leave blank if no authentication is configured.
 
-### 3.4 For Online Migration
+### 3.4 For Online Migration (FFCF)
 
-Online mode uses the built-in Cosmos DB Cassandra change
-feed (`COSMOS_CHANGEFEED_START_TIME()`). No special table
-creation or enablement is needed — change feed is
-available automatically for all Cosmos DB Cassandra API
-tables.
+Full Fidelity Change Feed must be enabled **at table
+creation time** on the source Cosmos DB account:
 
-> **Note:** The regular change feed captures inserts and
-> updates but does **not** capture deletes. If your
-> application performs deletes during migration, those
-> must be handled manually after cutover.
+```sql
+CREATE TABLE keyspace.tablename (
+    ...
+) WITH cosmosdb_cell_level_timestamp = true
+  AND cosmosdb_cell_level_timestamp_tombstones = true
+  AND cosmosdb_cell_level_timetolive = true;
+```
+
+> ⚠️ **Important:** FFCF cannot be enabled retroactively
+> with `ALTER TABLE`. Tables must be created with these
+> properties. If your tables were created without FFCF,
+> use **Offline** migration mode instead.
 
 ---
 
@@ -306,6 +311,7 @@ tool (gear icon on the dashboard):
 | Change Feed Max Rows/Batch | 10,000 | Max rows per change feed batch |
 | Change Feed Batch Duration | 120s | Seconds per change feed batch |
 | Change Feed Poll Interval | 5,000ms | Polling interval for new changes |
+| Change Feed Full Fidelity | true | Use FFCF (vs. standard change feed) |
 | Parallel Threads | configurable | Number of parallel copy threads |
 
 ---
@@ -391,15 +397,15 @@ Phase 4: Completion
 ## 7. Online Migration with Change Feed
 
 Online migration adds a **live sync phase** after the bulk
-copy, using the Cosmos DB Cassandra change feed.
+copy, using Cosmos DB Full Fidelity Change Feed (FFCF).
 
 ### 7.1 Create an Online Migration Job
 
 Follow the same steps as Section 6.2, but select
 **Online** for Migration Mode.
 
-> **Note:** Change feed is built in to Cosmos DB Cassandra
-> API — no special table setup is required.
+> ⚠️ All tables selected for online migration **must** have
+> FFCF enabled at creation time (see Section 3.4).
 
 ### 7.2 How Online Migration Works
 
@@ -412,7 +418,8 @@ Phase 3: Bulk Copy
 
 Phase 4: Change Feed Sync
   └─ Polls source for new changes since the token
-  └─ Replays INSERTs and UPDATEs on target
+  └─ Replays INSERTs, UPDATEs, DELETEs on target
+  └─ Handles TTL expirations
   └─ Continues indefinitely until cutover
 
 Phase 5: Cutover (manual)
@@ -535,6 +542,7 @@ for browsing and querying the target cluster.
 | **"Authentication error" on source** | Managed Identity not configured or missing RBAC | Ensure System MI is enabled. Verify Cosmos DB RBAC role assignment. |
 | **AAD token error / 401** | Expired token or wrong scope | The tool auto-refreshes tokens. If stuck, restart the job. |
 | **"Table not found" on source** | Wrong keyspace/table name or case sensitivity | Cassandra names are case-sensitive. Verify exact names. |
+| **FFCF query rejected** | Table created without FFCF properties | FFCF must be enabled at CREATE TABLE time. Use Offline mode for these tables. |
 | **Slow migration speed** | Small page size or low parallelism | Increase `CQL Copy Page Size` and `Parallel Threads` in Settings. Scale up App Service plan. |
 | **Job stuck after restart** | State corruption or connectivity loss | Check logs. Try pausing and resuming. If needed, cancel and recreate the job. |
 | **Target SSL connection fails** | Certificate validation or wrong port | The tool tries SSL first, then falls back to plaintext. Ensure port 9042 is open. |
@@ -633,7 +641,7 @@ minutes with default settings.
 | Migration Type | Cosmos DB Role |
 |---------------|----------------|
 | Offline | `Cosmos DB Built-in Data Reader` |
-| Online (Change Feed) | `Cosmos DB Built-in Data Contributor` |
+| Online (FFCF) | `Cosmos DB Built-in Data Contributor` |
 
 ### App Service Requirements
 

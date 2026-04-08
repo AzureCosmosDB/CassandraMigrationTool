@@ -19,10 +19,10 @@ namespace CassandraMigrationProcessor.Processors
         protected ISession? _sourceSession;
         protected ISession? _targetSession;
         protected MigrationSettings _config;
-        protected CancellationTokenSource _cts;
+        protected CancellationTokenSource _cancellation;
         protected Log _log;
         protected MigrationJob _job;
-        protected MigrationWorker? _migrationWorker;
+        protected MigrationWorker? _worker;
         protected ChangeFeedProcessor? _changeFeedProcessor;
 
         public volatile bool ProcessRunning;
@@ -33,17 +33,22 @@ namespace CassandraMigrationProcessor.Processors
             ISession sourceSession,
             MigrationSettings config,
             MigrationJob job,
-            MigrationWorker? migrationWorker = null)
+            MigrationWorker? worker = null)
         {
             _log = log;
             _sourceSession = sourceSession;
             _targetSession = null;
             _config = config;
             _job = job;
-            _cts = new CancellationTokenSource();
-            _migrationWorker = migrationWorker;
+            _cancellation = new CancellationTokenSource();
+            _worker = worker;
         }
 
+        /// <summary>
+        /// Gracefully stop the migration processor. Cancels the
+        /// token, updates job status, and optionally marks the
+        /// process as no longer running.
+        /// </summary>
         public virtual void StopProcessing(bool updateStatus = true,
             bool isPause = false)
         {
@@ -52,7 +57,7 @@ namespace CassandraMigrationProcessor.Processors
                 $"updateStatus={updateStatus}, isPause={isPause}");
 
             // Cancel first so workers see the signal
-            _cts?.Cancel();
+            _cancellation?.Cancel();
 
             if (_changeFeedProcessor != null)
                 _changeFeedProcessor.ExecutionCancelled = true;
@@ -81,8 +86,8 @@ namespace CassandraMigrationProcessor.Processors
         /// </summary>
         public void ResetCancellationToken()
         {
-            _cts?.Dispose();
-            _cts = new CancellationTokenSource();
+            _cancellation?.Dispose();
+            _cancellation = new CancellationTokenSource();
         }
 
         protected ProcessorContext SetProcessorContext(
@@ -108,6 +113,11 @@ namespace CassandraMigrationProcessor.Processors
             return context;
         }
 
+        /// <summary>
+        /// Enqueue a single table for change-feed processing.
+        /// Creates the target session and <see cref="ChangeFeedProcessor"/>
+        /// on first call.
+        /// </summary>
         public bool AddTableToChangeFeedQueue(MigrationUnit mu)
         {
             MigrationJobContext.AddVerboseLog(
@@ -142,11 +152,16 @@ namespace CassandraMigrationProcessor.Processors
             _log.WriteLine(
                 $"Adding {mu.KeyspaceName}.{mu.TableName} " +
                 $"to change feed queue", LogType.Debug);
-            _changeFeedProcessor?.AddTableToProcess(mu.Id, _cts);
+            _changeFeedProcessor?.AddTableToProcess(mu.Id, _cancellation);
 
             return true;
         }
 
+        /// <summary>
+        /// Start change-feed processing for all completed tables
+        /// in the job. Returns <c>false</c> if the feed is already
+        /// running or preconditions are not met.
+        /// </summary>
         public bool RunChangeFeedForAllTables()
         {
             MigrationJobContext.AddVerboseLog(
@@ -188,15 +203,20 @@ namespace CassandraMigrationProcessor.Processors
                 _changeFeedProcessor = new ChangeFeedProcessor(
                     _log, freshSourceSession, _targetSession!,
                     MigrationJobContext.MigrationUnitsCache,
-                    _config, _job, false, _migrationWorker);
+                    _config, _job, false, _worker);
             }
 
             _changeFeedProcessor?
-                .RunChangeFeedForAllTables(_cts);
+                .RunChangeFeedForAllTables(_cancellation);
 
             return true;
         }
 
+        /// <summary>
+        /// After all tables finish, either mark the job completed
+        /// (offline mode) or start the change-feed processors
+        /// (online mode).
+        /// </summary>
         public void StopOfflineOrInvokeChangeFeed()
         {
             if (!Helper.IsOnline(_job)
@@ -236,8 +256,9 @@ namespace CassandraMigrationProcessor.Processors
 
         public void Dispose()
         {
-            _cts?.Dispose();
-            try { _targetSession?.Dispose(); } catch { }
+            _cancellation?.Dispose();
+            try { _targetSession?.Dispose(); }
+            catch (Exception ex) { Console.WriteLine($"[WARN] MigrationProcessor target session dispose failed: {ex.Message}"); }
             // _sourceSession is owned by the caller
         }
     }

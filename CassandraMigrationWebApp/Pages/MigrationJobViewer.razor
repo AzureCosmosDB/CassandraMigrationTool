@@ -120,7 +120,7 @@
     int inProgress = allUnits.Count(u => !u.CopyComplete && u.CopyPercent > 0);
     int failedTables = allUnits.Count(u => u.SourceStatus == CollectionStatus.Failed);
     long totalRows = allUnits.Sum(u => (long)u.CopyRowsCopied);
-    long totalDocs = allUnits.Sum(u => (long)u.TotalDocCount);
+    long totalDocs = allUnits.Sum(u => (long)u.TotalRowCount);
     double avgSpeed = allUnits.Where(u => u.CopyRowsPerSecond > 0).Select(u => u.CopyRowsPerSecond).DefaultIfEmpty(0).Sum();
 
     <div class="card mb-3 mt-2">
@@ -202,7 +202,7 @@
                 <div class="col-auto">
                     <small class="text-muted">
                         <i class="bi bi-hdd-network"></i>
-                        <strong>Namespaces:</strong> @(sj.NameSpaces ?? "all")
+                        <strong>Namespaces:</strong> @(sj.Tables ?? "all")
                     </small>
                 </div>
                 @if (sj.DropTargetTableBeforeStart)
@@ -1451,6 +1451,24 @@ else if (@_showLogBackupFile)
         // when the job isn't yet the active job in context.
         var mj = CurrentlyLoadedMigrationJob;
 
+        // Transfer credentials from the dialog's job object to
+        // the actual job. The dialog creates a fresh MigrationJob
+        // with the user-supplied passwords, but we run with mj
+        // (the persisted job that has MigrationUnitBasics intact).
+        // Without this, passwords are lost after restart because
+        // they are [JsonIgnore] and not persisted.
+        if (!string.IsNullOrEmpty(job.SourcePassword))
+            mj.SourcePassword = job.SourcePassword;
+        if (!string.IsNullOrEmpty(job.TargetPassword))
+            mj.TargetPassword = job.TargetPassword;
+        if (!string.IsNullOrEmpty(job.SourceUsername))
+            mj.SourceUsername = job.SourceUsername;
+        if (!string.IsNullOrEmpty(job.TargetUsername))
+            mj.TargetUsername = job.TargetUsername;
+        mj.SourcePort = job.SourcePort;
+        mj.TargetPort = job.TargetPort;
+        mj.SourceUseAad = job.SourceUseAad;
+
         if (!string.IsNullOrEmpty(sourceConnectionString))
             MigrationJobContext.SourceConnectionString[mj.Id] = sourceConnectionString;
 
@@ -1484,7 +1502,7 @@ else if (@_showLogBackupFile)
             await JobManager.StartMigration(mj,
                 GetSourceConnectionString(mj),
                 GetTargetConnectionString(mj),
-                mj.NameSpaces ?? string.Empty,
+                mj.Tables ?? string.Empty,
                 mj.JobType,
                 Helper.IsOnline(mj));
         });
@@ -1665,7 +1683,7 @@ else if (@_showLogBackupFile)
                 return;
             }
 
-            CurrentlyLoadedMigrationJob.NameSpaces = string.Join(",", migrationUnits.Select(mu => $"{mu.KeyspaceName}.{mu.TableName}"));
+            CurrentlyLoadedMigrationJob.Tables = string.Join(",", migrationUnits.Select(mu => $"{mu.KeyspaceName}.{mu.TableName}"));
 
             MigrationJobContext.SaveMigrationJob(CurrentlyLoadedMigrationJob);
 

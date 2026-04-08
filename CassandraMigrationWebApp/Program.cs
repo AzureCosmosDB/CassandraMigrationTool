@@ -21,7 +21,10 @@ try
     Console.SetError(diagStream);
     Console.WriteLine($"=== App starting at {DateTime.UtcNow:O} ===");
 }
-catch { /* fall back to default stdout */ }
+catch (Exception ex)
+{
+    Console.Error.WriteLine($"[WARN] Diagnostic log setup failed, falling back to stdout: {ex.Message}");
+}
 
 builder.Services.AddControllersWithViews();
 

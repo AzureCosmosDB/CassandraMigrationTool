@@ -41,11 +41,14 @@ namespace CassandraMigrationProcessor.Workers
 
         /// <summary>
         /// Start or resume migration for the active job.
+        /// Processes each <see cref="MigrationUnit"/> with
+        /// table-level parallelism and optional change-feed
+        /// replication.
         /// </summary>
         public async Task<TaskResult> StartAsync(
             MigrationJob job,
             MigrationSettings config,
-            CancellationToken ct)
+            CancellationToken cancellationToken)
         {
             MigrationJobContext.AddVerboseLog(
                 $"MigrationWorker.StartAsync: job={job.Id}");
@@ -79,14 +82,14 @@ namespace CassandraMigrationProcessor.Workers
                             .RunChangeFeedForAllTables();
 
                         // Keep worker alive while CF runs
-                        while (!ct.IsCancellationRequested
+                        while (!cancellationToken.IsCancellationRequested
                             && !MigrationJobContext
                                 .ControlledPauseRequested)
                         {
-                            await Task.Delay(2000, ct);
+                            await Task.Delay(2000, cancellationToken);
                         }
 
-                        return ct.IsCancellationRequested
+                        return cancellationToken.IsCancellationRequested
                             ? TaskResult.Canceled
                             : TaskResult.Success;
                     }
@@ -115,9 +118,9 @@ namespace CassandraMigrationProcessor.Workers
                     new ParallelOptions
                     {
                         MaxDegreeOfParallelism = maxParallel,
-                        CancellationToken = ct
+                        CancellationToken = cancellationToken
                     },
-                    async (mu, token) =>
+                    async (migrationUnit, token) =>
                     {
                         if (MigrationJobContext
                             .ControlledPauseRequested)
@@ -139,7 +142,7 @@ namespace CassandraMigrationProcessor.Workers
                             try
                             {
                                 await ProcessMigrationUnitAsync(
-                                    job, config, mu, token);
+                                    job, config, migrationUnit, token);
                                 break; // success
                             }
                             catch (Exception ex) when (
@@ -153,8 +156,8 @@ namespace CassandraMigrationProcessor.Workers
                                             ex, attempt);
                                 _log.WriteLine(
                                     $"Table retry {attempt} " +
-                                    $"for {mu.KeyspaceName}" +
-                                    $".{mu.TableName}: " +
+                                    $"for {migrationUnit.KeyspaceName}" +
+                                    $".{migrationUnit.TableName}: " +
                                     $"{ex.Message}",
                                     LogType.Warning);
                                 await Task.Delay(
@@ -197,21 +200,26 @@ namespace CassandraMigrationProcessor.Workers
             }
         }
 
+        /// <summary>
+        /// Process a single migration unit: validate source/target
+        /// tables, create schema if needed, capture change-feed
+        /// tokens, and run the bulk copy.
+        /// </summary>
         private async Task ProcessMigrationUnitAsync(
             MigrationJob job,
             MigrationSettings config,
-            MigrationUnit mu,
-            CancellationToken ct)
+            MigrationUnit migrationUnit,
+            CancellationToken cancellationToken)
         {
             _log.WriteLine(
-                $"Processing {mu.KeyspaceName}.{mu.TableName}");
+                $"Processing {migrationUnit.KeyspaceName}.{migrationUnit.TableName}");
 
             // Reset Failed status on retry/resume so the table
             // gets a fresh chance (Bug 3 fix)
-            if (mu.SourceStatus == CollectionStatus.Failed)
+            if (migrationUnit.SourceStatus == CollectionStatus.Failed)
             {
-                mu.SourceStatus = CollectionStatus.OK;
-                MigrationJobContext.SaveMigrationUnit(mu, true);
+                migrationUnit.SourceStatus = CollectionStatus.OK;
+                MigrationJobContext.SaveMigrationUnit(migrationUnit, true);
             }
 
             // Each parallel table gets its own source session
@@ -221,21 +229,21 @@ namespace CassandraMigrationProcessor.Workers
             {
                 localSourceSession = CassandraClientFactory
                     .CreateSourceSession(
-                        _log, job, mu.KeyspaceName);
+                        _log, job, migrationUnit.KeyspaceName);
 
                 // Validate table exists on source
                 if (!await CassandraHelper.TableExistsAsync(
                     localSourceSession!,
-                    mu.KeyspaceName, mu.TableName)
+                    migrationUnit.KeyspaceName, migrationUnit.TableName)
                     .ConfigureAwait(false))
                 {
                     _log.WriteLine(
-                        $"Source table {mu.KeyspaceName}" +
-                        $".{mu.TableName} not found.",
+                        $"Source table {migrationUnit.KeyspaceName}" +
+                        $".{migrationUnit.TableName} not found.",
                         LogType.Error);
-                    mu.SourceStatus = CollectionStatus.NotFound;
+                    migrationUnit.SourceStatus = CollectionStatus.NotFound;
                     MigrationJobContext.SaveMigrationUnit(
-                        mu, true);
+                        migrationUnit, true);
                     return;
                 }
 
@@ -247,42 +255,42 @@ namespace CassandraMigrationProcessor.Workers
                             _log, job, string.Empty))
                     {
                         await CassandraHelper.EnsureKeyspaceExistsAsync(
-                            targetSession, mu.KeyspaceName)
+                            targetSession, migrationUnit.KeyspaceName)
                             .ConfigureAwait(false);
 
                         if (job.DropTargetTableBeforeStart
                             && await CassandraHelper.TableExistsAsync(
                                 targetSession,
-                                mu.KeyspaceName, mu.TableName)
+                                migrationUnit.KeyspaceName, migrationUnit.TableName)
                                 .ConfigureAwait(false))
                         {
                             _log.WriteLine(
                                 $"Dropping target table " +
-                                $"{mu.KeyspaceName}" +
-                                $".{mu.TableName} " +
+                                $"{migrationUnit.KeyspaceName}" +
+                                $".{migrationUnit.TableName} " +
                                 $"(DropTargetTableBeforeStart)");
                             await targetSession.ExecuteAsync(
                                 new SimpleStatement(
                                     $"DROP TABLE " +
-                                    $"\"{mu.KeyspaceName}\"" +
-                                    $".\"{mu.TableName}\""))
+                                    $"\"{migrationUnit.KeyspaceName}\"" +
+                                    $".\"{migrationUnit.TableName}\""))
                                 .ConfigureAwait(false);
                         }
 
                         if (!await CassandraHelper.TableExistsAsync(
                             targetSession,
-                            mu.KeyspaceName, mu.TableName)
+                            migrationUnit.KeyspaceName, migrationUnit.TableName)
                             .ConfigureAwait(false))
                         {
                             await CassandraHelper.CreateTableFromSourceAsync(
                                 localSourceSession!, targetSession,
-                                mu.KeyspaceName, mu.TableName,
-                                mu.KeyspaceName, mu.TableName)
+                                migrationUnit.KeyspaceName, migrationUnit.TableName,
+                                migrationUnit.KeyspaceName, migrationUnit.TableName)
                                 .ConfigureAwait(false);
                             _log.WriteLine(
                                 $"Created target table " +
-                                $"{mu.KeyspaceName}" +
-                                $".{mu.TableName}");
+                                $"{migrationUnit.KeyspaceName}" +
+                                $".{migrationUnit.TableName}");
                         }
                         else
                         {
@@ -290,14 +298,14 @@ namespace CassandraMigrationProcessor.Workers
                             // (adds missing columns via ALTER)
                             await CassandraHelper.CreateTableFromSourceAsync(
                                 localSourceSession!, targetSession,
-                                mu.KeyspaceName, mu.TableName,
-                                mu.KeyspaceName, mu.TableName)
+                                migrationUnit.KeyspaceName, migrationUnit.TableName,
+                                migrationUnit.KeyspaceName, migrationUnit.TableName)
                                 .ConfigureAwait(false);
                         }
                     }
                 }
 
-                mu.BulkCopyStartedOn ??= DateTime.UtcNow;
+                migrationUnit.BulkCopyStartedOn ??= DateTime.UtcNow;
 
                 // Log feed range count for this table
                 if (!job.IsSimulatedRun)
@@ -307,15 +315,18 @@ namespace CassandraMigrationProcessor.Workers
                         var rangeCount = (await CassandraHelper
                             .GetFeedRangesAsync(
                                 localSourceSession!,
-                                mu.KeyspaceName,
-                                mu.TableName)
+                                migrationUnit.KeyspaceName,
+                                migrationUnit.TableName)
                                 .ConfigureAwait(false)).Count;
                         _log.WriteLine(
                             $"Feed ranges: {rangeCount} " +
-                            $"for {mu.KeyspaceName}" +
-                            $".{mu.TableName}");
+                            $"for {migrationUnit.KeyspaceName}" +
+                            $".{migrationUnit.TableName}");
                     }
-                    catch { }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"[WARN] MigrationWorker GetFeedRanges failed: {ex.Message}");
+                    }
                 }
 
                 // Capture FFCF continuation token BEFORE
@@ -330,29 +341,27 @@ namespace CassandraMigrationProcessor.Workers
                 // parallel change feed processing.
                 if (Helper.IsOnline(job)
                     && string.IsNullOrEmpty(
-                        mu.ChangeFeedContinuationToken))
+                        migrationUnit.ChangeFeedContinuationToken))
                 {
                     try
                     {
-                        // Get feed ranges for parallel CF
                         var feedRanges = CassandraHelper
                             .GetFeedRanges(
                                 localSourceSession!,
-                                mu.KeyspaceName,
-                                mu.TableName);
+                                migrationUnit.KeyspaceName,
+                                migrationUnit.TableName);
 
                         _log.WriteLine(
                             $"Feed ranges discovered: " +
                             $"{feedRanges.Count} for " +
-                            $"{mu.KeyspaceName}" +
-                            $".{mu.TableName}");
+                            $"{migrationUnit.KeyspaceName}" +
+                            $".{migrationUnit.TableName}");
 
                         if (feedRanges.Count > 1)
                         {
-                            // Capture per-range tokens
-                            mu.FeedRangeStartTokens =
+                            migrationUnit.FeedRangeStartTokens =
                                 new Dictionary<string, string>();
-                            mu.FeedRangeContinuationTokens =
+                            migrationUnit.FeedRangeContinuationTokens =
                                 new Dictionary<string, string>();
 
                             foreach (var range in feedRanges)
@@ -361,8 +370,8 @@ namespace CassandraMigrationProcessor.Workers
                                 {
                                     string rangeCql =
                                         $"SELECT JSON * FROM " +
-                                        $"\"{mu.KeyspaceName}\"" +
-                                        $".\"{mu.TableName}\"" +
+                                        $"\"{migrationUnit.KeyspaceName}\"" +
+                                        $".\"{migrationUnit.TableName}\"" +
                                         $" WHERE COSMOS_CHANGEFEED" +
                                         $"_FROM_START() = false" +
                                         $" AND COSMOS_FULLFIDELITY" +
@@ -378,7 +387,7 @@ namespace CassandraMigrationProcessor.Workers
                                         .ConfigureAwait(false);
                                     if (rangeRs.PagingState != null)
                                     {
-                                        mu.FeedRangeContinuationTokens[
+                                        migrationUnit.FeedRangeContinuationTokens[
                                             range] = Convert
                                             .ToBase64String(
                                                 rangeRs.PagingState);
@@ -392,8 +401,8 @@ namespace CassandraMigrationProcessor.Workers
                             _log.WriteLine(
                                 $"FFCF: {feedRanges.Count} feed " +
                                 $"range tokens captured for " +
-                                $"{mu.KeyspaceName}" +
-                                $".{mu.TableName}");
+                                $"{migrationUnit.KeyspaceName}" +
+                                $".{migrationUnit.TableName}");
                         }
                         else
                         {
@@ -401,30 +410,30 @@ namespace CassandraMigrationProcessor.Workers
                             // use legacy single-token path
                             string ffcfCql =
                                 $"SELECT JSON * FROM " +
-                                $"\"{mu.KeyspaceName}\"" +
-                                $".\"{mu.TableName}\"" +
+                                $"\"{migrationUnit.KeyspaceName}\"" +
+                                $".\"{migrationUnit.TableName}\"" +
                                 $" WHERE COSMOS_CHANGEFEED" +
                                 $"_FROM_START() = false" +
                                 $" AND COSMOS_FULLFIDELITY" +
                                 $"_CHANGEFEED() = true";
-                            var stmt = new Cassandra
+                            var statement = new Cassandra
                                 .SimpleStatement(ffcfCql);
-                            stmt.SetPageSize(1);
-                            stmt.SetAutoPage(false);
-                            var rs = await localSourceSession!
-                                .ExecuteAsync(stmt)
+                            statement.SetPageSize(1);
+                            statement.SetAutoPage(false);
+                            var resultSet = await localSourceSession!
+                                .ExecuteAsync(statement)
                                 .ConfigureAwait(false);
-                            if (rs.PagingState != null)
+                            if (resultSet.PagingState != null)
                             {
-                                mu.ChangeFeedContinuationToken =
+                                migrationUnit.ChangeFeedContinuationToken =
                                     Convert.ToBase64String(
-                                        rs.PagingState);
+                                        resultSet.PagingState);
                             }
                         }
                         _log.WriteLine(
                             $"FFCF start token captured for " +
-                            $"{mu.KeyspaceName}" +
-                            $".{mu.TableName}: " +
+                            $"{migrationUnit.KeyspaceName}" +
+                            $".{migrationUnit.TableName}: " +
                             $"{DateTime.UtcNow:o}");
                     }
                     catch (Exception ex)
@@ -432,72 +441,71 @@ namespace CassandraMigrationProcessor.Workers
                         _log.WriteLine(
                             $"FFCF start token capture " +
                             $"failed for " +
-                            $"{mu.KeyspaceName}" +
-                            $".{mu.TableName}: " +
+                            $"{migrationUnit.KeyspaceName}" +
+                            $".{migrationUnit.TableName}: " +
                             $"{ex.Message}",
                             LogType.Warning);
                     }
-                    // Also record timestamp for display
-                    mu.ChangeFeedStartToken =
+                    migrationUnit.ChangeFeedStartToken =
                         DateTime.UtcNow.ToString(
                             "yyyy-MM-ddTHH:mm:ss.fffZ",
                             System.Globalization.CultureInfo
                                 .InvariantCulture);
                 }
 
-                MigrationJobContext.SaveMigrationUnit(mu, true);
+                MigrationJobContext.SaveMigrationUnit(migrationUnit, true);
 
                 var processor = new CopyProcessor(
                     _log, localSourceSession!, config, job, this);
-                _activeProcessors[mu.Id] = processor;
+                _activeProcessors[migrationUnit.Id] = processor;
 
-                ct.ThrowIfCancellationRequested();
+                cancellationToken.ThrowIfCancellationRequested();
 
                 TaskResult result =
                     await processor.StartProcessAsync(
-                        mu.Id);
+                        migrationUnit.Id);
 
                 switch (result)
                 {
                     case TaskResult.Success:
                         _log.WriteLine(
                             $"Copy succeeded for " +
-                            $"{mu.KeyspaceName}.{mu.TableName}");
+                            $"{migrationUnit.KeyspaceName}.{migrationUnit.TableName}");
                         break;
 
                     case TaskResult.Canceled:
                         _log.WriteLine(
                             $"Copy paused for " +
-                            $"{mu.KeyspaceName}.{mu.TableName}");
+                            $"{migrationUnit.KeyspaceName}.{migrationUnit.TableName}");
                         break;
 
                     default:
                         _log.WriteLine(
                             $"Copy failed for " +
-                            $"{mu.KeyspaceName}.{mu.TableName}",
+                            $"{migrationUnit.KeyspaceName}.{migrationUnit.TableName}",
                             LogType.Error);
                         break;
                 }
 
-                MigrationJobContext.SaveMigrationUnit(mu, true);
+                MigrationJobContext.SaveMigrationUnit(migrationUnit, true);
             }
             catch (OperationCanceledException)
             {
                 _log.WriteLine(
-                    $"Cancelled {mu.KeyspaceName}" +
-                    $".{mu.TableName}");
+                    $"Cancelled {migrationUnit.KeyspaceName}" +
+                    $".{migrationUnit.TableName}");
                 throw;
             }
             catch (Exception ex)
             {
                 _log.WriteLine(
                     $"Error processing " +
-                    $"{mu.KeyspaceName}.{mu.TableName}: {ex}",
+                    $"{migrationUnit.KeyspaceName}.{migrationUnit.TableName}: {ex}",
                     LogType.Error);
 
                 // BB-3 fix: Mark MU as failed so the UI shows
                 // "Failed" instead of "0.0%"
-                mu.SourceStatus = CollectionStatus.Failed;
+                migrationUnit.SourceStatus = CollectionStatus.Failed;
 
                 // Detect auth errors (expired token)
                 if (IsAuthError(ex))
@@ -506,7 +514,7 @@ namespace CassandraMigrationProcessor.Workers
                         ref _consecutiveAuthErrors);
                     _log.WriteLine(
                         $"Auth failure #{_consecutiveAuthErrors}" +
-                        $" on {mu.KeyspaceName}.{mu.TableName}",
+                        $" on {migrationUnit.KeyspaceName}.{migrationUnit.TableName}",
                         LogType.Warning);
                 }
                 else
@@ -515,14 +523,16 @@ namespace CassandraMigrationProcessor.Workers
                         ref _consecutiveAuthErrors, 0);
                 }
 
-                MigrationJobContext.SaveMigrationUnit(mu, true);
+                MigrationJobContext.SaveMigrationUnit(migrationUnit, true);
             }
             finally
             {
-                // Cleanup per-table resources
-                _activeProcessors.TryRemove(mu.Id, out _);
+                _activeProcessors.TryRemove(migrationUnit.Id, out _);
                 try { localSourceSession?.Dispose(); }
-                catch { /* best-effort */ }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[WARN] MigrationWorker localSourceSession dispose failed: {ex.Message}");
+                }
             }
         }
 
@@ -565,7 +575,10 @@ namespace CassandraMigrationProcessor.Workers
         private void ForceInvalidateSession()
         {
             try { _sourceSession?.Dispose(); }
-            catch { /* best-effort */ }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[WARN] ForceInvalidateSession dispose failed: {ex.Message}");
+            }
             _sourceSession = null;
         }
 
