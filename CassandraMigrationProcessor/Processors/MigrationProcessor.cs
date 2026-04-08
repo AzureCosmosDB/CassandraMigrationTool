@@ -58,8 +58,11 @@ namespace CassandraMigrationProcessor.Processors
 
             if (_job != null)
             {
-                if (isPause) _job.Status = JobStatus.Paused;
-                else if (_job.Status == JobStatus.Running) _job.Status = JobStatus.Pending;
+                if (isPause)
+                    _job.Status = JobStatus.Paused;
+                else if (_job.Status == JobStatus.Running)
+                    _job.Status = JobStatus.Pending;
+                // Don't downgrade Paused/Completed/Cancelled/Faulted
             }
 
             MigrationJobContext.SaveMigrationJob(_job);

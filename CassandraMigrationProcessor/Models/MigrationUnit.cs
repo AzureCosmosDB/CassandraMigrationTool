@@ -232,6 +232,8 @@ namespace CassandraMigrationProcessor
             mub.SkippedDueToMaxRetries =
                 this.SkippedDueToMaxRetries;
             mub.FailedOperation = this.FailedOperation;
+            mub.ChangeFeedLastChecked =
+                this.ChangeFeedLastChecked;
             return mub;
         }
     }

@@ -1737,13 +1737,12 @@ else if (@_showLogBackupFile)
     private void PauseJobImmediate()
     {
         _errorMessage = string.Empty;
-        JobManager.StopMigration();
+        // Set status BEFORE stopping so StopProcessing
+        // won't downgrade from Paused to Pending
         if (CurrentlyLoadedMigrationJob != null)
-        {
             CurrentlyLoadedMigrationJob.Status = JobStatus.Paused;
-        }
-        MigrationJobContext.SaveMigrationJob(
-            CurrentlyLoadedMigrationJob);
+        MigrationJobContext.SaveMigrationJob(CurrentlyLoadedMigrationJob);
+        JobManager.StopMigration();
     }
 
     private void PauseJobControlled()
