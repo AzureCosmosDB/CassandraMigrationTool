@@ -312,9 +312,13 @@
                     Table Name
                     <i class="bi @GetSortIcon("TableName") ms-1"></i>
                 </th>
-                <th class="sortable-header @GetSortClass("CopyStatus")" @onclick='() => SortBy("CopyStatus")' style="cursor: pointer;">
-                    Copy Status
+                <th class="sortable-header @GetSortClass("CopyStatus")" @onclick='() => SortBy("CopyStatus")' style="cursor: pointer; min-width: 180px;">
+                    Progress
                     <i class="bi @GetSortIcon("CopyStatus") ms-1"></i>
+                </th>
+                <th class="sortable-header @GetSortClass("RowsCopied")" @onclick='() => SortBy("RowsCopied")' style="cursor: pointer;">
+                    Rows Copied
+                    <i class="bi @GetSortIcon("RowsCopied") ms-1"></i>
                 </th>
                 @if (CurrentlyLoadedMigrationJob != null && Helper.IsOnline(CurrentlyLoadedMigrationJob))
                 {
@@ -347,49 +351,53 @@
                                      @GetDatabaseDisplayName(mu)
                         </td>
                                 <td>@GetCollectionDisplayName(mu)</td>
-                        <td>
+                        <td style="min-width: 180px;">
                             @{
                                 string copyStatus;
-                                if (mu.SourceStatus == CollectionStatus.NotFound)
-                                    copyStatus = "Skipped (404)";
-                                else if (mu.SourceStatus == CollectionStatus.Failed)
-                                    copyStatus = "Failed";
-                                else if (mu.SkippedDueToMaxRetries)
-                                    copyStatus = "Skipped (Max Retries)";
-                                else if (mu.CopyComplete)
-                                    copyStatus = "Success";
-                                else
-                                {
-                                    // Build speed string
-                                    string speedStr = "";
-                                    if (mu.CopyRowsPerSecond > 0)
-                                    {
-                                        speedStr = mu.CopyRowsPerSecond >= 1000
-                                            ? $" ({mu.CopyRowsPerSecond/1000:F1}k/s)"
-                                            : $" ({mu.CopyRowsPerSecond:F0}/s)";
-                                    }
+                                string barColor = "bg-primary";
+                                double pct = 0;
 
-                                    if (mu.CopyPercent > 0)
-                                    {
-                                        // Known percentage
-                                        copyStatus = $"{mu.CopyPercent:F1}%{speedStr}";
-                                        if (mu.CopyRowsCopied > 0 && mu.TotalDocCount > 0)
-                                            copyStatus += $" [{mu.CopyRowsCopied:N0}/{mu.TotalDocCount:N0}]";
-                                        else if (mu.CopyRowsCopied > 0)
-                                            copyStatus += $" [{mu.CopyRowsCopied:N0} rows]";
-                                    }
-                                    else if (mu.CopyRowsCopied > 0)
-                                    {
-                                        // No percentage — show rows only
-                                        copyStatus = $"Copying{speedStr} [{mu.CopyRowsCopied:N0} rows]";
-                                    }
-                                    else
-                                    {
-                                        copyStatus = "Starting...";
-                                    }
+                                if (mu.SourceStatus == CollectionStatus.NotFound)
+                                { copyStatus = "Skipped (404)"; barColor = "bg-secondary"; pct = 100; }
+                                else if (mu.SourceStatus == CollectionStatus.Failed)
+                                { copyStatus = "Failed"; barColor = "bg-danger"; pct = 100; }
+                                else if (mu.SkippedDueToMaxRetries)
+                                { copyStatus = "Skipped (Max Retries)"; barColor = "bg-warning"; pct = 100; }
+                                else if (mu.CopyComplete)
+                                { copyStatus = "Complete"; barColor = "bg-success"; pct = 100; }
+                                else if (mu.CopyPercent > 0)
+                                {
+                                    pct = Math.Min(mu.CopyPercent, 99.9);
+                                    string speedStr = mu.CopyRowsPerSecond >= 1000
+                                        ? $"{mu.CopyRowsPerSecond/1000:F1}k/s"
+                                        : mu.CopyRowsPerSecond > 0
+                                            ? $"{mu.CopyRowsPerSecond:F0}/s" : "";
+                                    copyStatus = speedStr != "" ? $"{pct:F1}% ({speedStr})" : $"{pct:F1}%";
                                 }
+                                else if (mu.CopyRowsCopied > 0)
+                                {
+                                    pct = 5; // indeterminate — show small bar
+                                    string speedStr = mu.CopyRowsPerSecond >= 1000
+                                        ? $"{mu.CopyRowsPerSecond/1000:F1}k/s"
+                                        : mu.CopyRowsPerSecond > 0
+                                            ? $"{mu.CopyRowsPerSecond:F0}/s" : "";
+                                    copyStatus = speedStr != "" ? $"Copying ({speedStr})" : "Copying...";
+                                }
+                                else
+                                { copyStatus = "Pending"; pct = 0; }
                             }
-                            @copyStatus
+                            <div class="progress" style="height: 20px; position: relative;">
+                                <div class="progress-bar @barColor" role="progressbar"
+                                     style="width: @($"{pct:F0}")%"
+                                     aria-valuenow="@pct" aria-valuemin="0" aria-valuemax="100">
+                                </div>
+                                <span style="position: absolute; width: 100%; text-align: center; font-size: 0.75rem; line-height: 20px; color: @(pct > 50 ? "white" : "black");">
+                                    @copyStatus
+                                </span>
+                            </div>
+                        </td>
+                        <td>
+                            @(mu.CopyRowsCopied > 0 ? mu.CopyRowsCopied.ToString("N0") : "-")
                         </td>
 
                         @if (CurrentlyLoadedMigrationJob != null && Helper.IsOnline(CurrentlyLoadedMigrationJob))
@@ -823,6 +831,10 @@ else if (@_showLogBackupFile)
             "CopyStatus" => _sortAscending
                 ? units.OrderBy(u => GetSortValueForStatus(u)).ToList()
                 : units.OrderByDescending(u => GetSortValueForStatus(u)).ToList(),
+
+            "RowsCopied" => _sortAscending
+                ? units.OrderBy(u => u.CopyRowsCopied).ToList()
+                : units.OrderByDescending(u => u.CopyRowsCopied).ToList(),
 
             "TimeSinceLastChange" => _sortAscending
                 ? units.OrderBy(u => GetSortValueForTimestamp(u)).ToList()

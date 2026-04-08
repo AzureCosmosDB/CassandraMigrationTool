@@ -94,7 +94,7 @@ namespace CassandraMigrationProcessor
                 ChangeFeedBatchDurationMin = 30;
                 ChangeFeedMaxTablesInBatch = 5;
                 ChangeFeedPollIntervalMs = 5000;
-                ChangeFeedFullFidelity = true;
+                ChangeFeedFullFidelity = false;
                 MaxFeedRangeParallelism = Math.Max(4,
                     Environment.ProcessorCount * 2);
                 LogPageSize = 5000;
