@@ -346,7 +346,7 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
                 return false;
 
             // Probe actual data read with retry for 429s
-            for (int attempt = 1; attempt <= 3; attempt++)
+            for (int attempt = 1; attempt <= 10; attempt++)
             {
                 try
                 {
@@ -366,13 +366,14 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
                         || ex.Message?.Contains("rate", StringComparison.OrdinalIgnoreCase) == true
                         || ex.Message?.Contains("TooMany", StringComparison.OrdinalIgnoreCase) == true;
 
-                    if (isThrottle && attempt < 3)
+                    if (isThrottle && attempt < 10)
                     {
+                        int delaySec = Math.Min(attempt * 3, 30);
                         Console.WriteLine(
                             $"  TableExists: {keyspace}.{table}" +
-                            $" probe throttled (attempt {attempt}/3)," +
-                            $" retrying in {attempt * 3}s...");
-                        await Task.Delay(attempt * 3000)
+                            $" probe throttled (attempt {attempt}/10)," +
+                            $" retrying in {delaySec}s...");
+                        await Task.Delay(delaySec * 1000)
                             .ConfigureAwait(false);
                         continue;
                     }

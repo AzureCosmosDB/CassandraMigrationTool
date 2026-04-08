@@ -392,7 +392,7 @@ namespace CassandraMigrationWebApp.Service
                             {
                                 // Validate table is accessible with retry for 429s
                                 bool accessible = false;
-                                for (int att = 1; att <= 3; att++)
+                                for (int att = 1; att <= 10; att++)
                                 {
                                     try
                                     {
@@ -411,10 +411,11 @@ namespace CassandraMigrationWebApp.Service
                                         bool isThrottle = vex.Message?.Contains("429") == true
                                             || vex.Message?.Contains("rate", StringComparison.OrdinalIgnoreCase) == true
                                             || vex.Message?.Contains("TooMany", StringComparison.OrdinalIgnoreCase) == true;
-                                        if (isThrottle && att < 3)
+                                        if (isThrottle && att < 10)
                                         {
-                                            Console.WriteLine($"  Probe {ks}.{tableName} throttled (attempt {att}/3), retrying...");
-                                            Thread.Sleep(att * 3000);
+                                            int delaySec = Math.Min(att * 3, 30);
+                                            Console.WriteLine($"  Probe {ks}.{tableName} throttled (attempt {att}/10), retrying in {delaySec}s...");
+                                            Thread.Sleep(delaySec * 1000);
                                             continue;
                                         }
                                         Console.WriteLine($"  Skipping {ks}.{tableName} — not accessible: {vex.GetType().Name}: {vex.Message}");
