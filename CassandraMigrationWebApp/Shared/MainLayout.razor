@@ -1,0 +1,51 @@
+﻿@inherits LayoutComponentBase
+@inject AuthenticationService AuthService
+@inject NavigationManager Navigation
+
+<AuthenticationGuard>
+    <PageTitle>Cassandra Migration Utility</PageTitle>
+
+    <div class="page">
+        <main>
+            <div class="top-row px-4 d-flex justify-content-between align-items-center">
+                <div class="d-flex align-items-center gap-2">
+                    <svg width="20" height="20" viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <path d="M9.5 2L2 6v6l7.5 4L17 12V6L9.5 2z" fill="#50e6ff" opacity=".8"/>
+                        <path d="M9.5 2L2 6l7.5 4L17 6 9.5 2z" fill="#fff" opacity=".3"/>
+                        <path d="M2 6v6l7.5 4V10L2 6z" fill="#0078d4" opacity=".6"/>
+                        <path d="M17 6v6l-7.5 4V10L17 6z" fill="#0078d4" opacity=".4"/>
+                    </svg>
+                    <h2>Cassandra Migration</h2>
+                </div>
+                <AuthorizeView>
+                    <Authorized>
+                        <div class="d-flex align-items-center gap-2">
+                            <span class="small">v0.9.7</span>
+                            <button class="btn btn-sm btn-outline-secondary" @onclick="@(() => Navigation.NavigateTo("/change-password"))">
+                                <i class="bi bi-key"></i>
+                            </button>
+                            <button class="btn btn-sm btn-outline-secondary" @onclick="HandleLogout">
+                                <i class="bi bi-box-arrow-right"></i>
+                            </button>
+                        </div>
+                    </Authorized>
+                    <NotAuthorized>
+                        <span class="small">v0.9.7</span>
+                    </NotAuthorized>
+                </AuthorizeView>
+            </div>
+
+            <article class="content px-4">
+                @Body
+            </article>
+        </main>
+    </div>
+</AuthenticationGuard>
+
+@code {
+    private async Task HandleLogout()
+    {
+        await AuthService.LogoutAsync();
+        Navigation.NavigateTo("/login", true);
+    }
+}

@@ -1,0 +1,87 @@
+﻿<div class="modal-backdrop" xclass="modal modal-lg fade show d-block bg-dark bg-opacity-75" id="myModal" aria-modal="true" role="dialog">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">@Caption</h5>
+                <button type="button" class="btn-close" aria-label="Close" @onclick="@Cancel"></button>
+            </div>
+            <div class="modal-body">
+                <p>@Message</p>
+            </div>
+            <div class="modal-footer">
+                @switch (Type)
+                {
+                    case Category.Okay:
+                        <button type="button" class="btn btn-primary" @onclick=@Ok>OK</button>
+                        break;
+                    case Category.CutoverNot:
+                        <button type="button" class="btn btn-primary" @onclick=@Ok>Cutover</button>
+                        <button type="button" class="btn btn-secondary" @onclick="@Cancel">Don't Cutover</button>
+                        break;
+                    case Category.CompleteNot:
+                        <button type="button" class="btn btn-primary" @onclick=@Ok>Complete</button>
+                        <button type="button" class="btn btn-secondary" @onclick="@Cancel">Don't Complete</button>
+                        break;
+                    case Category.SyncBackNot:
+                        <button type="button" class="btn btn-primary" @onclick=@Ok>Start Sync Back</button>
+                        <button type="button" class="btn btn-secondary" @onclick="@Cancel">Don't Cutover</button>
+                        break;
+                    case Category.DeleteNot:
+                        <button type="button" class="btn btn-primary" @onclick=@Ok>Delete</button>
+                        <button type="button" class="btn btn-secondary" @onclick="@Cancel">Don't Delete</button>
+                        break;
+                    case Category.RecoverNot:
+                        <button type="button" class="btn btn-primary" @onclick=@Ok>Recover</button>
+                        <button type="button" class="btn btn-secondary" @onclick="@Cancel">Don't Recover</button>
+                        break;
+                    case Category.RunComparisonNot:
+                        <button type="button" class="btn btn-primary" @onclick=@Ok>Run Comparison</button>
+                        <button type="button" class="btn btn-secondary" @onclick="@Cancel">Don't Run Comparison</button>
+                        break;
+                    case Category.CancelNot:
+                        <button type="button" class="btn btn-danger" @onclick=@Ok>Cancel Job</button>
+                        <button type="button" class="btn btn-secondary" @onclick="@Cancel">Keep Running</button>
+                        break;
+                }
+            </div>
+        </div>
+    </div>
+</div>
+
+@code {
+
+    [Parameter] public string? Caption { get; set; }
+    [Parameter] public string? Message { get; set; }
+    [Parameter] public EventCallback<YesNoDialogResult> OnClose { get; set; }
+    [Parameter] public Category Type { get; set; }
+
+    private Task Cancel()
+    {
+        
+        return OnClose.InvokeAsync(new YesNoDialogResult { IsConfirmed = false, DiaLogType = Type });
+    }
+
+    private Task Ok()
+    {
+        return OnClose.InvokeAsync(new YesNoDialogResult { IsConfirmed = true, DiaLogType = Type });
+    }
+
+    public enum Category
+    {
+        Okay,
+        CutoverNot,
+        CompleteNot,
+        SyncBackNot,
+        DeleteNot,
+        RecoverNot,
+        RunComparisonNot,
+        CancelNot
+
+    }
+
+    public class YesNoDialogResult
+    {
+        public bool IsConfirmed { get; set; }
+        public Category DiaLogType { get; set; }
+    }
+}

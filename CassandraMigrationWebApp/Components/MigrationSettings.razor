@@ -1,0 +1,169 @@
+@using CassandraMigrationProcessor
+
+<div class="modal fade show d-block bg-dark bg-opacity-75" id="myModal" aria-modal="true" role="dialog">
+    <div class="modal-dialog bg-dark">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h4 class="modal-title">Edit Configuration Settings</h4>
+                <button type="button" class="btn-close" aria-label="Close" @onclick="@Cancel"></button>
+            </div>
+            <div class="modal-body">
+                <!-- Tab Navigation -->
+                <ul class="nav nav-tabs mb-3">
+                    <li class="nav-item">
+                        <button class="nav-link @(activeTab == "OfflineDataMovement" ? "active" : "")" @onclick="SwitchToOfflineDataMovementTab">Offline</button>
+                    </li>
+                    <li class="nav-item">
+                        <button class="nav-link @(activeTab == "ChangeStream" ? "active" : "")" @onclick="SwitchToChangeStreamTab">Online</button>
+                    </li>
+                    <li class="nav-item">
+                        <button class="nav-link @(activeTab == "Other" ? "active" : "")" @onclick="SwitchToOtherTab">Other</button>
+                    </li>
+                </ul>
+
+                <!-- Offline Data Movement Tab Content -->
+                <div class="@(activeTab == "OfflineDataMovement" ? "" : "d-none")">
+                    <div class="mb-3">
+                        <label for="cql-copy-page-size" class="form-label">CQL Copy page size</label>
+                        <input type="number" id="cql-copy-page-size" class="form-control" @bind="(_configurationBackup ??= new CassandraMigrationProcessor.MigrationSettings()).CqlCopyPageSize" />
+                    </div>
+                </div>
+
+                <!-- Change Stream Tab Content -->
+                <div class="@(activeTab == "ChangeStream" ? "" : "d-none")">
+                    <div class="mb-3">
+                        <label for="max-rows-per-batch" class="form-label">Max rows per change feed batch</label>
+                        <input type="number" id="max-rows-per-batch" class="form-control" @bind="(_configurationBackup ??= new CassandraMigrationProcessor.MigrationSettings()).ChangeFeedMaxRowsInBatch" />
+                    </div>
+                    <div class="mb-3">
+                        <label for="csbatchdurationmax" class="form-label">Max duration (in seconds) for change feed batch</label>
+                        <input type="number" id="csbatchdurationmax" class="form-control" @bind="(_configurationBackup ??= new CassandraMigrationProcessor.MigrationSettings()).ChangeFeedBatchDuration" />
+                    </div>
+                    <div class="mb-3">
+                        <label for="csbatchdurationmin" class="form-label">Min duration (in seconds) for change feed batch</label>
+                        <input type="number" id="csbatchdurationmin" class="form-control" @bind="(_configurationBackup ??= new CassandraMigrationProcessor.MigrationSettings()).ChangeFeedBatchDurationMin" />
+                    </div>
+                    <div class="mb-3">
+                        <label for="cs-tables-inbatch" class="form-label">Max tables per change feed batch</label>
+                        <input type="number" id="cs-tables-inbatch" class="form-control" @bind="(_configurationBackup ??= new CassandraMigrationProcessor.MigrationSettings()).ChangeFeedMaxTablesInBatch" />
+                    </div>
+                </div>
+
+                <!-- Other Tab Content -->
+                <div class="@(activeTab == "Other" ? "" : "d-none")">
+                    <div class="mb-3">
+                        <label for="log-page-size" class="form-label">Log page size</label>
+                        <input type="text" id="log-page-size" class="form-control" @bind="(_configurationBackup ??= new CassandraMigrationProcessor.MigrationSettings()).LogPageSize" />
+                    </div>
+                </div>
+
+                @if (!string.IsNullOrEmpty(errorMessage))
+                {
+                    <div class="alert alert-danger mt-2">
+                        @errorMessage
+                        <button type="button" class="btn-close btn-close-sm" aria-label="Close" @onclick="() => errorMessage = string.Empty"></button>
+                    </div>
+                }
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-primary" @onclick=@HandleSubmit>OK</button>
+                <button type="button" class="btn btn-secondary" @onclick="@Cancel">Cancel</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+@code
+{
+    [Parameter]
+    public CassandraMigrationProcessor.MigrationSettings? _configuration { get; set; }
+
+    [Parameter]
+    public EventCallback<CassandraMigrationProcessor.MigrationSettings?> On_configurationSaved { get; set; }
+
+    private string errorMessage = string.Empty;
+    private string activeTab = "OfflineDataMovement";
+
+    private void SwitchToOfflineDataMovementTab()
+    {
+        activeTab = "OfflineDataMovement";
+    }
+
+    private void SwitchToChangeStreamTab()
+    {
+        activeTab = "ChangeStream";
+    }
+
+    private void SwitchToOtherTab()
+    {
+        activeTab = "Other";
+    }
+
+    CassandraMigrationProcessor.MigrationSettings? _configurationBackup;
+
+    protected override void OnInitialized()
+    {
+        _configurationBackup = (CassandraMigrationProcessor.MigrationSettings?)(_configuration?.Clone()) ?? new CassandraMigrationProcessor.MigrationSettings();
+    }
+
+    private void HandleSubmit()
+    {
+        if ((_configurationBackup?.LogPageSize ?? 0) < 1000 || (_configurationBackup?.LogPageSize ?? 0) > 100000)
+        {
+            errorMessage = "Log page size should be between 1000 and 100000.";
+            return;
+        }
+
+        if ((_configurationBackup?.ChangeFeedBatchDurationMin ?? 0) < 10 || (_configurationBackup?.ChangeFeedBatchDurationMin ?? 0) > 600)
+        {
+            errorMessage = "Minimum batch duration should be between 10 and 600 seconds.";
+            return;
+        }
+
+        if ((_configurationBackup?.ChangeFeedBatchDuration ?? 0) < 20 || (_configurationBackup?.ChangeFeedBatchDuration ?? 0) > 3600)
+        {
+            errorMessage = "Maximum batch duration should be between 20 and 3600 seconds.";
+            return;
+        }
+
+        if ((_configurationBackup?.ChangeFeedBatchDurationMin ?? 0) >= (_configurationBackup?.ChangeFeedBatchDuration ?? 0))
+        {
+            errorMessage = "Minimum batch duration should be less than maximum batch duration.";
+            return;
+        }
+
+        if ((_configurationBackup?.ChangeFeedMaxTablesInBatch ?? 0) < 1 || (_configurationBackup?.ChangeFeedMaxTablesInBatch ?? 0) > 30)
+        {
+            errorMessage = "Maximum tables per batch should be between 1 and 30.";
+            return;
+        }
+
+        if ((_configurationBackup?.CqlCopyPageSize ?? 0) < 50 || (_configurationBackup?.CqlCopyPageSize ?? 0) > 40000)
+        {
+            errorMessage = "Page size should be between 50 and 40000.";
+            return;
+        }
+
+        if ((_configurationBackup?.ChangeFeedMaxRowsInBatch ?? 0) < 100 || (_configurationBackup?.ChangeFeedMaxRowsInBatch ?? 0) > 10000)
+        {
+            errorMessage = "Maximum rows per batch should be between 100 and 10000.";
+            return;
+        }
+
+        _configurationBackup ??= new CassandraMigrationProcessor.MigrationSettings();
+        _configuration = (CassandraMigrationProcessor.MigrationSettings)_configurationBackup.Clone();
+
+        if (On_configurationSaved.HasDelegate)
+        {
+            On_configurationSaved.InvokeAsync(_configuration);
+        }
+    }
+
+    private void Cancel()
+    {
+        if (On_configurationSaved.HasDelegate)
+        {
+            On_configurationSaved.InvokeAsync(null);
+        }
+    }
+}

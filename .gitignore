@@ -1,0 +1,85 @@
+## Build results
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+[Bb]in/
+[Oo]bj/
+[Ll]og/
+[Ll]ogs/
+LogFiles/
+
+## Publish output
+publish/
+publish-win/
+publish_output/
+publish_test/
+deploy.zip
+
+## .NET artifacts
+*.user
+*.suo
+*.cache
+*.dll
+*.exe
+*.pdb
+*.nupkg
+project.assets.json
+project.nuget.cache
+*.nuget.dgspec.json
+*.nuget.g.props
+*.nuget.g.targets
+appsettings.Development.json
+Properties/PublishProfiles/
+
+## IDE
+.vs/
+.vscode/
+*.swp
+*~
+
+## Node
+node_modules/
+package.json
+package-lock.json
+
+## Python
+__pycache__/
+*.pyc
+*.pyo
+.env
+venv/
+
+## OS
+Thumbs.db
+.DS_Store
+desktop.ini
+
+## Archives, logs, binaries
+*.zip
+*.log
+AutoStartLog.txt
+app.keyfile
+app.password
+
+## Test screenshots and scripts (not source code)
+SESSION_LOG.md
+bb2-*.png
+bb2-*.js
+bb3-*.png
+bb3-*.js
+bb3v2-*.png
+bb3v2-*.js
+bb4-*.png
+bb4-*.js
+
+## Legacy Mongo migration code (not part of Cassandra tool)
+OnPremise/
+SchemaMigration/
+WebApp/
+ResumeTokenProbeExe/
+ACA/
+CollectionInfoFormat.JSON
+
+## 1ES inventory
+.inventory/

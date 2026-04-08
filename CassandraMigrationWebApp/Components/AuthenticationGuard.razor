@@ -1,0 +1,39 @@
+@inject AuthenticationService AuthService
+@inject NavigationManager Navigation
+
+@if (isAuthenticated)
+{
+    @ChildContent
+}
+else if (isChecking)
+{
+    <div class="d-flex justify-content-center align-items-center" style="min-height: 100vh;">
+        <div class="spinner-border" role="status">
+            <span class="visually-hidden">Checking authentication...</span>
+        </div>
+    </div>
+}
+
+@code {
+    [Parameter]
+    public RenderFragment? ChildContent { get; set; }
+
+    private bool isAuthenticated = false;
+    private bool isChecking = true;
+
+    protected override async Task OnInitializedAsync()
+    {
+        isAuthenticated = await AuthService.IsAuthenticatedAsync();
+        
+        if (!isAuthenticated)
+        {
+            var returnUrl = Navigation.ToBaseRelativePath(Navigation.Uri);
+            if (returnUrl != "login" && !returnUrl.StartsWith("login?"))
+            {
+                Navigation.NavigateTo($"/login?returnUrl={Uri.EscapeDataString(returnUrl)}");
+            }
+        }
+        
+        isChecking = false;
+    }
+}

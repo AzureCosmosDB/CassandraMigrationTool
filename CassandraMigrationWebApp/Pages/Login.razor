@@ -1,0 +1,135 @@
+@page "/login"
+@layout EmptyLayout
+@attribute [AllowAnonymous]
+@using CassandraMigrationWebApp.Service
+@inject AuthenticationService AuthService
+@inject PasswordManager PasswordManager
+@inject NavigationManager Navigation
+
+<PageTitle>Login - Cassandra Migration</PageTitle>
+
+<div class="login-container">
+    <div class="login-box">
+        <svg width="108" height="24" viewBox="0 0 108 24" fill="none" xmlns="http://www.w3.org/2000/svg" style="margin-bottom:20px;">
+            <rect width="11" height="11" fill="#f25022"/>
+            <rect x="12" width="11" height="11" fill="#7fba00"/>
+            <rect y="12" width="11" height="11" fill="#00a4ef"/>
+            <rect x="12" y="12" width="11" height="11" fill="#ffb900"/>
+            <text x="28" y="17" font-family="Segoe UI,sans-serif" font-size="14" font-weight="600" fill="#1b1b1f">Cassandra Migration</text>
+        </svg>
+
+        <div style="font-size:24px; font-weight:300; color:#1b1b1f; margin-bottom:4px;">Sign in</div>
+        <div style="font-size:13px; color:#605e5c; margin-bottom:24px;">Enter your password to continue</div>
+
+        <EditForm Model="@loginModel" OnValidSubmit="@HandleLogin">
+            <div class="form-group" style="margin-bottom:16px;">
+                <InputText type="password" @bind-Value="loginModel.Password" class="form-control" id="password"
+                    placeholder="Password"
+                    style="border:none; border-bottom: 1px solid #605e5c; border-radius:0; padding: 6px 0; font-size:15px; background:transparent;" />
+            </div>
+
+            @if (!string.IsNullOrEmpty(errorMessage))
+            {
+                <div style="color:#d13438; font-size:13px; margin-bottom:12px;">
+                    @errorMessage
+                </div>
+            }
+
+            <button type="submit" class="btn btn-primary w-100" disabled="@isLoading"
+                style="height:32px; font-size:14px; font-weight:600; border-radius:2px;">
+                @if (isLoading)
+                {
+                    <span class="spinner-border spinner-border-sm me-2"></span>
+                }
+                Sign in
+            </button>
+        </EditForm>
+    </div>
+</div>
+
+<style>
+    .login-container {
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        min-height: 100vh;
+        background-color: #f2f2f2;
+        position: fixed;
+        top: 0; left: 0; right: 0; bottom: 0;
+        z-index: 9999;
+    }
+
+    .login-box {
+        background: #ffffff;
+        padding: 44px;
+        width: 440px;
+        max-width: 90vw;
+        box-shadow: 0 2px 6px rgba(0,0,0,.2);
+    }
+
+    .form-group { margin-bottom: 12px; }
+</style>
+
+@code {
+    private LoginModel loginModel = new LoginModel();
+    private string errorMessage = string.Empty;
+    private bool isLoading = false;
+
+    [SupplyParameterFromQuery]
+    [Parameter]
+    public string? ReturnUrl { get; set; }
+
+    private string SafeReturnUrl =>
+        !string.IsNullOrEmpty(ReturnUrl) && ReturnUrl.StartsWith("/")
+            ? ReturnUrl : "/";
+
+    protected override async Task OnInitializedAsync()
+    {
+        // Check if password needs to be set for first time
+        if (!await PasswordManager.IsPasswordSetAsync())
+        {
+            Navigation.NavigateTo("/change-password");
+            return;
+        }
+
+        // Check if already authenticated
+        if (await AuthService.IsAuthenticatedAsync())
+        {
+            Navigation.NavigateTo(SafeReturnUrl, true);
+        }
+    }
+
+    private async Task HandleLogin()
+    {
+        isLoading = true;
+        errorMessage = string.Empty;
+
+        try
+        {
+            var isValid = await AuthService.ValidatePasswordAsync(loginModel.Password);
+
+            if (isValid)
+            {
+                Navigation.NavigateTo(SafeReturnUrl, true);
+            }
+            else
+            {
+                errorMessage = "Invalid password. Please try again.";
+                loginModel.Password = string.Empty;
+            }
+        }
+        catch (Exception ex)
+        {
+            errorMessage = $"An error occurred. Details: {ex.Message}";
+        }
+        finally
+        {
+            isLoading = false;
+        }
+    }
+
+    private class LoginModel
+    {
+        public string Password { get; set; } = string.Empty;
+    }
+}
