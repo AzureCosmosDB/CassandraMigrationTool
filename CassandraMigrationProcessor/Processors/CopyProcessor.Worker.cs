@@ -122,7 +122,7 @@ namespace CassandraMigrationProcessor.Processors
                                  .Contains("NoHostAvail")))
                         {
                             _log.WriteLine(
-                                $"Read timeout " +
+                                $"[W{workerId}] Read timeout " +
                                 $"(attempt {attempt}/3)",
                                 LogType.Warning);
                             await Task.Delay(
@@ -253,14 +253,14 @@ namespace CassandraMigrationProcessor.Processors
                                             .Increment(
                                             ref writeFail);
                                         _log.WriteLine(
-                                            $"INSERT failed"
+                                            $"[W{workerId}] INSERT failed"
                                             + $": {ex.GetType().Name}"
                                             + $": {ex.Message}",
                                             LogType.Error);
                                         if (IsFatalError(ex))
                                         {
                                             _log.WriteLine(
-                                                $"FATAL: {ex.GetType().Name}" +
+                                                $"[W{workerId}] FATAL: {ex.GetType().Name}" +
                                                 $" — failing job",
                                                 LogType.Error);
                                             Interlocked.Exchange(
@@ -379,7 +379,7 @@ namespace CassandraMigrationProcessor.Processors
                 catch (Exception ex)
                 {
                     _log.WriteLine(
-                        $"Worker error: " +
+                        $"[W{workerId}] Worker error: " +
                         $"{ex.GetType().Name}: " +
                         $"{ex.Message}",
                         LogType.Error);
@@ -387,7 +387,7 @@ namespace CassandraMigrationProcessor.Processors
                     if (IsFatalError(ex))
                     {
                         _log.WriteLine(
-                            $"FATAL: {ex.GetType().Name}" +
+                            $"[W{workerId}] FATAL: {ex.GetType().Name}" +
                             $" — failing job",
                             LogType.Error);
                         Interlocked.Exchange(

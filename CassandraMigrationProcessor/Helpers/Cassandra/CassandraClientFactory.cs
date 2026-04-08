@@ -18,6 +18,9 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
     /// </summary>
     public static class CassandraClientFactory
     {
+        // Log pool config only once across all workers
+        private static bool _poolConfigLogged = false;
+
         // Cache last-used connection parameters for token refresh
         private static string? _lastSourceContactPoint;
         private static int _lastSourcePort;
@@ -48,16 +51,10 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
 
                 _tokenExpiresAt = tokenResult.ExpiresOn.UtcDateTime;
 
-                Console.WriteLine(
-                    $"  AAD token refreshed, expires " +
-                    $"{tokenResult.ExpiresOn:u}");
                 return tokenResult.Token;
             }
-            catch (Exception ex)
+            catch
             {
-                Console.WriteLine(
-                    $"  AAD token refresh failed: " +
-                    $"{ex.GetType().Name}: {ex.Message}");
                 throw;
             }
         }
@@ -115,11 +112,6 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
                 if (delay < TimeSpan.FromMinutes(1))
                     delay = TimeSpan.FromMinutes(1);
 
-                Console.WriteLine(
-                    $"  Token refresh timer set: next refresh " +
-                    $"in {delay.TotalMinutes:F1} min " +
-                    $"(expires {expiry:u})");
-
                 _tokenRefreshTimer = new Timer(
                     TokenRefreshCallback, null,
                     delay, Timeout.InfiniteTimeSpan);
@@ -141,10 +133,6 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
             {
                 try
                 {
-                    Console.WriteLine(
-                        "  [TokenRefresh] Proactive AAD " +
-                        "token refresh triggered");
-
                     string freshToken = GetFreshAadToken();
 
                     // If we have a managed session, recreate it
@@ -152,9 +140,6 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
                         && !_managedSourceSession.IsDisposed
                         && _lastSourceContactPoint != null)
                     {
-                        Console.WriteLine(
-                            "  [TokenRefresh] Reconnecting " +
-                            "source session with fresh token");
                         var oldSession = _managedSourceSession;
                         _managedSourceSession = CreateSourceSession(
                             _lastLog ?? new Log(),
@@ -171,11 +156,8 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
                     StartTokenRefreshTimer(freshToken,
                         _lastLog ?? new Log());
                 }
-                catch (Exception ex)
+                catch (Exception)
                 {
-                    Console.WriteLine(
-                        $"  [TokenRefresh] Failed: " +
-                        $"{ex.GetType().Name}: {ex.Message}");
                     // Retry in 2 minutes on failure
                     StopTokenRefreshTimer();
                     _tokenRefreshTimer = new Timer(
@@ -260,17 +242,14 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
             _lastSourceKeyspace = keyspace;
             _lastLog = log;
 
-            MigrationJobContext.AddVerboseLog(
-                $"CassandraClientFactory.CreateSourceSession: " +
-                $"contactPoint={contactPoint}, port={port}, " +
-                $"keyspace={keyspace}");
-
-            var sslOptions = new SSLOptions(
+            var sslOptions= new SSLOptions(
                 SslProtocols.Tls12, true,
                 (sender, certificate, chain, sslPolicyErrors) =>
                 {
                     if (sslPolicyErrors != System.Net.Security.SslPolicyErrors.None)
-                        Console.WriteLine($"  SSL source: accepting with {sslPolicyErrors}");
+                    {
+                        // Accept Azure MI/Cosmos certs with chain+name issues
+                    }
                     return true; // Azure MI/Cosmos certs may have chain+name issues
                 });
             sslOptions.SetHostNameResolver(
@@ -305,11 +284,6 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
                             ? cluster.Connect()
                             : cluster.Connect(keyspace);
 
-                    log.WriteLine(
-                        $"Connected to Cosmos DB Cassandra " +
-                        $"source: {contactPoint}:{port}" +
-                        $"/{keyspace}");
-
                     if (IsLikelyAadToken(password))
                     {
                         _managedSourceSession = session;
@@ -324,11 +298,6 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
                 {
                     cluster?.Dispose();
                     int delayMs = GetRetryDelayMs(ex, attempt);
-                    Console.WriteLine(
-                        $"  Source connect retry " +
-                        $"{attempt}/{MaxRetries}: " +
-                        $"{ex.GetType().Name}, " +
-                        $"waiting {delayMs}ms");
                     log.WriteLine(
                         $"Source connect retry " +
                         $"{attempt}: {ex.Message}",
@@ -359,10 +328,6 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
                 string.IsNullOrWhiteSpace(keyspace)
                     ? finalCluster.Connect()
                     : finalCluster.Connect(keyspace);
-
-            log.WriteLine(
-                $"Connected to Cosmos DB Cassandra source: " +
-                $"{contactPoint}:{port}/{keyspace}");
 
             if (IsLikelyAadToken(password))
             {
@@ -443,16 +408,6 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
             bool useSsl = true,
             int maxConnectionsPerHost = 0)
         {
-            MigrationJobContext.AddVerboseLog(
-                $"CassandraClientFactory.CreateTargetSession: " +
-                $"contactPoint={contactPoint}, port={port}, " +
-                $"keyspace={keyspace}, ssl={useSsl}");
-
-            Console.WriteLine(
-                $"CreateTargetSession: {contactPoint}:{port} " +
-                $"ks={keyspace} ssl={useSsl} " +
-                $"user={(string.IsNullOrWhiteSpace(username) ? "(none)" : username)}");
-
             // Try SSL first, then fall back to plain
             Exception? sslException = null;
             if (useSsl)
@@ -463,20 +418,11 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
                         contactPoint, port, username, password,
                         keyspace, useSsl: true,
                         maxConnectionsPerHost);
-                    Console.WriteLine(
-                        "  Target session connected (SSL)");
-                    log.WriteLine(
-                        $"Connected to target (SSL): " +
-                        $"{contactPoint}:{port}/{keyspace}");
                     return session;
                 }
                 catch (Exception ex)
                 {
                     sslException = ex;
-                    Console.WriteLine(
-                        $"  SSL connection failed: {ex.Message}");
-                    Console.WriteLine(
-                        "  Retrying without SSL...");
                 }
             }
 
@@ -486,17 +432,10 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
                     contactPoint, port, username, password,
                     keyspace, useSsl: false,
                     maxConnectionsPerHost);
-                Console.WriteLine(
-                    "  Target session connected (plain)");
-                log.WriteLine(
-                    $"Connected to target (plain): " +
-                    $"{contactPoint}:{port}/{keyspace}");
                 return session;
             }
             catch (Exception ex)
             {
-                Console.WriteLine(
-                    $"  Plain connection also failed: {ex.Message}");
                 // Throw the SSL exception if both fail
                 throw new AggregateException(
                     $"Failed to connect to {contactPoint}:{port}. " +
@@ -518,10 +457,14 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
             int remoteMax = Math.Max(1, localMax / 2);
             int remoteCore = Math.Max(1, remoteMax / 2);
 
-            Console.WriteLine(
-                $"  Pool: local={localCore}-{localMax}, " +
-                $"remote={remoteCore}-{remoteMax}, " +
-                $"max in-flight/host={localMax * 2048}");
+            if (!_poolConfigLogged)
+            {
+                Console.WriteLine(
+                    $"  Pool: local={localCore}-{localMax}, " +
+                    $"remote={remoteCore}-{remoteMax}, " +
+                    $"max in-flight/host={localMax * 2048}");
+                _poolConfigLogged = true;
+            }
 
             var builder = Cluster.Builder()
                 .AddContactPoint(contactPoint)
@@ -556,8 +499,6 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
                     SslProtocols.Tls12, true,
                     (sender, certificate, chain, sslPolicyErrors) =>
                     {
-                        if (sslPolicyErrors != System.Net.Security.SslPolicyErrors.None)
-                            Console.WriteLine($"  SSL target: accepting with {sslPolicyErrors}");
                         return true; // Azure MI certs may have chain+name issues
                     });
                 builder = builder.WithSSL(sslOptions);
@@ -594,9 +535,6 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
             // fetch a fresh token via managed identity
             if (string.IsNullOrEmpty(password) || job.SourceUseAad)
             {
-                Console.WriteLine(
-                    "  Source password empty or AAD mode — " +
-                    "fetching fresh AAD token");
                 password = GetFreshAadToken();
                 // Cache it in memory (not persisted)
                 job.SourcePassword = password;
@@ -613,9 +551,6 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
             {
                 username = job.SourceContactPoint
                     .Split('.')[0];
-                Console.WriteLine(
-                    $"  AAD mode: derived username " +
-                    $"'{username}' from hostname");
             }
 
             return CreateSourceSession(
@@ -643,9 +578,6 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
             // If password is empty, try ARM-based credential discovery
             if (string.IsNullOrEmpty(password))
             {
-                Console.WriteLine(
-                    "  Target password empty — trying ARM " +
-                    "credential discovery...");
                 try
                 {
                     var armResult = DiscoverTargetCredentialsViaArm(
@@ -654,36 +586,22 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
 
                     if (armResult.AuthMethod == "None")
                     {
-                        Console.WriteLine(
-                            "  ARM: MI auth=None, connecting " +
-                            "without credentials");
-                        log.WriteLine(
-                            "Target MI has no authentication — " +
-                            "connecting without credentials");
                         username = string.Empty;
                         password = string.Empty;
                     }
                     else if (!string.IsNullOrEmpty(armResult.Password))
                     {
-                        Console.WriteLine(
-                            "  ARM: fetched credentials via " +
-                            "control plane");
-                        log.WriteLine(
-                            "Target credentials fetched via ARM");
                         username = armResult.Username ?? username;
                         password = armResult.Password;
                     }
                     else
                     {
-                        Console.WriteLine(
-                            "  ARM: auth required but password " +
-                            "not available from ARM");
+                        // auth required but password not available from ARM
                     }
                 }
-                catch (Exception ex)
+                catch (Exception)
                 {
-                    Console.WriteLine(
-                        $"  ARM discovery failed: {ex.Message}");
+                    // ARM discovery failed — continue with empty credentials
                 }
             }
 
@@ -695,10 +613,6 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
                 // target ~50% utilisation for headroom
                 effectivePool = Math.Max(8,
                     (int)Math.Ceiling(job.MaxWriteConcurrency / 1024.0));
-                Console.WriteLine(
-                    $"  Pool auto-scaled to {effectivePool} " +
-                    $"connections/host from write concurrency " +
-                    $"{job.MaxWriteConcurrency}");
             }
 
             return CreateTargetSession(
@@ -748,7 +662,6 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
 
             if (string.IsNullOrEmpty(subscriptionId))
             {
-                Console.WriteLine("  ARM: no subscription ID available");
                 return new ArmCredentialResult();
             }
 
@@ -834,13 +747,6 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
                                         out var authProp)
                                     ? authProp.GetString() : null;
 
-                                var clusterName = cluster
-                                    .GetProperty("name").GetString();
-                                Console.WriteLine(
-                                    $"  ARM: matched MI cluster " +
-                                    $"'{clusterName}', " +
-                                    $"auth={authMethod}");
-
                                 return new ArmCredentialResult
                                 {
                                     AuthMethod = authMethod ?? "Unknown"
@@ -850,10 +756,9 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
                     }
                 }
             }
-            catch (Exception ex)
+            catch (Exception)
             {
-                Console.WriteLine(
-                    $"  ARM MI cluster search error: {ex.Message}");
+                // ARM MI cluster search error — fall through
             }
             return null;
         }
@@ -923,9 +828,6 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
 
                         if (!string.IsNullOrEmpty(primaryKey))
                         {
-                            Console.WriteLine(
-                                $"  ARM: fetched Cosmos key for " +
-                                $"'{accountName}'");
                             return new ArmCredentialResult
                             {
                                 AuthMethod = "Cassandra",
@@ -936,10 +838,9 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
                     }
                 }
             }
-            catch (Exception ex)
+            catch (Exception)
             {
-                Console.WriteLine(
-                    $"  ARM Cosmos account search error: {ex.Message}");
+                // ARM Cosmos account search error — fall through
             }
             return null;
         }
