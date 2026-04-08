@@ -225,6 +225,7 @@ namespace CassandraMigrationProcessor.Processors
             public int ConfiguredPageSize;
             public ProcessorContext Context = null!;
             public MigrationUnit MigrationUnit = null!;
+            public MigrationJob Job = null!;
             public int ChunkIndex;
             public double InitialPercent;
             public double ContributionFactor;

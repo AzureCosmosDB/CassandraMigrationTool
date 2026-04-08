@@ -32,7 +32,7 @@ namespace CassandraMigrationProcessor.Processors
             try
             {
             // Create per-worker sessions (1 conn/host each)
-            var job = MigrationJobContext.CurrentlyActiveJob;
+            var job = pipeline.Job;
             workerTargetSession = CassandraClientFactory
                 .CreateTargetSession(_log, job, "");
             workerSourceSession = CassandraClientFactory

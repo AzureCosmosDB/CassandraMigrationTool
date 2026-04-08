@@ -25,8 +25,9 @@ namespace CassandraMigrationProcessor.Processors
             Log log,
             ISession sourceSession,
             MigrationSettings config,
+            MigrationJob job,
             MigrationWorker? migrationWorker = null)
-            : base(log, sourceSession, config, migrationWorker)
+            : base(log, sourceSession, config, job, migrationWorker)
         {
             MigrationJobContext.AddVerboseLog(
                 "CopyProcessor: Constructor called");
@@ -100,13 +101,11 @@ namespace CassandraMigrationProcessor.Processors
                 $"[{chunkIndex}] is {rowCount}");
 
             if (_targetSession == null
-                && !MigrationJobContext
-                    .CurrentlyActiveJob.IsSimulatedRun)
+                && !_job.IsSimulatedRun)
             {
-                var job = MigrationJobContext.CurrentlyActiveJob;
                 _targetSession = CassandraClientFactory
                     .CreateTargetSession(
-                        _log, job,
+                        _log, _job,
                         string.Empty);
                 await CassandraHelper.EnsureKeyspaceExistsAsync(
                     _targetSession,
@@ -155,8 +154,7 @@ namespace CassandraMigrationProcessor.Processors
                     migrationUnit, chunkIndex,
                     initialPercent, contributionFactor,
                     rowCount, _cts.Token,
-                    MigrationJobContext
-                        .CurrentlyActiveJob.IsSimulatedRun);
+                    _job.IsSimulatedRun);
             }
             
             if (result == TaskResult.Success)

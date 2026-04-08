@@ -22,7 +22,7 @@ namespace CassandraMigrationProcessor.Processors
         {
             var migrationUnit = MigrationJobContext
                 .GetMigrationUnit(migrationUnitId);
-            migrationUnit.ParentJob = MigrationJobContext.CurrentlyActiveJob;
+            migrationUnit.ParentJob = _job;
             ProcessRunning = true;
 
             var context = SetProcessorContext(migrationUnit);
@@ -145,7 +145,7 @@ namespace CassandraMigrationProcessor.Processors
                     // Only remove from cache if offline — online mode
                     // needs the MU in cache for ChangeFeedProcessor
                     if (!Helper.IsOnline(
-                        MigrationJobContext.CurrentlyActiveJob))
+                        _job))
                     {
                         MigrationJobContext.MigrationUnitsCache
                             .RemoveMigrationUnit(migrationUnit.Id);

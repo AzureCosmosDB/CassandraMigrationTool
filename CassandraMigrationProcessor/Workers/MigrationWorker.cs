@@ -47,16 +47,12 @@ namespace CassandraMigrationProcessor.Workers
             MigrationSettings config,
             CancellationToken ct)
         {
-            Console.WriteLine(
-                $"MigrationWorker.StartAsync called for job={job.Id}");
             MigrationJobContext.AddVerboseLog(
                 $"MigrationWorker.StartAsync: job={job.Id}");
 
             try
             {
                 var units = Helper.GetMigrationUnitsToMigrate(job);
-                Console.WriteLine(
-                    $"GetMigrationUnitsToMigrate returned {units?.Count ?? 0} units");
 
                 if (units == null || units.Count == 0)
                 {
@@ -67,10 +63,6 @@ namespace CassandraMigrationProcessor.Workers
                         && Helper.IsOfflineJobCompleted(job)
                         && Helper.AnyValidTable(job))
                     {
-                        Console.WriteLine(
-                            "No copy units left — " +
-                            "resuming change feed for " +
-                            "online job.");
                         _log.WriteLine(
                             "All tables copied. Resuming " +
                             "change feed processors.",
@@ -82,7 +74,7 @@ namespace CassandraMigrationProcessor.Workers
 
                         _activeProcessor = new CopyProcessor(
                             _log, _sourceSession!, config,
-                            this);
+                            job, this);
                         _activeProcessor
                             .RunChangeFeedForAllTables();
 
@@ -99,9 +91,6 @@ namespace CassandraMigrationProcessor.Workers
                             : TaskResult.Success;
                     }
 
-                    Console.WriteLine(
-                        "No remaining migration units " +
-                        "- returning Success");
                     _log.WriteLine(
                         "No remaining migration units.",
                         LogType.Warning);
@@ -115,11 +104,6 @@ namespace CassandraMigrationProcessor.Workers
                     Math.Min(job.ParallelThreads,
                         units.Count));
 
-                Console.WriteLine(
-                    $"Starting migration of {units.Count}" +
-                    $" units with parallelism={maxParallel}." +
-                    $" First: {units[0].KeyspaceName}" +
-                    $".{units[0].TableName}");
                 _log.WriteLine(
                     $"Migrating {units.Count} tables with" +
                     $" max parallelism={maxParallel}");
@@ -146,10 +130,6 @@ namespace CassandraMigrationProcessor.Workers
                             return;
                         }
 
-                        Console.WriteLine(
-                            $"About to process: " +
-                            $"{mu.KeyspaceName}.{mu.TableName}");
-
                         // Retry on transient 429/overload errors
                         const int MaxTableRetries = 3;
                         for (int attempt = 1;
@@ -171,13 +151,6 @@ namespace CassandraMigrationProcessor.Workers
                                     CassandraClientFactory
                                         .GetRetryDelayMs(
                                             ex, attempt);
-                                Console.WriteLine(
-                                    $"  Table retry " +
-                                    $"{attempt}/{MaxTableRetries}" +
-                                    $" for {mu.KeyspaceName}" +
-                                    $".{mu.TableName}: " +
-                                    $"{ex.GetType().Name}, " +
-                                    $"waiting {delayMs}ms");
                                 _log.WriteLine(
                                     $"Table retry {attempt} " +
                                     $"for {mu.KeyspaceName}" +
@@ -189,9 +162,6 @@ namespace CassandraMigrationProcessor.Workers
                             }
                         }
 
-                        Console.WriteLine(
-                            $"Finished processing: " +
-                            $"{mu.KeyspaceName}.{mu.TableName}");
                     });
 
                 if (abortRequested)
@@ -233,8 +203,6 @@ namespace CassandraMigrationProcessor.Workers
             MigrationUnit mu,
             CancellationToken ct)
         {
-            Console.WriteLine(
-                $"ProcessMigrationUnitAsync: {mu.KeyspaceName}.{mu.TableName}");
             _log.WriteLine(
                 $"Processing {mu.KeyspaceName}.{mu.TableName}");
 
@@ -242,9 +210,6 @@ namespace CassandraMigrationProcessor.Workers
             // gets a fresh chance (Bug 3 fix)
             if (mu.SourceStatus == CollectionStatus.Failed)
             {
-                Console.WriteLine(
-                    $"  Resetting SourceStatus from Failed " +
-                    $"to OK for {mu.KeyspaceName}.{mu.TableName}");
                 mu.SourceStatus = CollectionStatus.OK;
                 MigrationJobContext.SaveMigrationUnit(mu, true);
             }
@@ -254,20 +219,16 @@ namespace CassandraMigrationProcessor.Workers
             ISession? localSourceSession = null;
             try
             {
-                Console.WriteLine("  Creating source session...");
                 localSourceSession = CassandraClientFactory
                     .CreateSourceSession(
                         _log, job, mu.KeyspaceName);
-                Console.WriteLine("  Source session OK");
 
                 // Validate table exists on source
-                Console.WriteLine("  Checking table exists on source...");
                 if (!await CassandraHelper.TableExistsAsync(
                     localSourceSession!,
                     mu.KeyspaceName, mu.TableName)
                     .ConfigureAwait(false))
                 {
-                    Console.WriteLine($"  Table NOT FOUND on source");
                     _log.WriteLine(
                         $"Source table {mu.KeyspaceName}" +
                         $".{mu.TableName} not found.",
@@ -277,17 +238,14 @@ namespace CassandraMigrationProcessor.Workers
                         mu, true);
                     return;
                 }
-                Console.WriteLine("  Table exists on source");
 
                 // Ensure target keyspace + table
                 if (!job.IsSimulatedRun)
                 {
-                    Console.WriteLine("  Creating target session...");
                     using (var targetSession =
                         CassandraClientFactory.CreateTargetSession(
                             _log, job, string.Empty))
                     {
-                        Console.WriteLine("  Target session created, ensuring keyspace...");
                         await CassandraHelper.EnsureKeyspaceExistsAsync(
                             targetSession, mu.KeyspaceName)
                             .ConfigureAwait(false);
@@ -316,7 +274,6 @@ namespace CassandraMigrationProcessor.Workers
                             mu.KeyspaceName, mu.TableName)
                             .ConfigureAwait(false))
                         {
-                            Console.WriteLine($"  Creating target table {mu.KeyspaceName}.{mu.TableName}...");
                             await CassandraHelper.CreateTableFromSourceAsync(
                                 localSourceSession!, targetSession,
                                 mu.KeyspaceName, mu.TableName,
@@ -337,7 +294,6 @@ namespace CassandraMigrationProcessor.Workers
                                 mu.KeyspaceName, mu.TableName)
                                 .ConfigureAwait(false);
                         }
-                        Console.WriteLine("  Target table ready");
                     }
                 }
 
@@ -390,11 +346,6 @@ namespace CassandraMigrationProcessor.Workers
                             $"{feedRanges.Count} for " +
                             $"{mu.KeyspaceName}" +
                             $".{mu.TableName}");
-                        Console.WriteLine(
-                            $"  Feed ranges: " +
-                            $"{feedRanges.Count} for " +
-                            $"{mu.KeyspaceName}" +
-                            $".{mu.TableName}");
 
                         if (feedRanges.Count > 1)
                         {
@@ -433,19 +384,11 @@ namespace CassandraMigrationProcessor.Workers
                                                 rangeRs.PagingState);
                                     }
                                 }
-                                catch (Exception rex)
+                                catch (Exception)
                                 {
-                                    Console.WriteLine(
-                                        $"  FFCF: Range token " +
-                                        $"capture failed for " +
-                                        $"range: {rex.Message}");
+                                    // Feed range token capture failed — skip this range
                                 }
                             }
-                            Console.WriteLine(
-                                $"  FFCF: Captured {feedRanges.Count}" +
-                                $" feed range tokens for " +
-                                $"{mu.KeyspaceName}" +
-                                $".{mu.TableName}");
                             _log.WriteLine(
                                 $"FFCF: {feedRanges.Count} feed " +
                                 $"range tokens captured for " +
@@ -477,12 +420,6 @@ namespace CassandraMigrationProcessor.Workers
                                     Convert.ToBase64String(
                                         rs.PagingState);
                             }
-                            Console.WriteLine(
-                                $"  FFCF: Captured continuation " +
-                                $"token for {mu.KeyspaceName}" +
-                                $".{mu.TableName} " +
-                                $"(has token: " +
-                                $"{rs.PagingState != null})");
                         }
                         _log.WriteLine(
                             $"FFCF start token captured for " +
@@ -492,12 +429,6 @@ namespace CassandraMigrationProcessor.Workers
                     }
                     catch (Exception ex)
                     {
-                        Console.WriteLine(
-                            $"  FFCF: Failed to capture " +
-                            $"start token for " +
-                            $"{mu.KeyspaceName}" +
-                            $".{mu.TableName}: " +
-                            $"{ex.Message}");
                         _log.WriteLine(
                             $"FFCF start token capture " +
                             $"failed for " +
@@ -517,7 +448,7 @@ namespace CassandraMigrationProcessor.Workers
                 MigrationJobContext.SaveMigrationUnit(mu, true);
 
                 var processor = new CopyProcessor(
-                    _log, localSourceSession!, config, this);
+                    _log, localSourceSession!, config, job, this);
                 _activeProcessors[mu.Id] = processor;
 
                 ct.ThrowIfCancellationRequested();
@@ -559,8 +490,6 @@ namespace CassandraMigrationProcessor.Workers
             }
             catch (Exception ex)
             {
-                Console.WriteLine(
-                    $"  ERROR processing {mu.KeyspaceName}.{mu.TableName}: {ex.Message}");
                 _log.WriteLine(
                     $"Error processing " +
                     $"{mu.KeyspaceName}.{mu.TableName}: {ex}",
@@ -575,9 +504,6 @@ namespace CassandraMigrationProcessor.Workers
                 {
                     Interlocked.Increment(
                         ref _consecutiveAuthErrors);
-                    Console.WriteLine(
-                        $"  AUTH ERROR #{_consecutiveAuthErrors}" +
-                        " for {mu.KeyspaceName}.{mu.TableName}");
                     _log.WriteLine(
                         $"Auth failure #{_consecutiveAuthErrors}" +
                         $" on {mu.KeyspaceName}.{mu.TableName}",

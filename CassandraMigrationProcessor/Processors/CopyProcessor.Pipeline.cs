@@ -38,8 +38,7 @@ namespace CassandraMigrationProcessor.Processors
             ProcessorContext processorContext,
             List<string> feedRanges)
         {
-            int rawValue = MigrationJobContext
-                .CurrentlyActiveJob.MaxFeedRangeParallelism;
+            int rawValue = _job.MaxFeedRangeParallelism;
             int workerCount = Math.Max(1, rawValue);
 
             // ── Resume: filter out completed ranges ─────────
@@ -179,8 +178,7 @@ namespace CassandraMigrationProcessor.Processors
             long priorCopied = migrationUnit.CopyRowsCopied;
 
             // Page size
-            int jobPageSize = MigrationJobContext
-                .CurrentlyActiveJob?.PageSize ?? 0;
+            int jobPageSize = _job?.PageSize ?? 0;
             int configuredPageSize = jobPageSize > 0
                 ? jobPageSize
                 : _config.CqlCopyPageSize > 0
@@ -212,6 +210,7 @@ namespace CassandraMigrationProcessor.Processors
                 ConfiguredPageSize = configuredPageSize,
                 Context = processorContext,
                 MigrationUnit = migrationUnit,
+                Job = _job,
                 ChunkIndex = chunkIndex,
                 InitialPercent = initialPercent,
                 ContributionFactor = contributionFactor,

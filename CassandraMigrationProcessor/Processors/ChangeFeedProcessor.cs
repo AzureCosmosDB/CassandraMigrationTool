@@ -1,4 +1,4 @@
-﻿using Cassandra;
+using Cassandra;
 using CassandraMigrationProcessor.Context;
 using CassandraMigrationProcessor.Helpers.Cassandra;
 using CassandraMigrationProcessor.Helpers.JobManagement;
@@ -40,6 +40,7 @@ namespace CassandraMigrationProcessor.Processors
         private ISession? _targetSession;
         private readonly ActiveMigrationUnitsCache _muCache;
         private readonly MigrationSettings _config;
+        private readonly MigrationJob _job;
         private readonly bool _singleTable;
         private readonly MigrationWorker? _migrationWorker;
 
@@ -56,6 +57,7 @@ namespace CassandraMigrationProcessor.Processors
             ISession targetSession,
             ActiveMigrationUnitsCache muCache,
             MigrationSettings config,
+            MigrationJob job,
             bool singleTable = true,
             MigrationWorker? migrationWorker = null)
         {
@@ -64,6 +66,7 @@ namespace CassandraMigrationProcessor.Processors
             _targetSession = targetSession;
             _muCache = muCache;
             _config = config;
+            _job = job;
             _singleTable = singleTable;
             _migrationWorker = migrationWorker;
         }
@@ -91,7 +94,7 @@ namespace CassandraMigrationProcessor.Processors
             MigrationJobContext.AddVerboseLog(
                 "ChangeFeedProcessor.RunChangeFeedForAllTables");
 
-            var job = MigrationJobContext.CurrentlyActiveJob;
+            var job = _job;
             if (job?.MigrationUnitBasics == null) return;
 
             foreach (var mub in job.MigrationUnitBasics)
@@ -124,20 +127,14 @@ namespace CassandraMigrationProcessor.Processors
         {
           try
           {
-            Console.WriteLine($"  CF PollLoop entering for muId={muId}");
-            var mu = _muCache.GetMigrationUnit(muId);
+            var mu = _muCache.GetMigrationUnit(muId, _job?.Id);
             if (mu == null)
             {
-                Console.WriteLine(
-                    $"  CF PollLoop: MU {muId} not found in cache!");
                 _log.WriteLine(
                     $"ChangeFeed: MU {muId} not found",
                     LogType.Error);
                 return;
             }
-
-            Console.WriteLine(
-                $"  CF PollLoop: MU found: {mu.KeyspaceName}.{mu.TableName}");
 
             bool useFullFidelity = _config.ChangeFeedFullFidelity;
 
@@ -147,9 +144,6 @@ namespace CassandraMigrationProcessor.Processors
 
             _log.WriteLine(
                 $"Feed ranges discovered: {feedRanges.Count} " +
-                $"for {mu.KeyspaceName}.{mu.TableName}");
-            Console.WriteLine(
-                $"  CF: {feedRanges.Count} feed ranges " +
                 $"for {mu.KeyspaceName}.{mu.TableName}");
 
             if (feedRanges.Count > 1
@@ -226,20 +220,12 @@ namespace CassandraMigrationProcessor.Processors
                 }
                 catch (Exception ex)
                 {
-                    Console.WriteLine(
-                        $"  CF: PrepareDelete failed: {ex.Message}");
                 }
             }
 
             int maxConcurrent = Math.Max(1,
-                MigrationJobContext.CurrentlyActiveJob
-                    .MaxFeedRangeParallelism);
+                _job.MaxFeedRangeParallelism);
 
-            Console.WriteLine(
-                $"  CF PARALLEL STARTED: " +
-                $"{mu.KeyspaceName}.{mu.TableName} " +
-                $"{feedRanges.Count} ranges, FFCF={useFullFidelity}" +
-                $", maxConcurrent={maxConcurrent}");
 
             // Throttle concurrent range tasks to avoid
             // thread pool starvation on small App Service plans.
@@ -334,9 +320,6 @@ namespace CassandraMigrationProcessor.Processors
             var rangeLabel = feedRange.Length > 40
                 ? feedRange.Substring(0, 40) + "..."
                 : feedRange;
-            Console.WriteLine(
-                $"  CF RANGE: {mu.KeyspaceName}.{mu.TableName} " +
-                $"range={rangeLabel}");
 
             long rangeTotalApplied = 0;
 
@@ -470,17 +453,9 @@ namespace CassandraMigrationProcessor.Processors
                 catch (Exception ex)
                 {
                     consecutiveErrors++;
-                    Console.WriteLine(
-                        $"  CF RANGE ERROR [{consecutiveErrors}]: " +
-                        $"{mu.KeyspaceName}.{mu.TableName} " +
-                        $"range={rangeLabel}: " +
-                        $"{ex.GetType().Name}: {ex.Message}");
 
                     if (consecutiveErrors > MaxReconnectAttempts)
                     {
-                        Console.WriteLine(
-                            $"  CF RANGE GIVING UP " +
-                            $"after {consecutiveErrors} errors");
                         break;
                     }
                 }
@@ -489,10 +464,6 @@ namespace CassandraMigrationProcessor.Processors
                 catch (OperationCanceledException) { break; }
             }
 
-            Console.WriteLine(
-                $"  CF RANGE DONE: {mu.KeyspaceName}" +
-                $".{mu.TableName} range={rangeLabel} " +
-                $"applied={rangeTotalApplied}");
           }
           catch (Exception ex)
           {
@@ -654,8 +625,6 @@ namespace CassandraMigrationProcessor.Processors
                     $"'{startTime}'";
             }
 
-            Console.WriteLine(
-                $"  CF PollLoop: Getting columns from source...");
             var columns = CassandraHelper.GetTableColumns(
                 _sourceSession, mu.KeyspaceName, mu.TableName);
 
@@ -690,8 +659,6 @@ namespace CassandraMigrationProcessor.Processors
                 }
                 catch (Exception ex)
                 {
-                    Console.WriteLine(
-                        $"  CF: PrepareDelete failed: {ex.Message}");
                     _log.WriteLine(
                         $"CF PrepareDelete failed: {ex.Message}",
                         LogType.Warning);
@@ -700,13 +667,6 @@ namespace CassandraMigrationProcessor.Processors
 
             mu.ChangeFeedStartedOn ??= DateTime.UtcNow;
             long totalApplied = 0;
-
-            Console.WriteLine(
-                $"  CF STARTED: {mu.KeyspaceName}.{mu.TableName} " +
-                $"fullFidelity={useFullFidelity} " +
-                $"startToken={startTime} " +
-                $"pollMs={intervalMs} " +
-                $"hasContinuation={continuationState != null}");
 
             _log.WriteLine(
                 $"Change feed started for " +
@@ -817,11 +777,6 @@ namespace CassandraMigrationProcessor.Processors
                         MigrationJobContext.SaveMigrationUnit(
                             mu, true);
 
-                        Console.WriteLine(
-                            $"  CF {mu.KeyspaceName}.{mu.TableName}: " +
-                            $"ins={insertCount}, upd={updateCount}, " +
-                            $"del={deleteCount}, err={errorCount}, " +
-                            $"total={totalApplied}");
                         _log.WriteLine(
                             $"CF {mu.KeyspaceName}" +
                             $".{mu.TableName}: ins=" +
@@ -845,10 +800,6 @@ namespace CassandraMigrationProcessor.Processors
                 catch (Exception ex)
                 {
                     consecutiveErrors++;
-                    Console.WriteLine(
-                        $"  CF ERROR [{consecutiveErrors}]: " +
-                        $"{mu.KeyspaceName}.{mu.TableName}: " +
-                        $"{ex.GetType().Name}: {ex.Message}");
                     _log.WriteLine(
                         $"CF error {mu.KeyspaceName}" +
                         $".{mu.TableName}: {ex.Message}",
@@ -864,8 +815,6 @@ namespace CassandraMigrationProcessor.Processors
                     {
                         try
                         {
-                            Console.WriteLine(
-                                $"  CF RECONNECT: rebuilding...");
                             var job = MigrationJobContext
                                 .CurrentlyActiveJob;
                             ISession newSource;
@@ -919,22 +868,14 @@ namespace CassandraMigrationProcessor.Processors
                                 }
                                 catch { /* best-effort */ }
                             }
-                            Console.WriteLine(
-                                $"  CF RECONNECT: success");
                         }
                         catch (Exception rex)
                         {
-                            Console.WriteLine(
-                                $"  CF RECONNECT FAILED: " +
-                                $"{rex.Message}");
                         }
                     }
                     else if (consecutiveErrors
                         > MaxReconnectAttempts)
                     {
-                        Console.WriteLine(
-                            $"  CF GIVING UP after " +
-                            $"{consecutiveErrors} errors");
                         break;
                     }
                 }
