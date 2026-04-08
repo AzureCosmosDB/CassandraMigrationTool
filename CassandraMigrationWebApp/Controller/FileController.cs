@@ -9,15 +9,15 @@ using System.Text;
 
 public class FileController : ControllerBase
 {
-   
+
 
     [HttpGet("download/log/{Id}")]
     public IActionResult DownloadFile(string Id)
     {
         string fileSharePath = $"{Helper.GetWorkingFolder()}migrationlogs"; // UNC path to your file share
         string filePath;
-        
-        filePath = Path.Combine(fileSharePath, Id + ".bin");       
+
+        filePath = Path.Combine(fileSharePath, Id + ".bin");
 
         var fileBytes = new Log().DownloadLogsAsJsonBytes(Id, 0, 0);
         var contentType = "application/octet-stream";
@@ -37,7 +37,7 @@ public class FileController : ControllerBase
         }
 
         var jsonContent = MigrationJobContext.Store.Read(filePath);
-        
+
         if (string.IsNullOrEmpty(jsonContent))
         {
             return NotFound("Migration unit file is empty or could not be read.");
@@ -46,7 +46,7 @@ public class FileController : ControllerBase
         // Pretty print the JSON
         var jsonObject = Newtonsoft.Json.JsonConvert.DeserializeObject(jsonContent);
         var prettyJson = Newtonsoft.Json.JsonConvert.SerializeObject(jsonObject, Newtonsoft.Json.Formatting.Indented);
-        
+
         var fileBytes = Encoding.UTF8.GetBytes(prettyJson);
         var contentType = "application/json";
 
@@ -57,7 +57,7 @@ public class FileController : ControllerBase
     public IActionResult DownloadJob(string jobId)
     {
         var job = MigrationJobContext.GetMigrationJob(jobId);
-        
+
         if (job == null)
         {
             return NotFound("Job file not found.");
@@ -65,7 +65,7 @@ public class FileController : ControllerBase
 
         // Pretty print the JSON
         var prettyJson = Newtonsoft.Json.JsonConvert.SerializeObject(job, Newtonsoft.Json.Formatting.Indented);
-        
+
         var fileBytes = Encoding.UTF8.GetBytes(prettyJson);
         var contentType = "application/json";
 
@@ -94,7 +94,7 @@ public class FileController : ControllerBase
         {
             // Calculate skip/take for pagination
             int skip = (pageNumber - 1) * pageSize;
-            
+
             var fileBytes = new Log().DownloadLogsPaginated(Id, skip, pageSize);
             var contentType = "application/octet-stream";
             return File(fileBytes, contentType, $"{Id}_page_{pageNumber}.txt");

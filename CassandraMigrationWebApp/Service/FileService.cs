@@ -13,7 +13,7 @@ namespace CassandraMigrationWebApp.Service
             _httpClient = httpClient;
         }
 
-       string GetFileDownloadUrl(string fileName)
+        string GetFileDownloadUrl(string fileName)
         {
             return $"/api/File/download/{fileName}";
         }

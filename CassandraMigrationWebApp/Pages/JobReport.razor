@@ -68,7 +68,7 @@ else
                 <tr><td class="nowrap">Job Type</td><td>@GetToolName(MigrationJob.JobType)</td></tr>
                 <tr><td class="nowrap">Started On (UTC)</td><td>@(MigrationJob.StartedOn?.ToString() ?? "N/A")</td></tr>
                 <tr><td class="nowrap">Is Online</td><td>@(Helper.IsOnline(MigrationJob) ? "Yes" : "No")</td></tr>
-                <tr><td class="nowrap">Is Completed</td><td>@(MigrationJob.IsCompleted ? "Yes" : "No")</td></tr>
+                <tr><td class="nowrap">Is Completed</td><td>@(MigrationJob.Status == JobStatus.Completed ? "Yes" : "No")</td></tr>
                 <tr><td class="nowrap">Source Contact Point</td><td class="wrap">@MigrationJob.SourceContactPoint</td></tr>
                 <tr><td class="nowrap">Target Contact Point</td><td class="wrap">@MigrationJob.TargetContactPoint</td></tr>
                 <tr><td class="nowrap">Collection Count</td><td>@(@JobManager.GetMigrationUnits(MigrationJob)?.Count ?? 0)</td></tr>

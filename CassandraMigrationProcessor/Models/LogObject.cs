@@ -13,10 +13,10 @@ namespace CassandraMigrationProcessor
         }
 
         public string Message { get; set; }
-        
+
         [JsonConverter(typeof(LogTypeConverter))]
         public LogType Type { get; set; }
-        
+
         public DateTime Datetime { get; set; }
     }
 }

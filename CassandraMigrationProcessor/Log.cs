@@ -25,7 +25,7 @@ namespace CassandraMigrationProcessor
         private readonly object _writeLock = new object();
         private readonly object _initLock = new object();
 
-        public  bool IsInitialized { get; set; } = false;
+        public bool IsInitialized { get; set; } = false;
 
         /// <summary>
         /// Set the migration job reference for log level filtering
@@ -77,7 +77,7 @@ namespace CassandraMigrationProcessor
                 _logBucket = ReadLogFile(_currentId, out logBackupFile);
                 _verboseMessages.Clear();
 
-                IsInitialized=true;
+                IsInitialized = true;
                 return logBackupFile;
             }
         }
@@ -93,7 +93,7 @@ namespace CassandraMigrationProcessor
             {
                 // Filter based on minimum log level - only log if the message type is at or below the minimum level
                 // Lower numeric values = more severe (Error=0, Message=1, Warning=2, Info=3, Debug=4, Verbose=5)
-                if (_currentId==string.Empty ||( CurrentlyActiveJob != null && (int)logType > (int)CurrentlyActiveJob.LogLevel))
+                if (_currentId == string.Empty || (CurrentlyActiveJob != null && (int)logType > (int)CurrentlyActiveJob.LogLevel))
                 {
                     return; // Skip this log entry
                 }
@@ -105,7 +105,7 @@ namespace CassandraMigrationProcessor
                     {
                         string logBackupFile = string.Empty;
                         //_logBucket = ReadLogFile(_currentId, out logBackupFile);
-                        _logBucket= ReadLogFile(_currentId, out logBackupFile);
+                        _logBucket = ReadLogFile(_currentId, out logBackupFile);
                         Console.WriteLine($"LogBucket was null, re-initialized from file during WriteLine.");
                     }
 
@@ -122,12 +122,12 @@ namespace CassandraMigrationProcessor
                     }
 
                     //persits to file
-                    MigrationJobContext.Store.PushLogEntry(_currentId, logObj);                    
+                    MigrationJobContext.Store.PushLogEntry(_currentId, logObj);
                 }
 
 
             }
-            catch(Exception ex) 
+            catch (Exception ex)
             {
                 Console.WriteLine($"[CRITICAL] Log write failed: {message} | Error: {ex}");
             }
@@ -136,7 +136,7 @@ namespace CassandraMigrationProcessor
         {
             _currentId = string.Empty;
             _verboseMessages.Clear();
-        }                
+        }
 
         public LogBucket GetCurrentLogBucket(string id)
         {

@@ -24,7 +24,7 @@ namespace CassandraMigrationWebApp.Controller
         public IActionResult Get()
         {
             var runningJobId = _jobManager.GetRunningJobId();
-            
+
             if (string.IsNullOrEmpty(runningJobId))
             {
                 return Ok(new
@@ -39,7 +39,7 @@ namespace CassandraMigrationWebApp.Controller
 
             // Get the active job from MigrationJobContext
             var activeJob = MigrationJobContext.CurrentlyActiveJob;
-            
+
             if (activeJob == null || activeJob.Id != runningJobId)
             {
                 return Ok(new

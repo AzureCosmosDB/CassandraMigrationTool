@@ -38,7 +38,7 @@ namespace CassandraMigrationWebApp.Service
 
 
 
-        
+
         #region _configuration Management
 
         /// <summary>
@@ -53,7 +53,7 @@ namespace CassandraMigrationWebApp.Service
 
                 // Remove trailing slash if present
                 _webAppBaseUrl = baseUri.TrimEnd('/');
-                
+
                 Helper.LogToFile($"WebAppBaseUrl updated from browser: {_webAppBaseUrl}");
             }
             catch (Exception ex)
@@ -98,8 +98,8 @@ namespace CassandraMigrationWebApp.Service
             return units;
         }
 
-        
-        public MigrationJob? GetMigrationJobById(string id, bool active =true)
+
+        public MigrationJob? GetMigrationJobById(string id, bool active = true)
         {
             var job = MigrationJobContext.GetMigrationJob(id);
             return job;
@@ -109,7 +109,7 @@ namespace CassandraMigrationWebApp.Service
 
 
         public List<string> GetMigrationIds()
-        {  
+        {
 
             return MigrationJobContext.JobList.MigrationJobIds;
         }
@@ -118,7 +118,7 @@ namespace CassandraMigrationWebApp.Service
         {
             MigrationJobContext.JobList.MigrationJobIds?.Remove(jobId);
             MigrationJobContext.SaveJobList();
-;
+            ;
             try
             {
                 Task.Run(() =>
@@ -137,7 +137,7 @@ namespace CassandraMigrationWebApp.Service
             {
             }
 
-            
+
         }
 
         #endregion 
@@ -265,7 +265,7 @@ namespace CassandraMigrationWebApp.Service
             return Task.CompletedTask;
         }
 
-        public Task StartMigration(MigrationJob job, string sourceConnectionString, string targetConnectionString, string namespacesToMigrate, CassandraMigrationProcessor.Models.JobType jobType,bool trackChangeStreams)
+        public Task StartMigration(MigrationJob job, string sourceConnectionString, string targetConnectionString, string namespacesToMigrate, CassandraMigrationProcessor.Models.JobType jobType, bool trackChangeStreams)
         {
             lock (_stateLock)
             {
@@ -285,7 +285,7 @@ namespace CassandraMigrationWebApp.Service
                 _migrationCts = new CancellationTokenSource();
                 _runningJobId = job.Id;
             }
-            
+
             MigrationJobContext.SourceConnectionString[job.Id] = sourceConnectionString;
             MigrationJobContext.TargetConnectionString[job.Id] = targetConnectionString;
 
@@ -358,7 +358,7 @@ namespace CassandraMigrationWebApp.Service
                     _runningJobId = string.Empty;
                 }
             });
-            
+
             Helper.LogToFile($"Started migration task for Job ID: {job.Id}");
             Console.WriteLine($"Started migration for Job ID: {job.Id}");
 
@@ -463,7 +463,7 @@ namespace CassandraMigrationWebApp.Service
         {
             return _runningJobId;
         }
-               
+
 
         public bool IsProcessRunning(string id)
         {
@@ -471,7 +471,7 @@ namespace CassandraMigrationWebApp.Service
         }
 
         #endregion
-                
+
     }
 }
 

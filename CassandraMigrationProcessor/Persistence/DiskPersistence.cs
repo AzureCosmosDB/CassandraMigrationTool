@@ -28,7 +28,7 @@ namespace CassandraMigrationProcessor.Persistence
         /// <param name="connectionStringOrPath">Directory path where files will be stored</param>
         /// <exception cref="ArgumentException">Thrown when path is null or empty</exception>
         /// <exception cref="InvalidOperationException">Thrown when initialization fails</exception>
-        public void Initialize(string connectionStringOrPath,string appId)
+        public void Initialize(string connectionStringOrPath, string appId)
         {
 
             if (_isInitialized)
@@ -45,7 +45,7 @@ namespace CassandraMigrationProcessor.Persistence
                 try
                 {
                     _storagePath = connectionStringOrPath;
-                    _appId= appId;
+                    _appId = appId;
                     // Create directory if it doesn't exist (no-op for blob storage)
                     StorageStreamFactory.EnsureDirectoryExists(_storagePath);
 
@@ -76,7 +76,7 @@ namespace CassandraMigrationProcessor.Persistence
         {
             // Split by backslash or forward slash to handle hierarchical structure
             var parts = id.Split('\\', '/');
-            
+
             if (parts.Length == 1)
             {
                 // Simple ID, just use as filename (already has .json extension)
@@ -88,21 +88,21 @@ namespace CassandraMigrationProcessor.Persistence
                 // Hierarchical ID like "job1\mu1.json"
                 // Create folder structure: storagePath/job1/mu1.json
                 var pathParts = new List<string> { _storagePath! };
-                
+
                 // Add all parts except the last as directories
                 for (int i = 0; i < parts.Length - 1; i++)
                 {
                     pathParts.Add(SanitizeFileName(parts[i]));
                 }
-                
+
                 // Create the directory structure if it doesn't exist (no-op for blob storage)
                 var directoryPath = Path.Combine(pathParts.ToArray());
                 StorageStreamFactory.EnsureDirectoryExists(directoryPath);
-                
+
                 // Add the last part as the filename (already has .json extension)
                 var fileName = SanitizeFileName(parts[^1]);
                 pathParts.Add(fileName);
-                
+
                 return Path.Combine(pathParts.ToArray());
             }
         }
@@ -115,15 +115,15 @@ namespace CassandraMigrationProcessor.Persistence
 
             // Split by backslash or forward slash
             var parts = id.Split('\\', '/');
-            
+
             var pathParts = new List<string> { _storagePath! };
-            
+
             // Add all parts as directories
             foreach (var part in parts)
             {
                 pathParts.Add(SanitizeFileName(part));
             }
-            
+
             return Path.Combine(pathParts.ToArray());
         }
 
@@ -243,7 +243,7 @@ namespace CassandraMigrationProcessor.Persistence
                 {
                     // Delete file
                     var filePath = GetFilePath(id);
-                    
+
                     if (!StorageStreamFactory.Exists(filePath))
                         return false;
 
@@ -276,10 +276,10 @@ namespace CassandraMigrationProcessor.Persistence
             try
             {
                 var ids = new List<string>();
-                
+
                 // Recursively find all .json files using StorageStreamFactory
                 var files = StorageStreamFactory.ListFiles(_storagePath!, "*" + FILE_EXTENSION, recursive: true);
-                
+
                 foreach (var file in files)
                 {
                     // Get relative path from storage root
@@ -293,13 +293,13 @@ namespace CassandraMigrationProcessor.Persistence
                     {
                         relativePath = Path.GetRelativePath(_storagePath!, file);
                     }
-                    
+
                     // Convert path separators to backslash for consistency (keep .json extension)
                     var id = relativePath.Replace('/', '\\').Replace(Path.DirectorySeparatorChar, '\\');
-                    
+
                     ids.Add(id);
                 }
-                
+
                 return ids;
             }
             catch (Exception ex)
@@ -338,10 +338,10 @@ namespace CassandraMigrationProcessor.Persistence
         public bool IsInitialized => _isInitialized;
 
         private static readonly object _readLock = new object();
-        
+
 
         public void PushLogEntry(string jobId, LogObject logObject)
-        {           
+        {
             EnsureInitialized();
 
             if (string.IsNullOrWhiteSpace(jobId))
@@ -378,32 +378,32 @@ namespace CassandraMigrationProcessor.Persistence
         {
             var folder = Path.Combine(_storagePath, "migrationlogs");
             var binPath = Path.Combine(folder, $"{id}.bin");
-            
+
             if (!StorageStreamFactory.Exists(binPath))
                 return 0;
-                
+
             int count = 0;
             try
             {
                 using var fs = StorageStreamFactory.OpenReadShared(binPath);
                 if (fs == null) return 0;
                 using var br = new BinaryReader(fs);
-                
+
                 while (fs.Position < fs.Length)
                 {
                     try
                     {
                         if (br.BaseStream.Position + 4 > br.BaseStream.Length)
                             break;
-                            
+
                         int msgLen = br.ReadInt32();
                         if (msgLen < 0 || msgLen > 1_000_000)
                             break;
-                            
+
                         long bytesToSkip = msgLen + 1 + 8;
                         if (br.BaseStream.Position + bytesToSkip > br.BaseStream.Length)
                             break;
-                            
+
                         br.BaseStream.Seek(bytesToSkip, SeekOrigin.Current);
                         count++;
                     }
@@ -417,7 +417,7 @@ namespace CassandraMigrationProcessor.Persistence
             {
                 return 0;
             }
-            
+
             return count;
         }
 
@@ -497,7 +497,7 @@ namespace CassandraMigrationProcessor.Persistence
                 string dateTime = log.Datetime.ToString("MM/dd/yyyy HH:mm:ss");
                 sb.AppendLine($"{typeChar}|{dateTime}|{log.Message}");
             }
-            
+
             return System.Text.Encoding.UTF8.GetBytes(sb.ToString());
         }
 
@@ -506,10 +506,10 @@ namespace CassandraMigrationProcessor.Persistence
             var folder = Path.Combine(_storagePath, "migrationlogs");
             var binPath = Path.Combine(folder, $"{id}.bin");
             var logs = ParseLogBinFile(binPath, topEntries, bottomEntries);
-            
+
             // Format logs as multi-line string with Type|DateTime|Message format
             var sb = new System.Text.StringBuilder();
-            
+
             foreach (var log in logs.Logs)
             {
                 // Convert LogType to single character (E=Error, W=Warning, I=Info, D=Debug, V=Verbose)
@@ -523,14 +523,14 @@ namespace CassandraMigrationProcessor.Persistence
                     LogType.Verbose => 'V',
                     _ => '?'
                 };
-                
+
                 // Format DateTime as short format (MM/dd/yyyy HH:mm:ss)
                 string dateTime = log.Datetime.ToString("MM/dd/yyyy HH:mm:ss");
-                
+
                 // Build the line: Type|DateTime|Message
                 sb.AppendLine($"{typeChar}|{dateTime}|{log.Message}");
             }
-            
+
             return System.Text.Encoding.UTF8.GetBytes(sb.ToString());
         }
         public LogBucket ReadLogs(string id, out string fileName)

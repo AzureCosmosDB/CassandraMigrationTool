@@ -17,17 +17,11 @@ namespace CassandraMigrationProcessor.Processors
     /// more tables and replicates changes to the target OSS
     /// Cassandra cluster.
     ///
-    /// FFCF (Full Fidelity Change Feed) mode uses CQL syntax:
-    ///   SELECT JSON * FROM ks.tbl
-    ///     WHERE COSMOS_CHANGEFEED_FROM_START() = false
-    ///       AND COSMOS_FULLFIDELITY_CHANGEFEED() = true
-    ///
-    /// Returns JSON rows with __sys_metadata.operationType
-    /// (create/replace) and tombstone markers for deletes.
-    /// SetAutoPage(false) is critical to avoid long-poll hang.
-    /// PagingState acts as the continuation token.
-    ///
-    /// Legacy mode uses custom payload keys and SELECT *.
+    /// Uses COSMOS_CHANGEFEED_START_TIME() with SELECT * to
+    /// read change feed rows and replay them as inserts on
+    /// the target. SetAutoPage(false) is critical to avoid
+    /// long-poll hang. PagingState acts as the continuation
+    /// token.
     /// </summary>
     public partial class ChangeFeedProcessor
     {
@@ -40,18 +34,13 @@ namespace CassandraMigrationProcessor.Processors
         private readonly bool _singleTable;
         private readonly MigrationWorker? _migrationWorker;
 
-        private readonly ConcurrentQueue<string> _pendingTables =
-            new();
+        private readonly ConcurrentQueue<string> _pendingTables = new();
         private readonly ConcurrentDictionary<string, Task>
             _activeTasks = new();
 
         public bool ExecutionCancelled { get; set; }
 
-        public ChangeFeedProcessor(
-            Log log,
-            ISession sourceSession,
-            ISession targetSession,
-            MigrationUnitCache muCache,
+        public ChangeFeedProcessor(Log log, ISession sourceSession, ISession targetSession, MigrationUnitCache muCache,
             MigrationSettings config,
             MigrationJob job,
             bool singleTable = true,
@@ -70,13 +59,9 @@ namespace CassandraMigrationProcessor.Processors
         /// <summary>
         /// Enqueue a single table for change-feed processing.
         /// </summary>
-        public void AddTableToProcess(
-            string migrationUnitId,
-            CancellationTokenSource cts)
+        public void AddTableToProcess(string migrationUnitId, CancellationTokenSource cts)
         {
-            MigrationJobContext.AddVerboseLog(
-                $"ChangeFeedProcessor.AddTableToProcess: " +
-                $"mu={migrationUnitId}");
+            MigrationJobContext.AddVerboseLog($"ChangeFeedProcessor.AddTableToProcess: mu={migrationUnitId}");
             _pendingTables.Enqueue(migrationUnitId);
             StartPendingTables(cts);
         }
@@ -84,11 +69,9 @@ namespace CassandraMigrationProcessor.Processors
         /// <summary>
         /// Start change-feed polling for all completed tables.
         /// </summary>
-        public void RunChangeFeedForAllTables(
-            CancellationTokenSource cts)
+        public void RunChangeFeedForAllTables(CancellationTokenSource cts)
         {
-            MigrationJobContext.AddVerboseLog(
-                "ChangeFeedProcessor.RunChangeFeedForAllTables");
+            MigrationJobContext.AddVerboseLog("ChangeFeedProcessor.RunChangeFeedForAllTables");
 
             var job = _job;
             if (job?.MigrationUnitBasics == null) return;
@@ -104,16 +87,14 @@ namespace CassandraMigrationProcessor.Processors
             StartPendingTables(cts);
         }
 
-        private void StartPendingTables(
-            CancellationTokenSource cts)
+        private void StartPendingTables(CancellationTokenSource cts)
         {
             while (_pendingTables.TryDequeue(out var muId))
             {
                 if (_activeTasks.ContainsKey(muId)) continue;
                 if (ExecutionCancelled) break;
 
-                var task = Task.Run(
-                    () => PollLoopAsync(muId, cts.Token));
+                var task = Task.Run(() => PollLoopAsync(muId, cts.Token));
                 _activeTasks[muId] = task;
             }
         }

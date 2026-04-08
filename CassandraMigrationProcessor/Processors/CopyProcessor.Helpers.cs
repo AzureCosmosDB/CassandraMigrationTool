@@ -16,8 +16,7 @@ namespace CassandraMigrationProcessor.Processors
         private const int MaxReadRetries = 3;
         private const int RetryDelayMs = 5000;
 
-        private static string TruncRange(string r) =>
-            r.Length > 30 ? r[..15] + "..." : r;
+        private static string TruncRange(string r) => r.Length > 30 ? r[..15] + "..." : r;
 
         /// <summary>
         /// Determines if a write error is transient and should
@@ -46,8 +45,7 @@ namespace CassandraMigrationProcessor.Processors
             // Cosmos DB 429 (may appear as wrapped message)
             var msg = ex.Message ?? string.Empty;
             if (msg.Contains("429")
-                || msg.Contains("TooManyRequests",
-                    StringComparison.OrdinalIgnoreCase))
+                || msg.Contains("TooManyRequests", StringComparison.OrdinalIgnoreCase))
                 return true;
 
             return false;
@@ -108,8 +106,7 @@ namespace CassandraMigrationProcessor.Processors
             private WorkChunk? _tail;
             private readonly object _lock = new();
 
-            public Partition(
-                string feedRange, byte[]? initialPagingState)
+            public Partition(string feedRange, byte[]? initialPagingState)
             {
                 FeedRange = feedRange;
                 LastPagingState = initialPagingState;
@@ -128,8 +125,7 @@ namespace CassandraMigrationProcessor.Processors
             /// chunks from the head. Returns the new chunk so
             /// the caller can mark it completed after writing.
             /// </summary>
-            public WorkChunk AddChunkAndTrim(
-                byte[]? continuationToken)
+            public WorkChunk AddChunkAndTrim(byte[]? continuationToken)
             {
                 var chunk = new WorkChunk
                 {
@@ -204,9 +200,7 @@ namespace CassandraMigrationProcessor.Processors
         {
             public Channel<Partition> PartitionPool = null!;
             public List<string> ColumnNames = null!;
-            public List<(string Name, string Type,
-                string Kind, string ClusteringOrder,
-                int Position)> Columns = null!;
+            public List<(string Name, string Type, string Kind, string ClusteringOrder, int Position)> Columns = null!;
             public HashSet<string> Completed = null!;
             public Dictionary<string, string?> Checkpoints = null!;
             public List<string> FeedRanges = null!;

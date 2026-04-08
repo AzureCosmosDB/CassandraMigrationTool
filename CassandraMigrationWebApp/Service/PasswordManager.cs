@@ -17,7 +17,7 @@ namespace CassandraMigrationWebApp.Service
         public PasswordManager()
         {
             var workingFolder = Helper.GetWorkingFolder();
-            
+
             if (!Directory.Exists(workingFolder))
             {
                 Directory.CreateDirectory(workingFolder);
@@ -71,7 +71,7 @@ namespace CassandraMigrationWebApp.Service
             try
             {
                 byte[] encryptedBytes = File.ReadAllBytes(_passwordFilePath);
-                
+
                 var decryptedPassword = Decrypt(encryptedBytes);
                 return Task.FromResult<string?>(decryptedPassword);
             }
@@ -90,7 +90,7 @@ namespace CassandraMigrationWebApp.Service
         public Task SetPasswordAsync(string newPassword)
         {
             var encryptedBytes = Encrypt(newPassword);
-            
+
             // Ensure directory exists for local file
             var directory = Path.GetDirectoryName(_passwordFilePath);
             if (!string.IsNullOrEmpty(directory) && !Directory.Exists(directory))

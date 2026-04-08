@@ -1096,7 +1096,7 @@ else if (@_showLogBackupFile)
                 }
 
                 // Trigger immediate refresh
-                if (CurrentlyLoadedMigrationJob != null && (CurrentlyLoadedMigrationJob.IsStarted || JobManager.DidMigrationJobExitRecently(JobId)) && !_showLogBackupFile)
+                if (CurrentlyLoadedMigrationJob != null && (CurrentlyLoadedMigrationJob.Status == JobStatus.Running || JobManager.DidMigrationJobExitRecently(JobId)) && !_showLogBackupFile)
                 {
                     if (_isLoadingCollections && @CurrentlyLoadedMigrationJob.MigrationUnitBasics != null && @CurrentlyLoadedMigrationJob.MigrationUnitBasics.Count > 0)
                     {
@@ -1126,7 +1126,7 @@ else if (@_showLogBackupFile)
         _showLogBackupFile = false;
         _logBackupFile = string.Empty;  
 
-        if (CurrentlyLoadedMigrationJob != null && CurrentlyLoadedMigrationJob.IsStarted)
+        if (CurrentlyLoadedMigrationJob != null && CurrentlyLoadedMigrationJob.Status == JobStatus.Running)
         {
             // Only start timer if AutoRefreshEnabled is true (default)
             if (CurrentlyLoadedMigrationJob.AutoRefreshEnabled)
@@ -1261,7 +1261,7 @@ else if (@_showLogBackupFile)
         InvokeAsync(() =>
         {
 
-            if (CurrentlyLoadedMigrationJob != null && (CurrentlyLoadedMigrationJob.IsStarted || JobManager.DidMigrationJobExitRecently(JobId)) && !_showLogBackupFile)
+            if (CurrentlyLoadedMigrationJob != null && (CurrentlyLoadedMigrationJob.Status == JobStatus.Running || JobManager.DidMigrationJobExitRecently(JobId)) && !_showLogBackupFile)
             {
                 // Check if we should hide loading spinner
                 if (_isLoadingCollections && @CurrentlyLoadedMigrationJob.MigrationUnitBasics != null && @CurrentlyLoadedMigrationJob.MigrationUnitBasics.Count > 0)
@@ -1318,7 +1318,7 @@ else if (@_showLogBackupFile)
             return; // Exit if the JobId does not match
         }
 
-        if (CurrentlyLoadedMigrationJob != null && CurrentlyLoadedMigrationJob.IsStarted)
+        if (CurrentlyLoadedMigrationJob != null && CurrentlyLoadedMigrationJob.Status == JobStatus.Running)
         {
             LogBucket = JobManager.GetLogBucket(id, out string logBackup, out bool isLive);
             if (!string.IsNullOrEmpty(logBackup) && logBackup != JobId)
@@ -1413,8 +1413,8 @@ else if (@_showLogBackupFile)
                 await ResumeJob();
             }
             else if (CurrentlyLoadedMigrationJob != null
-                && CurrentlyLoadedMigrationJob.IsStarted
-                && !CurrentlyLoadedMigrationJob.IsCompleted
+                && CurrentlyLoadedMigrationJob.Status == JobStatus.Running
+                && CurrentlyLoadedMigrationJob.Status != JobStatus.Completed
                 && !NoOtherActiveJobs())
             {
                 // BB-1 fix: Tell user why job can't start
@@ -1428,7 +1428,7 @@ else if (@_showLogBackupFile)
                     + "or you can use 'Resume Job' after pausing/completing the active job.";
             }
             var mjLocal = CurrentlyLoadedMigrationJob;
-            if (mjLocal != null && !mjLocal.IsCancelled && !mjLocal.IsCompleted)
+            if (mjLocal != null && mjLocal.Status != JobStatus.Cancelled && mjLocal.Status != JobStatus.Completed)
             {
                 StartAutoRefresh();
             }
@@ -1601,7 +1601,7 @@ else if (@_showLogBackupFile)
         if (MigrationJobContext.ActiveMigrationJobId == JobId)
         {
             var job = CurrentlyLoadedMigrationJob;
-            if (job != null && !job.IsCancelled && !job.IsCompleted)
+            if (job != null && job.Status != JobStatus.Cancelled && job.Status != JobStatus.Completed)
             {
                 // Verify the worker thread is actually alive
                 // by checking _runningJobId on JobManager
@@ -1760,7 +1760,7 @@ else if (@_showLogBackupFile)
         if (activeJob != string.Empty && activeJob != JobId)
         {
             var job = MigrationJobContext.GetMigrationJob(activeJob);
-            if (job != null && !job.IsCancelled && !job.IsCompleted)
+            if (job != null && job.Status != JobStatus.Cancelled && job.Status != JobStatus.Completed)
                 return false;
             else
                 return true;
@@ -1771,13 +1771,13 @@ else if (@_showLogBackupFile)
 
     private  bool  IsPauseEnabled()
     {
-        return CurrentlyLoadedMigrationJob != null && !CurrentlyLoadedMigrationJob.IsCancelled && !CurrentlyLoadedMigrationJob.IsCompleted && IsJobRunning() && NoOtherActiveJobs();
+        return CurrentlyLoadedMigrationJob != null && CurrentlyLoadedMigrationJob.Status != JobStatus.Cancelled && CurrentlyLoadedMigrationJob.Status != JobStatus.Completed && IsJobRunning() && NoOtherActiveJobs();
     }
 
 
     private bool IsResumeEnabled()
     {
-        return CurrentlyLoadedMigrationJob != null && !CurrentlyLoadedMigrationJob.IsCompleted && !IsJobRunning();
+        return CurrentlyLoadedMigrationJob != null && CurrentlyLoadedMigrationJob.Status != JobStatus.Completed && !IsJobRunning();
     }
 
     private bool CanAutoStart()
@@ -1814,33 +1814,33 @@ else if (@_showLogBackupFile)
 
     private string GetJobStatusLabel(MigrationJob job)
     {
-        if (job.IsCompleted) return "Completed";
-        if (job.IsCancelled) return "Cancelled";
+        if (job.Status == JobStatus.Completed) return "Completed";
+        if (job.Status == JobStatus.Cancelled) return "Cancelled";
         if (IsJobRunning())
         {
             if (MigrationJobContext.ControlledPauseRequested)
                 return "Pausing...";
             return "Running";
         }
-        if (job.IsFaulted) return "Faulted";
-        if (job.IsPaused) return "Paused";
-        if (job.IsStarted) return "Stopped";
+        if (job.Status == JobStatus.Faulted) return "Faulted";
+        if (job.Status == JobStatus.Paused) return "Paused";
+        if (job.Status == JobStatus.Running) return "Stopped";
         return "Not Started";
     }
 
     private string GetJobStatusBadge(MigrationJob job)
     {
-        if (job.IsCompleted) return "bg-success";
-        if (job.IsCancelled) return "bg-secondary";
+        if (job.Status == JobStatus.Completed) return "bg-success";
+        if (job.Status == JobStatus.Cancelled) return "bg-secondary";
         if (IsJobRunning())
         {
             if (MigrationJobContext.ControlledPauseRequested)
                 return "bg-warning text-dark";
             return "bg-primary";
         }
-        if (job.IsFaulted) return "bg-danger";
-        if (job.IsPaused) return "bg-warning text-dark";
-        if (job.IsStarted) return "bg-info";
+        if (job.Status == JobStatus.Faulted) return "bg-danger";
+        if (job.Status == JobStatus.Paused) return "bg-warning text-dark";
+        if (job.Status == JobStatus.Running) return "bg-info";
         return "bg-secondary";
     }
 }

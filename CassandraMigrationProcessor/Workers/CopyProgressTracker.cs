@@ -45,12 +45,9 @@ namespace CassandraMigrationProcessor.Workers
 
         private const int LogIntervalSeconds = 5;
 
-        public long TotalCopied =>
-            Interlocked.Read(ref _totalCopied);
-        public long TotalFailed =>
-            Interlocked.Read(ref _totalFailed);
-        public long TotalSkipped =>
-            Interlocked.Read(ref _totalSkipped);
+        public long TotalCopied => Interlocked.Read(ref _totalCopied);
+        public long TotalFailed => Interlocked.Read(ref _totalFailed);
+        public long TotalSkipped => Interlocked.Read(ref _totalSkipped);
         public int ActiveWorkers => _activeWorkers;
 
         /// <summary>
@@ -63,8 +60,7 @@ namespace CassandraMigrationProcessor.Workers
             int peak = _peakActiveWorkers;
             while (active > peak)
             {
-                int old = Interlocked.CompareExchange(
-                    ref _peakActiveWorkers, active, peak);
+                int old = Interlocked.CompareExchange(ref _peakActiveWorkers, active, peak);
                 if (old == peak) break;
                 peak = old;
             }
@@ -75,8 +71,7 @@ namespace CassandraMigrationProcessor.Workers
         /// Only logs range completion — does NOT affect
         /// active worker count.
         /// </summary>
-        public void RangeCompleted(
-            string range, TaskResult result)
+        public void RangeCompleted(string range, TaskResult result)
         {
             Interlocked.Increment(ref _completedRanges);
         }
@@ -84,8 +79,7 @@ namespace CassandraMigrationProcessor.Workers
         /// <summary>
         /// Call once when a worker thread exits.
         /// </summary>
-        public void WorkerExited() =>
-            Interlocked.Decrement(ref _activeWorkers);
+        public void WorkerExited() => Interlocked.Decrement(ref _activeWorkers);
         public double RecentSpeed
         {
             get
@@ -96,12 +90,7 @@ namespace CassandraMigrationProcessor.Workers
             }
         }
 
-        public CopyProgressTracker(
-            Log log,
-            string keyspace,
-            string table,
-            int workerCount,
-            int totalRanges = 0,
+        public CopyProgressTracker(Log log, string keyspace, string table, int workerCount, int totalRanges = 0,
             long initialCopied = 0)
         {
             _log = log;
@@ -212,23 +201,13 @@ namespace CassandraMigrationProcessor.Workers
             int ranges = Volatile.Read(ref _activeRanges);
             int pageSize = Volatile.Read(ref _adaptivePageSize);
 
-            string bottleneck =
-                avgReadMs > avgWriteMs * 2
+            string bottleneck = avgReadMs > avgWriteMs * 2
                     ? "READ-BOUND" :
                 avgWriteMs > avgReadMs * 2
                     ? "WRITE-BOUND" :
                       "BALANCED";
 
-            _log.WriteLine(
-                $"Progress: {_keyspace}.{_table} " +
-                $"[{_activeWorkers}/{_workerCount} workers, " +
-                $"{ranges} ranges, pg={pageSize}] " +
-                $"{copied:N0} rows ({speedStr}, {throughput}), " +
-                $"{failed:N0} failed " +
-                $"({elapsed:F1}s) | " +
-                $"read={avgRead}/page, " +
-                $"write={avgWrite}/page | " +
-                $"{bottleneck}");
+            _log.WriteLine($"Progress: {_keyspace}.{_table} [{_activeWorkers}/{_workerCount} workers, {ranges} ranges, pg={pageSize}] {copied:N0} rows ({speedStr}, {throughput}), " + $"{failed:N0} failed ({elapsed:F1}s) | read={avgRead}/page, write={avgWrite}/page | {bottleneck}");
         }
 
         /// <summary>
@@ -244,15 +223,7 @@ namespace CassandraMigrationProcessor.Workers
                 ? copied / elapsed : 0;
             string speedStr = rps >= 1000
                 ? $"{rps / 1000:F1}k/s" : $"{rps:F0}/s";
-            _log.WriteLine(
-                $"Bulk copy done: " +
-                $"{_keyspace}.{_table} " +
-                $"[{_workerCount} workers] - " +
-                $"{copied:N0} copied, " +
-                $"{failed:N0} failed, " +
-                $"{skipped:N0} skipped " +
-                $"({elapsed:F1}s, {speedStr}), " +
-                $"peak active: {_peakActiveWorkers}");
+            _log.WriteLine($"Bulk copy done: {_keyspace}.{_table} [{_workerCount} workers] - {copied:N0} copied, " + $"{failed:N0} failed, {skipped:N0} skipped ({elapsed:F1}s, {speedStr}), peak active: {_peakActiveWorkers}");
         }
     }
 }

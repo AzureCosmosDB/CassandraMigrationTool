@@ -79,8 +79,8 @@ namespace CassandraMigrationProcessor.Context
             LogType level, MigrationJob job)
         {
             if (CurrentlyActiveJob == null
-                || CurrentlyActiveJob.IsCancelled
-                || CurrentlyActiveJob.IsCompleted)
+                || CurrentlyActiveJob.Status == JobStatus.Cancelled
+                || CurrentlyActiveJob.Status == JobStatus.Completed)
             {
                 job.LogLevel = level;
                 SaveMigrationJob(job);
@@ -96,8 +96,8 @@ namespace CassandraMigrationProcessor.Context
         {
             if (_log == null
                 || CurrentlyActiveJob == null
-                || CurrentlyActiveJob.IsCancelled
-                || CurrentlyActiveJob.IsCompleted)
+                || CurrentlyActiveJob.Status == JobStatus.Cancelled
+                || CurrentlyActiveJob.Status == JobStatus.Completed)
                 return;
 
             _log?.WriteLine(message, LogType.Verbose);

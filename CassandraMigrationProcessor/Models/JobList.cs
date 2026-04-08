@@ -25,7 +25,7 @@ namespace CassandraMigrationProcessor
         public List<MigrationJob>? MigrationJobs { get; set; }
 
         public List<string>? MigrationJobIds { get; set; }
-               
+
         private static readonly object _writeLock = new object();
         private static readonly object _loadLock = new object();
         private Log _log;
@@ -56,6 +56,6 @@ namespace CassandraMigrationProcessor
         }
 
 
-         
+
     }
 }

@@ -28,11 +28,7 @@ namespace CassandraMigrationProcessor.Processors
         public volatile bool ProcessRunning;
         public volatile bool IsChangeFeedRunning;
 
-        protected MigrationProcessor(
-            Log log,
-            ISession sourceSession,
-            MigrationSettings config,
-            MigrationJob job,
+        protected MigrationProcessor(Log log, ISession sourceSession, MigrationSettings config, MigrationJob job,
             MigrationWorker? worker = null)
         {
             _log = log;
@@ -49,12 +45,9 @@ namespace CassandraMigrationProcessor.Processors
         /// token, updates job status, and optionally marks the
         /// process as no longer running.
         /// </summary>
-        public virtual void StopProcessing(bool updateStatus = true,
-            bool isPause = false)
+        public virtual void StopProcessing(bool updateStatus = true, bool isPause = false)
         {
-            MigrationJobContext.AddVerboseLog(
-                $"MigrationProcessor.StopProcessing: " +
-                $"updateStatus={updateStatus}, isPause={isPause}");
+            MigrationJobContext.AddVerboseLog($"MigrationProcessor.StopProcessing: updateStatus={updateStatus}, isPause={isPause}");
 
             // Cancel first so workers see the signal
             _cancellation?.Cancel();
@@ -64,17 +57,11 @@ namespace CassandraMigrationProcessor.Processors
 
             if (_job != null)
             {
-                if (isPause)
-                    _job.Status
-                        = JobStatus.Paused;
-                else if (_job.Status
-                         == JobStatus.Running)
-                    _job.Status
-                        = JobStatus.Pending;
+                if (isPause) _job.Status = JobStatus.Paused;
+                else if (_job.Status == JobStatus.Running) _job.Status = JobStatus.Pending;
             }
 
-            MigrationJobContext.SaveMigrationJob(
-                _job);
+            MigrationJobContext.SaveMigrationJob(_job);
 
             if (updateStatus)
                 ProcessRunning = false;
@@ -90,8 +77,7 @@ namespace CassandraMigrationProcessor.Processors
             _cancellation = new CancellationTokenSource();
         }
 
-        protected ProcessorContext SetProcessorContext(
-            MigrationUnit mu)
+        protected ProcessorContext SetProcessorContext(MigrationUnit mu)
         {
             var keyspaceName = mu.KeyspaceName;
             var tableName = mu.TableName;
@@ -120,38 +106,26 @@ namespace CassandraMigrationProcessor.Processors
         /// </summary>
         public bool AddTableToChangeFeedQueue(MigrationUnit mu)
         {
-            MigrationJobContext.AddVerboseLog(
-                $"MigrationProcessor.AddTableToChangeFeedQueue: " +
-                $"mu={mu.Id}");
+            MigrationJobContext.AddVerboseLog($"MigrationProcessor.AddTableToChangeFeedQueue: mu={mu.Id}");
 
-            if (!Helper.IsOnline(_job))
-            {
-                return false;
-            }
+            if (!Helper.IsOnline(_job)) return false;
 
             if (_targetSession == null)
             {
-                _targetSession = CassandraClientFactory
-                    .CreateTargetSession(_log, _job, string.Empty);
-                CassandraHelper.EnsureKeyspaceExists(
-                    _targetSession,
-                    mu.GetEffectiveTargetKeyspaceName());
+                _targetSession = CassandraClientFactory.CreateTargetSession(_log, _job, string.Empty);
+                CassandraHelper.EnsureKeyspaceExists(_targetSession, mu.GetEffectiveTargetKeyspaceName());
             }
 
             if (_changeFeedProcessor == null
                 && _sourceSession != null)
             {
-                var freshSourceSession = CassandraClientFactory
-                    .CreateSourceSession(_log, _job, mu.KeyspaceName);
-                _changeFeedProcessor = new ChangeFeedProcessor(
-                    _log, freshSourceSession, _targetSession!,
+                var freshSourceSession = CassandraClientFactory.CreateSourceSession(_log, _job, mu.KeyspaceName);
+                _changeFeedProcessor = new ChangeFeedProcessor(_log, freshSourceSession, _targetSession!,
                     MigrationJobContext.MigrationUnitsCache, _config,
                     _job);
             }
 
-            _log.WriteLine(
-                $"Adding {mu.KeyspaceName}.{mu.TableName} " +
-                $"to change feed queue", LogType.Debug);
+            _log.WriteLine($"Adding {mu.KeyspaceName}.{mu.TableName} to change feed queue", LogType.Debug);
             _changeFeedProcessor?.AddTableToProcess(mu.Id, _cancellation);
 
             return true;
@@ -164,50 +138,31 @@ namespace CassandraMigrationProcessor.Processors
         /// </summary>
         public bool RunChangeFeedForAllTables()
         {
-            MigrationJobContext.AddVerboseLog(
-                "MigrationProcessor.RunChangeFeedForAllTables");
+            MigrationJobContext.AddVerboseLog("MigrationProcessor.RunChangeFeedForAllTables");
 
-            if (IsChangeFeedRunning)
-            {
-                return false;
-            }
-            if (!Helper.IsOnline(_job))
-            {
-                return false;
-            }
-            if (!Helper.IsOfflineJobCompleted(
-                _job))
-            {
-                return false;
-            }
-            if (!Helper.AnyValidTable(
-                _job))
-            {
-                return false;
-            }
+            if (IsChangeFeedRunning) return false;
+            if (!Helper.IsOnline(_job)) return false;
+            if (!Helper.IsOfflineJobCompleted(_job)) return false;
+            if (!Helper.AnyValidTable(_job)) return false;
 
             IsChangeFeedRunning = true;
 
             if (_targetSession == null
                 && !_job.IsSimulatedRun)
             {
-                _targetSession = CassandraClientFactory
-                    .CreateTargetSession(_log, _job, string.Empty);
+                _targetSession = CassandraClientFactory.CreateTargetSession(_log, _job, string.Empty);
             }
 
             if (_changeFeedProcessor == null
                 && _sourceSession != null)
             {
-                var freshSourceSession = CassandraClientFactory
-                    .CreateSourceSession(_log, _job, string.Empty);
-                _changeFeedProcessor = new ChangeFeedProcessor(
-                    _log, freshSourceSession, _targetSession!,
+                var freshSourceSession = CassandraClientFactory.CreateSourceSession(_log, _job, string.Empty);
+                _changeFeedProcessor = new ChangeFeedProcessor(_log, freshSourceSession, _targetSession!,
                     MigrationJobContext.MigrationUnitsCache,
                     _config, _job, false, _worker);
             }
 
-            _changeFeedProcessor?
-                .RunChangeFeedForAllTables(_cancellation);
+            _changeFeedProcessor?.RunChangeFeedForAllTables(_cancellation);
 
             return true;
         }
@@ -220,17 +175,14 @@ namespace CassandraMigrationProcessor.Processors
         public void StopOfflineOrInvokeChangeFeed()
         {
             if (!Helper.IsOnline(_job)
-                && Helper.IsOfflineJobCompleted(
-                    _job))
+                && Helper.IsOfflineJobCompleted(_job))
             {
                 // Do NOT mark completed if cancelled or paused
                 if (!MigrationJobContext.ControlledPauseRequested
                     && _job?.Status != JobStatus.Cancelled
                     && _job?.Status != JobStatus.Paused)
                 {
-                    _log.WriteLine(
-                        $"Job {_job?.Id} " +
-                        $"Completed");
+                    _log.WriteLine($"Job {_job?.Id} Completed");
                     _job!.Status = JobStatus.Completed;
                     MigrationJobContext.SaveMigrationJob(_job);
                 }
@@ -240,16 +192,13 @@ namespace CassandraMigrationProcessor.Processors
             {
                 if (!MigrationJobContext.ControlledPauseRequested)
                 {
-                    _log.WriteLine(
-                        "Invoke RunChangeFeedForAllTables.",
-                        LogType.Debug);
+                    _log.WriteLine("Invoke RunChangeFeedForAllTables.", LogType.Debug);
                     RunChangeFeedForAllTables();
                 }
             }
         }
 
-        public virtual Task<TaskResult> StartProcessAsync(
-            string migrationUnitId)
+        public virtual Task<TaskResult> StartProcessAsync(string migrationUnitId)
         {
             return Task.FromResult(TaskResult.Success);
         }

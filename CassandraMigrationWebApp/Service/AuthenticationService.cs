@@ -18,7 +18,7 @@ namespace CassandraMigrationWebApp.Service
         public async Task<bool> ValidatePasswordAsync(string password)
         {
             var isValid = await _passwordManager.ValidatePasswordAsync(password);
-            
+
             if (isValid)
             {
                 var expiryTime = DateTime.UtcNow.AddHours(12);

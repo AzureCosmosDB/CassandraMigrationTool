@@ -16,7 +16,7 @@ namespace CassandraMigrationProcessor.Helpers.JobManagement
         }
 
 
-        public MigrationUnit GetMigrationUnit(string migrationUnitId, string JobId=null)
+        public MigrationUnit GetMigrationUnit(string migrationUnitId, string JobId = null)
         {
             MigrationJobContext.AddVerboseLog($"MigrationUnitCache.GetMigrationUnit: migrationUnitId={migrationUnitId}, cacheCount={_migrationUnits.Count}");
 
@@ -41,7 +41,7 @@ namespace CassandraMigrationProcessor.Helpers.JobManagement
         }
 
 
-        public  bool UpdateMigrationUnit(MigrationUnit migrationUnit)
+        public bool UpdateMigrationUnit(MigrationUnit migrationUnit)
         {
             MigrationJobContext.AddVerboseLog($"MigrationUnitCache.UpdateMigrationUnit: migrationUnitId={migrationUnit.Id}");
 

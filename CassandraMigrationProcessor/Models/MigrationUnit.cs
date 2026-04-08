@@ -70,21 +70,15 @@ namespace CassandraMigrationProcessor
         /// Used when feed ranges > 1 for a table.
         /// </summary>
         public Dictionary<string, string>?
-            FeedRangeContinuationTokens { get; set; }
+            FeedRangeContinuationTokens
+        { get; set; }
 
         /// <summary>
-        /// FFCF start time captured BEFORE bulk copy begins.
-        /// Used as the change feed anchor so changes during
-        /// copy are not lost.
+        /// Change feed start time captured BEFORE bulk copy
+        /// begins. Used as the COSMOS_CHANGEFEED_START_TIME()
+        /// anchor so changes during copy are not lost.
         /// </summary>
         public string? ChangeFeedStartToken { get; set; }
-
-        /// <summary>
-        /// Per-feed-range start tokens captured BEFORE bulk
-        /// copy. Key = feed range JSON, Value = base64 token.
-        /// </summary>
-        public Dictionary<string, string>?
-            FeedRangeStartTokens { get; set; }
 
         /// <summary>
         /// Per-feed-range copy checkpoint. Key = feed range JSON,
@@ -94,14 +88,16 @@ namespace CassandraMigrationProcessor
         /// the last checkpoint of in-progress ranges.
         /// </summary>
         public Dictionary<string, string?>?
-            CopyFeedRangeCheckpoints { get; set; }
+            CopyFeedRangeCheckpoints
+        { get; set; }
 
         /// <summary>
         /// Set of feed ranges whose bulk copy completed fully.
         /// On resume, these ranges are skipped entirely.
         /// </summary>
         public HashSet<string>?
-            CompletedCopyFeedRanges { get; set; }
+            CompletedCopyFeedRanges
+        { get; set; }
 
         public long EstimatedRowCount { get; set; }
         public long ActualRowCount { get; set; }

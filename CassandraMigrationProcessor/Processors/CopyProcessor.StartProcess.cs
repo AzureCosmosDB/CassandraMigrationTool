@@ -9,11 +9,9 @@ namespace CassandraMigrationProcessor.Processors
 {
     internal partial class CopyProcessor
     {
-        public override async Task<TaskResult> StartProcessAsync(
-            string migrationUnitId)
+        public override async Task<TaskResult> StartProcessAsync(string migrationUnitId)
         {
-            var migrationUnit = MigrationJobContext
-                .GetMigrationUnit(migrationUnitId);
+            var migrationUnit = MigrationJobContext.GetMigrationUnit(migrationUnitId);
             migrationUnit.ParentJob = _job;
             ProcessRunning = true;
 
@@ -21,14 +19,11 @@ namespace CassandraMigrationProcessor.Processors
 
             if (migrationUnit.CopyComplete)
             {
-                _log.WriteLine(
-                    $"Copy for {context.KeyspaceName}.{context.TableName} " +
-                    $"already completed.", LogType.Debug);
+                _log.WriteLine($"Copy for {context.KeyspaceName}.{context.TableName} already completed.", LogType.Debug);
                 return TaskResult.Success;
             }
 
-            _log.WriteLine(
-                $"{context.KeyspaceName}.{context.TableName} Copy started");
+            _log.WriteLine($"{context.KeyspaceName}.{context.TableName} Copy started");
 
             if (!migrationUnit.CopyComplete
                 && !_cancellation.Token.IsCancellationRequested)
@@ -48,29 +43,21 @@ namespace CassandraMigrationProcessor.Processors
                 {
                     if (MigrationJobContext.ControlledPauseRequested)
                     {
-                        _log.WriteLine(
-                            $"Controlled pause before chunk {chunkIndex}");
+                        _log.WriteLine($"Controlled pause before chunk {chunkIndex}");
                         break;
                     }
 
                     _cancellation.Token.ThrowIfCancellationRequested();
 
-                    double initialPercent =
-                        ((double)100 / migrationUnit.MigrationChunks.Count) * chunkIndex;
-                    double contributionFactor =
-                        1.0 / migrationUnit.MigrationChunks.Count;
+                    double initialPercent = ((double)100 / migrationUnit.MigrationChunks.Count) * chunkIndex;
+                    double contributionFactor = 1.0 / migrationUnit.MigrationChunks.Count;
 
                     if (migrationUnit.MigrationChunks[chunkIndex].IsDownloaded != true)
                     {
-                        TaskResult result =
-                            await new RetryHelper().ExecuteTask(
-                                () => ProcessChunkAsync(
-                                    migrationUnit, chunkIndex, context,
-                                    initialPercent,
+                        TaskResult result = await new RetryHelper().ExecuteTask(
+                                () => ProcessChunkAsync(migrationUnit, chunkIndex, context, initialPercent,
                                     contributionFactor),
-                                (ex, attemptCount, currentBackoff) =>
-                                    CopyProcess_ExceptionHandler(
-                                        ex, attemptCount,
+                                (ex, attemptCount, currentBackoff) => CopyProcess_ExceptionHandler(ex, attemptCount,
                                         "Chunk processor",
                                         context.KeyspaceName,
                                         context.TableName,
@@ -80,10 +67,7 @@ namespace CassandraMigrationProcessor.Processors
 
                         if (result == TaskResult.Canceled)
                         {
-                            _log.WriteLine(
-                                $"Copy paused for " +
-                                $"{context.KeyspaceName}.{context.TableName}" +
-                                $"[{chunkIndex}].");
+                            _log.WriteLine($"Copy paused for {context.KeyspaceName}.{context.TableName}[{chunkIndex}].");
                             StopProcessing(isPause: true);
                             return TaskResult.Canceled;
                         }
@@ -91,10 +75,7 @@ namespace CassandraMigrationProcessor.Processors
                         if (result == TaskResult.Abort
                             || result == TaskResult.FailedAfterRetries)
                         {
-                            _log.WriteLine(
-                                $"Copy failed for " +
-                                $"{context.KeyspaceName}.{context.TableName}" +
-                                $"[{chunkIndex}] after retries.",
+                            _log.WriteLine($"Copy failed for {context.KeyspaceName}.{context.TableName}[{chunkIndex}] after retries.",
                                 LogType.Error);
                             StopProcessing();
                             return result;
@@ -102,25 +83,20 @@ namespace CassandraMigrationProcessor.Processors
                     }
                     else
                     {
-                        context.DownloadCount +=
-                            migrationUnit.MigrationChunks[chunkIndex].SourceQueryRowCount;
+                        context.DownloadCount += migrationUnit.MigrationChunks[chunkIndex].SourceQueryRowCount;
                     }
                 }
 
                 if (MigrationJobContext.ControlledPauseRequested)
                 {
-                    _log.WriteLine(
-                        "Controlled pause - exiting",
-                        LogType.Debug);
+                    _log.WriteLine("Controlled pause - exiting", LogType.Debug);
                     StopProcessing(isPause: true);
                     return TaskResult.Success;
                 }
 
-                migrationUnit.SourceCountDuringCopy = migrationUnit.MigrationChunks
-                    .Sum(c => c.SourceQueryRowCount);
+                migrationUnit.SourceCountDuringCopy = migrationUnit.MigrationChunks.Sum(c => c.SourceQueryRowCount);
 
-                long failed = migrationUnit.MigrationChunks
-                    .Sum(c => c.TargetFailedRowCount);
+                long failed = migrationUnit.MigrationChunks.Sum(c => c.TargetFailedRowCount);
 
                 if (failed <= 0
                     && migrationUnit.MigrationChunks
@@ -136,18 +112,14 @@ namespace CassandraMigrationProcessor.Processors
 
                     // Only remove from cache if offline — online mode
                     // needs the MU in cache for ChangeFeedProcessor
-                    if (!Helper.IsOnline(
-                        _job))
+                    if (!Helper.IsOnline(_job))
                     {
-                        MigrationJobContext.MigrationUnitsCache
-                            .RemoveMigrationUnit(migrationUnit.Id);
+                        MigrationJobContext.MigrationUnitsCache.RemoveMigrationUnit(migrationUnit.Id);
                     }
                 }
                 else
                 {
-                    _log.WriteLine(
-                        $"Copy for {context.KeyspaceName}" +
-                        $".{context.TableName} had failures.",
+                    _log.WriteLine($"Copy for {context.KeyspaceName}.{context.TableName} had failures.",
                         LogType.Error);
                     return TaskResult.Retry;
                 }

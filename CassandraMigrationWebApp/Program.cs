@@ -60,8 +60,8 @@ if (!string.IsNullOrEmpty(appId))
 }
 
 
-var useLocalDisk=Environment.GetEnvironmentVariable("StateStoreUseLocalDisk");
-bool useLocal=false;
+var useLocalDisk = Environment.GetEnvironmentVariable("StateStoreUseLocalDisk");
+bool useLocal = false;
 if (!string.IsNullOrEmpty(useLocalDisk))
 {
     bool.TryParse(useLocalDisk, out useLocal);

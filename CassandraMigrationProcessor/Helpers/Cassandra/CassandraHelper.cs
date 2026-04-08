@@ -24,8 +24,7 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
         /// <summary>
         /// Execute an async operation with retry on timeout errors.
         /// </summary>
-        private static async Task<T> ExecuteWithTimeoutRetryAsync<T>(
-            Func<Task<T>> operation,
+        private static async Task<T> ExecuteWithTimeoutRetryAsync<T>(Func<Task<T>> operation,
             int maxRetries = DefaultMaxRetries,
             int baseDelayMs = RetryBaseDelayMs)
         {
@@ -33,32 +32,26 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
             {
                 try
                 {
-                    return await operation().ConfigureAwait(false);
+                    return await operation();
                 }
-                catch (Exception ex) when (
-                    attempt < maxRetries &&
-                    (ex is TimeoutException
+                catch (Exception ex) when (attempt < maxRetries && (ex is TimeoutException
                      || ex.GetType().Name.Contains("Timeout")
                      || ex.InnerException is TimeoutException))
                 {
-                    await Task.Delay(attempt * baseDelayMs)
-                        .ConfigureAwait(false);
+                    await Task.Delay(attempt * baseDelayMs);
                 }
             }
             // Should not reach here, but satisfy the compiler
-            return await operation().ConfigureAwait(false);
+            return await operation();
         }
         /// <summary>
         /// List all keyspaces (excluding system keyspaces).
         /// </summary>
         public static async Task<List<string>> ListKeyspacesAsync(ISession session)
         {
-            var resultSet = await session.ExecuteAsync(
-                new SimpleStatement(
-                    "SELECT keyspace_name FROM system_schema.keyspaces"))
-                .ConfigureAwait(false);
-            var systemKeyspaces = new HashSet<string>(
-                StringComparer.OrdinalIgnoreCase)
+            var resultSet = await session.ExecuteAsync(new SimpleStatement(
+                    "SELECT keyspace_name FROM system_schema.keyspaces"));
+            var systemKeyspaces = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
             {
                 "system", "system_auth", "system_distributed",
                 "system_schema", "system_traces", "system_views",
@@ -85,14 +78,10 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
         /// <summary>
         /// List all tables in a keyspace.
         /// </summary>
-        public static async Task<List<string>> ListTablesAsync(
-            ISession session, string keyspace)
+        public static async Task<List<string>> ListTablesAsync(ISession session, string keyspace)
         {
-            var resultSet = await session.ExecuteAsync(
-                new SimpleStatement(
-                    "SELECT table_name FROM system_schema.tables " +
-                    "WHERE keyspace_name = ?", keyspace))
-                .ConfigureAwait(false);
+            var resultSet = await session.ExecuteAsync(new SimpleStatement(
+                    "SELECT table_name FROM system_schema.tables " + "WHERE keyspace_name = ?", keyspace));
 
             return resultSet
                 .Select(r => r.GetValue<string>("table_name"))
@@ -103,8 +92,7 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
         /// <summary>
         /// List all tables in a keyspace.
         /// </summary>
-        public static List<string> ListTables(
-            ISession session, string keyspace)
+        public static List<string> ListTables(ISession session, string keyspace)
         {
             return ListTablesAsync(session, keyspace).GetAwaiter().GetResult();
         }
@@ -115,50 +103,35 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
         /// Returns -1 if count cannot be determined (progress
         /// will show rows copied without percentage).
         /// </summary>
-        public static async Task<long> GetRowCountAsync(
-            ISession session,
-            string keyspace,
-            string table)
+        public static async Task<long> GetRowCountAsync(ISession session, string keyspace, string table)
         {
             // 1) Try system.size_estimates (works on OSS Cassandra
             //    and Azure MI, but NOT on Cosmos DB Cassandra API)
             try
             {
-                var estStmt = new SimpleStatement(
-                    "SELECT mean_partition_size, partitions_count " +
-                    "FROM system.size_estimates " +
-                    "WHERE keyspace_name = ? AND table_name = ?",
+                var estStmt = new SimpleStatement("SELECT mean_partition_size, partitions_count " +
+                    "FROM system.size_estimates " + "WHERE keyspace_name = ? AND table_name = ?",
                     keyspace, table);
                 estStmt.SetReadTimeoutMillis(SizeEstimateTimeoutMs);
-                var estRs = await session.ExecuteAsync(estStmt)
-                    .ConfigureAwait(false);
+                var estRs = await session.ExecuteAsync(estStmt);
                 long totalPartitions = 0;
                 foreach (var row in estRs)
                 {
-                    totalPartitions += row.GetValue<long>(
-                        "partitions_count");
+                    totalPartitions += row.GetValue<long>("partitions_count");
                 }
-                if (totalPartitions > 0)
-                {
-                    return totalPartitions;
-                }
+                if (totalPartitions > 0) return totalPartitions;
             }
-            catch (Exception ex)
-            {
-            }
+            catch (Exception ex) { }
 
             // 2) Try COUNT(*) with short timeout (30s).
             //    For large Cosmos DB tables this will time out —
             //    that's expected; migration proceeds without %.
             try
             {
-                var statement = new SimpleStatement(
-                    $"SELECT COUNT(*) FROM " +
-                    $"\"{keyspace}\".\"{table}\"");
+                var statement = new SimpleStatement($"SELECT COUNT(*) FROM \"{keyspace}\".\"{table}\"");
                 statement.SetReadTimeoutMillis(SchemaQueryTimeoutMs); // 30s max
                 statement.SetConsistencyLevel(ConsistencyLevel.One);
-                var resultSet = await session.ExecuteAsync(statement)
-                    .ConfigureAwait(false);
+                var resultSet = await session.ExecuteAsync(statement);
                 var row = resultSet.FirstOrDefault();
                 if (row != null)
                 {
@@ -170,9 +143,7 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
                     return count;
                 }
             }
-            catch (Exception ex)
-            {
-            }
+            catch (Exception ex) { }
 
             return -1;
         }
@@ -182,10 +153,7 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
         /// size_estimates first (fast, approximate), then
         /// falls back to COUNT(*) with a short timeout.
         /// </summary>
-        public static long GetRowCount(
-            ISession session,
-            string keyspace,
-            string table)
+        public static long GetRowCount(ISession session, string keyspace, string table)
         {
             return GetRowCountAsync(session, keyspace, table).GetAwaiter().GetResult();
         }
@@ -199,31 +167,19 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
         /// clusteringOrder = "asc", "desc", or "none"
         /// position = ordinal within key group
         /// </summary>
-        public static async Task<List<(string Name, string Type,
-            string Kind, string ClusteringOrder, int Position)>>
-            GetTableColumnsAsync(
-                ISession session,
-                string keyspace,
-                string table)
+        public static async Task<List<(string Name, string Type, string Kind, string ClusteringOrder, int Position)>>
+            GetTableColumnsAsync(ISession session, string keyspace, string table)
         {
-            var statement = new SimpleStatement(
-                "SELECT column_name, type, kind, " +
-                "clustering_order, position " +
-                "FROM system_schema.columns " +
-                "WHERE keyspace_name = ? " +
-                "AND table_name = ?", keyspace, table);
+            var statement = new SimpleStatement("SELECT column_name, type, kind, " +
+                "clustering_order, position " + "FROM system_schema.columns " +
+                "WHERE keyspace_name = ? " + "AND table_name = ?", keyspace, table);
             statement.SetReadTimeoutMillis(SchemaQueryTimeoutMs);
 
-            var resultSet = await ExecuteWithTimeoutRetryAsync(
-                () => session.ExecuteAsync(statement))
-                .ConfigureAwait(false);
+            var resultSet = await ExecuteWithTimeoutRetryAsync(() => session.ExecuteAsync(statement));
 
-            return resultSet.Select(r => (
-                Name: r.GetValue<string>("column_name"),
-                Type: r.GetValue<string>("type"),
+            return resultSet.Select(r => (Name: r.GetValue<string>("column_name"), Type: r.GetValue<string>("type"),
                 Kind: r.GetValue<string>("kind"),
-                ClusteringOrder: r.GetValue<string>(
-                    "clustering_order") ?? "none",
+                ClusteringOrder: r.GetValue<string>("clustering_order") ?? "none",
                 Position: r.GetValue<int>("position")
             )).ToList();
         }
@@ -231,12 +187,8 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
         /// <summary>
         /// Get column metadata for a table.
         /// </summary>
-        public static List<(string Name, string Type,
-            string Kind, string ClusteringOrder, int Position)>
-            GetTableColumns(
-                ISession session,
-                string keyspace,
-                string table)
+        public static List<(string Name, string Type, string Kind, string ClusteringOrder, int Position)>
+            GetTableColumns(ISession session, string keyspace, string table)
         {
             return GetTableColumnsAsync(session, keyspace, table).GetAwaiter().GetResult();
         }
@@ -246,8 +198,7 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
         /// column metadata. Returns empty string if no
         /// clustering columns or all are default (ASC).
         /// </summary>
-        private static string BuildClusteringOrderClause(
-            List<(string Name, string Type,
+        private static string BuildClusteringOrderClause(List<(string Name, string Type,
                 string Kind, string ClusteringOrder,
                 int Position)> columns)
         {
@@ -262,20 +213,15 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
             // Only add clause if any clustering column
             // has DESC order (ASC is the default)
             bool hasNonDefault = clusteringCols
-                .Any(c => c.ClusteringOrder
-                    .Equals("desc",
-                        StringComparison.OrdinalIgnoreCase));
+                .Any(c => c.ClusteringOrder.Equals("desc", StringComparison.OrdinalIgnoreCase));
             if (!hasNonDefault)
                 return string.Empty;
 
             var orderParts = clusteringCols
-                .Select(c =>
-                    $"\"{c.Name}\" " +
-                    $"{c.ClusteringOrder.ToUpperInvariant()}")
+                .Select(c => $"\"{c.Name}\" " + $"{c.ClusteringOrder.ToUpperInvariant()}")
                 .ToList();
 
-            return " WITH CLUSTERING ORDER BY " +
-                $"({string.Join(", ", orderParts)})";
+            return $" WITH CLUSTERING ORDER BY ({string.Join(", ", orderParts)})";
         }
 
         /// <summary>
@@ -284,16 +230,11 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
         /// Cosmos DB can return metadata for ghost tables
         /// that 404 on data reads.
         /// </summary>
-        public static async Task<bool> TableExistsAsync(
-            ISession session,
-            string keyspace,
-            string table)
+        public static async Task<bool> TableExistsAsync(ISession session, string keyspace, string table)
         {
             // First quick metadata check
-            var tables = await ListTablesAsync(session, keyspace)
-                .ConfigureAwait(false);
-            if (!tables.Contains(
-                table, StringComparer.OrdinalIgnoreCase))
+            var tables = await ListTablesAsync(session, keyspace);
+            if (!tables.Contains(table, StringComparer.OrdinalIgnoreCase))
                 return false;
 
             // Probe actual data read with retry for 429s
@@ -301,14 +242,12 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
             {
                 try
                 {
-                    var probe = new SimpleStatement(
-                        $"SELECT * FROM \"{keyspace}\".\"{table}\"" +
+                    var probe = new SimpleStatement($"SELECT * FROM \"{keyspace}\".\"{table}\"" +
                         " WHERE COSMOS_CHANGEFEED_FROM_START() = true");
                     probe.SetPageSize(1);
                     probe.SetAutoPage(false);
                     probe.SetReadTimeoutMillis(ProbeTimeoutMs);
-                    await session.ExecuteAsync(probe)
-                        .ConfigureAwait(false);
+                    await session.ExecuteAsync(probe);
                     return true;
                 }
                 catch (Exception ex)
@@ -320,8 +259,7 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
                     if (isThrottle && attempt < ThrottleMaxRetries)
                     {
                         int delaySec = Math.Min(attempt * 3, 30);
-                        await Task.Delay(delaySec * 1000)
-                            .ConfigureAwait(false);
+                        await Task.Delay(delaySec * 1000);
                         continue;
                     }
 
@@ -334,10 +272,7 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
         /// <summary>
         /// Check if a table exists in the given keyspace.
         /// </summary>
-        public static bool TableExists(
-            ISession session,
-            string keyspace,
-            string table)
+        public static bool TableExists(ISession session, string keyspace, string table)
         {
             return TableExistsAsync(session, keyspace, table).GetAwaiter().GetResult();
         }
@@ -345,34 +280,23 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
         /// <summary>
         /// Check if a keyspace exists.
         /// </summary>
-        public static async Task<bool> KeyspaceExistsAsync(
-            ISession session, string keyspace)
+        public static async Task<bool> KeyspaceExistsAsync(ISession session, string keyspace)
         {
-            var keyspaces = await ListKeyspacesAsync(session)
-                .ConfigureAwait(false);
-            return keyspaces.Contains(
-                keyspace, StringComparer.OrdinalIgnoreCase);
+            var keyspaces = await ListKeyspacesAsync(session);
+            return keyspaces.Contains(keyspace, StringComparer.OrdinalIgnoreCase);
         }
 
         /// <summary>
         /// Ensure target keyspace exists.Creates with
         /// SimpleStrategy replication if missing.
         /// </summary>
-        public static async Task EnsureKeyspaceExistsAsync(
-            ISession session,
-            string keyspace,
-            int replicationFactor = 1)
+        public static async Task EnsureKeyspaceExistsAsync(ISession session, string keyspace, int replicationFactor = 1)
         {
-            if (!await KeyspaceExistsAsync(session, keyspace)
-                .ConfigureAwait(false))
+            if (!await KeyspaceExistsAsync(session, keyspace))
             {
-                await session.ExecuteAsync(
-                    new SimpleStatement(
+                await session.ExecuteAsync(new SimpleStatement(
                         $"CREATE KEYSPACE IF NOT EXISTS \"{keyspace}\" " +
-                        $"WITH replication = " +
-                        $"{{'class': 'SimpleStrategy', " +
-                        $"'replication_factor': {replicationFactor}}}"))
-                    .ConfigureAwait(false);
+                        $"WITH replication = {{'class': 'SimpleStrategy', 'replication_factor': {replicationFactor}}}"));
             }
         }
 
@@ -380,10 +304,7 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
         /// Ensure target keyspace exists. Creates with
         /// SimpleStrategy replication if missing.
         /// </summary>
-        public static void EnsureKeyspaceExists(
-            ISession session,
-            string keyspace,
-            int replicationFactor = 1)
+        public static void EnsureKeyspaceExists(ISession session, string keyspace, int replicationFactor = 1)
         {
             EnsureKeyspaceExistsAsync(session, keyspace, replicationFactor).GetAwaiter().GetResult();
         }
@@ -391,29 +312,19 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
         /// <summary>
         /// Create a table on the target using the source schema.
         /// </summary>
-        public static async Task CreateTableFromSourceAsync(
-            ISession sourceSession,
-            ISession targetSession,
+        public static async Task CreateTableFromSourceAsync(ISession sourceSession, ISession targetSession,
             string sourceKeyspace,
             string sourceTable,
             string targetKeyspace,
             string targetTable)
         {
-            var columns = await GetTableColumnsAsync(
-                sourceSession, sourceKeyspace, sourceTable)
-                .ConfigureAwait(false);
+            var columns = await GetTableColumnsAsync(sourceSession, sourceKeyspace, sourceTable);
             if (columns.Count == 0)
-                throw new InvalidOperationException(
-                    $"Source table {sourceKeyspace}.{sourceTable} " +
-                    $"has no columns or does not exist.");
+                throw new InvalidOperationException($"Source table {sourceKeyspace}.{sourceTable} has no columns or does not exist.");
 
-            if (await TableExistsAsync(targetSession,
-                targetKeyspace, targetTable)
-                .ConfigureAwait(false))
+            if (await TableExistsAsync(targetSession, targetKeyspace, targetTable))
             {
-                var targetCols = await GetTableColumnsAsync(
-                    targetSession, targetKeyspace, targetTable)
-                    .ConfigureAwait(false);
+                var targetCols = await GetTableColumnsAsync(targetSession, targetKeyspace, targetTable);
                 var srcClustering = columns
                     .Where(c => c.Kind == "clustering")
                     .OrderBy(c => c.Position).ToList();
@@ -428,11 +339,8 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
                 {
                     for (int i = 0; i < srcClustering.Count; i++)
                     {
-                        if (!srcClustering[i].ClusteringOrder
-                            .Equals(tgtClustering[i]
-                                .ClusteringOrder,
-                                StringComparison
-                                    .OrdinalIgnoreCase))
+                        if (!srcClustering[i].ClusteringOrder.Equals(tgtClustering[i].ClusteringOrder,
+                                StringComparison.OrdinalIgnoreCase))
                         {
                             clusteringMismatch = true;
                             break;
@@ -442,22 +350,13 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
 
                 if (clusteringMismatch)
                 {
-                    await targetSession.ExecuteAsync(
-                        new SimpleStatement(
-                            $"DROP TABLE " +
-                            $"\"{targetKeyspace}\"" +
-                            $".\"{targetTable}\""))
-                        .ConfigureAwait(false);
+                    await targetSession.ExecuteAsync(new SimpleStatement($"DROP TABLE \"{targetKeyspace}\"" +
+                            $".\"{targetTable}\""));
                 }
                 else
                 {
-                    await AlterTableAddMissingColumnsAsync(
-                        targetSession,
-                        targetKeyspace,
-                        targetTable,
-                        columns,
-                        targetCols)
-                        .ConfigureAwait(false);
+                    await AlterTableAddMissingColumnsAsync(targetSession, targetKeyspace, targetTable, columns,
+                        targetCols);
                     return;
                 }
             }
@@ -475,8 +374,7 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
                 .ToList();
 
             var colDefs = columns
-                .Select(c =>
-                    c.Kind == "static"
+                .Select(c => c.Kind == "static"
                         ? $"  \"{c.Name}\" {c.Type} static"
                         : $"  \"{c.Name}\" {c.Type}")
                 .ToList();
@@ -484,43 +382,32 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
             string pkClause;
             if (clusteringKeys.Count > 0)
             {
-                pkClause =
-                    $"({string.Join(", ", partitionKeys)}), " +
-                    $"{string.Join(", ", clusteringKeys)}";
+                pkClause = $"({string.Join(", $", partitionKeys)}), {string.Join(", ", clusteringKeys)}";
             }
             else
             {
                 pkClause = string.Join(", ", partitionKeys);
             }
 
-            string clusteringOrder =
-                BuildClusteringOrderClause(columns);
+            string clusteringOrder = BuildClusteringOrderClause(columns);
 
             string cql =
-                $"CREATE TABLE IF NOT EXISTS " +
-                $"\"{targetKeyspace}\".\"{targetTable}\" (\n" +
-                $"{string.Join(",\n", colDefs)},\n" +
-                $"  PRIMARY KEY ({pkClause})\n)" +
+                $"CREATE TABLE IF NOT EXISTS \"{targetKeyspace}\".\"{targetTable}\" (\n" +
+                $"{string.Join(",\n", colDefs)},\n  PRIMARY KEY ({pkClause})\n)" +
                 clusteringOrder;
 
-            await targetSession.ExecuteAsync(
-                new SimpleStatement(cql))
-                .ConfigureAwait(false);
+            await targetSession.ExecuteAsync(new SimpleStatement(cql));
         }
 
         /// <summary>
         /// Create a table on the target using the source schema.
         /// </summary>
-        public static void CreateTableFromSource(
-            ISession sourceSession,
-            ISession targetSession,
-            string sourceKeyspace,
+        public static void CreateTableFromSource(ISession sourceSession, ISession targetSession, string sourceKeyspace,
             string sourceTable,
             string targetKeyspace,
             string targetTable)
         {
-            CreateTableFromSourceAsync(sourceSession, targetSession,
-                sourceKeyspace, sourceTable,
+            CreateTableFromSourceAsync(sourceSession, targetSession, sourceKeyspace, sourceTable,
                 targetKeyspace, targetTable).GetAwaiter().GetResult();
         }
 
@@ -530,47 +417,31 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
         /// from target, execute ALTER TABLE … ADD.
         /// Primary key columns cannot be added after creation.
         /// </summary>
-        public static async Task AlterTableAddMissingColumnsAsync(
-            ISession targetSession,
-            string targetKeyspace,
+        public static async Task AlterTableAddMissingColumnsAsync(ISession targetSession, string targetKeyspace,
             string targetTable,
-            List<(string Name, string Type,
-                string Kind, string ClusteringOrder,
-                int Position)> sourceColumns,
-            List<(string Name, string Type,
-                string Kind, string ClusteringOrder,
-                int Position)> targetColumns)
+            List<(string Name, string Type, string Kind, string ClusteringOrder, int Position)> sourceColumns,
+            List<(string Name, string Type, string Kind, string ClusteringOrder, int Position)> targetColumns)
         {
-            var targetColNames = new HashSet<string>(
-                targetColumns.Select(c => c.Name),
+            var targetColNames = new HashSet<string>(targetColumns.Select(c => c.Name),
                 StringComparer.OrdinalIgnoreCase);
 
             var missingCols = sourceColumns
-                .Where(c => (c.Kind == "regular" ||
-                             c.Kind == "static") &&
-                            !targetColNames.Contains(c.Name))
+                .Where(c => (c.Kind == "regular" || c.Kind == "static") && !targetColNames.Contains(c.Name))
                 .ToList();
 
-            if (missingCols.Count == 0)
-            {
-                return;
-            }
+            if (missingCols.Count == 0) return;
 
             var failedCols = new List<(string Name, Exception Ex)>();
 
             foreach (var col in missingCols)
             {
-                string staticClause =
-                    col.Kind == "static" ? " static" : "";
+                string staticClause = col.Kind == "static" ? " static" : "";
                 string alterCql =
-                    $"ALTER TABLE " +
-                    $"\"{targetKeyspace}\".\"{targetTable}\" " +
+                    $"ALTER TABLE \"{targetKeyspace}\".\"{targetTable}\" " +
                     $"ADD \"{col.Name}\" {col.Type}{staticClause}";
                 try
                 {
-                    await targetSession.ExecuteAsync(
-                        new SimpleStatement(alterCql))
-                        .ConfigureAwait(false);
+                    await targetSession.ExecuteAsync(new SimpleStatement(alterCql));
                 }
                 catch (Exception ex)
                 {
@@ -580,37 +451,23 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
 
             if (failedCols.Count > 0)
             {
-                var names = string.Join(", ",
-                    failedCols.Select(f => f.Name));
-                throw new InvalidOperationException(
-                    $"ALTER TABLE failed for " +
-                    $"{failedCols.Count} column(s): {names}. " +
-                    $"Target schema may be incomplete.");
+                var names = string.Join(", ", failedCols.Select(f => f.Name));
+                throw new InvalidOperationException($"ALTER TABLE failed for {failedCols.Count} column(s): {names}. Target schema may be incomplete.");
             }
-
         }
 
         /// <summary>
         /// Truncate a table on the target.
         /// </summary>
-        public static async Task TruncateTableAsync(
-            ISession session,
-            string keyspace,
-            string table)
+        public static async Task TruncateTableAsync(ISession session, string keyspace, string table)
         {
-            await session.ExecuteAsync(
-                new SimpleStatement(
-                    $"TRUNCATE \"{keyspace}\".\"{table}\""))
-                .ConfigureAwait(false);
+            await session.ExecuteAsync(new SimpleStatement($"TRUNCATE \"{keyspace}\".\"{table}\""));
         }
 
         /// <summary>
         /// Truncate a table on the target.
         /// </summary>
-        public static void TruncateTable(
-            ISession session,
-            string keyspace,
-            string table)
+        public static void TruncateTable(ISession session, string keyspace, string table)
         {
             TruncateTableAsync(session, keyspace, table).GetAwaiter().GetResult();
         }
@@ -622,20 +479,14 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
         /// physical partition. Returns empty list if the
         /// system table is not available.
         /// </summary>
-        public static async Task<List<string>> GetFeedRangesAsync(
-            ISession session,
-            string keyspace,
-            string table)
+        public static async Task<List<string>> GetFeedRangesAsync(ISession session, string keyspace, string table)
         {
             var ranges = new List<string>();
             try
             {
-                var resultSet = await session.ExecuteAsync(
-                    new SimpleStatement(
-                        "SELECT range FROM system_cosmos.feedranges " +
-                        "WHERE keyspace_name=? " +
-                        "AND table_name=?", keyspace, table))
-                    .ConfigureAwait(false);
+                var resultSet = await session.ExecuteAsync(new SimpleStatement(
+                        "SELECT range FROM system_cosmos.feedranges " + "WHERE keyspace_name=? " +
+                        "AND table_name=?", keyspace, table));
                 foreach (var row in resultSet)
                 {
                     var range = row.GetValue<string>("range");
@@ -645,8 +496,7 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
             }
             catch (Exception ex)
             {
-                MigrationJobContext.AddVerboseLog(
-                    $"GetFeedRanges error: {ex.Message}");
+                MigrationJobContext.AddVerboseLog($"GetFeedRanges error: {ex.Message}");
             }
             return ranges;
         }
@@ -655,10 +505,7 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
         /// Get feed ranges (physical partitions) for a table
         /// from the system_cosmos.feedranges table.
         /// </summary>
-        public static List<string> GetFeedRanges(
-            ISession session,
-            string keyspace,
-            string table)
+        public static List<string> GetFeedRanges(ISession session, string keyspace, string table)
         {
             return GetFeedRangesAsync(session, keyspace, table).GetAwaiter().GetResult();
         }
@@ -669,13 +516,8 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
         /// names.
         /// </summary>
         public static async Task<(PreparedStatement Ps, List<string> ColumnNames)>
-            PrepareInsertAsync(
-                ISession session,
-                string keyspace,
-                string table,
-                List<(string Name, string Type,
-                    string Kind, string ClusteringOrder,
-                    int Position)> columns)
+            PrepareInsertAsync(ISession session, string keyspace, string table,
+                List<(string Name, string Type, string Kind, string ClusteringOrder, int Position)> columns)
         {
             var colNames = columns
                 .Select(c => $"\"{c.Name}\"").ToList();
@@ -687,8 +529,7 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
                 $"({string.Join(", ", colNames)}) " +
                 $"VALUES ({string.Join(", ", placeholders)})";
 
-            var ps = await session.PrepareAsync(cql)
-                .ConfigureAwait(false);
+            var ps = await session.PrepareAsync(cql);
             return (ps, columns.Select(c => c.Name).ToList());
         }
 
@@ -696,50 +537,11 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
         /// Build a prepared INSERT statement for a table.
         /// </summary>
         public static (PreparedStatement Ps, List<string> ColumnNames)
-            PrepareInsert(
-                ISession session,
-                string keyspace,
-                string table,
-                List<(string Name, string Type,
-                    string Kind, string ClusteringOrder,
-                    int Position)> columns)
+            PrepareInsert(ISession session, string keyspace, string table,
+                List<(string Name, string Type, string Kind, string ClusteringOrder, int Position)> columns)
         {
             return PrepareInsertAsync(session, keyspace, table, columns).GetAwaiter().GetResult();
         }
 
-        /// <summary>
-        /// Build a prepared DELETE statement for a table,
-        /// using primary key columns (partition + clustering).
-        /// Used by FFCF change feed to replicate deletes.
-        /// </summary>
-        public static (PreparedStatement Ps, List<string> PkColumnNames)
-            PrepareDelete(
-                ISession session,
-                string keyspace,
-                string table,
-                List<(string Name, string Type,
-                    string Kind, string ClusteringOrder,
-                    int Position)> columns)
-        {
-            var pkCols = columns
-                .Where(c => c.Kind == "partition_key"
-                         || c.Kind == "clustering")
-                .ToList();
-
-            if (pkCols.Count == 0)
-                throw new InvalidOperationException(
-                    $"Table {keyspace}.{table} has no primary key columns");
-
-            var whereClauses = pkCols
-                .Select(c => $"\"{c.Name}\" = ?")
-                .ToList();
-
-            var cql =
-                $"DELETE FROM \"{keyspace}\".\"{table}\" " +
-                $"WHERE {string.Join(" AND ", whereClauses)}";
-
-            var ps = session.Prepare(cql);
-            return (ps, pkCols.Select(c => c.Name).ToList());
-        }
     }
 }

@@ -28,7 +28,6 @@ namespace CassandraMigrationProcessor
         public int ChangeFeedBatchDurationMin { get; set; }
         public int ChangeFeedMaxTablesInBatch { get; set; }
         public int ChangeFeedPollIntervalMs { get; set; }
-        public bool ChangeFeedFullFidelity { get; set; }
         public int MaxFeedRangeParallelism { get; set; }
 
         // Load and Save live on the model for simplicity: the
@@ -63,7 +62,6 @@ namespace CassandraMigrationProcessor
             ChangeFeedBatchDurationMin = DefaultChangeFeedBatchDurationMin;
             ChangeFeedMaxTablesInBatch = DefaultChangeFeedMaxTables;
             ChangeFeedPollIntervalMs = DefaultChangeFeedPollIntervalMs;
-            ChangeFeedFullFidelity = false;
             MaxFeedRangeParallelism = DefaultParallelism();
             LogPageSize = DefaultLogPageSize;
         }
@@ -96,7 +94,6 @@ namespace CassandraMigrationProcessor
                     ChangeFeedMaxTablesInBatch = DefaultOrValue(loaded.ChangeFeedMaxTablesInBatch, DefaultChangeFeedMaxTables);
                     LogPageSize = DefaultOrValue(loaded.LogPageSize, DefaultLogPageSize);
                     ChangeFeedPollIntervalMs = DefaultOrValue(loaded.ChangeFeedPollIntervalMs, DefaultChangeFeedPollIntervalMs);
-                    ChangeFeedFullFidelity = loaded.ChangeFeedFullFidelity;
                     MaxFeedRangeParallelism = DefaultOrValue(loaded.MaxFeedRangeParallelism, DefaultParallelism());
 
                     ClampValues();

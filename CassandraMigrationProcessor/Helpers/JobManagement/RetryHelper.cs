@@ -43,7 +43,7 @@ namespace CassandraMigrationProcessor.Helpers.JobManagement
                         return result;
 
                     attempt++;
-                    log.WriteLine($"Retrying attempt {attempt} in {delay/1000} seconds...");
+                    log.WriteLine($"Retrying attempt {attempt} in {delay / 1000} seconds...");
                     await Task.Delay(delay, ct);
                     delay = EscalateDelay(delay);
 
@@ -57,7 +57,7 @@ namespace CassandraMigrationProcessor.Helpers.JobManagement
                     attempt++;
                     int currentBackoffSeconds = delay / 1000;
                     var shouldRetry = await exceptionHandler(ex, attempt, currentBackoffSeconds);
-                    if (shouldRetry==TaskResult.Abort || attempt >= maxTries)
+                    if (shouldRetry == TaskResult.Abort || attempt >= maxTries)
                         return TaskResult.Abort;
 
                     if (ct.IsCancellationRequested)
