@@ -328,17 +328,43 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
         }
 
         /// <summary>
-        /// Check if a table exists in the given keyspace.
+        /// Check if a table exists and is accessible.
+        /// Probes actual data (not just metadata) because
+        /// Cosmos DB can return metadata for ghost tables
+        /// that 404 on data reads.
         /// </summary>
         public static async Task<bool> TableExistsAsync(
             ISession session,
             string keyspace,
             string table)
         {
+            // First quick metadata check
             var tables = await ListTablesAsync(session, keyspace)
                 .ConfigureAwait(false);
-            return tables.Contains(
-                table, StringComparer.OrdinalIgnoreCase);
+            if (!tables.Contains(
+                table, StringComparer.OrdinalIgnoreCase))
+                return false;
+
+            // Probe actual data read to catch ghost tables
+            try
+            {
+                var probe = new SimpleStatement(
+                    $"SELECT * FROM \"{keyspace}\".\"{table}\"" +
+                    " WHERE COSMOS_CHANGEFEED_FROM_START() = true");
+                probe.SetPageSize(1);
+                probe.SetAutoPage(false);
+                probe.SetReadTimeoutMillis(15_000);
+                await session.ExecuteAsync(probe)
+                    .ConfigureAwait(false);
+                return true;
+            }
+            catch
+            {
+                Console.WriteLine(
+                    $"  TableExists: {keyspace}.{table}" +
+                    $" metadata OK but data probe failed");
+                return false;
+            }
         }
 
         /// <summary>
