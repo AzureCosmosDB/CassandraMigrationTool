@@ -195,8 +195,7 @@
                         <i class="bi bi-cpu"></i>
                         <strong>Workers:</strong> @sj.MaxFeedRangeParallelism
                         · <strong>Parallel tables:</strong> @sj.ParallelThreads
-                        · <strong>Write concurrency:</strong> @(sj.MaxWriteConcurrency > 0 ? sj.MaxWriteConcurrency.ToString() : "auto")
-                        · <strong>Connections/host:</strong> @(sj.MaxConnectionsPerHost > 0 ? sj.MaxConnectionsPerHost.ToString() : sj.MaxWriteConcurrency > 0 ? $"auto ({Math.Max(8, (int)Math.Ceiling(sj.MaxWriteConcurrency / 1024.0))})" : "8")
+                        · <strong>Connections/host:</strong> @(sj.MaxConnectionsPerHost > 0 ? sj.MaxConnectionsPerHost.ToString() : "8")
                         · <strong>Page size:</strong> @(sj.PageSize > 0 ? sj.PageSize.ToString() : "500")
                     </small>
                 </div>
@@ -1313,8 +1312,6 @@ else if (@_showLogBackupFile)
     private async Task UpdateTimerStatus(string id, int seconds)
     {
         await Task.Delay(TimeSpan.FromSeconds(seconds)); // Wait for the specified seconds before processing
-
-        Console.WriteLine($"UpdateTimerStatus Invoked");
 
         if (id!= JobId)
         {

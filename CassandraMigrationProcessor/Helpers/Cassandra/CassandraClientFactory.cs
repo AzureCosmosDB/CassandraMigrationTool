@@ -605,16 +605,6 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
                 }
             }
 
-            // Auto-scale pool from write concurrency if pool not explicitly set
-            int effectivePool = job.MaxConnectionsPerHost;
-            if (effectivePool == 0 && job.MaxWriteConcurrency > 0)
-            {
-                // Each connection handles ~2048 in-flight requests;
-                // target ~50% utilisation for headroom
-                effectivePool = Math.Max(8,
-                    (int)Math.Ceiling(job.MaxWriteConcurrency / 1024.0));
-            }
-
             return CreateTargetSession(
                 log,
                 job.TargetContactPoint!,
@@ -622,7 +612,7 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
                 username,
                 password,
                 keyspace,
-                maxConnectionsPerHost: effectivePool);
+                maxConnectionsPerHost: job.MaxConnectionsPerHost);
         }
 
         /// <summary>

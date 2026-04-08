@@ -178,10 +178,6 @@
                         </div>
                         <div class="row mb-3">
                             <div class="col-md-6">
-                                <label for="writeConcurrency" class="form-label" title="Max in-flight write requests across all workers. 0 = auto. Increase if target cluster can handle more load. Default = auto.">Write concurrency</label>
-                                <input type="number" id="writeConcurrency" class="form-control" @bind="writeConcurrency" min="0" max="50000" placeholder="Auto (workers × 64)"/>
-                            </div>
-                            <div class="col-md-6">
                                 <label for="connectionsPerHost" class="form-label" title="Max Cassandra driver connections per host on target. 0 = default (8). Higher values increase throughput but need more resources.">Connections per host</label>
                                 <input type="number" id="connectionsPerHost" class="form-control" @bind="connectionsPerHost" min="0" max="128" placeholder="Default (8)"/>
                             </div>
@@ -238,7 +234,6 @@
     private int? parallelThreads = null; // Parallel threads for CQL Copy
     private int defaultParallelThreads = 5;
     private int? feedRangeWorkers = null; // Max concurrent feed range workers per table
-    private int? writeConcurrency = null; // Max in-flight writes (0 = auto)
     private int? connectionsPerHost = null; // Max connections per host (0 = default)
     private int? pageSize = null; // Rows per page (0 = default 500)
     private LogType logLevel = LogType.Info; // Minimum log level
@@ -384,7 +379,6 @@
             dropTargetTableBeforeStart = Job?.DropTargetTableBeforeStart ?? false;
             parallelThreads = Job?.ParallelThreads == defaultParallelThreads ? null : Job?.ParallelThreads;
             feedRangeWorkers = Job?.MaxFeedRangeParallelism == 16 ? null : Job?.MaxFeedRangeParallelism;
-            writeConcurrency = Job?.MaxWriteConcurrency == 0 ? null : Job?.MaxWriteConcurrency;
             connectionsPerHost = Job?.MaxConnectionsPerHost == 0 ? null : Job?.MaxConnectionsPerHost;
             pageSize = Job?.PageSize == 0 ? null : Job?.PageSize;
             logLevel = Job?.LogLevel ?? LogType.Info;
@@ -490,7 +484,6 @@
             DropTargetTableBeforeStart = dropTargetTableBeforeStart,
             ParallelThreads = parallelThreads ?? defaultParallelThreads,
             MaxFeedRangeParallelism = feedRangeWorkers ?? 16,
-            MaxWriteConcurrency = writeConcurrency ?? 0,
             MaxConnectionsPerHost = connectionsPerHost ?? 0,
             PageSize = pageSize ?? 0,
             LogLevel = logLevel,

@@ -136,12 +136,6 @@ namespace CassandraMigrationProcessor
         public int MaxFeedRangeParallelism { get; set; } = 16;
 
         /// <summary>
-        /// Max concurrent in-flight write requests across all
-        /// workers. 0 = auto (workers × 64, max 8000).
-        /// </summary>
-        public int MaxWriteConcurrency { get; set; } = 0;
-
-        /// <summary>
         /// Max Cassandra driver connections per host.
         /// 0 = default (8 local, 4 remote).
         /// </summary>
