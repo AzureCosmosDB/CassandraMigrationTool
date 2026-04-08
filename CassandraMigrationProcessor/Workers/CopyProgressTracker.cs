@@ -122,7 +122,7 @@ namespace CassandraMigrationProcessor.Workers
         public void AddCopied(long count)
         {
             Interlocked.Add(ref _totalCopied, count);
-            MaybeLog();
+            LogIfDue();
         }
 
         /// <summary>Track data volume written.</summary>
@@ -162,7 +162,11 @@ namespace CassandraMigrationProcessor.Workers
             Interlocked.Add(ref _totalSkipped, count);
         }
 
-        private void MaybeLog()
+        /// <summary>
+        /// Emit a periodic progress log line if the minimum
+        /// interval has elapsed since the last log.
+        /// </summary>
+        private void LogIfDue()
         {
             var now = DateTime.UtcNow;
             if ((now - _lastLogTime).TotalSeconds
@@ -188,19 +192,16 @@ namespace CassandraMigrationProcessor.Workers
                 ? $"{_recentRowsPerSecond / 1000:F1}k/s"
                 : $"{_recentRowsPerSecond:F0}/s";
 
-            // Pipeline diagnostics
             long pages = Interlocked.Read(ref _readPages);
-            long rMs = Interlocked.Read(ref _readTimeMs);
-            long wMs = Interlocked.Read(ref _writeTimeMs);
-            long wOps = Interlocked.Read(ref _writeOps);
-            // Compare per-page cost: avg read time vs avg
-            // write time for one page worth of rows
-            long avgReadMs = pages > 0 ? rMs / pages : 0;
-            long avgWritePerPageMs = pages > 0 ? wMs / pages : 0;
+            long readTimeMs = Interlocked.Read(ref _readTimeMs);
+            long writeTimeMs = Interlocked.Read(ref _writeTimeMs);
+            long writeOps = Interlocked.Read(ref _writeOps);
+            long avgReadMs = pages > 0 ? readTimeMs / pages : 0;
+            long avgWriteMs = pages > 0 ? writeTimeMs / pages : 0;
             string avgRead = avgReadMs > 0
                 ? $"{avgReadMs}ms" : "-";
-            string avgWrite = wOps > 0
-                ? $"{wMs / Math.Max(1, wOps)}ms" : "-";
+            string avgWrite = avgWriteMs > 0
+                ? $"{avgWriteMs}ms" : "-";
 
             long totalB = Interlocked.Read(ref _totalBytes);
             double mbps = elapsed > 0
@@ -209,24 +210,24 @@ namespace CassandraMigrationProcessor.Workers
                 ? $"{mbps:F1} MB/s" : $"{mbps * 1024:F0} KB/s";
 
             int ranges = Volatile.Read(ref _activeRanges);
-            int pgSz = Volatile.Read(ref _adaptivePageSize);
+            int pageSize = Volatile.Read(ref _adaptivePageSize);
 
             string bottleneck =
-                avgReadMs > avgWritePerPageMs * 2
+                avgReadMs > avgWriteMs * 2
                     ? "READ-BOUND" :
-                avgWritePerPageMs > avgReadMs * 2
+                avgWriteMs > avgReadMs * 2
                     ? "WRITE-BOUND" :
                       "BALANCED";
 
             _log.WriteLine(
                 $"Progress: {_keyspace}.{_table} " +
                 $"[{_activeWorkers}/{_workerCount} workers, " +
-                $"{ranges} ranges, pg={pgSz}] " +
+                $"{ranges} ranges, pg={pageSize}] " +
                 $"{copied:N0} rows ({speedStr}, {throughput}), " +
                 $"{failed:N0} failed " +
                 $"({elapsed:F1}s) | " +
-                $"avg read={avgRead}/page, " +
-                $"avg write={avgWrite}/row | " +
+                $"read={avgRead}/page, " +
+                $"write={avgWrite}/page | " +
                 $"{bottleneck}");
         }
 
