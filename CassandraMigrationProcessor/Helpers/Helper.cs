@@ -25,11 +25,6 @@ namespace CassandraMigrationProcessor
         /// Extract the host from a contact point string.
         /// For Cassandra, the contact point is already the host.
         /// </summary>
-        public static string ExtractHost(string contactPoint)
-        {
-            return contactPoint?.Trim() ?? string.Empty;
-        }
-
         public static bool IsOnline(MigrationJob job)
         {
             if (job == null) return false;

@@ -104,13 +104,6 @@ namespace CassandraMigrationProcessor.Context
             _log?.WriteLine(message, LogType.Verbose);
         }
 
-        public static void ResetJobState()
-        {
-            _controlledPauseRequested = false;
-            MigrationUnitsCache = new ActiveMigrationUnitsCache();
-            _log = null;
-        }
-
         public static void InitializeLog(Log log)
         {
             if (_log == null) { _log = log; }

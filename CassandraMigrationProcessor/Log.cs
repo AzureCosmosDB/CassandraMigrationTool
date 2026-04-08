@@ -37,18 +37,6 @@ namespace CassandraMigrationProcessor
             CurrentlyActiveJob = job;
         }
 
-        public void ShowInMonitor(string message, LogType LogType = LogType.Info)
-        {
-            lock (_verboseLock)
-            {
-                if (_verboseMessages.Count == 5)
-                {
-                    _verboseMessages.RemoveAt(0); // Remove the oldest mu
-                }
-                _verboseMessages.Add(new LogObject(LogType, message)); // Add the new mu
-            }            
-        }
-        
         public List<LogObject> GetMonitorMessages()
         {
             lock (_verboseLock)
@@ -169,20 +157,6 @@ namespace CassandraMigrationProcessor
         public int GetLogCount(string id)
         {
             return MigrationJobContext.Store.GetLogCount(id);
-        }
-
-        public static string FormatNamespaceForLog(
-            string sourceDatabaseName,
-            string sourceCollectionName,
-            string targetDatabaseName,
-            string targetCollectionName)
-        {
-            var sourceNamespace = $"{sourceDatabaseName}.{sourceCollectionName}";
-            var targetNamespace = $"{targetDatabaseName}.{targetCollectionName}";
-
-            return string.Equals(sourceNamespace, targetNamespace, StringComparison.OrdinalIgnoreCase)
-                ? sourceNamespace
-                : $"{sourceNamespace} ({targetNamespace})";
         }
 
         public byte[] DownloadLogsPaginated(string id, int skip, int take)

@@ -129,8 +129,6 @@ namespace CassandraMigrationProcessor
         /// </summary>
         public int ParallelThreads { get; set; } = 5;
 
-        public bool EnableParallelProcessing { get; set; } = true;
-
         /// <summary>
         /// Max concurrent feed-range workers per table.
         /// Higher = more throughput but more RU consumption.

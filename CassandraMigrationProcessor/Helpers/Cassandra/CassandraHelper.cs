@@ -276,57 +276,6 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
         /// <summary>
         /// Get the CREATE TABLE statement for a table.
         /// </summary>
-        public static string GetCreateTableCql(
-            ISession session,
-            string keyspace,
-            string table)
-        {
-            var columns = GetTableColumns(session, keyspace, table);
-            if (columns.Count == 0)
-                return string.Empty;
-
-            var partitionKeys = columns
-                .Where(c => c.Kind == "partition_key")
-                .OrderBy(c => c.Position)
-                .Select(c => $"\"{c.Name}\"")
-                .ToList();
-
-            var clusteringKeys = columns
-                .Where(c => c.Kind == "clustering")
-                .OrderBy(c => c.Position)
-                .Select(c => $"\"{c.Name}\"")
-                .ToList();
-
-            var colDefs = columns
-                .Select(c =>
-                    c.Kind == "static"
-                        ? $"  \"{c.Name}\" {c.Type} static"
-                        : $"  \"{c.Name}\" {c.Type}")
-                .ToList();
-
-            string pkClause;
-            if (clusteringKeys.Count > 0)
-            {
-                pkClause =
-                    $"({string.Join(", ", partitionKeys)}), " +
-                    $"{string.Join(", ", clusteringKeys)}";
-            }
-            else
-            {
-                pkClause = string.Join(", ", partitionKeys);
-            }
-
-            string clusteringOrder =
-                BuildClusteringOrderClause(columns);
-
-            return
-                $"CREATE TABLE IF NOT EXISTS " +
-                $"\"{keyspace}\".\"{table}\" (\n" +
-                $"{string.Join(",\n", colDefs)},\n" +
-                $"  PRIMARY KEY ({pkClause})\n)" +
-                clusteringOrder;
-        }
-
         /// <summary>
         /// Check if a table exists and is accessible.
         /// Probes actual data (not just metadata) because
@@ -411,16 +360,7 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
         }
 
         /// <summary>
-        /// Check if a keyspace exists.
-        /// </summary>
-        public static bool KeyspaceExists(
-            ISession session, string keyspace)
-        {
-            return KeyspaceExistsAsync(session, keyspace).GetAwaiter().GetResult();
-        }
-
-        /// <summary>
-        /// Ensure target keyspace exists. Creates with
+        /// Ensure target keyspace exists.Creates with
         /// SimpleStrategy replication if missing.
         /// </summary>
         public static async Task EnsureKeyspaceExistsAsync(
@@ -671,27 +611,6 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
             Console.WriteLine(
                 $"  Added {missingCols.Count} missing column(s)" +
                 $" to {targetKeyspace}.{targetTable}");
-        }
-
-        /// <summary>
-        /// Compare source and target columns. For any
-        /// regular/static column in source that is missing
-        /// from target, execute ALTER TABLE … ADD.
-        /// </summary>
-        public static void AlterTableAddMissingColumns(
-            ISession targetSession,
-            string targetKeyspace,
-            string targetTable,
-            List<(string Name, string Type,
-                string Kind, string ClusteringOrder,
-                int Position)> sourceColumns,
-            List<(string Name, string Type,
-                string Kind, string ClusteringOrder,
-                int Position)> targetColumns)
-        {
-            AlterTableAddMissingColumnsAsync(targetSession,
-                targetKeyspace, targetTable,
-                sourceColumns, targetColumns).GetAwaiter().GetResult();
         }
 
         /// <summary>
