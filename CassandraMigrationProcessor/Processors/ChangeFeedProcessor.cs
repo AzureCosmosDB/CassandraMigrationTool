@@ -359,16 +359,6 @@ namespace CassandraMigrationProcessor.Processors
                         .ConfigureAwait(false);
 
                     continuationState = rs.PagingState;
-                    if (continuationState != null
-                        && mu.FeedRangeContinuationTokens != null)
-                    {
-                        lock (mu.FeedRangeContinuationTokens)
-                        {
-                            mu.FeedRangeContinuationTokens[
-                                feedRange] = Convert
-                                .ToBase64String(continuationState);
-                        }
-                    }
 
                     int insertCount = 0;
                     int updateCount = 0;
@@ -445,6 +435,19 @@ namespace CassandraMigrationProcessor.Processors
                         insertCount + updateCount + deleteCount;
                     mu.ChangeFeedUpdatesInLastBatch = batchTotal;
                     mu.ChangeFeedLastChecked = DateTime.UtcNow;
+
+                    // Save continuation AFTER writes so crash
+                    // doesn't skip unwritten rows
+                    if (continuationState != null
+                        && mu.FeedRangeContinuationTokens != null)
+                    {
+                        lock (mu.FeedRangeContinuationTokens)
+                        {
+                            mu.FeedRangeContinuationTokens[
+                                feedRange] = Convert
+                                .ToBase64String(continuationState);
+                        }
+                    }
 
                     if (batchTotal > 0 || errorCount > 0)
                     {

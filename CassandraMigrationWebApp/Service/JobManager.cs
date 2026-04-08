@@ -266,12 +266,24 @@ namespace CassandraMigrationWebApp.Service
 
         public Task StartMigration(MigrationJob job, string sourceConnectionString, string targetConnectionString, string namespacesToMigrate, CassandraMigrationProcessor.Models.JobType jobType,bool trackChangeStreams)
         {
-            _log = new Log();
-            _log.Init(job.Id);
-            _log.SetJob(job);
-            MigrationWorker = new MigrationWorker(_log);
-            _migrationCts = new CancellationTokenSource();
-            _runningJobId = job.Id;
+            lock (_stateLock)
+            {
+                if (!string.IsNullOrEmpty(_runningJobId))
+                {
+                    _log.WriteLine(
+                        $"Job {_runningJobId} already running," +
+                        $" cannot start {job.Id}",
+                        LogType.Warning);
+                    return Task.CompletedTask;
+                }
+
+                _log = new Log();
+                _log.Init(job.Id);
+                _log.SetJob(job);
+                MigrationWorker = new MigrationWorker(_log);
+                _migrationCts = new CancellationTokenSource();
+                _runningJobId = job.Id;
+            }
             
             MigrationJobContext.SourceConnectionString[job.Id] = sourceConnectionString;
             MigrationJobContext.TargetConnectionString[job.Id] = targetConnectionString;

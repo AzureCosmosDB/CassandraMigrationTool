@@ -826,6 +826,11 @@ namespace CassandraMigrationProcessor.Processors
                                 $"{ex.Message}",
                                 LogType.Error);
                             workerErrors.Add(TaskResult.Retry);
+                            // Signal readers to stop if
+                            // writer has a fatal error
+                            if (!IsRetriableWriteError(ex))
+                                Interlocked.Exchange(
+                                    ref nonRetriableHitFlag, 1);
                         }
                         finally
                         {
@@ -982,19 +987,28 @@ namespace CassandraMigrationProcessor.Processors
         private static bool IsRetriableWriteError(Exception ex)
         {
             var msg = ex.Message ?? string.Empty;
+            var typeName = ex.GetType().Name;
+            // Transient: throttling
             if (msg.Contains("429")
                 || msg.Contains("TooManyRequests",
                     StringComparison.OrdinalIgnoreCase)
                 || msg.Contains("rate",
                     StringComparison.OrdinalIgnoreCase))
                 return true;
+            // Transient: timeout
             if (ex is TimeoutException
                 || ex is System.IO.IOException
                 || msg.Contains("timeout",
-                    StringComparison.OrdinalIgnoreCase))
+                    StringComparison.OrdinalIgnoreCase)
+                || typeName.Contains("Timeout"))
                 return true;
+            // Transient: network/connection
             if (ex is System.Net.Sockets.SocketException
+                || typeName.Contains("NoHostAvailable")
+                || typeName.Contains("BusyPool")
                 || msg.Contains("connection",
+                    StringComparison.OrdinalIgnoreCase)
+                || msg.Contains("All hosts tried",
                     StringComparison.OrdinalIgnoreCase))
                 return true;
             // Non-retriable: auth, schema, syntax errors
@@ -1161,7 +1175,6 @@ namespace CassandraMigrationProcessor.Processors
                 }
             }
 
-            StopOfflineOrInvokeChangeFeed();
             return TaskResult.Success;
         }
     }

@@ -203,6 +203,11 @@ namespace CassandraMigrationProcessor.Workers
                     return TaskResult.Abort;
                 }
 
+                // All tables processed — check job completion
+                // (must be after Parallel.ForEachAsync, not per-table)
+                if (_activeProcessor != null)
+                    _activeProcessor.StopOfflineOrInvokeChangeFeed();
+
                 return TaskResult.Success;
             }
             catch (OperationCanceledException)
