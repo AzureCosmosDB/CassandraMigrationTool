@@ -28,7 +28,8 @@ namespace CassandraMigrationProcessor.Processors
             List<object[]> Rows,
             string FeedRange,
             bool IsLastPage,
-            long ReadTimeMs);
+            long ReadTimeMs,
+            byte[]? NextPagingState);
 
         private static string TruncRange(string r) =>
             r.Length > 30 ? r[..15] + "..." : r;

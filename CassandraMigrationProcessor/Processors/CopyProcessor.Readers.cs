@@ -121,9 +121,9 @@ namespace CassandraMigrationProcessor.Processors
                             || nextPaging == null)
                             isLastPage = true;
 
-                        // ── RECYCLE immediately after
-                        // read so next page can be read
-                        // by another reader in parallel
+                        // Recycle feed range for next page
+                        // (do NOT update checkpoint here —
+                        // writer does it after confirmed write)
                         if (!isLastPage)
                         {
                             try
@@ -142,35 +142,9 @@ namespace CassandraMigrationProcessor.Processors
                             }
                         }
 
-                        // Update checkpoint AFTER
-                        // successful recycle/completion
-                        lock (pctx.Checkpoints)
-                        {
-                            if (isLastPage)
-                            {
-                                pctx.Checkpoints.Remove(
-                                    state.FeedRange);
-                                pctx.Completed.Add(
-                                    state.FeedRange);
-                            }
-                            else if (recycledToChannel
-                                && nextPaging != null)
-                            {
-                                pctx.Checkpoints[
-                                    state.FeedRange] =
-                                    Convert.ToBase64String(
-                                        nextPaging);
-                            }
-                        }
-
                         // Signal range completion
                         if (isLastPage)
                         {
-                            _log.WriteLine(
-                                $"Range complete: " +
-                                $"{TruncRange(state.FeedRange)} " +
-                                $"[{pctx.Completed.Count}" +
-                                $"/{pctx.FeedRanges.Count}]");
                             pctx.Tracker.RangeCompleted(
                                 state.FeedRange,
                                 TaskResult.Success);
@@ -179,7 +153,7 @@ namespace CassandraMigrationProcessor.Processors
 
                         // Push rows to data channel
                         // for writers to consume
-                        if (rows.Count > 0)
+                        if (rows.Count > 0 || isLastPage)
                         {
                             await pctx.DataCh.Writer
                                 .WriteAsync(
@@ -187,7 +161,8 @@ namespace CassandraMigrationProcessor.Processors
                                         rows,
                                         state.FeedRange,
                                         isLastPage,
-                                        readSw.ElapsedMilliseconds),
+                                        readSw.ElapsedMilliseconds,
+                                        nextPaging),
                                     _cts.Token);
                         }
                     }
@@ -210,22 +185,19 @@ namespace CassandraMigrationProcessor.Processors
                 }
                 finally
                 {
+                    // On error/cancel where range wasn't
+                    // recycled: mark it complete so channel
+                    // can close. (No checkpoint update —
+                    // range will restart on resume.)
                     if (!recycledToChannel
                         && !pctx.Completed.Contains(
                             state.FeedRange))
                     {
                         lock (pctx.Checkpoints)
                         {
-                            pctx.Checkpoints.Remove(
-                                state.FeedRange);
                             pctx.Completed.Add(
                                 state.FeedRange);
                         }
-                        _log.WriteLine(
-                            $"Range failed: " +
-                            $"{TruncRange(state.FeedRange)} " +
-                            $"[{pctx.Completed.Count}" +
-                            $"/{pctx.FeedRanges.Count}]");
                         pctx.Tracker.RangeCompleted(
                             state.FeedRange,
                             TaskResult.Retry);

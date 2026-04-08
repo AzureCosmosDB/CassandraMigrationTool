@@ -147,6 +147,26 @@ namespace CassandraMigrationProcessor.Processors
                                 pageBytes += 8;
                         }
                     pctx.Tracker.AddBytes(pageBytes);
+
+                    // Update checkpoint AFTER writes confirmed
+                    // so crash doesn't skip unwritten rows
+                    lock (pctx.Checkpoints)
+                    {
+                        if (page.IsLastPage)
+                        {
+                            pctx.Checkpoints.Remove(
+                                page.FeedRange);
+                            pctx.Completed.Add(
+                                page.FeedRange);
+                        }
+                        else if (page.NextPagingState != null)
+                        {
+                            pctx.Checkpoints[
+                                page.FeedRange] =
+                                Convert.ToBase64String(
+                                    page.NextPagingState);
+                        }
+                    }
                 }
                 catch (OperationCanceledException)
                 {
