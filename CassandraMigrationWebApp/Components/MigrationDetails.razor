@@ -236,7 +236,7 @@
     private bool appendMode = false;
     private bool dropTargetTableBeforeStart = false;
     private int? parallelThreads = null; // Parallel threads for CQL Copy
-    private int defaultParallelThreads = Environment.ProcessorCount * 5; // Default parallel threads
+    private int defaultParallelThreads = 5;
     private int? feedRangeWorkers = null; // Max concurrent feed range workers per table
     private int? writeConcurrency = null; // Max in-flight writes (0 = auto)
     private int? connectionsPerHost = null; // Max connections per host (0 = default)

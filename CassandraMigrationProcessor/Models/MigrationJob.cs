@@ -127,8 +127,7 @@ namespace CassandraMigrationProcessor
         /// <summary>
         /// Number of parallel threads for row copy operations.
         /// </summary>
-        public int ParallelThreads { get; set; }
-            = Environment.ProcessorCount * 5;
+        public int ParallelThreads { get; set; } = 5;
 
         public bool EnableParallelProcessing { get; set; } = true;
 
