@@ -124,8 +124,7 @@ namespace CassandraMigrationProcessor.Processors
                     pctx.Tracker.SetPipelineState(
                         pctx.FeedRanges.Count
                             - pctx.Completed.Count,
-                        Volatile.Read(
-                            ref pctx.AdaptivePageSize));
+                        pctx.ConfiguredPageSize);
                     await Task.WhenAll(writeTasks);
                     writeSw.Stop();
                     pctx.Tracker.AddWriteTime(

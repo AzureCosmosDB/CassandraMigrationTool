@@ -251,7 +251,6 @@ namespace CassandraMigrationProcessor.Processors
                 TotalFailed = 0,
                 NonRetriableHitFlag = 0,
                 WorkerErrors = new ConcurrentBag<TaskResult>(),
-                AdaptivePageSize = configuredPageSize,
                 ConfiguredPageSize = configuredPageSize,
                 MaxInFlight = maxInFlight,
                 Ctx = ctx,
@@ -269,8 +268,7 @@ namespace CassandraMigrationProcessor.Processors
                 $"{writerCount} writers " +
                 $"for {ctx.KeyspaceName}.{ctx.TableName} " +
                 $"({pendingRanges.Count} feed ranges, " +
-                $"page size={configuredPageSize}" +
-                $"{(configuredPageSize != pctx.AdaptivePageSize ? $"→{pctx.AdaptivePageSize} adaptive" : "")})...");
+                $"page size={configuredPageSize})...");
             var readers = Enumerable.Range(0, readerCount)
                 .Select(rid => Task.Run(
                     () => RunReaderAsync(rid, pctx)))

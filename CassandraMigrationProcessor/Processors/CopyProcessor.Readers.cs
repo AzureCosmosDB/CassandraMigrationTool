@@ -47,9 +47,7 @@ namespace CassandraMigrationProcessor.Processors
                     var stmt = new SimpleStatement(
                         BuildSelectCql(
                             pctx.Ctx, state.FeedRange));
-                    int effectivePageSize = Volatile.Read(
-                        ref pctx.AdaptivePageSize);
-                    stmt.SetPageSize(effectivePageSize);
+                    stmt.SetPageSize(pctx.ConfiguredPageSize);
                     stmt.SetAutoPage(false);
                     stmt.SetReadTimeoutMillis(60_000);
                     stmt.SetConsistencyLevel(
@@ -118,31 +116,6 @@ namespace CassandraMigrationProcessor.Processors
                         readSw.Stop();
                         pctx.Tracker.AddReadTime(
                             readSw.ElapsedMilliseconds);
-
-                        // Adapt page size based on row size
-                        if (rows.Count > 0)
-                        {
-                            long sampleSize = 0;
-                            var sample = rows[0];
-                            foreach (var v in sample)
-                            {
-                                if (v is byte[] b)
-                                    sampleSize += b.Length;
-                                else if (v is string s)
-                                    sampleSize += s.Length * 2;
-                                else if (v != null)
-                                    sampleSize += 8;
-                            }
-                            if (sampleSize > 0)
-                            {
-                                int ideal = (int)Math.Clamp(
-                                    TargetPageBytes / sampleSize,
-                                    10, pctx.ConfiguredPageSize);
-                                Volatile.Write(
-                                    ref pctx.AdaptivePageSize,
-                                    ideal);
-                            }
-                        }
 
                         if (rows.Count == 0
                             || nextPaging == null)

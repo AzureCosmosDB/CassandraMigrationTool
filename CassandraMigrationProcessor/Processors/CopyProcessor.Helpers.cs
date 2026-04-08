@@ -18,11 +18,6 @@ namespace CassandraMigrationProcessor.Processors
     internal partial class CopyProcessor
     {
         /// <summary>
-        /// Target byte size per page read for adaptive page sizing.
-        /// </summary>
-        private const long TargetPageBytes = 5 * 1024 * 1024; // 5MB
-
-        /// <summary>
         /// State of a feed range — its token and paging position.
         /// </summary>
         private record FeedRangeState(
@@ -92,7 +87,6 @@ namespace CassandraMigrationProcessor.Processors
             public long TotalFailed;
             public int NonRetriableHitFlag;
             public ConcurrentBag<TaskResult> WorkerErrors = null!;
-            public int AdaptivePageSize;
             public int ConfiguredPageSize;
             public int MaxInFlight;
             public ProcessorContext Ctx = null!;
