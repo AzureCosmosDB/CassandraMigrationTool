@@ -41,7 +41,7 @@ namespace CassandraMigrationProcessor.Context
                 lock (_writeMULock)
                 {
                     var muFilePath = Path.Combine(
-                        "migrationjobs", mu.JobId,
+                        JobStore.JobsFolder, mu.JobId,
                         $"{mu.Id}.json");
                     string muJson =
                         JsonConvert.SerializeObject(
@@ -77,7 +77,7 @@ namespace CassandraMigrationProcessor.Context
             try
             {
                 var filePath = Path.Combine(
-                    "migrationjobs", jobId, $"{unitId}.json");
+                    JobStore.JobsFolder, jobId, $"{unitId}.json");
                 string json = MigrationJobContext.Store
                     .ReadDocument(filePath);
                 return JsonConvert

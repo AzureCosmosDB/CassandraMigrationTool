@@ -253,15 +253,37 @@ namespace CassandraMigrationProcessor.Processors
                         if (!ctx.Completed.Contains(
                             partition.FeedRange))
                         {
+                            // Save checkpoint for the failed
+                            // range so resume can retry from
+                            // the last good position. Do NOT
+                            // mark as completed — the range
+                            // still has uncopied data.
                             lock (ctx.Checkpoints)
                             {
-                                ctx.Completed.Add(
-                                    partition.FeedRange);
+                                var token =
+                                    partition.GetResumeToken();
+                                if (token != null)
+                                    ctx.Checkpoints[
+                                        partition.FeedRange] =
+                                        Convert.ToBase64String(
+                                            token);
+                                else if (
+                                    partition.LastPagingState
+                                    != null)
+                                    ctx.Checkpoints[
+                                        partition.FeedRange] =
+                                        Convert.ToBase64String(
+                                            partition
+                                                .LastPagingState);
                             }
                             ctx.Tracker.RangeCompleted(
                                 partition.FeedRange,
                                 TaskResult.Retry);
-                            TryCloseChannel(ctx);
+                            // Close channel so workers drain
+                            // and the pipeline can return the
+                            // error to the retry helper.
+                            ctx.PartitionPool.Writer
+                                .TryComplete();
                         }
                     }
                     finally

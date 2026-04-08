@@ -56,7 +56,7 @@ namespace CassandraMigrationProcessor
                 ParentJob.MigrationUnitBasics.RemoveAt(index);
 
                 var filePath =
-                    $"migrationjobs\\{this.JobId}\\{this.Id}.json";
+                    $"{JobStore.JobsFolder}\\{this.JobId}\\{this.Id}.json";
                 MigrationJobContext.Store.DeleteDocument(filePath);
 
                 return MigrationJobContext

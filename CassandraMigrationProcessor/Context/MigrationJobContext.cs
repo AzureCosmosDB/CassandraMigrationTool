@@ -212,7 +212,7 @@ namespace CassandraMigrationProcessor.Context
         {
             errorMessage = string.Empty;
             notFound = false;
-            string path = "migrationjobs\\joblist.json";
+            string path = $"{JobStore.JobsFolder}\\joblist.json";
 
             try
             {
@@ -266,7 +266,7 @@ namespace CassandraMigrationProcessor.Context
                     lock (_writeJobListLock)
                     {
                         var filePath = Path.Combine(
-                            "migrationjobs", "joblist.json");
+                            JobStore.JobsFolder, "joblist.json");
                         string json =
                             JsonConvert.SerializeObject(
                                 JobList, Formatting.Indented);

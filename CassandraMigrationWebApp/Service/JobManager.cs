@@ -122,7 +122,7 @@ namespace CassandraMigrationWebApp.Service
             {
                 Task.Run(() =>
                 {
-                    MigrationJobContext.Store.DeleteDocument($"{Path.Combine("migrationjobs", jobId)}");
+                    MigrationJobContext.Store.DeleteDocument($"{Path.Combine(JobStore.JobsFolder, jobId)}");
                     MigrationJobContext.Store.DeleteLogs(jobId);
                     //clearing  dumped files
 

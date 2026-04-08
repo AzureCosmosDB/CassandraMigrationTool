@@ -8,6 +8,9 @@ namespace CassandraMigrationProcessor.Context
 {
     public static class JobStore
     {
+        public const string JobsFolder = "migrationjobs";
+        private const string JobDefinitionFile = "jobdefinition.json";
+
         private static readonly object _writeJobLock = new object();
 
         private static ConcurrentDictionary<string, MigrationJob>
@@ -21,6 +24,23 @@ namespace CassandraMigrationProcessor.Context
             set => _cachedActiveJob = value;
         }
 
+        /// <summary>
+        /// Build the canonical path to a job definition file.
+        /// </summary>
+        internal static string GetJobDefinitionPath(string jobId) =>
+            Path.Combine(JobsFolder, jobId, JobDefinitionFile);
+
+        /// <summary>
+        /// Serialize a job and persist it to storage (caller must hold _writeJobLock).
+        /// </summary>
+        private static void SerializeAndPersist(MigrationJob job)
+        {
+            var filePath = GetJobDefinitionPath(job.Id);
+            string json = JsonConvert.SerializeObject(
+                job, Formatting.Indented);
+            MigrationJobContext.Store.UpsertDocument(filePath, json);
+        }
+
         internal static MigrationJob? LoadJob(string jobId)
         {
             if (_jobs.TryGetValue(jobId, out var cached))
@@ -28,8 +48,7 @@ namespace CassandraMigrationProcessor.Context
 
             try
             {
-                var filePath = Path.Combine(
-                    "migrationjobs", jobId, "jobdefinition.json");
+                var filePath = GetJobDefinitionPath(jobId);
                 var json = MigrationJobContext.Store.ReadDocument(
                     filePath);
                 var loadedObject =
@@ -74,14 +93,7 @@ namespace CassandraMigrationProcessor.Context
                 {
                     lock (_writeJobLock)
                     {
-                        var filePath = Path.Combine(
-                            "migrationjobs", job.Id,
-                            "jobdefinition.json");
-                        string json =
-                            JsonConvert.SerializeObject(
-                                job, Formatting.Indented);
-                        MigrationJobContext.Store.UpsertDocument(
-                            filePath, json);
+                        SerializeAndPersist(job);
                         _jobs[job.Id] = job;
                         if (!string.IsNullOrEmpty(
                                 MigrationJobContext
@@ -110,14 +122,7 @@ namespace CassandraMigrationProcessor.Context
             {
                 lock (_writeJobLock)
                 {
-                    var filePath = Path.Combine(
-                        "migrationjobs", job.Id,
-                        "jobdefinition.json");
-                    string json =
-                        JsonConvert.SerializeObject(
-                            job, Formatting.Indented);
-                    MigrationJobContext.Store.UpsertDocument(
-                        filePath, json);
+                    SerializeAndPersist(job);
                 }
             }
         }

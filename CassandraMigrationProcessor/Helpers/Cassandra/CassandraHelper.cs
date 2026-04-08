@@ -13,6 +13,41 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
     /// </summary>
     public static class CassandraHelper
     {
+        // Retry/timeout constants
+        private const int SchemaQueryTimeoutMs = 30_000;
+        private const int SizeEstimateTimeoutMs = 10_000;
+        private const int ProbeTimeoutMs = 15_000;
+        private const int DefaultMaxRetries = 3;
+        private const int RetryBaseDelayMs = 2000;
+        private const int ThrottleMaxRetries = 10;
+
+        /// <summary>
+        /// Execute an async operation with retry on timeout errors.
+        /// </summary>
+        private static async Task<T> ExecuteWithTimeoutRetryAsync<T>(
+            Func<Task<T>> operation,
+            int maxRetries = DefaultMaxRetries,
+            int baseDelayMs = RetryBaseDelayMs)
+        {
+            for (int attempt = 1; attempt <= maxRetries; attempt++)
+            {
+                try
+                {
+                    return await operation().ConfigureAwait(false);
+                }
+                catch (Exception ex) when (
+                    attempt < maxRetries &&
+                    (ex is TimeoutException
+                     || ex.GetType().Name.Contains("Timeout")
+                     || ex.InnerException is TimeoutException))
+                {
+                    await Task.Delay(attempt * baseDelayMs)
+                        .ConfigureAwait(false);
+                }
+            }
+            // Should not reach here, but satisfy the compiler
+            return await operation().ConfigureAwait(false);
+        }
         /// <summary>
         /// List all keyspaces (excluding system keyspaces).
         /// </summary>
@@ -94,7 +129,7 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
                     "FROM system.size_estimates " +
                     "WHERE keyspace_name = ? AND table_name = ?",
                     keyspace, table);
-                estStmt.SetReadTimeoutMillis(10_000);
+                estStmt.SetReadTimeoutMillis(SizeEstimateTimeoutMs);
                 var estRs = await session.ExecuteAsync(estStmt)
                     .ConfigureAwait(false);
                 long totalPartitions = 0;
@@ -120,7 +155,7 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
                 var statement = new SimpleStatement(
                     $"SELECT COUNT(*) FROM " +
                     $"\"{keyspace}\".\"{table}\"");
-                statement.SetReadTimeoutMillis(30_000); // 30s max
+                statement.SetReadTimeoutMillis(SchemaQueryTimeoutMs); // 30s max
                 statement.SetConsistencyLevel(ConsistencyLevel.One);
                 var resultSet = await session.ExecuteAsync(statement)
                     .ConfigureAwait(false);
@@ -177,27 +212,11 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
                 "FROM system_schema.columns " +
                 "WHERE keyspace_name = ? " +
                 "AND table_name = ?", keyspace, table);
-            statement.SetReadTimeoutMillis(30_000);
+            statement.SetReadTimeoutMillis(SchemaQueryTimeoutMs);
 
-            RowSet resultSet = null!;
-            for (int attempt = 1; attempt <= 3; attempt++)
-            {
-                try
-                {
-                    resultSet = await session.ExecuteAsync(statement)
-                        .ConfigureAwait(false);
-                    break;
-                }
-                catch (Exception ex) when (
-                    attempt < 3 &&
-                    (ex is TimeoutException
-                     || ex.GetType().Name.Contains("Timeout")
-                     || ex.InnerException is TimeoutException))
-                {
-                    await Task.Delay(attempt * 2000)
-                        .ConfigureAwait(false);
-                }
-            }
+            var resultSet = await ExecuteWithTimeoutRetryAsync(
+                () => session.ExecuteAsync(statement))
+                .ConfigureAwait(false);
 
             return resultSet.Select(r => (
                 Name: r.GetValue<string>("column_name"),
@@ -278,7 +297,7 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
                 return false;
 
             // Probe actual data read with retry for 429s
-            for (int attempt = 1; attempt <= 10; attempt++)
+            for (int attempt = 1; attempt <= ThrottleMaxRetries; attempt++)
             {
                 try
                 {
@@ -287,7 +306,7 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
                         " WHERE COSMOS_CHANGEFEED_FROM_START() = true");
                     probe.SetPageSize(1);
                     probe.SetAutoPage(false);
-                    probe.SetReadTimeoutMillis(15_000);
+                    probe.SetReadTimeoutMillis(ProbeTimeoutMs);
                     await session.ExecuteAsync(probe)
                         .ConfigureAwait(false);
                     return true;
@@ -298,7 +317,7 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
                         || ex.Message?.Contains("rate", StringComparison.OrdinalIgnoreCase) == true
                         || ex.Message?.Contains("TooMany", StringComparison.OrdinalIgnoreCase) == true;
 
-                    if (isThrottle && attempt < 10)
+                    if (isThrottle && attempt < ThrottleMaxRetries)
                     {
                         int delaySec = Math.Min(attempt * 3, 30);
                         await Task.Delay(delaySec * 1000)

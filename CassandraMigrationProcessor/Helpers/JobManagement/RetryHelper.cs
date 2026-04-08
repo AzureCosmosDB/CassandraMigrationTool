@@ -8,12 +8,19 @@ namespace CassandraMigrationProcessor.Helpers.JobManagement
 {
     public class RetryHelper
     {
+        private const int DefaultMaxTries = 10;
+        private const int DefaultInitialDelayMs = 2000;
+        private const int MaxBackoffMs = 60_000;
+
+        private static int EscalateDelay(int currentDelay)
+            => Math.Min(currentDelay * 2, MaxBackoffMs);
+
         public async Task<TaskResult> ExecuteTask(
             Func<Task<TaskResult>> taskFunc,
             Func<Exception, int, int, Task<TaskResult>> exceptionHandler,
             Log log,
-            int maxTries=10,
-            int initialDelayMs = 2000,
+            int maxTries = DefaultMaxTries,
+            int initialDelayMs = DefaultInitialDelayMs,
             CancellationToken ct = default)
         {
 
@@ -38,7 +45,7 @@ namespace CassandraMigrationProcessor.Helpers.JobManagement
                     attempt++;
                     log.WriteLine($"Retrying attempt {attempt} in {delay/1000} seconds...");
                     await Task.Delay(delay, ct);
-                    delay = Math.Min(delay * 2, 60_000); // Cap at 60s
+                    delay = EscalateDelay(delay);
 
                 }
                 catch (OperationCanceledException)
@@ -57,7 +64,7 @@ namespace CassandraMigrationProcessor.Helpers.JobManagement
                         return TaskResult.Canceled;
 
                     await Task.Delay(delay, ct);
-                    delay = Math.Min(delay * 2, 60_000); // Cap at 60s
+                    delay = EscalateDelay(delay);
                 }
             }
             return TaskResult.FailedAfterRetries;

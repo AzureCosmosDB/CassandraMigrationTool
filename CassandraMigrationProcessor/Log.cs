@@ -1,12 +1,6 @@
 using CassandraMigrationProcessor.Context;
 using System;
 using System.Collections.Generic;
-using System.Diagnostics.Metrics;
-using System.IO;
-using System.Text;
-using System.Text.Json;
-using System.Text.Json.Serialization;
-using System.Threading;
 
 namespace CassandraMigrationProcessor
 {
@@ -18,6 +12,10 @@ namespace CassandraMigrationProcessor
 
     public class Log
     {
+        private const int MonitorMessageMinCount = 5;
+        private const int MaxLogEntries = 300;
+        private const int LogTrimIndex = 20;
+
         private LogBucket _logBucket = new LogBucket();
         private List<LogObject> _verboseMessages = new List<LogObject>();
         private string _currentId = string.Empty;
@@ -51,7 +49,7 @@ namespace CassandraMigrationProcessor
                     var reversedList = new List<LogObject>(_verboseMessages);
                     reversedList.Reverse();
 
-                    while (reversedList.Count < 5)
+                    while (reversedList.Count < MonitorMessageMinCount)
                     {
                         reversedList.Add(new LogObject(LogType.Info, ""));
                     }
@@ -60,7 +58,7 @@ namespace CassandraMigrationProcessor
                 catch
                 {
                     var blankList = new List<LogObject>();
-                    for (int i = 0; i < 5; i++)
+                    for (int i = 0; i < MonitorMessageMinCount; i++)
                     {
                         blankList.Add(new LogObject(LogType.Info, ""));
                     }
@@ -117,10 +115,10 @@ namespace CassandraMigrationProcessor
                     _logBucket.Logs ??= new List<LogObject>();
                     _logBucket.Logs.Add(logObj);
 
-                    // If more than 300 logs, remove the 21st mu (index 20), keep it small
-                    if (_logBucket.Logs.Count > 300 && _logBucket.Logs.Count > 20)
+                    // If more than MaxLogEntries logs, remove at LogTrimIndex to keep it small
+                    if (_logBucket.Logs.Count > MaxLogEntries && _logBucket.Logs.Count > LogTrimIndex)
                     {
-                        _logBucket.Logs.RemoveAt(20);
+                        _logBucket.Logs.RemoveAt(LogTrimIndex);
                     }
 
                     //persits to file

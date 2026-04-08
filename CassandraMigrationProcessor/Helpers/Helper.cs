@@ -1,7 +1,5 @@
 using Newtonsoft.Json;
 using CassandraMigrationProcessor.Context;
-using CassandraMigrationProcessor.Helpers;
-using CassandraMigrationProcessor.Helpers.Cassandra;
 using CassandraMigrationProcessor.Models;
 using System;
 using System.Collections.Generic;
@@ -196,6 +194,47 @@ namespace CassandraMigrationProcessor
             return units;
         }
 
+        /// <summary>
+        /// Parse a namespace string (JSON or CSV format) into CollectionInfo entries.
+        /// Returns null if the input is invalid.
+        /// </summary>
+        private static List<CollectionInfo>? ParseNamespaceEntries(string input)
+        {
+            if (string.IsNullOrWhiteSpace(input))
+                return null;
+
+            // Try JSON format first
+            try
+            {
+                var parsed = JsonConvert
+                    .DeserializeObject<List<CollectionInfo>>(input);
+                if (parsed != null)
+                    return parsed;
+            }
+            catch { }
+
+            // CSV format: keyspace.table, keyspace.table
+            var entries = input.Split(new[] { ',', '\n', '\r', ';' })
+                .Select(s => s.Trim())
+                .Where(s => !string.IsNullOrEmpty(s))
+                .ToList();
+
+            var result = new List<CollectionInfo>();
+            foreach (var fullName in entries)
+            {
+                int dotIdx = fullName.IndexOf('.');
+                if (dotIdx <= 0 || dotIdx == fullName.Length - 1)
+                    return null; // invalid entry
+
+                result.Add(new CollectionInfo
+                {
+                    KeyspaceName = fullName.Substring(0, dotIdx).Trim(),
+                    TableName = fullName.Substring(dotIdx + 1).Trim()
+                });
+            }
+            return result;
+        }
+
         public static async Task<List<MigrationUnit>>
             PopulateJobTablesAsync(
                 MigrationJob job,
@@ -325,49 +364,31 @@ namespace CassandraMigrationProcessor
                 return Tuple.Create(false, string.Empty,
                     "Namespaces cannot be null or empty.");
 
-            // Try JSON
-            List<CollectionInfo>? loadedObject = null;
-            try
-            {
-                loadedObject = JsonConvert
-                    .DeserializeObject<List<CollectionInfo>>(input);
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[WARN] ValidateNamespaceFormat JSON parse failed, trying CSV: {ex.Message}");
-            }
+            var parsed = ParseNamespaceEntries(input);
+            if (parsed == null)
+                return Tuple.Create(false, string.Empty,
+                    "Invalid format. Expected JSON array or CSV of keyspace.table entries.");
 
-            if (loadedObject != null)
+            foreach (var item in parsed)
             {
-                foreach (var item in loadedObject)
+                if (string.IsNullOrWhiteSpace(item.KeyspaceName)
+                    || string.IsNullOrWhiteSpace(item.TableName))
                 {
-                    if (string.IsNullOrWhiteSpace(item.KeyspaceName)
-                        || string.IsNullOrWhiteSpace(item.TableName))
-                    {
-                        return Tuple.Create(false, string.Empty,
-                            "Each entry must have KeyspaceName and TableName.");
-                    }
-                }
-                return Tuple.Create(true,
-                    JsonConvert.SerializeObject(loadedObject),
-                    string.Empty);
-            }
-
-            // CSV / newline / semicolon format validation
-            var entries = input.Split(new[] { ',', '\n', '\r', ';' })
-                .Select(s => s.Trim())
-                .Where(s => !string.IsNullOrEmpty(s));
-
-            foreach (var entry in entries)
-            {
-                int dotIdx = entry.IndexOf('.');
-                if (dotIdx <= 0 || dotIdx == entry.Length - 1)
                     return Tuple.Create(false, string.Empty,
-                        $"Invalid format: '{entry}'. " +
-                        $"Expected keyspace.table");
+                        "Each entry must have KeyspaceName and TableName.");
+                }
             }
 
-            return Tuple.Create(true, input, string.Empty);
+            // Re-serialize to normalized JSON if the original was JSON
+            List<CollectionInfo>? jsonCheck = null;
+            try { jsonCheck = JsonConvert.DeserializeObject<List<CollectionInfo>>(input); }
+            catch { }
+
+            string normalizedOutput = jsonCheck != null
+                ? JsonConvert.SerializeObject(parsed)
+                : input;
+
+            return Tuple.Create(true, normalizedOutput, string.Empty);
         }
     }
 }

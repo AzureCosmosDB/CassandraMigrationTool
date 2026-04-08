@@ -1,13 +1,26 @@
 using Newtonsoft.Json;
-using Newtonsoft.Json.Linq;
 using CassandraMigrationProcessor.Context;
 using System;
-using System.IO;
 
 namespace CassandraMigrationProcessor
 {
     public class MigrationSettings : ICloneable
     {
+        // Default values
+        private const int DefaultCqlCopyPageSize = 500;
+        private const int DefaultChangeFeedMaxRows = 10000;
+        private const int DefaultChangeFeedBatchDuration = 120;
+        private const int DefaultChangeFeedBatchDurationMin = 30;
+        private const int DefaultChangeFeedMaxTables = 5;
+        private const int DefaultChangeFeedPollIntervalMs = 5000;
+        private const int DefaultLogPageSize = 5000;
+
+        // Clamping bounds
+        private const int MaxChangeFeedMaxRows = 10000;
+        private const int MinChangeFeedBatchDuration = 20;
+        private const int MinLogPageSize = 1000;
+        private const int MaxLogPageSize = 100000;
+
         public int LogPageSize { get; set; }
         public int CqlCopyPageSize { get; set; }
         public int ChangeFeedMaxRowsInBatch { get; set; }
@@ -22,7 +35,7 @@ namespace CassandraMigrationProcessor
 
         public MigrationSettings()
         {
-            _filePath = $"migrationjobs\\config.json";
+            _filePath = $"{JobStore.JobsFolder}\\config.json";
         }
 
         public object Clone()
@@ -32,73 +45,62 @@ namespace CassandraMigrationProcessor
                 ?? new MigrationSettings();
         }
 
+        private static int DefaultOrValue(int loaded, int defaultVal)
+            => loaded == 0 ? defaultVal : loaded;
+
+        private static int DefaultParallelism()
+            => Math.Max(4, Environment.ProcessorCount * 2);
+
+        private void ApplyDefaults()
+        {
+            CqlCopyPageSize = DefaultCqlCopyPageSize;
+            ChangeFeedMaxRowsInBatch = DefaultChangeFeedMaxRows;
+            ChangeFeedBatchDuration = DefaultChangeFeedBatchDuration;
+            ChangeFeedBatchDurationMin = DefaultChangeFeedBatchDurationMin;
+            ChangeFeedMaxTablesInBatch = DefaultChangeFeedMaxTables;
+            ChangeFeedPollIntervalMs = DefaultChangeFeedPollIntervalMs;
+            ChangeFeedFullFidelity = false;
+            MaxFeedRangeParallelism = DefaultParallelism();
+            LogPageSize = DefaultLogPageSize;
+        }
+
+        private void ClampValues()
+        {
+            if (ChangeFeedMaxRowsInBatch > MaxChangeFeedMaxRows)
+                ChangeFeedMaxRowsInBatch = MaxChangeFeedMaxRows;
+            if (ChangeFeedBatchDuration < MinChangeFeedBatchDuration)
+                ChangeFeedBatchDuration = DefaultChangeFeedBatchDuration;
+            if (LogPageSize < MinLogPageSize)
+                LogPageSize = MinLogPageSize;
+            if (LogPageSize > MaxLogPageSize)
+                LogPageSize = MaxLogPageSize;
+        }
+
         public void Load()
         {
-            bool initialized = false;
             if (MigrationJobContext.Store.DocumentExists(_filePath))
             {
                 string json = MigrationJobContext.Store.ReadDocument(_filePath);
-                var loadedObject =
+                var loaded =
                     JsonConvert.DeserializeObject<MigrationSettings>(json);
-                if (loadedObject != null)
+                if (loaded != null)
                 {
-                    CqlCopyPageSize = loadedObject.CqlCopyPageSize == 0
-                        ? 500 : loadedObject.CqlCopyPageSize;
-                    ChangeFeedMaxRowsInBatch =
-                        loadedObject.ChangeFeedMaxRowsInBatch == 0
-                        ? 10000
-                        : loadedObject.ChangeFeedMaxRowsInBatch;
-                    ChangeFeedBatchDuration =
-                        loadedObject.ChangeFeedBatchDuration == 0
-                        ? 120
-                        : loadedObject.ChangeFeedBatchDuration;
-                    ChangeFeedBatchDurationMin =
-                        loadedObject.ChangeFeedBatchDurationMin == 0
-                        ? 30
-                        : loadedObject.ChangeFeedBatchDurationMin;
-                    ChangeFeedMaxTablesInBatch =
-                        loadedObject.ChangeFeedMaxTablesInBatch == 0
-                        ? 5
-                        : loadedObject.ChangeFeedMaxTablesInBatch;
-                    LogPageSize = loadedObject.LogPageSize == 0
-                        ? 5000 : loadedObject.LogPageSize;
+                    CqlCopyPageSize = DefaultOrValue(loaded.CqlCopyPageSize, DefaultCqlCopyPageSize);
+                    ChangeFeedMaxRowsInBatch = DefaultOrValue(loaded.ChangeFeedMaxRowsInBatch, DefaultChangeFeedMaxRows);
+                    ChangeFeedBatchDuration = DefaultOrValue(loaded.ChangeFeedBatchDuration, DefaultChangeFeedBatchDuration);
+                    ChangeFeedBatchDurationMin = DefaultOrValue(loaded.ChangeFeedBatchDurationMin, DefaultChangeFeedBatchDurationMin);
+                    ChangeFeedMaxTablesInBatch = DefaultOrValue(loaded.ChangeFeedMaxTablesInBatch, DefaultChangeFeedMaxTables);
+                    LogPageSize = DefaultOrValue(loaded.LogPageSize, DefaultLogPageSize);
+                    ChangeFeedPollIntervalMs = DefaultOrValue(loaded.ChangeFeedPollIntervalMs, DefaultChangeFeedPollIntervalMs);
+                    ChangeFeedFullFidelity = loaded.ChangeFeedFullFidelity;
+                    MaxFeedRangeParallelism = DefaultOrValue(loaded.MaxFeedRangeParallelism, DefaultParallelism());
 
-                    ChangeFeedPollIntervalMs =
-                        loadedObject.ChangeFeedPollIntervalMs == 0
-                        ? 5000
-                        : loadedObject.ChangeFeedPollIntervalMs;
-                    ChangeFeedFullFidelity =
-                        loadedObject.ChangeFeedFullFidelity;
-                    MaxFeedRangeParallelism =
-                        loadedObject.MaxFeedRangeParallelism == 0
-                        ? Math.Max(4, Environment.ProcessorCount * 2)
-                        : loadedObject.MaxFeedRangeParallelism;
-
-                    initialized = true;
-
-                    if (ChangeFeedMaxRowsInBatch > 10000)
-                        ChangeFeedMaxRowsInBatch = 10000;
-                    if (ChangeFeedBatchDuration < 20)
-                        ChangeFeedBatchDuration = 120;
-                    if (LogPageSize < 1000)
-                        LogPageSize = 1000;
-                    if (LogPageSize > 100000)
-                        LogPageSize = 100000;
+                    ClampValues();
+                    return;
                 }
             }
-            if (!initialized)
-            {
-                CqlCopyPageSize = 500;
-                ChangeFeedMaxRowsInBatch = 10000;
-                ChangeFeedBatchDuration = 120;
-                ChangeFeedBatchDurationMin = 30;
-                ChangeFeedMaxTablesInBatch = 5;
-                ChangeFeedPollIntervalMs = 5000;
-                ChangeFeedFullFidelity = false;
-                MaxFeedRangeParallelism = Math.Max(4,
-                    Environment.ProcessorCount * 2);
-                LogPageSize = 5000;
-            }
+
+            ApplyDefaults();
         }
 
         public bool Save(out string errorMessage)
