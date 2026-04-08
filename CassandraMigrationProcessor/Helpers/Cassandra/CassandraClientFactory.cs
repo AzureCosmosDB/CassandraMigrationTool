@@ -477,7 +477,8 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
                 .WithReconnectionPolicy(
                     new ExponentialReconnectionPolicy(2000, 60000));
 
-            if (!string.IsNullOrWhiteSpace(username))
+            if (!string.IsNullOrWhiteSpace(username)
+                && password != null)
             {
                 builder = builder.WithAuthProvider(
                     new PlainTextAuthProvider(username, password));
@@ -586,7 +587,11 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
                     }
                     else
                     {
-                        // auth required but password not available from ARM
+                        // Auth required but password not available.
+                        // Connect without credentials — MI may
+                        // accept unauthenticated connections.
+                        username = string.Empty;
+                        password = string.Empty;
                     }
                 }
                 catch (Exception)
