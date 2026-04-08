@@ -177,6 +177,7 @@ namespace CassandraMigrationProcessor.Processors
             if (result == TaskResult.Success)
             {
                 if (!_cts.Token.IsCancellationRequested
+                    && !MigrationJobContext.ControlledPauseRequested
                     && mu.MigrationChunks[chunkIndex].Segments
                         .All(seg => seg.IsProcessed == true))
                 {

@@ -225,7 +225,8 @@ namespace CassandraMigrationProcessor.Processors
                 // Do NOT mark completed if cancelled or paused
                 var job = MigrationJobContext.CurrentlyActiveJob;
                 if (!MigrationJobContext.ControlledPauseRequested
-                    && job?.Status != JobStatus.Cancelled)
+                    && job?.Status != JobStatus.Cancelled
+                    && job?.Status != JobStatus.Paused)
                 {
                     _log.WriteLine(
                         $"Job {job?.Id} " +
