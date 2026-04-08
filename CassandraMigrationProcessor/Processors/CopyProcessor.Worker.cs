@@ -57,12 +57,27 @@ namespace CassandraMigrationProcessor.Processors
                         || Volatile.Read(
                             ref ctx.FatalErrorFlag) != 0)
                     {
+                        // Save checkpoint but do NOT mark the
+                        // range as completed — it still has
+                        // uncopied data. Closing the channel
+                        // lets all workers drain and exit.
                         lock (ctx.Checkpoints)
                         {
-                            ctx.Completed.Add(
-                                partition.FeedRange);
+                            var token =
+                                partition.GetResumeToken();
+                            if (token != null)
+                                ctx.Checkpoints[
+                                    partition.FeedRange] =
+                                    Convert.ToBase64String(
+                                        token);
+                            else if (
+                                partition.LastPagingState != null)
+                                ctx.Checkpoints[
+                                    partition.FeedRange] =
+                                    Convert.ToBase64String(
+                                        partition.LastPagingState);
                         }
-                        TryCloseChannel(ctx);
+                        ctx.PartitionPool.Writer.TryComplete();
                         continue;
                     }
 
@@ -87,8 +102,23 @@ namespace CassandraMigrationProcessor.Processors
 
                         if (rows == null)
                         {
-                            // Read failed after all retries
-                            continue;
+                            // Read failed after all retries —
+                            // DO NOT skip this range. Mark as
+                            // error so job fails instead of
+                            // silently losing data.
+                            _log.WriteLine(
+                                $"[W{workerId}] FATAL: Read " +
+                                $"failed after {MaxReadRetries} " +
+                                $"retries for range " +
+                                $"{TruncRange(partition.FeedRange)}" +
+                                $" — failing job to prevent " +
+                                $"data loss",
+                                LogType.Error);
+                            Interlocked.Exchange(
+                                ref ctx.FatalErrorFlag, 1);
+                            try { _cancellation.Cancel(); }
+                            catch { }
+                            break;
                         }
 
                         isLastPage = lastPage;
@@ -165,12 +195,29 @@ namespace CassandraMigrationProcessor.Processors
                             TaskResult.Canceled);
                         if (!partition.IsExhausted)
                         {
+                            // Save checkpoint but do NOT mark
+                            // the range as completed — resume
+                            // needs to re-process it.
                             lock (ctx.Checkpoints)
                             {
-                                ctx.Completed.Add(
-                                    partition.FeedRange);
+                                var token =
+                                    partition.GetResumeToken();
+                                if (token != null)
+                                    ctx.Checkpoints[
+                                        partition.FeedRange] =
+                                        Convert.ToBase64String(
+                                            token);
+                                else if (
+                                    partition.LastPagingState
+                                    != null)
+                                    ctx.Checkpoints[
+                                        partition.FeedRange] =
+                                        Convert.ToBase64String(
+                                            partition
+                                                .LastPagingState);
                             }
-                            TryCloseChannel(ctx);
+                            ctx.PartitionPool.Writer
+                                .TryComplete();
                         }
                     }
                     catch (Exception ex)
@@ -189,7 +236,11 @@ namespace CassandraMigrationProcessor.Processors
                                 LogType.Error);
                             Interlocked.Exchange(
                                 ref ctx.FatalErrorFlag, 1);
-                            try { _cancellation.Cancel(); } catch { }
+                            try { _cancellation.Cancel(); }
+                            catch (Exception cancelEx)
+                            {
+                                Console.WriteLine($"[WARN] CopyProcessor cancel failed: {cancelEx.Message}");
+                            }
                             ctx.WorkerErrors.Add(
                                 TaskResult.Abort);
                         }
@@ -258,8 +309,10 @@ namespace CassandraMigrationProcessor.Processors
             }
             finally
             {
-                try { workerTargetSession?.Dispose(); } catch { }
-                try { workerSourceSession?.Dispose(); } catch { }
+                try { workerTargetSession?.Dispose(); }
+                catch (Exception ex) { Console.WriteLine($"[WARN] CopyProcessor worker target session dispose failed: {ex.Message}"); }
+                try { workerSourceSession?.Dispose(); }
+                catch (Exception ex) { Console.WriteLine($"[WARN] CopyProcessor worker source session dispose failed: {ex.Message}"); }
                 ctx.Tracker.WorkerExited();
             }
         }
@@ -420,7 +473,10 @@ namespace CassandraMigrationProcessor.Processors
                             Interlocked.Exchange(
                                 ref ctx.FatalErrorFlag, 1);
                             try { _cancellation.Cancel(); }
-                            catch { }
+                            catch (Exception cancelEx)
+                            {
+                                Console.WriteLine($"[WARN] CopyProcessor batch cancel failed: {cancelEx.Message}");
+                            }
                         }
                         else if (!IsRetriableWriteError(ex))
                         {
@@ -445,7 +501,20 @@ namespace CassandraMigrationProcessor.Processors
                 ctx.ConfiguredPageSize);
             await Task.WhenAll(writeTasks);
 
-            workChunk.IsCompleted = true;
+            // Only mark chunk completed if ALL rows succeeded.
+            // Failed rows mean this page must be retried on resume.
+            if (writeFail == 0)
+            {
+                workChunk.IsCompleted = true;
+            }
+            else
+            {
+                _log.WriteLine(
+                    $"[W{workerId}] {writeFail}/{rows.Count}" +
+                    $" writes failed — checkpoint NOT advanced" +
+                    $" (will retry on resume)",
+                    LogType.Warning);
+            }
 
             stopwatch.Stop();
             ctx.Tracker.AddWriteTime(
