@@ -59,45 +59,49 @@ namespace CassandraMigrationProcessor
 
         /// <summary>
         /// Single source of truth for job lifecycle state.
-        /// Replaces the individual boolean flags.
         /// </summary>
         public JobStatus Status { get; set; } = JobStatus.Pending;
 
         // ── Backward-compat boolean properties ──────────
-        // Kept for JSON deserialization of old job files and
-        // to minimize code churn. Setters update Status.
+        // Deserialized from old job files to migrate Status.
+        // On new saves, Status is the source of truth.
+        // Priority order for migration: Cancelled > Faulted >
+        // Completed > Paused > Running > Pending.
 
-        [JsonIgnore]
+        [JsonProperty(DefaultValueHandling = DefaultValueHandling.Ignore)]
         public bool IsCompleted
         {
             get => Status == JobStatus.Completed;
             set { if (value) Status = JobStatus.Completed; }
         }
-        [JsonIgnore]
+        [JsonProperty(DefaultValueHandling = DefaultValueHandling.Ignore)]
         public bool IsCancelled
         {
             get => Status == JobStatus.Cancelled;
             set { if (value) Status = JobStatus.Cancelled; }
         }
-        [JsonIgnore]
+        [JsonProperty(DefaultValueHandling = DefaultValueHandling.Ignore)]
         public bool IsFaulted
         {
             get => Status == JobStatus.Faulted;
             set { if (value) Status = JobStatus.Faulted; }
         }
-        [JsonIgnore]
+        [JsonProperty(DefaultValueHandling = DefaultValueHandling.Ignore)]
         public bool IsPaused
         {
             get => Status == JobStatus.Paused;
             set { if (value) Status = JobStatus.Paused; }
         }
-        [JsonIgnore]
+        [JsonProperty(DefaultValueHandling = DefaultValueHandling.Ignore)]
         public bool IsStarted
         {
             get => Status == JobStatus.Running;
-            set { if (value) Status = JobStatus.Running;
-                  else if (Status == JobStatus.Running)
-                      Status = JobStatus.Pending; }
+            set
+            {
+                if (value) Status = JobStatus.Running;
+                else if (Status == JobStatus.Running)
+                    Status = JobStatus.Pending;
+            }
         }
 
         public JobType JobType { get; set; } = JobType.CqlCopy;
