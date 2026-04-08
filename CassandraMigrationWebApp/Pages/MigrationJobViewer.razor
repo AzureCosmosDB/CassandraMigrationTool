@@ -322,12 +322,8 @@
                 @if (CurrentlyLoadedMigrationJob != null && Helper.IsOnline(CurrentlyLoadedMigrationJob))
                 {
                     <th class="sortable-header @GetSortClass("TimeSinceLastChange")" @onclick='() => SortBy("TimeSinceLastChange")' style="cursor: pointer;">
-                        Time Since Last Change
+                        Last Checked
                         <i class="bi @GetSortIcon("TimeSinceLastChange") ms-1"></i>
-                    </th>
-                    <th class="sortable-header @GetSortClass("TimeSinceLastBatch")" @onclick='() => SortBy("TimeSinceLastBatch")' style="cursor: pointer;">
-                        CS Last Checked
-                        <i class="bi @GetSortIcon("TimeSinceLastBatch") ms-1"></i>
                     </th>
                     <th class="sortable-header @GetSortClass("LastBatchChanges")" @onclick='() => SortBy("LastBatchChanges")' style="cursor: pointer;">
                         Last Batch – Total Changes
@@ -407,9 +403,6 @@
                         {
                             <td title="Avg Read Latency: @mu.ChangeFeedAvgReadLatencyInMS.ToString("F2") ms | Avg Write Latency: @mu.ChangeFeedAvgWriteLatencyInMS.ToString("F2") ms">                           
                                 @(mu.ChangeFeedLastChecked.HasValue ? Helper.GetTimestampDiff(mu.ChangeFeedLastChecked.Value) : "NA")
-                            </td>
-                            <td>
-                                @GetTimeSinceLastBatch(CurrentlyLoadedMigrationJob, mu)
                             </td>
                             <td>
                                 @mu.ChangeFeedUpdatesInLastBatch
