@@ -38,8 +38,9 @@ namespace CassandraMigrationProcessor.Processors
             ProcessorContext processorContext,
             List<string> feedRanges)
         {
-            // Calculate workers: configured or auto (CPU × 15 / parallel tables)
-            int totalBudget = Environment.ProcessorCount * 15;
+            // Calculate workers: configured or auto
+            // Target ~100 total workers on 8 vCPU, scaled by cores
+            int totalBudget = Environment.ProcessorCount * 13;
             int parallelTables = Math.Max(1, _job.ParallelThreads);
             int autoWorkers = Math.Max(4, totalBudget / parallelTables);
             int workerCount = _job.MaxFeedRangeParallelism > 0
