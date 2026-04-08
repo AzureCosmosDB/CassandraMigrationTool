@@ -18,19 +18,16 @@ namespace CassandraMigrationProcessor.Processors
     internal partial class CopyProcessor
     {
         /// <summary>
-        /// Split reader/writer pipeline with feed range state objects:
+        /// Unified worker pipeline with partition pool:
         ///
-        ///  workCh ──► Reader (read 1 page) ──► dataCh ──► Writer (write rows)
-        ///    ▲             │
-        ///    └── recycle ◄─┘ (if more pages)
+        ///  Partition Pool (Channel) ──► Worker (read + write)
+        ///         ▲                         │
+        ///         └──── recycle ◄────────────┘ (if more pages)
         ///
-        /// Readers pull FeedRangeState, read ONE page from source,
-        /// extract rows, recycle the range, and push ReadPage to
-        /// dataCh. Writers consume ReadPage objects and fire
-        /// concurrent INSERTs. Separating read from write lets
-        /// readers prefetch the next page while writes are in
-        /// flight. Continuation state persisted periodically
-        /// for resume.
+        /// Each worker takes a partition, reads one page,
+        /// creates a WorkChunk, recycles the partition back
+        /// to the pool (so another worker can read the next
+        /// page), then writes rows and marks the chunk done.
         /// </summary>
         private async Task<TaskResult> CopyWithFeedRangesAsync(
             MigrationUnit mu,
@@ -41,13 +38,9 @@ namespace CassandraMigrationProcessor.Processors
             ProcessorContext ctx,
             List<string> feedRanges)
         {
-            bool isSimulated = MigrationJobContext
-                .CurrentlyActiveJob.IsSimulatedRun;
             int rawValue = MigrationJobContext
                 .CurrentlyActiveJob.MaxFeedRangeParallelism;
             int workerCount = Math.Max(1, rawValue);
-            int readerCount = workerCount;
-            int writerCount = Math.Max(4, workerCount / 2);
 
             // ── Resume: filter out completed ranges ─────────
             var completed = mu.CompletedCopyFeedRanges
@@ -70,24 +63,18 @@ namespace CassandraMigrationProcessor.Processors
                 return TaskResult.Success;
             }
 
-            // No cap — with recycle-after-read,
-            // workers > ranges is fine (extra workers
-            // just wait on the channel for work)
-
             _log.WriteLine(
                 $"Pipeline copy: {pendingRanges.Count} ranges " +
                 $"({completed.Count} already done), " +
-                $"{readerCount} readers + {writerCount} writers " +
+                $"{workerCount} workers " +
                 $"for {ctx.KeyspaceName}.{ctx.TableName}");
-            Console.WriteLine(
-                $"  Pipeline: {pendingRanges.Count} ranges, " +
-                $"readers={readerCount}, writers={writerCount}");
 
             // ── Schema setup (once) ─────────────────────────
             _log.WriteLine(
                 $"Detecting target table " +
                 $"{ctx.TargetKeyspaceName}" +
-                $".{ctx.TargetTableName}...");
+                $".{ctx.TargetTableName}...",
+                LogType.Debug);
             if (!await CassandraHelper.TableExistsAsync(
                 _targetSession!, ctx.TargetKeyspaceName,
                 ctx.TargetTableName)
@@ -115,7 +102,8 @@ namespace CassandraMigrationProcessor.Processors
                 _log.WriteLine(
                     $"Target table exists — syncing schema " +
                     $"for {ctx.TargetKeyspaceName}" +
-                    $".{ctx.TargetTableName}");
+                    $".{ctx.TargetTableName}",
+                    LogType.Debug);
                 await CassandraHelper.CreateTableFromSourceAsync(
                     _sourceSession!, _targetSession!,
                     ctx.KeyspaceName, ctx.TableName,
@@ -138,7 +126,8 @@ namespace CassandraMigrationProcessor.Processors
             }
             _log.WriteLine(
                 $"Source schema: {columns.Count} columns " +
-                $"[{string.Join(", ", columns.Select(c => c.Name))}]");
+                $"[{string.Join(", ", columns.Select(c => c.Name))}]",
+                LogType.Debug);
 
             _log.WriteLine(
                 $"Preparing INSERT statement for " +
@@ -151,11 +140,8 @@ namespace CassandraMigrationProcessor.Processors
             _log.WriteLine(
                 $"INSERT prepared with {colNames.Count} columns");
 
-            // ── Work channel ────────────────────────────────
-            // Bounded: workers that finish writing fast will
-            // block recycling if all slots are full, providing
-            // natural backpressure.
-            var workCh = Channel.CreateBounded<FeedRangeState>(
+            // ── Partition pool channel ───────────────────────
+            var partitionPool = Channel.CreateBounded<Partition>(
                 new BoundedChannelOptions(
                     pendingRanges.Count + workerCount)
                 {
@@ -163,8 +149,6 @@ namespace CassandraMigrationProcessor.Processors
                 });
 
             // Write throttle: cap total in-flight INSERTs.
-            // Use job-level MaxWriteConcurrency if set,
-            // otherwise auto-calculate from worker count.
             int jobWriteConcurrency = MigrationJobContext
                 .CurrentlyActiveJob.MaxWriteConcurrency;
             int maxInFlight = jobWriteConcurrency > 0
@@ -178,8 +162,9 @@ namespace CassandraMigrationProcessor.Processors
 
             // Seed channel with pending ranges (resume-aware)
             _log.WriteLine(
-                $"Seeding work channel with " +
-                $"{pendingRanges.Count} feed ranges...");
+                $"Seeding partition pool with " +
+                $"{pendingRanges.Count} feed ranges...",
+                LogType.Debug);
             int resumedCount = 0;
             foreach (var range in pendingRanges)
             {
@@ -191,10 +176,11 @@ namespace CassandraMigrationProcessor.Processors
                     resumedCount++;
                     _log.WriteLine(
                         $"Resuming range from checkpoint: " +
-                        $"{TruncRange(range)}");
+                        $"{TruncRange(range)}",
+                        LogType.Debug);
                 }
-                await workCh.Writer.WriteAsync(
-                    new FeedRangeState(range, pagingState));
+                await partitionPool.Writer.WriteAsync(
+                    new Partition(range, pagingState));
             }
             if (resumedCount > 0)
                 _log.WriteLine(
@@ -209,14 +195,7 @@ namespace CassandraMigrationProcessor.Processors
             // Seed counters from prior run for resume
             long priorCopied = mu.CopyRowsCopied;
 
-            var tracker = new CopyProgressTracker(
-                _log, ctx.KeyspaceName, ctx.TableName,
-                readerCount, pendingRanges.Count,
-                priorCopied);
-
-            // Adaptive page size: starts at configured value,
-            // adjusts based on observed row size to target
-            // ~5MB per page read.
+            // Page size
             int jobPageSize = MigrationJobContext
                 .CurrentlyActiveJob?.PageSize ?? 0;
             int configuredPageSize = jobPageSize > 0
@@ -225,20 +204,17 @@ namespace CassandraMigrationProcessor.Processors
                     ? _config.CqlCopyPageSize
                     : 500;
 
-            // ── DATA CHANNEL ────────────────────────────────
-            var dataCh = Channel.CreateBounded<ReadPage>(
-                new BoundedChannelOptions(workerCount * 2)
-                {
-                    FullMode = BoundedChannelFullMode.Wait
-                });
+            var tracker = new CopyProgressTracker(
+                _log, ctx.KeyspaceName, ctx.TableName,
+                workerCount, pendingRanges.Count,
+                priorCopied);
 
             var sw = Stopwatch.StartNew();
 
             // ── Build shared context ────────────────────────
             var pctx = new PipelineContext
             {
-                WorkCh = workCh,
-                DataCh = dataCh,
+                PartitionPool = partitionPool,
                 WriteSem = writeSem,
                 Ps = ps,
                 ColNames = colNames,
@@ -262,47 +238,29 @@ namespace CassandraMigrationProcessor.Processors
                 LastCheckpointTicks = DateTime.UtcNow.Ticks,
             };
 
-            // ── READER + WRITER POOLS ───────────────────────
+            // ── LAUNCH UNIFIED WORKERS ──────────────────────
             _log.WriteLine(
-                $"Launching {readerCount} readers + " +
-                $"{writerCount} writers " +
+                $"Launching {workerCount} workers " +
                 $"for {ctx.KeyspaceName}.{ctx.TableName} " +
                 $"({pendingRanges.Count} feed ranges, " +
                 $"page size={configuredPageSize})...");
-            var readers = Enumerable.Range(0, readerCount)
-                .Select(rid => Task.Run(
-                    () => RunReaderAsync(rid, pctx)))
-                .ToArray();
-
-            // ── WRITER WORKERS ──────────────────────────────
-            var writers = Enumerable.Range(0, writerCount)
+            var workers = Enumerable.Range(0, workerCount)
                 .Select(wid => Task.Run(
-                    () => RunWriterAsync(wid, pctx)))
+                    () => RunWorkerAsync(wid, pctx)))
                 .ToArray();
 
-            // Wait for readers, then close data channel
+            // Wait for all workers
             try
             {
-                await Task.WhenAll(readers);
+                await Task.WhenAll(workers);
             }
             catch (OperationCanceledException)
             {
-                // Readers exited due to cancellation
-            }
-            pctx.DataCh.Writer.TryComplete();
-
-            // Wait for writers to drain remaining pages
-            try
-            {
-                await Task.WhenAll(writers);
-            }
-            catch (OperationCanceledException)
-            {
-                // Writers exited due to cancellation
+                // Workers exited due to cancellation
             }
 
-            // Ensure channels are closed
-            pctx.WorkCh.Writer.TryComplete();
+            // Ensure channel is closed
+            pctx.PartitionPool.Writer.TryComplete();
 
             // ── Final stats ─────────────────────────────────
             pctx.Tracker.LogFinal();
@@ -333,7 +291,7 @@ namespace CassandraMigrationProcessor.Processors
             _log.WriteLine(
                 $"  Avg speed:     {avgSpeed:F0} rows/sec");
             _log.WriteLine(
-                $"  Workers used:  {readerCount} readers + {writerCount} writers");
+                $"  Workers used:  {workerCount}");
 
             // Final chunk update
             var fc = mu.MigrationChunks[chunkIndex];
@@ -343,8 +301,6 @@ namespace CassandraMigrationProcessor.Processors
             mu.CopyRowsCopied = finalWritten;
             mu.ActualRowCount = Math.Max(
                 mu.ActualRowCount, finalRead);
-            // Only mark segments as processed if ALL feed
-            // ranges actually completed (not cancelled/paused)
             bool allRangesComplete =
                 pctx.Completed.Count >= feedRanges.Count;
             if (fc.Segments.Count == 0)

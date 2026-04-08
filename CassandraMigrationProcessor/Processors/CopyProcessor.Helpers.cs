@@ -17,20 +17,6 @@ namespace CassandraMigrationProcessor.Processors
 {
     internal partial class CopyProcessor
     {
-        /// <summary>
-        /// State of a feed range — its token and paging position.
-        /// </summary>
-        private record FeedRangeState(
-            string FeedRange,
-            byte[]? PagingState);
-
-        private record ReadPage(
-            List<object[]> Rows,
-            string FeedRange,
-            bool IsLastPage,
-            long ReadTimeMs,
-            byte[]? NextPagingState);
-
         private static string TruncRange(string r) =>
             r.Length > 30 ? r[..15] + "..." : r;
 
@@ -66,16 +52,126 @@ namespace CassandraMigrationProcessor.Processors
         }
 
         /// <summary>
-        /// Bundles the shared mutable state that is passed between
-        /// <see cref="CopyWithFeedRangesAsync"/>, reader workers,
-        /// and writer workers. Fields that are updated concurrently
-        /// (e.g. TotalRead, TotalWritten) must be accessed with
-        /// <see cref="Interlocked"/> or <see cref="Volatile"/>.
+        /// Tracks a pending or completed read-write cycle.
+        /// Forms a linked list per partition.
+        /// </summary>
+        private class WorkChunk
+        {
+            public byte[]? ContinuationToken { get; set; }
+            public bool IsCompleted { get; set; }
+            public WorkChunk? Next { get; set; }
+        }
+
+        /// <summary>
+        /// Represents a feed range partition with its work
+        /// chunk list. Passed through the partition pool channel.
+        /// </summary>
+        private class Partition
+        {
+            public string FeedRange { get; }
+            public bool IsExhausted { get; set; }
+
+            // Linked list of work chunks (head = oldest pending)
+            private WorkChunk? _head;
+            private WorkChunk? _tail;
+            private readonly object _lock = new();
+
+            public Partition(
+                string feedRange, byte[]? initialPagingState)
+            {
+                FeedRange = feedRange;
+                if (initialPagingState != null)
+                {
+                    _head = _tail = new WorkChunk
+                    {
+                        ContinuationToken = initialPagingState,
+                        IsCompleted = true
+                    };
+                }
+            }
+
+            /// <summary>
+            /// Add a new pending work chunk and trim completed
+            /// chunks from the head. Returns the new chunk so
+            /// the caller can mark it completed after writing.
+            /// </summary>
+            public WorkChunk AddChunkAndTrim(
+                byte[]? continuationToken)
+            {
+                var chunk = new WorkChunk
+                {
+                    ContinuationToken = continuationToken
+                };
+                lock (_lock)
+                {
+                    // Trim completed chunks from head
+                    while (_head != null && _head.IsCompleted)
+                        _head = _head.Next;
+
+                    // Append new chunk
+                    if (_tail == null)
+                        _head = _tail = chunk;
+                    else
+                    {
+                        _tail.Next = chunk;
+                        _tail = chunk;
+                    }
+                }
+                return chunk;
+            }
+
+            /// <summary>
+            /// Get the resume point: continuation token of the
+            /// first non-completed chunk, or the last completed
+            /// chunk's token if all are done.
+            /// </summary>
+            public byte[]? GetResumeToken()
+            {
+                lock (_lock)
+                {
+                    var node = _head;
+                    while (node != null)
+                    {
+                        if (!node.IsCompleted)
+                            return node.ContinuationToken;
+                        node = node.Next;
+                    }
+                    return _tail?.ContinuationToken;
+                }
+            }
+
+            /// <summary>
+            /// Count of pending (non-completed) work chunks.
+            /// </summary>
+            public int PendingCount
+            {
+                get
+                {
+                    lock (_lock)
+                    {
+                        int count = 0;
+                        var node = _head;
+                        while (node != null)
+                        {
+                            if (!node.IsCompleted) count++;
+                            node = node.Next;
+                        }
+                        return count;
+                    }
+                }
+            }
+        }
+
+        /// <summary>
+        /// Bundles the shared mutable state that is passed to
+        /// each unified worker. Fields that are updated
+        /// concurrently (e.g. TotalRead, TotalWritten) must
+        /// be accessed with <see cref="Interlocked"/> or
+        /// <see cref="Volatile"/>.
         /// </summary>
         private class PipelineContext
         {
-            public Channel<FeedRangeState> WorkCh = null!;
-            public Channel<ReadPage> DataCh = null!;
+            public Channel<Partition> PartitionPool = null!;
             public SemaphoreSlim WriteSem = null!;
             public PreparedStatement Ps = null!;
             public List<string> ColNames = null!;

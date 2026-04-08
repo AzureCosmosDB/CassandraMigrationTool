@@ -20,9 +20,6 @@ namespace CassandraMigrationProcessor.Processors
         public override async Task<TaskResult> StartProcessAsync(
             string migrationUnitId)
         {
-            Console.WriteLine(
-                $"CopyProcessor.StartProcessAsync: mu={migrationUnitId}");
-
             var mu = MigrationJobContext
                 .GetMigrationUnit(migrationUnitId);
             mu.ParentJob = MigrationJobContext.CurrentlyActiveJob;
@@ -30,23 +27,14 @@ namespace CassandraMigrationProcessor.Processors
 
             var ctx = SetProcessorContext(mu);
 
-            Console.WriteLine(
-                $"  CopyComplete={mu.CopyComplete}, " +
-                $"Chunks={mu.MigrationChunks?.Count ?? 0}, " +
-                $"ks={ctx.KeyspaceName}, tbl={ctx.TableName}");
-
             if (mu.CopyComplete)
             {
-                Console.WriteLine(
-                    $"  SKIPPING - already complete");
                 _log.WriteLine(
                     $"Copy for {ctx.KeyspaceName}.{ctx.TableName} " +
                     $"already completed.", LogType.Debug);
                 return TaskResult.Success;
             }
 
-            Console.WriteLine(
-                $"  Copy starting for {ctx.KeyspaceName}.{ctx.TableName}");
             _log.WriteLine(
                 $"{ctx.KeyspaceName}.{ctx.TableName} Copy started");
 
@@ -66,10 +54,6 @@ namespace CassandraMigrationProcessor.Processors
 
                 for (int i = 0; i < mu.MigrationChunks.Count; i++)
                 {
-                    Console.WriteLine(
-                        $"  Processing chunk {i}/{mu.MigrationChunks.Count}, " +
-                        $"IsDownloaded={mu.MigrationChunks[i].IsDownloaded}");
-
                     if (MigrationJobContext.ControlledPauseRequested)
                     {
                         _log.WriteLine(

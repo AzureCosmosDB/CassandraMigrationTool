@@ -41,10 +41,6 @@ namespace CassandraMigrationProcessor.Processors
             int chunkIndex,
             int currentBackoff)
         {
-            Console.WriteLine(
-                $"  CHUNK ERROR: {keyspace}.{table}[{chunkIndex}] " +
-                $"attempt={attemptCount}: {ex.Message}");
-
             if (ex is OperationCanceledException)
             {
                 return Task.FromResult(TaskResult.Abort);
@@ -71,8 +67,6 @@ namespace CassandraMigrationProcessor.Processors
                 $"CopyProcessor.ProcessChunkAsync: " +
                 $"{mu.KeyspaceName}.{mu.TableName}[{chunkIndex}]");
 
-            Console.WriteLine(
-                $"  GetRowCount: {ctx.KeyspaceName}.{ctx.TableName}...");
             _log.WriteLine(
                 $"Counting source documents for " +
                 $"{ctx.KeyspaceName}.{ctx.TableName} " +
@@ -82,8 +76,6 @@ namespace CassandraMigrationProcessor.Processors
                 ctx.KeyspaceName,
                 ctx.TableName)
                 .ConfigureAwait(false);
-            Console.WriteLine(
-                $"  RowCount={rowCount}");
             _log.WriteLine(
                 rowCount >= 0
                     ? $"Source document count: {rowCount:N0} " +
@@ -112,7 +104,6 @@ namespace CassandraMigrationProcessor.Processors
                     .CurrentlyActiveJob.IsSimulatedRun)
             {
                 var job = MigrationJobContext.CurrentlyActiveJob;
-                Console.WriteLine($"CopyProcessor: Creating target session for {ctx.TargetKeyspaceName}");
                 _targetSession = CassandraClientFactory
                     .CreateTargetSession(
                         _log, job,
@@ -121,11 +112,7 @@ namespace CassandraMigrationProcessor.Processors
                     _targetSession,
                     ctx.TargetKeyspaceName)
                     .ConfigureAwait(false);
-                Console.WriteLine($"CopyProcessor: Target session ready for {ctx.TargetKeyspaceName}");
             }
-
-            Console.WriteLine(
-                $"  Starting CopyRowsAsync: {rowCount} rows...");
 
             // Discover feed ranges for parallel copy
             _log.WriteLine(
@@ -171,9 +158,7 @@ namespace CassandraMigrationProcessor.Processors
                     MigrationJobContext
                         .CurrentlyActiveJob.IsSimulatedRun);
             }
-            Console.WriteLine(
-                $"  CopyRowsAsync result: {result}");
-
+            
             if (result == TaskResult.Success)
             {
                 if (!_cts.Token.IsCancellationRequested
