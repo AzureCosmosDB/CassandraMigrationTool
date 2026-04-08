@@ -27,17 +27,21 @@ namespace CassandraMigrationProcessor.Processors
             int workerId, PipelineContext pipeline)
         {
             pipeline.Tracker.WorkerStarted();
-            ISession? workerSession = null;
+            ISession? workerTargetSession = null;
+            ISession? workerSourceSession = null;
             try
             {
-            // Create per-worker target session
+            // Create per-worker sessions (1 conn/host each)
             var job = MigrationJobContext.CurrentlyActiveJob;
-            workerSession = CassandraClientFactory
+            workerTargetSession = CassandraClientFactory
                 .CreateTargetSession(_log, job, "");
+            workerSourceSession = CassandraClientFactory
+                .CreateSourceSession(_log, job,
+                    pipeline.Context.KeyspaceName);
 
             // Prepare INSERT for this worker's session
             var (ps, _) = await CassandraHelper.PrepareInsertAsync(
-                workerSession,
+                workerTargetSession,
                 pipeline.Context.TargetKeyspaceName,
                 pipeline.Context.TargetTableName,
                 pipeline.Columns).ConfigureAwait(false);
@@ -104,7 +108,7 @@ namespace CassandraMigrationProcessor.Processors
                     {
                         try
                         {
-                            resultSet = await _sourceSession!
+                            resultSet = await workerSourceSession!
                                 .ExecuteAsync(stmt)
                                 .ConfigureAwait(false);
                             break;
@@ -222,7 +226,7 @@ namespace CassandraMigrationProcessor.Processors
                                 var writeStart = Stopwatch
                                     .GetTimestamp();
                                 writeTasks.Add(
-                                    workerSession!
+                                    workerTargetSession!
                                     .ExecuteAsync(bound)
                                     .ContinueWith(writeTask =>
                                 {
@@ -460,7 +464,8 @@ namespace CassandraMigrationProcessor.Processors
             }
             finally
             {
-                try { workerSession?.Dispose(); } catch { }
+                try { workerTargetSession?.Dispose(); } catch { }
+                try { workerSourceSession?.Dispose(); } catch { }
                 pipeline.Tracker.WorkerExited();
             }
         }
