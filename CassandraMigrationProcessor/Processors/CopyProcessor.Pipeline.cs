@@ -74,21 +74,12 @@ namespace CassandraMigrationProcessor.Processors
                 $"{workerCount} workers " +
                 $"for {processorContext.KeyspaceName}.{processorContext.TableName}");
 
-            // ── Schema setup (once) ─────────────────────────
-            _log.WriteLine(
-                $"Detecting target table " +
-                $"{processorContext.TargetKeyspaceName}" +
-                $".{processorContext.TargetTableName}...",
-                LogType.Debug);
+            // Schema setup
             if (!await CassandraHelper.TableExistsAsync(
                 _targetSession!, processorContext.TargetKeyspaceName,
                 processorContext.TargetTableName)
                 .ConfigureAwait(false))
             {
-                _log.WriteLine(
-                    $"Target table not found — creating " +
-                    $"{processorContext.TargetKeyspaceName}" +
-                    $".{processorContext.TargetTableName} from source schema");
                 await CassandraHelper.EnsureKeyspaceExistsAsync(
                     _targetSession!, processorContext.TargetKeyspaceName)
                     .ConfigureAwait(false);
@@ -104,11 +95,6 @@ namespace CassandraMigrationProcessor.Processors
             }
             else
             {
-                _log.WriteLine(
-                    $"Target table exists — syncing schema " +
-                    $"for {processorContext.TargetKeyspaceName}" +
-                    $".{processorContext.TargetTableName}",
-                    LogType.Debug);
                 await CassandraHelper.CreateTableFromSourceAsync(
                     _sourceSession!, _targetSession!,
                     processorContext.KeyspaceName, processorContext.TableName,
@@ -116,9 +102,6 @@ namespace CassandraMigrationProcessor.Processors
                     .ConfigureAwait(false);
             }
 
-            _log.WriteLine(
-                $"Discovering source columns for " +
-                $"{processorContext.KeyspaceName}.{processorContext.TableName}...");
             var columns = await CassandraHelper.GetTableColumnsAsync(
                 _sourceSession!, processorContext.KeyspaceName, processorContext.TableName)
                 .ConfigureAwait(false);
@@ -129,10 +112,6 @@ namespace CassandraMigrationProcessor.Processors
                     $".{processorContext.TableName}", LogType.Error);
                 return TaskResult.Abort;
             }
-            _log.WriteLine(
-                $"Source schema: {columns.Count} columns " +
-                $"[{string.Join(", ", columns.Select(c => c.Name))}]",
-                LogType.Debug);
 
             var columnNames = columns.Select(c => c.Name).ToList();
 
@@ -144,15 +123,7 @@ namespace CassandraMigrationProcessor.Processors
                     FullMode = BoundedChannelFullMode.Wait
                 });
 
-            _log.WriteLine(
-                $"Write: per-worker sessions, " +
-                $"no shared semaphore");
-
             // Seed channel with pending ranges (resume-aware)
-            _log.WriteLine(
-                $"Seeding partition pool with " +
-                $"{pendingRanges.Count} feed ranges...",
-                LogType.Debug);
             int resumedCount = 0;
             foreach (var range in pendingRanges)
             {
@@ -162,23 +133,14 @@ namespace CassandraMigrationProcessor.Processors
                 {
                     pagingState = Convert.FromBase64String(base64Token);
                     resumedCount++;
-                    _log.WriteLine(
-                        $"Resuming range from checkpoint: " +
-                        $"{TruncRange(range)}",
-                        LogType.Debug);
                 }
                 await partitionPool.Writer.WriteAsync(
                     new Partition(range, pagingState));
             }
             if (resumedCount > 0)
                 _log.WriteLine(
-                    $"{resumedCount} ranges resumed from " +
-                    $"checkpoint, {pendingRanges.Count - resumedCount} " +
-                    $"starting fresh");
-            else
-                _log.WriteLine(
-                    $"All {pendingRanges.Count} ranges " +
-                    $"starting fresh");
+                    $"Resuming {resumedCount}/{pendingRanges.Count}" +
+                    $" ranges from checkpoint");
 
             // Seed counters from prior run for resume
             long priorCopied = migrationUnit.CopyRowsCopied;
