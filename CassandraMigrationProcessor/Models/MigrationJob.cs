@@ -2,7 +2,6 @@ using Newtonsoft.Json;
 using CassandraMigrationProcessor.Models;
 using System;
 using System.Collections.Generic;
-#pragma warning disable CS8618
 
 namespace CassandraMigrationProcessor
 {
@@ -27,7 +26,7 @@ namespace CassandraMigrationProcessor
 
     public class MigrationJob
     {
-        public string Id { get; set; }
+        public string Id { get; set; } = string.Empty;
         public string? Name { get; set; }
 
         // Source: Cosmos DB Cassandra API

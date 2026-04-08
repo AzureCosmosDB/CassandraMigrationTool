@@ -118,7 +118,7 @@
     int totalTables = allUnits.Count;
     int copyDone = allUnits.Count(u => u.CopyComplete);
     int inProgress = allUnits.Count(u => !u.CopyComplete && u.CopyPercent > 0);
-    int failedTables = allUnits.Count(u => u.SourceStatus == CollectionStatus.Failed);
+    int failedTables = allUnits.Count(u => u.SourceStatus == TableStatus.Failed);
     long totalRows = allUnits.Sum(u => (long)u.CopyRowsCopied);
     long totalDocs = allUnits.Sum(u => (long)u.TotalRowCount);
     double avgSpeed = allUnits.Where(u => u.CopyRowsPerSecond > 0).Select(u => u.CopyRowsPerSecond).DefaultIfEmpty(0).Sum();
@@ -356,9 +356,9 @@
                                 string barColor = "bg-primary";
                                 double pct = 0;
 
-                                if (mu.SourceStatus == CollectionStatus.NotFound)
+                                if (mu.SourceStatus == TableStatus.NotFound)
                                 { copyStatus = "Skipped (404)"; barColor = "bg-secondary"; pct = 100; }
-                                else if (mu.SourceStatus == CollectionStatus.Failed)
+                                else if (mu.SourceStatus == TableStatus.Failed)
                                 { copyStatus = "Failed"; barColor = "bg-danger"; pct = 100; }
                                 else if (mu.SkippedDueToMaxRetries)
                                 { copyStatus = "Skipped (Max Retries)"; barColor = "bg-warning"; pct = 100; }
@@ -735,8 +735,8 @@ else if (@_showLogBackupFile)
                 return true;
 
             // Copy Status
-            var sourceStatus = mu.SourceStatus == CollectionStatus.NotFound ? "Skipped (404)"
-                                                : mu.SourceStatus == CollectionStatus.Failed ? "Failed"
+            var sourceStatus = mu.SourceStatus == TableStatus.NotFound ? "Skipped (404)"
+                                                : mu.SourceStatus == TableStatus.Failed ? "Failed"
                                                 : mu.SkippedDueToMaxRetries ? "Skipped (Max Retries)"
                                                 : (mu.CopyComplete ? "Success" : $"{mu.CopyPercent:F1}%");
             if (sourceStatus.Contains(searchText, StringComparison.OrdinalIgnoreCase))
@@ -759,7 +759,7 @@ else if (@_showLogBackupFile)
             }
 
             // Collection Status text variants
-            if (mu.SourceStatus == CollectionStatus.NotFound && 
+            if (mu.SourceStatus == TableStatus.NotFound && 
                 ("missing".Contains(searchText) || "empty".Contains(searchText) || "notfound".Contains(searchText)))
                 return true;
 
@@ -853,10 +853,10 @@ else if (@_showLogBackupFile)
 
     private object GetSortValueForStatus(MigrationUnitBasic mu)
     {
-        if (mu.SourceStatus == CollectionStatus.NotFound)
+        if (mu.SourceStatus == TableStatus.NotFound)
             return "0_Skipped (404)"; // Sort skipped items first
 
-        if (mu.SourceStatus == CollectionStatus.Failed)
+        if (mu.SourceStatus == TableStatus.Failed)
             return "0_Failed"; // Sort failed items near top
 
         if (mu.CopyComplete)
@@ -1350,7 +1350,7 @@ else if (@_showLogBackupFile)
         if (CurrentlyLoadedMigrationJob?.MigrationUnitBasics == null)
             return false;
         return CurrentlyLoadedMigrationJob.MigrationUnitBasics.All(mu =>
-            mu.SourceStatus == CollectionStatus.NotFound || mu.CopyComplete);
+            mu.SourceStatus == TableStatus.NotFound || mu.CopyComplete);
     }
 
     /// <summary>
@@ -1658,8 +1658,8 @@ else if (@_showLogBackupFile)
             foreach (var tobDel in delList)
             {
                 tobDel.ParentJob = CurrentlyLoadedMigrationJob;
-                tobDel.Remove();
-                MigrationJobContext.MigrationUnitsCache.RemoveMigrationUnit(tobDel.Id);//remove from cache
+                UnitStore.RemoveUnit(tobDel);
+                MigrationJobContext.MigrationUnitsCache?.RemoveMigrationUnit(tobDel.Id);//remove from cache
             }
 
             foreach (var mu in migrationUnits)

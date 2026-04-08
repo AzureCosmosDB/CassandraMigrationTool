@@ -117,7 +117,11 @@ namespace CassandraMigrationProcessor.Processors
                             Interlocked.Exchange(
                                 ref ctx.FatalErrorFlag, 1);
                             try { _cancellation.Cancel(); }
-                            catch { }
+                            catch (Exception ex)
+                            {
+                                Console.WriteLine(
+                                    $"[WARN] Cancel failed: {ex.Message}");
+                            }
                             break;
                         }
 

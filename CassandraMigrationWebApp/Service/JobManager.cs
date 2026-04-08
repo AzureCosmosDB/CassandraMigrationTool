@@ -19,6 +19,7 @@ namespace CassandraMigrationWebApp.Service
         private CancellationTokenSource? _migrationCts;
         private string _runningJobId = string.Empty;
         private readonly object _stateLock = new();
+        private Task? _migrationTask;
 
         private DateTime _lastJobHeartBeat = DateTime.MinValue;
         private string _lastJobID = string.Empty;
@@ -122,7 +123,7 @@ namespace CassandraMigrationWebApp.Service
             {
                 Task.Run(() =>
                 {
-                    MigrationJobContext.Store.DeleteDocument($"{Path.Combine(JobStore.JobsFolder, jobId)}");
+                    MigrationJobContext.Store.Delete($"{Path.Combine(JobStore.JobsFolder, jobId)}");
                     MigrationJobContext.Store.DeleteLogs(jobId);
                     //clearing  dumped files
 
@@ -170,7 +171,7 @@ namespace CassandraMigrationWebApp.Service
             LogBucket? bucket = null;
             if (IsProcessRunning(id))
             {
-                bucket = _log.GetCurentLogBucket(id);
+                bucket = _log.GetCurrentLogBucket(id);
                 _lastJobHeartBeat = DateTime.UtcNow;
                 _lastJobID = id;
                 isLiveLog = true;
@@ -307,8 +308,9 @@ namespace CassandraMigrationWebApp.Service
             var config = new MigrationSettings();
             config.Load();
 
-            // Fire-and-forget: UI should not block on long-running migration
-            _ = Task.Run(async () =>
+            // Background migration: stored so exceptions are observable and
+            // the task can be awaited during shutdown if needed.
+            _migrationTask = Task.Run(async () =>
             {
                 try
                 {
@@ -343,10 +345,9 @@ namespace CassandraMigrationWebApp.Service
                     }
                     else if (job.Status == JobStatus.Running)
                     {
-                        // Still running = no explicit completion/cancel
                         bool hasFailed = job.MigrationUnitBasics?.Any(
                             mu => mu.SourceStatus ==
-                                CollectionStatus.Failed) ?? false;
+                                TableStatus.Failed) ?? false;
                         if (hasFailed)
                             job.Status = JobStatus.Faulted;
                         else
@@ -358,7 +359,7 @@ namespace CassandraMigrationWebApp.Service
                 }
             });
             
-            Helper.LogToFile($"Started migration (fire-and-forget) for Job ID: {job.Id}");
+            Helper.LogToFile($"Started migration task for Job ID: {job.Id}");
             Console.WriteLine($"Started migration for Job ID: {job.Id}");
 
             return Task.CompletedTask;
@@ -430,7 +431,7 @@ namespace CassandraMigrationWebApp.Service
                                 var mu = new MigrationUnit(
                                     job, ks, tableName,
                                     new List<MigrationChunk>());
-                                mu.SourceStatus = CollectionStatus.OK;
+                                mu.SourceStatus = TableStatus.OK;
                                 expandedUnits.Add(mu);
                             }
                         }
@@ -445,7 +446,7 @@ namespace CassandraMigrationWebApp.Service
                     var mu = new MigrationUnit(
                         job, ks, tbl,
                         new List<MigrationChunk>());
-                    mu.SourceStatus = CollectionStatus.OK;
+                    mu.SourceStatus = TableStatus.OK;
                     expandedUnits.Add(mu);
                 }
             }

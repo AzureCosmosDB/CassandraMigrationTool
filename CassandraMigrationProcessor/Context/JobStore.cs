@@ -6,6 +6,9 @@ using System.IO;
 
 namespace CassandraMigrationProcessor.Context
 {
+    // TODO: Convert to injectable singleton service.
+    // Currently static for backward compatibility with
+    // the processor library which lacks DI support.
     public static class JobStore
     {
         public const string JobsFolder = "migrationjobs";
@@ -38,7 +41,7 @@ namespace CassandraMigrationProcessor.Context
             var filePath = GetJobDefinitionPath(job.Id);
             string json = JsonConvert.SerializeObject(
                 job, Formatting.Indented);
-            MigrationJobContext.Store.UpsertDocument(filePath, json);
+            MigrationJobContext.Store.Write(filePath, json);
         }
 
         internal static MigrationJob? LoadJob(string jobId)
@@ -49,7 +52,7 @@ namespace CassandraMigrationProcessor.Context
             try
             {
                 var filePath = GetJobDefinitionPath(jobId);
-                var json = MigrationJobContext.Store.ReadDocument(
+                var json = MigrationJobContext.Store.Read(
                     filePath);
                 var loadedObject =
                     JsonConvert.DeserializeObject<MigrationJob>(json);

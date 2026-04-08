@@ -11,22 +11,29 @@ using static CassandraMigrationProcessor.JobList;
 
 namespace CassandraMigrationProcessor.Context
 {
+    // TODO: Convert to injectable singleton service.
+    // Currently static for backward compatibility with
+    // the processor library which lacks DI support.
     public static class MigrationJobContext
     {
         private static readonly object _writeJobListLock = new object();
         private static Log _log;
 
-        public static ActiveMigrationUnitsCache MigrationUnitsCache
+        public static MigrationUnitCache MigrationUnitsCache
         { get; set; }
 
         /// <summary>
         /// In-memory storage for source connection strings, keyed by job ID.
+        /// In-memory only. Never persisted to disk.
+        /// Cleared on app restart — user must re-enter on resume.
         /// </summary>
         public static ConcurrentDictionary<string, string> SourceConnectionString
         { get; set; } = new();
 
         /// <summary>
         /// In-memory storage for target connection strings, keyed by job ID.
+        /// In-memory only. Never persisted to disk.
+        /// Cleared on app restart — user must re-enter on resume.
         /// </summary>
         public static ConcurrentDictionary<string, string> TargetConnectionString
         { get; set; } = new();
@@ -120,7 +127,7 @@ namespace CassandraMigrationProcessor.Context
                         JobStore.LoadJob(ActiveMigrationJobId);
                     if (MigrationUnitsCache == null)
                         MigrationUnitsCache =
-                            new ActiveMigrationUnitsCache();
+                            new MigrationUnitCache();
                     return JobStore.CachedActiveJob;
                 }
 
@@ -220,14 +227,14 @@ namespace CassandraMigrationProcessor.Context
                 {
                     try
                     {
-                        if (!Store.DocumentExists(path))
+                        if (!Store.Exists(path))
                         {
                             notFound = true;
                             errorMessage = "Job list not found.";
                         }
                         else
                         {
-                            string json = Store.ReadDocument(path);
+                            string json = Store.Read(path);
                             var obj = JsonConvert
                                 .DeserializeObject<JobList>(json);
                             if (obj?.MigrationJobIds != null)
@@ -270,7 +277,7 @@ namespace CassandraMigrationProcessor.Context
                         string json =
                             JsonConvert.SerializeObject(
                                 JobList, Formatting.Indented);
-                        Store.UpsertDocument(filePath, json);
+                        Store.Write(filePath, json);
                     }
                 }
                 return true;

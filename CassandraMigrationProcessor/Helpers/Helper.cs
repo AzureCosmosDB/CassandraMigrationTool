@@ -34,8 +34,8 @@ namespace CassandraMigrationProcessor
             // Allow both OK and Failed status — Failed tables
             // are retried on resume (e.g. after token expiry).
             // Only NotFound tables are truly invalid.
-            return mu.SourceStatus == CollectionStatus.OK
-                || mu.SourceStatus == CollectionStatus.Failed;
+            return mu.SourceStatus == TableStatus.OK
+                || mu.SourceStatus == TableStatus.Failed;
         }
 
         #region Logging
@@ -195,10 +195,10 @@ namespace CassandraMigrationProcessor
         }
 
         /// <summary>
-        /// Parse a namespace string (JSON or CSV format) into CollectionInfo entries.
+        /// Parse a namespace string (JSON or CSV format) into TableMapping entries.
         /// Returns null if the input is invalid.
         /// </summary>
-        private static List<CollectionInfo>? ParseNamespaceEntries(string input)
+        private static List<TableMapping>? ParseNamespaceEntries(string input)
         {
             if (string.IsNullOrWhiteSpace(input))
                 return null;
@@ -207,26 +207,28 @@ namespace CassandraMigrationProcessor
             try
             {
                 var parsed = JsonConvert
-                    .DeserializeObject<List<CollectionInfo>>(input);
+                    .DeserializeObject<List<TableMapping>>(input);
                 if (parsed != null)
                     return parsed;
             }
-            catch { }
-
-            // CSV format: keyspace.table, keyspace.table
+            catch (Exception ex)
+            {
+                Console.WriteLine(
+                    $"[WARN] JSON parse failed during namespace parsing: {ex.Message}");
+            }
             var entries = input.Split(new[] { ',', '\n', '\r', ';' })
                 .Select(s => s.Trim())
                 .Where(s => !string.IsNullOrEmpty(s))
                 .ToList();
 
-            var result = new List<CollectionInfo>();
+            var result = new List<TableMapping>();
             foreach (var fullName in entries)
             {
                 int dotIdx = fullName.IndexOf('.');
                 if (dotIdx <= 0 || dotIdx == fullName.Length - 1)
                     return null; // invalid entry
 
-                result.Add(new CollectionInfo
+                result.Add(new TableMapping
                 {
                     KeyspaceName = fullName.Substring(0, dotIdx).Trim(),
                     TableName = fullName.Substring(dotIdx + 1).Trim()
@@ -245,11 +247,11 @@ namespace CassandraMigrationProcessor
                 return unitsToAdd;
 
             // Try JSON format first
-            List<CollectionInfo>? loadedObject = null;
+            List<TableMapping>? loadedObject = null;
             try
             {
                 loadedObject = JsonConvert
-                    .DeserializeObject<List<CollectionInfo>>(
+                    .DeserializeObject<List<TableMapping>>(
                         namespacesToMigrate);
             }
             catch (Exception ex)
@@ -279,7 +281,7 @@ namespace CassandraMigrationProcessor
                             new List<MigrationChunk>());
                         mu.TargetKeyspaceName = tgtKs;
                         mu.TargetTableName = tgtTbl;
-                        mu.SourceStatus = CollectionStatus.OK;
+                        mu.SourceStatus = TableStatus.OK;
                         unitsToAdd.Add(mu);
                     }
                 }
@@ -307,7 +309,7 @@ namespace CassandraMigrationProcessor
                         var mu = new MigrationUnit(
                             job, ks, tbl,
                             new List<MigrationChunk>());
-                        mu.SourceStatus = CollectionStatus.OK;
+                        mu.SourceStatus = TableStatus.OK;
                         unitsToAdd.Add(mu);
                     }
                 }
@@ -354,7 +356,7 @@ namespace CassandraMigrationProcessor
                 return;
 
             mu.ParentJob = job;
-            job.MigrationUnitBasics.Add(mu.GetBasic());
+            job.MigrationUnitBasics.Add(mu.ToSummary());
         }
 
         public static Tuple<bool, string, string> ValidateNamespaceFormat(
@@ -380,9 +382,13 @@ namespace CassandraMigrationProcessor
             }
 
             // Re-serialize to normalized JSON if the original was JSON
-            List<CollectionInfo>? jsonCheck = null;
-            try { jsonCheck = JsonConvert.DeserializeObject<List<CollectionInfo>>(input); }
-            catch { }
+            List<TableMapping>? jsonCheck = null;
+            try { jsonCheck = JsonConvert.DeserializeObject<List<TableMapping>>(input); }
+            catch (Exception ex)
+            {
+                Console.WriteLine(
+                    $"[WARN] JSON re-parse failed during validation: {ex.Message}");
+            }
 
             string normalizedOutput = jsonCheck != null
                 ? JsonConvert.SerializeObject(parsed)

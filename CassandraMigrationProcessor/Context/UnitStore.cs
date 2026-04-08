@@ -4,6 +4,9 @@ using System.IO;
 
 namespace CassandraMigrationProcessor.Context
 {
+    // TODO: Convert to injectable singleton service.
+    // Currently static for backward compatibility with
+    // the processor library which lacks DI support.
     public static class UnitStore
     {
         private static readonly object _writeMULock = new object();
@@ -46,7 +49,7 @@ namespace CassandraMigrationProcessor.Context
                     string muJson =
                         JsonConvert.SerializeObject(
                             mu, Formatting.Indented);
-                    MigrationJobContext.Store.UpsertDocument(
+                    MigrationJobContext.Store.Write(
                         muFilePath, muJson);
                 }
 
@@ -69,6 +72,35 @@ namespace CassandraMigrationProcessor.Context
             }
         }
 
+        public static bool RemoveUnit(MigrationUnitBasic unit)
+        {
+            if (unit == null || unit.ParentJob == null)
+                return false;
+
+            try
+            {
+                var job = unit.ParentJob;
+                var index = job.MigrationUnitBasics
+                    .FindIndex(mu => mu.Id == unit.Id);
+                if (index == -1) return false;
+
+                job.MigrationUnitBasics.RemoveAt(index);
+
+                var filePath = Path.Combine(
+                    JobStore.JobsFolder, unit.JobId,
+                    $"{unit.Id}.json");
+                MigrationJobContext.Store.Delete(filePath);
+
+                return MigrationJobContext.SaveMigrationJob(job);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine(
+                    $"[WARN] RemoveUnit failed: {ex.Message}");
+                return false;
+            }
+        }
+
         public static MigrationUnit GetFromStorage(
             string jobId, string unitId)
         {
@@ -79,7 +111,7 @@ namespace CassandraMigrationProcessor.Context
                 var filePath = Path.Combine(
                     JobStore.JobsFolder, jobId, $"{unitId}.json");
                 string json = MigrationJobContext.Store
-                    .ReadDocument(filePath);
+                    .Read(filePath);
                 return JsonConvert
                     .DeserializeObject<MigrationUnit>(json);
             }

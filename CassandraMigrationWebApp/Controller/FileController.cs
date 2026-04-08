@@ -31,12 +31,12 @@ public class FileController : ControllerBase
         var filePath = $"{JobStore.JobsFolder}\\{jobId}\\{migrationUnitId}.json";
 
         // Use the persistence storage to read the document
-        if (MigrationJobContext.Store == null || !MigrationJobContext.Store.DocumentExists(filePath))
+        if (MigrationJobContext.Store == null || !MigrationJobContext.Store.Exists(filePath))
         {
             return NotFound("Migration unit file not found.");
         }
 
-        var jsonContent = MigrationJobContext.Store.ReadDocument(filePath);
+        var jsonContent = MigrationJobContext.Store.Read(filePath);
         
         if (string.IsNullOrEmpty(jsonContent))
         {

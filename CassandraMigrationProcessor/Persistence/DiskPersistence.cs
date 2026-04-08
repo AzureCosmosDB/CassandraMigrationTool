@@ -143,7 +143,7 @@ namespace CassandraMigrationProcessor.Persistence
         /// <param name="id">Unique identifier for the document (must include .json extension, e.g., "job1\mu1.json")</param>
         /// <param name="jsonContent">JSON content to store</param>
         /// <returns>True if successful, false otherwise</returns>
-        public bool UpsertDocument(string id, string jsonContent)
+        public bool Write(string id, string jsonContent)
         {
             EnsureInitialized();
 
@@ -174,7 +174,7 @@ namespace CassandraMigrationProcessor.Persistence
         /// </summary>
         /// <param name="id">Unique identifier of the document (must include .json extension, e.g., "job1\mu1.json")</param>
         /// <returns>JSON content if found, null otherwise</returns>
-        public string ReadDocument(string id)
+        public string Read(string id)
         {
             EnsureInitialized();
 
@@ -202,7 +202,7 @@ namespace CassandraMigrationProcessor.Persistence
         /// </summary>
         /// <param name="id">Unique identifier of the document (must include .json extension, e.g., "job1\mu1.json")</param>
         /// <returns>True if document exists, false otherwise</returns>
-        public bool DocumentExists(string id)
+        public bool Exists(string id)
         {
             EnsureInitialized();
 
@@ -230,7 +230,7 @@ namespace CassandraMigrationProcessor.Persistence
         /// </summary>
         /// <param name="id">Unique identifier of the document/folder (e.g., "job1\mu1.json" for file, "job1" for folder)</param>
         /// <returns>True if deleted, false otherwise</returns>
-        public bool DeleteDocument(string id)
+        public bool Delete(string id)
         {
             EnsureInitialized();
 
@@ -269,7 +269,7 @@ namespace CassandraMigrationProcessor.Persistence
         /// Returns IDs with .json extension included.
         /// </summary>
         /// <returns>List of document IDs (e.g., "job1\mu1.json", "settings.json")</returns>
-        public List<string> ListDocumentIds()
+        public List<string> ListIds()
         {
             EnsureInitialized();
 

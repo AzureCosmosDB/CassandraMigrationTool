@@ -216,9 +216,9 @@ namespace CassandraMigrationProcessor.Workers
 
             // Reset Failed status on retry/resume so the table
             // gets a fresh chance (Bug 3 fix)
-            if (migrationUnit.SourceStatus == CollectionStatus.Failed)
+            if (migrationUnit.SourceStatus == TableStatus.Failed)
             {
-                migrationUnit.SourceStatus = CollectionStatus.OK;
+                migrationUnit.SourceStatus = TableStatus.OK;
                 MigrationJobContext.SaveMigrationUnit(migrationUnit, true);
             }
 
@@ -241,7 +241,7 @@ namespace CassandraMigrationProcessor.Workers
                         $"Source table {migrationUnit.KeyspaceName}" +
                         $".{migrationUnit.TableName} not found.",
                         LogType.Error);
-                    migrationUnit.SourceStatus = CollectionStatus.NotFound;
+                    migrationUnit.SourceStatus = TableStatus.NotFound;
                     MigrationJobContext.SaveMigrationUnit(
                         migrationUnit, true);
                     return;
@@ -505,7 +505,7 @@ namespace CassandraMigrationProcessor.Workers
 
                 // BB-3 fix: Mark MU as failed so the UI shows
                 // "Failed" instead of "0.0%"
-                migrationUnit.SourceStatus = CollectionStatus.Failed;
+                migrationUnit.SourceStatus = TableStatus.Failed;
 
                 // Detect auth errors (expired token)
                 if (IsAuthError(ex))

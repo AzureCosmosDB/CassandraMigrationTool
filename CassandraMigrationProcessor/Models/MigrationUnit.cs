@@ -4,8 +4,6 @@ using System;
 using System.Collections.Generic;
 using System.Threading;
 
-#pragma warning disable CS8618
-
 namespace CassandraMigrationProcessor
 {
     public class NameValuePair
@@ -19,10 +17,10 @@ namespace CassandraMigrationProcessor
         [JsonIgnore]
         public MigrationJob? ParentJob;
 
-        public string Id { get; set; }
-        public string JobId { get; set; }
-        public string KeyspaceName { get; set; }
-        public string TableName { get; set; }
+        public string Id { get; set; } = string.Empty;
+        public string JobId { get; set; } = string.Empty;
+        public string KeyspaceName { get; set; } = string.Empty;
+        public string TableName { get; set; } = string.Empty;
         public string? TargetKeyspaceName { get; set; }
         public string? TargetTableName { get; set; }
 
@@ -37,36 +35,11 @@ namespace CassandraMigrationProcessor
         public double CopyRowsPerSecond { get; set; }
         public long TotalRowCount { get; set; }
 
-        public CollectionStatus SourceStatus { get; set; }
+        public TableStatus SourceStatus { get; set; }
 
         // Skip tracking for max retries exceeded
         public bool SkippedDueToMaxRetries { get; set; } = false;
         public string? FailedOperation { get; set; } = null;
-
-        public bool Remove()
-        {
-            if (this.ParentJob == null) return false;
-
-            try
-            {
-                var index = ParentJob.MigrationUnitBasics
-                    .FindIndex(mu => mu.Id == this.Id);
-                if (index == -1) return false;
-
-                ParentJob.MigrationUnitBasics.RemoveAt(index);
-
-                var filePath =
-                    $"{JobStore.JobsFolder}\\{this.JobId}\\{this.Id}.json";
-                MigrationJobContext.Store.DeleteDocument(filePath);
-
-                return MigrationJobContext
-                    .SaveMigrationJob(ParentJob);
-            }
-            catch
-            {
-                return false;
-            }
-        }
 
         public string GetEffectiveTargetKeyspaceName()
         {
@@ -188,7 +161,7 @@ namespace CassandraMigrationProcessor
                 ref _changeFeedRowsUpdated, value);
         }
 
-        public List<MigrationChunk> MigrationChunks { get; set; }
+        public List<MigrationChunk> MigrationChunks { get; set; } = new();
 
         public MigrationUnit(
             MigrationJob job,
@@ -224,7 +197,7 @@ namespace CassandraMigrationProcessor
                         .FindIndex(mu => mu.Id == this.Id);
                     if (index == -1) return false;
 
-                    GetBasic(ParentJob.MigrationUnitBasics[index]);
+                    ToSummary(ParentJob.MigrationUnitBasics[index]);
                 }
                 return true;
             }
@@ -234,7 +207,7 @@ namespace CassandraMigrationProcessor
             }
         }
 
-        public MigrationUnitBasic GetBasic(
+        public MigrationUnitBasic ToSummary(
             MigrationUnitBasic? mub = null)
         {
             if (mub == null)

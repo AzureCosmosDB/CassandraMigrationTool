@@ -34,7 +34,7 @@ namespace CassandraMigrationProcessor.Processors
         private readonly Log _log;
         private ISession _sourceSession;
         private ISession? _targetSession;
-        private readonly ActiveMigrationUnitsCache _muCache;
+        private readonly MigrationUnitCache _muCache;
         private readonly MigrationSettings _config;
         private readonly MigrationJob _job;
         private readonly bool _singleTable;
@@ -51,7 +51,7 @@ namespace CassandraMigrationProcessor.Processors
             Log log,
             ISession sourceSession,
             ISession targetSession,
-            ActiveMigrationUnitsCache muCache,
+            MigrationUnitCache muCache,
             MigrationSettings config,
             MigrationJob job,
             bool singleTable = true,

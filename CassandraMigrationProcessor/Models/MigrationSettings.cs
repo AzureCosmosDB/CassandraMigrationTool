@@ -31,6 +31,10 @@ namespace CassandraMigrationProcessor
         public bool ChangeFeedFullFidelity { get; set; }
         public int MaxFeedRangeParallelism { get; set; }
 
+        // Load and Save live on the model for simplicity: the
+        // settings file is a single global config.json and there
+        // is no separate service boundary that warrants extraction.
+
         private string _filePath = string.Empty;
 
         public MigrationSettings()
@@ -78,9 +82,9 @@ namespace CassandraMigrationProcessor
 
         public void Load()
         {
-            if (MigrationJobContext.Store.DocumentExists(_filePath))
+            if (MigrationJobContext.Store.Exists(_filePath))
             {
-                string json = MigrationJobContext.Store.ReadDocument(_filePath);
+                string json = MigrationJobContext.Store.Read(_filePath);
                 var loaded =
                     JsonConvert.DeserializeObject<MigrationSettings>(json);
                 if (loaded != null)
@@ -108,7 +112,7 @@ namespace CassandraMigrationProcessor
             try
             {
                 string json = JsonConvert.SerializeObject(this);
-                MigrationJobContext.Store.UpsertDocument(_filePath, json);
+                MigrationJobContext.Store.Write(_filePath, json);
                 errorMessage = string.Empty;
                 return true;
             }

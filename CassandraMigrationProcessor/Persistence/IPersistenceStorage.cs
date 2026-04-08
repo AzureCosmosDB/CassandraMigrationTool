@@ -10,11 +10,11 @@ namespace CassandraMigrationProcessor.Persistence
     public interface IPersistenceStorage
     {
         void Initialize(string connectionStringOrPath, string appId);
-        bool UpsertDocument(string id, string jsonContent);
-        string? ReadDocument(string id);
-        bool DocumentExists(string id);
-        bool DeleteDocument(string id);
-        List<string> ListDocumentIds();
+        bool Write(string id, string jsonContent);
+        string? Read(string id);
+        bool Exists(string id);
+        bool Delete(string id);
+        List<string> ListIds();
         bool TestConnection();
         bool IsInitialized { get; }
         LogBucket ReadLogs(string id, out string fileName);

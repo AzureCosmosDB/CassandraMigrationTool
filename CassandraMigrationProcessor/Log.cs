@@ -10,7 +10,7 @@ namespace CassandraMigrationProcessor
         public List<LogObject>? Logs { get; set; } = new List<LogObject>();
     }
 
-    public class Log
+    public class Log : IDisposable
     {
         private const int MonitorMessageMinCount = 5;
         private const int MaxLogEntries = 300;
@@ -138,7 +138,7 @@ namespace CassandraMigrationProcessor
             _verboseMessages.Clear();
         }                
 
-        public LogBucket GetCurentLogBucket(string id)
+        public LogBucket GetCurrentLogBucket(string id)
         {
             if (_currentId == id && _logBucket != null)
             {
