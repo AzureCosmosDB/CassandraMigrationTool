@@ -165,28 +165,12 @@ namespace CassandraMigrationProcessor.Context
             }
             catch { }
 
-            if (isLocal)
-            {
-                Store = new DiskPersistence();
-                var localPath =
-                    string.IsNullOrEmpty(stateStoreCSorPath)
-                    ? Helper.GetWorkingFolder()
-                    : stateStoreCSorPath;
-                Store.Initialize(localPath, string.Empty);
-            }
-            else
-            {
-                if (string.IsNullOrEmpty(stateStoreCSorPath))
-                    throw new InvalidOperationException(
-                        "Configure StateStore:ConnectionStringOrPath.");
-                if (string.IsNullOrEmpty(appId))
-                    throw new InvalidOperationException(
-                        "Configure StateStore:AppID.");
-
-                AppId = appId;
-                Store = new DocumentDBPersistence();
-                Store.Initialize(stateStoreCSorPath, appId);
-            }
+            Store = new DiskPersistence();
+            var localPath =
+                string.IsNullOrEmpty(stateStoreCSorPath)
+                ? Helper.GetWorkingFolder()
+                : stateStoreCSorPath;
+            Store.Initialize(localPath, string.Empty);
 
             JobList = LoadJobList(
                 out bool notFound, out string errorMessage);
