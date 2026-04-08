@@ -29,9 +29,18 @@ namespace CassandraMigrationProcessor.Processors
             pctx.Tracker.WorkerStarted();
             try
             {
-            await foreach (var partition in pctx.PartitionPool
-                .Reader.ReadAllAsync(_cts.Token))
+            while (!_cts.Token.IsCancellationRequested
+                && Volatile.Read(ref pctx.NonRetriableHitFlag) == 0)
             {
+                Partition partition;
+                try
+                {
+                    partition = await pctx.PartitionPool
+                        .Reader.ReadAsync(_cts.Token);
+                }
+                catch (OperationCanceledException) { break; }
+                catch (ChannelClosedException) { break; }
+
                 if (_cts.Token.IsCancellationRequested
                     || Volatile.Read(
                         ref pctx.NonRetriableHitFlag) != 0)
