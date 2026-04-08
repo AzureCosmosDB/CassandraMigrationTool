@@ -79,10 +79,12 @@ namespace CassandraMigrationProcessor.Processors
                     stmt.SetConsistencyLevel(
                         ConsistencyLevel.One);
 
-                    var resumeToken =
-                        partition.GetResumeToken();
-                    if (resumeToken != null)
-                        stmt.SetPagingState(resumeToken);
+                    // Use partition's latest paging state
+                    // (not GetResumeToken — that's for
+                    // checkpoint persistence only)
+                    if (partition.LastPagingState != null)
+                        stmt.SetPagingState(
+                            partition.LastPagingState);
 
                     RowSet rs = null;
                     for (int att = 1; att <= 3; att++)
@@ -120,6 +122,8 @@ namespace CassandraMigrationProcessor.Processors
                     else
                     {
                         byte[]? nextPaging = rs.PagingState;
+                        // Update partition's read cursor
+                        partition.LastPagingState = nextPaging;
 
                         // Extract row values
                         var rows = new List<object[]>();

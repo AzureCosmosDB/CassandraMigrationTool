@@ -71,6 +71,14 @@ namespace CassandraMigrationProcessor.Processors
             public string FeedRange { get; }
             public bool IsExhausted { get; set; }
 
+            /// <summary>
+            /// Latest paging state from the most recent read.
+            /// Used by the next worker to continue reading.
+            /// NOT the same as GetResumeToken() which returns
+            /// the oldest unwritten checkpoint.
+            /// </summary>
+            public byte[]? LastPagingState { get; set; }
+
             // Linked list of work chunks (head = oldest pending)
             private WorkChunk? _head;
             private WorkChunk? _tail;
@@ -80,6 +88,7 @@ namespace CassandraMigrationProcessor.Processors
                 string feedRange, byte[]? initialPagingState)
             {
                 FeedRange = feedRange;
+                LastPagingState = initialPagingState;
                 if (initialPagingState != null)
                 {
                     _head = _tail = new WorkChunk
