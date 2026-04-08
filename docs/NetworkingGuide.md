@@ -317,6 +317,115 @@ This simplifies networking but requires the MI subnet to allow
 
 ---
 
+## Alternative: VNet Peering (Separate VNets)
+
+When the Cosmos DB account, Managed Instance, and App Service are
+in **different VNets** (common in hub-spoke topologies or cross-team
+setups), use VNet peering to connect them.
+
+```
+┌──────────────────────────────────┐       ┌──────────────────────────────────┐
+│  VNet A: App Service VNet         │       │  VNet B: MI VNet                  │
+│  (10.1.0.0/16)                    │       │  (10.0.0.0/16)                    │
+│                                    │       │                                    │
+│  ┌──────────────────────────────┐ │       │ ┌──────────────────────────────┐  │
+│  │  App Service Subnet           │ │       │ │  MI Subnet (10.0.0.0/24)      │  │
+│  │  (10.1.0.0/24)                │ │       │ │                                │  │
+│  │  ┌────────────────────────┐  │ │       │ │  ┌────────────────────────┐   │  │
+│  │  │ App Service             │  │ │  VNet │ │  │ Managed Instance       │   │  │
+│  │  │ (Migration Tool)        │──┼─┼──Peer─┼─┼─▶│ (10.0.0.5:9042)        │   │  │
+│  │  └────────────────────────┘  │ │       │ │  └────────────────────────┘   │  │
+│  └──────────────────────────────┘ │       │ └──────────────────────────────┘  │
+│                                    │       │                                    │
+│  ┌──────────────────────────────┐ │       │ ┌──────────────────────────────┐  │
+│  │  PE Subnet (10.1.1.0/24)      │ │       │ │  (PE can also be here)        │  │
+│  │  ┌────────────────────────┐  │ │       │ └──────────────────────────────┘  │
+│  │  │ Cosmos DB Private EP    │  │ │       │                                    │
+│  │  │ (10.1.1.4)              │  │ │       └──────────────────────────────────┘
+│  │  └────────────────────────┘  │ │
+│  └──────────────────────────────┘ │
+└──────────────────────────────────┘
+          │ Private Link
+          ▼
+   ┌──────────────────┐
+   │ Cosmos DB         │
+   │ Cassandra API     │
+   └──────────────────┘
+```
+
+### Step 1: Create Peering from App VNet → MI VNet
+
+```bash
+# Peer VNet A → VNet B
+az network vnet peering create \
+  --name app-to-mi-peering \
+  --resource-group <app-resource-group> \
+  --vnet-name <app-vnet> \
+  --remote-vnet <mi-vnet-resource-id> \
+  --allow-vnet-access true \
+  --allow-forwarded-traffic true
+```
+
+### Step 2: Create Peering from MI VNet → App VNet
+
+Peering must be created in **both directions**:
+
+```bash
+# Peer VNet B → VNet A
+az network vnet peering create \
+  --name mi-to-app-peering \
+  --resource-group <mi-resource-group> \
+  --vnet-name <mi-vnet> \
+  --remote-vnet <app-vnet-resource-id> \
+  --allow-vnet-access true \
+  --allow-forwarded-traffic true
+```
+
+### Step 3: Link Private DNS Zone to Both VNets
+
+If the Cosmos DB Private Endpoint is in VNet A, link the Private
+DNS zone to VNet B as well so MI can also resolve it (if needed):
+
+```bash
+# Link Private DNS zone to MI VNet
+az network private-dns zone vnet-link create \
+  --resource-group <resource-group> \
+  --zone-name privatelink.cassandra.cosmos.azure.com \
+  --name mi-vnet-dns-link \
+  --virtual-network <mi-vnet-resource-id> \
+  --registration-enabled false
+```
+
+### Step 4: Verify Peering Status
+
+```bash
+# Both should show "Connected"
+az network vnet peering show \
+  --name app-to-mi-peering \
+  --resource-group <app-resource-group> \
+  --vnet-name <app-vnet> \
+  --query peeringState
+
+az network vnet peering show \
+  --name mi-to-app-peering \
+  --resource-group <mi-resource-group> \
+  --vnet-name <mi-vnet> \
+  --query peeringState
+```
+
+### Important Notes for VNet Peering
+
+| Consideration | Details |
+|--------------|---------|
+| **Address space** | VNets must NOT have overlapping CIDR ranges |
+| **Bidirectional** | Peering must be created from both sides |
+| **Region** | Works across regions (global peering) but adds latency |
+| **Cost** | Peered traffic incurs data transfer charges across regions |
+| **DNS** | Private DNS zones must be linked to all VNets that need resolution |
+| **Transitivity** | VNet peering is NOT transitive — if A↔B and B↔C, A cannot reach C without A↔C peering |
+
+---
+
 ## Troubleshooting
 
 | Issue | Cause | Fix |
