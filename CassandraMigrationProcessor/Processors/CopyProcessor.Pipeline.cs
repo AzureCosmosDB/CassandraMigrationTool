@@ -166,18 +166,16 @@ namespace CassandraMigrationProcessor.Processors
             long finalWritten = Interlocked.Read(ref ctx.TotalWritten);
             long finalFailed = Interlocked.Read(ref ctx.TotalFailed);
             long finalRead = Interlocked.Read(ref ctx.TotalRead);
+            long sessionWritten = finalWritten - priorCopied;
 
             var elapsed = stopwatch.Elapsed;
             double avgSpeed = elapsed.TotalSeconds > 0
-                ? finalWritten / elapsed.TotalSeconds : 0;
+                ? sessionWritten / elapsed.TotalSeconds : 0;
             _log.WriteLine($"Pipeline complete for {processorContext.KeyspaceName}.{processorContext.TableName}:");
-            _log.WriteLine($"  Total read:    {finalRead:N0} rows");
-            _log.WriteLine($"  Total written: {finalWritten:N0} rows");
-            _log.WriteLine($"  Total failed:  {finalFailed:N0} rows");
+            _log.WriteLine($"  This session:  {sessionWritten:N0} read, {sessionWritten:N0} written, {finalFailed:N0} failed");
+            _log.WriteLine($"  Cumulative:    {finalWritten:N0} total rows copied");
             _log.WriteLine($"  Ranges:        {ctx.Completed.Count}/{feedRanges.Count} completed");
-            _log.WriteLine($"  Duration:      {elapsed.TotalSeconds:F1}s");
-            _log.WriteLine($"  Avg speed:     {avgSpeed:F0} rows/sec");
-            _log.WriteLine($"  Workers used:  {workerCount}");
+            _log.WriteLine($"  Duration:      {elapsed.TotalSeconds:F1}s ({avgSpeed:F0} rows/sec)");
 
             var chunk = migrationUnit.MigrationChunks[chunkIndex];
             chunk.SourceResultRowCount = finalWritten;
