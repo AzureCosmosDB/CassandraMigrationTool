@@ -1,7 +1,7 @@
 using Newtonsoft.Json;
 using System;
 using System.IO;
-
+using CassandraMigrationProcessor.Models;
 namespace CassandraMigrationProcessor.Context
 {
     // TODO: Convert to injectable singleton service.

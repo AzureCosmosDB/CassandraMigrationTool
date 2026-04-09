@@ -15,9 +15,9 @@ namespace CassandraMigrationProcessor.Processors
     /// </summary>
     internal partial class CopyProcessor : MigrationProcessor
     {
-        public CopyProcessor(Log log, ISession sourceSession, MigrationSettings config, MigrationJob job,
+        public CopyProcessor(MigrationLog MigrationLog, ISession sourceSession, MigrationSettings config, MigrationJob job,
             MigrationWorker? migrationWorker = null)
-            : base(log, sourceSession, config, job, migrationWorker)
+            : base(MigrationLog, sourceSession, config, job, migrationWorker)
         {
             MigrationJobContext.AddVerboseLog("CopyProcessor: Constructor called");
         }
@@ -87,8 +87,8 @@ namespace CassandraMigrationProcessor.Processors
 
             TaskResult result;
             _log.WriteLine($"Pipeline copy: {feedRanges.Count} feed range(s) for {context.KeyspaceName}.{context.TableName}");
-            result = await CopyWithFeedRangesAsync(migrationUnit, chunkIndex, initialPercent, contributionFactor,
-                rowCount, context, feedRanges);
+            result = await CopyWithFeedRangesAsync(new PipelineRequest(migrationUnit, chunkIndex, initialPercent, contributionFactor,
+                rowCount, context, feedRanges));
 
             if (result == TaskResult.Success)
             {

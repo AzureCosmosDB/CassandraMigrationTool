@@ -67,7 +67,7 @@ else
                 <tr><td class="nowrap">Job Name</td><td class="wrap">@MigrationJob.Name</td></tr>
                 <tr><td class="nowrap">Job Type</td><td>@GetToolName(MigrationJob.JobType)</td></tr>
                 <tr><td class="nowrap">Started On (UTC)</td><td>@(MigrationJob.StartedOn?.ToString() ?? "N/A")</td></tr>
-                <tr><td class="nowrap">Is Online</td><td>@(Helper.IsOnline(MigrationJob) ? "Yes" : "No")</td></tr>
+                <tr><td class="nowrap">Is Online</td><td>@(MigrationHelper.IsOnline(MigrationJob) ? "Yes" : "No")</td></tr>
                 <tr><td class="nowrap">Is Completed</td><td>@(MigrationJob.Status == JobStatus.Completed ? "Yes" : "No")</td></tr>
                 <tr><td class="nowrap">Source Contact Point</td><td class="wrap">@MigrationJob.SourceContactPoint</td></tr>
                 <tr><td class="nowrap">Target Contact Point</td><td class="wrap">@MigrationJob.TargetContactPoint</td></tr>
@@ -107,7 +107,7 @@ else
                     <div><span class="lbl">Actual Count:</span> @FormatLong(mu.ActualRowCount)</div>
                     <div><span class="lbl">Count While Copying:</span> @FormatLong(mu.SourceCountDuringCopy)</div>
                     @{
-                        var totals = Helper.GetProcessedTotals(mu);
+                        var totals = MigrationHelper.GetProcessedTotals(mu);
                     }
                     <div><span class="lbl">Processed Total:</span> @FormatLong(totals.Total)</div>
                     <div><span class="lbl">Insert:</span> @FormatLong(totals.Inserted)</div>

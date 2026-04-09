@@ -2,7 +2,7 @@ using Newtonsoft.Json;
 using CassandraMigrationProcessor.Context;
 using System;
 
-namespace CassandraMigrationProcessor
+namespace CassandraMigrationProcessor.Models
 {
     public class MigrationSettings : ICloneable
     {

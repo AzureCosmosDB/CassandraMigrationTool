@@ -15,7 +15,7 @@ namespace CassandraMigrationWebApp.Service
     public class JobManager
     {
         private MigrationWorker? MigrationWorker { get; set; }
-        private Log _log = new Log();
+        private MigrationLog _log = new MigrationLog();
         private CancellationTokenSource? _migrationCts;
         private string _runningJobId = string.Empty;
         private readonly object _stateLock = new();
@@ -33,7 +33,7 @@ namespace CassandraMigrationWebApp.Service
 
             MigrationJobContext.Initialize(_configuration);
 
-            Helper.LogToFile("JobManager initialized");
+            MigrationHelper.LogToFile("JobManager initialized");
         }
 
 
@@ -54,15 +54,15 @@ namespace CassandraMigrationWebApp.Service
                 // Remove trailing slash if present
                 _webAppBaseUrl = baseUri.TrimEnd('/');
 
-                Helper.LogToFile($"WebAppBaseUrl updated from browser: {_webAppBaseUrl}");
+                MigrationHelper.LogToFile($"WebAppBaseUrl updated from browser: {_webAppBaseUrl}");
             }
             catch (Exception ex)
             {
-                Helper.LogToFile($"Error updating WebAppBaseUrl from browser. Details: {ex}");
+                MigrationHelper.LogToFile($"Error updating WebAppBaseUrl from browser. Details: {ex}");
             }
         }
 
-        public bool UpdateConfig(CassandraMigrationProcessor.MigrationSettings updated_config, out string errorMessage)
+        public bool UpdateConfig(CassandraMigrationProcessor.Models.MigrationSettings updated_config, out string errorMessage)
         {
             if (updated_config == null)
             {
@@ -73,7 +73,7 @@ namespace CassandraMigrationWebApp.Service
             return updated_config.Save(out errorMessage);
         }
 
-        public CassandraMigrationProcessor.MigrationSettings GetConfig()
+        public CassandraMigrationProcessor.Models.MigrationSettings GetConfig()
         {
             MigrationSettings config = new MigrationSettings();
             config.Load();
@@ -127,7 +127,7 @@ namespace CassandraMigrationWebApp.Service
                     MigrationJobContext.Store.DeleteLogs(jobId);
                     //clearing  dumped files
 
-                    string dumpPath = Path.Combine(Helper.GetWorkingFolder(), "cassandradump", jobId);
+                    string dumpPath = Path.Combine(WorkingFolderResolver.GetWorkingFolder(), "cassandradump", jobId);
                     if (Directory.Exists(dumpPath))
                         Directory.Delete(dumpPath, true);
 
@@ -141,11 +141,11 @@ namespace CassandraMigrationWebApp.Service
         }
 
         #endregion 
-        #region Log Management
+        #region MigrationLog Management
 
         public List<LogObject> GetMonitorMessages(string id)
         {
-            //verbose messages are only there for active jobs so fetch from log.
+            //verbose messages are only there for active jobs so fetch from MigrationLog.
             if (IsProcessRunning(id))
                 return _log.GetMonitorMessages() ?? new List<LogObject>();
             else
@@ -167,7 +167,7 @@ namespace CassandraMigrationWebApp.Service
 
         public LogBucket GetLogBucket(string id, out string fileName, out bool isLiveLog)
         {
-            //Check if migration worker is initialized and active. Return log bucket if it is.
+            //Check if migration worker is initialized and active. Return MigrationLog bucket if it is.
             LogBucket? bucket = null;
             if (IsProcessRunning(id))
             {
@@ -179,16 +179,16 @@ namespace CassandraMigrationWebApp.Service
                 return bucket ?? new LogBucket { Logs = new List<LogObject>() };
             }
 
-            //If migration worker is not running, get the log bucket from the file.Its static  
+            //If migration worker is not running, get the MigrationLog bucket from the file.Its static  
             isLiveLog = false;
-            Log log = new Log();
-            return log.ReadLogFile(id, out fileName) ?? new LogBucket { Logs = new List<LogObject>() };
+            MigrationLog MigrationLog = new MigrationLog();
+            return MigrationLog.ReadLogFile(id, out fileName) ?? new LogBucket { Logs = new List<LogObject>() };
         }
 
         public int GetLogCount(string jobId)
         {
-            Log log = new Log();
-            return log.GetLogCount(jobId);
+            MigrationLog MigrationLog = new MigrationLog();
+            return MigrationLog.GetLogCount(jobId);
         }
 
         public byte[] DownloadLogPage(string jobId, int pageNumber, int pageSize)
@@ -197,8 +197,8 @@ namespace CassandraMigrationWebApp.Service
                 return Array.Empty<byte>();
 
             int skip = (pageNumber - 1) * pageSize;
-            Log log = new Log();
-            return log.DownloadLogsPaginated(jobId, skip, pageSize);
+            MigrationLog MigrationLog = new MigrationLog();
+            return MigrationLog.DownloadLogsPaginated(jobId, skip, pageSize);
         }
 
         #endregion
@@ -221,7 +221,7 @@ namespace CassandraMigrationWebApp.Service
         /// Checks if controlled pause is applicable for the given job type and current job state
         /// Controlled pause is only applicable during bulk copy phase, not during change stream processing
         /// </summary>
-        public bool IsControlledPauseApplicable(JobType jobType, CassandraMigrationProcessor.MigrationJob? job = null)
+        public bool IsControlledPauseApplicable(JobType jobType, CassandraMigrationProcessor.Models.MigrationJob? job = null)
         {
             // Controlled pause is only applicable for CqlCopy jobs during bulk copy phase
             if (jobType != JobType.CqlCopy)
@@ -278,7 +278,7 @@ namespace CassandraMigrationWebApp.Service
                     return Task.CompletedTask;
                 }
 
-                _log = new Log();
+                _log = new MigrationLog();
                 _log.Init(job.Id);
                 _log.SetJob(job);
                 MigrationWorker = new MigrationWorker(_log);
@@ -314,24 +314,24 @@ namespace CassandraMigrationWebApp.Service
             {
                 try
                 {
-                    Helper.LogToFile($"Task.Run started for job {job.Id}");
+                    MigrationHelper.LogToFile($"Task.Run started for job {job.Id}");
 
                     // Expand wildcards (e.g. "socialmedia.*") by connecting to source
                     if (job.Tables == null || job.Tables.Count == 0
                         || job.Tables.Any(m => m.TableName == "*"))
                     {
-                        Helper.LogToFile($"Expanding wildcards for job {job.Id}, namespaces={namespacesToMigrate}");
+                        MigrationHelper.LogToFile($"Expanding wildcards for job {job.Id}, namespaces={namespacesToMigrate}");
                         ExpandWildcardTables(job, namespacesToMigrate);
-                        Helper.LogToFile($"After expand: {job.Tables?.Count ?? 0} units");
+                        MigrationHelper.LogToFile($"After expand: {job.Tables?.Count ?? 0} units");
                     }
 
-                    Helper.LogToFile($"Calling MigrationWorker.StartAsync for job {job.Id}");
+                    MigrationHelper.LogToFile($"Calling MigrationWorker.StartAsync for job {job.Id}");
                     await MigrationWorker.StartAsync(job, config, _migrationCts.Token);
-                    Helper.LogToFile($"MigrationWorker.StartAsync completed for job {job.Id}");
+                    MigrationHelper.LogToFile($"MigrationWorker.StartAsync completed for job {job.Id}");
                 }
                 catch (Exception ex)
                 {
-                    Helper.LogToFile($"Migration failed for Job ID: {job.Id}: {ex}");
+                    MigrationHelper.LogToFile($"Migration failed for Job ID: {job.Id}: {ex}");
                     Console.WriteLine($"Migration failed for Job ID: {job.Id}: {ex}");
                     _log.WriteLine($"Migration failed: {ex}", LogType.Error);
                 }
@@ -359,7 +359,7 @@ namespace CassandraMigrationWebApp.Service
                 }
             });
 
-            Helper.LogToFile($"Started migration task for Job ID: {job.Id}");
+            MigrationHelper.LogToFile($"Started migration task for Job ID: {job.Id}");
             Console.WriteLine($"Started migration for Job ID: {job.Id}");
 
             return Task.CompletedTask;
@@ -452,7 +452,7 @@ namespace CassandraMigrationWebApp.Service
             {
                 // Clear any wildcard entries
                 job.Tables?.RemoveAll(m => m.TableName == "*");
-                Helper.AddMigrationUnits(expandedUnits, job, _log);
+                MigrationHelper.AddMigrationUnits(expandedUnits, job, _log);
             }
         }
 

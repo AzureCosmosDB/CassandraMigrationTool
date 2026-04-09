@@ -3,6 +3,7 @@ using CassandraMigrationProcessor.Context;
 using CassandraMigrationProcessor.Helpers.Cassandra;
 using CassandraMigrationProcessor.Helpers.JobManagement;
 using CassandraMigrationProcessor.Models;
+using CassandraMigrationProcessor.Helpers;
 using CassandraMigrationProcessor.Workers;
 using System;
 using System.Collections.Concurrent;
@@ -25,7 +26,7 @@ namespace CassandraMigrationProcessor.Processors
     /// </summary>
     public partial class ChangeFeedProcessor
     {
-        private readonly Log _log;
+        private readonly MigrationLog _log;
         private ISession _sourceSession;
         private ISession? _targetSession;
         private readonly MigrationUnitCache _muCache;
@@ -45,13 +46,13 @@ namespace CassandraMigrationProcessor.Processors
             set => _executionCancelled = value;
         }
 
-        public ChangeFeedProcessor(Log log, ISession sourceSession, ISession targetSession, MigrationUnitCache muCache,
+        public ChangeFeedProcessor(MigrationLog MigrationLog, ISession sourceSession, ISession targetSession, MigrationUnitCache muCache,
             MigrationSettings config,
             MigrationJob job,
             bool singleTable = true,
             MigrationWorker? migrationWorker = null)
         {
-            _log = log;
+            _log = MigrationLog;
             _sourceSession = sourceSession;
             _targetSession = targetSession;
             _muCache = muCache;
@@ -83,7 +84,7 @@ namespace CassandraMigrationProcessor.Processors
 
             foreach (var mub in job.Tables)
             {
-                if (!Helper.IsMigrationUnitValid(mub)) continue;
+                if (!MigrationHelper.IsMigrationUnitValid(mub)) continue;
                 if (!mub.CopyComplete) continue;
                 if (!_activeTasks.ContainsKey(mub.Id))
                     _pendingTables.Enqueue(mub.Id);

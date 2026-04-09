@@ -12,7 +12,7 @@ var builder = WebApplication.CreateBuilder(args);
 // Set up file-based diagnostic logging (stdout capture unreliable on IIS in-process)
 var diagLogPath = Path.Combine(
     Environment.GetEnvironmentVariable("HOME") ?? ".",
-    "LogFiles", "app-diag.log");
+    "LogFiles", "app-diag.MigrationLog");
 StreamWriter? diagStream = null;
 try
 {
@@ -24,7 +24,7 @@ try
 }
 catch (Exception ex)
 {
-    Console.Error.WriteLine($"[WARN] Diagnostic log setup failed, falling back to stdout: {ex.Message}");
+    Console.Error.WriteLine($"[WARN] Diagnostic MigrationLog setup failed, falling back to stdout: {ex.Message}");
 }
 
 builder.Services.AddControllersWithViews();
@@ -87,7 +87,7 @@ builder.Services.AddAuthorizationCore();
 
 var app = builder.Build();
 
-// Register disposal of diagnostic log stream on shutdown
+// Register disposal of diagnostic MigrationLog stream on shutdown
 var lifetime = app.Services.GetRequiredService<IHostApplicationLifetime>();
 if (diagStream != null)
 {

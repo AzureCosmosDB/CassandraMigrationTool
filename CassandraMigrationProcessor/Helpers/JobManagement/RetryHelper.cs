@@ -1,4 +1,4 @@
-﻿using CassandraMigrationProcessor.Models;
+using CassandraMigrationProcessor.Models;
 using CassandraMigrationProcessor.Context;
 using System;
 using System.Threading;
@@ -18,7 +18,7 @@ namespace CassandraMigrationProcessor.Helpers.JobManagement
         public async Task<TaskResult> ExecuteTask(
             Func<Task<TaskResult>> taskFunc,
             Func<Exception, int, int, Task<TaskResult>> exceptionHandler,
-            Log log,
+            MigrationLog MigrationLog,
             int maxTries = DefaultMaxTries,
             int initialDelayMs = DefaultInitialDelayMs,
             CancellationToken ct = default)
@@ -43,7 +43,7 @@ namespace CassandraMigrationProcessor.Helpers.JobManagement
                         return result;
 
                     attempt++;
-                    log.WriteLine($"Retrying attempt {attempt} in {delay / 1000} seconds...");
+                    MigrationLog.WriteLine($"Retrying attempt {attempt} in {delay / 1000} seconds...");
                     await Task.Delay(delay, ct);
                     delay = EscalateDelay(delay);
 

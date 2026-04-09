@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Hosting;
 using CassandraMigrationProcessor;
+using CassandraMigrationProcessor.Models;
 using CassandraMigrationProcessor.Context;
 using CassandraMigrationProcessor.Helpers;
 

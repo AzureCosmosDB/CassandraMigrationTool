@@ -1,29 +1,10 @@
 using Newtonsoft.Json;
-using CassandraMigrationProcessor.Models;
+using CassandraMigrationProcessor.Helpers;
 using System;
 using System.Collections.Generic;
 
-namespace CassandraMigrationProcessor
+namespace CassandraMigrationProcessor.Models
 {
-    /// <summary>
-    /// CDC mode for Cassandra migration (change feed).
-    /// </summary>
-    public enum CDCMode
-    {
-        Offline,
-        Online
-    }
-
-    public enum JobStatus
-    {
-        Pending,
-        Running,
-        Paused,
-        Completed,
-        Cancelled,
-        Faulted
-    }
-
     public class MigrationJob
     {
         public string Id { get; set; } = string.Empty;
@@ -31,7 +12,7 @@ namespace CassandraMigrationProcessor
 
         // Source: Cosmos DB Cassandra API
         public string? SourceContactPoint { get; set; }
-        public int SourcePort { get; set; } = 10350;
+        public int SourcePort { get; set; } = MigrationDefaults.CosmosDbCassandraPort;
         public string? SourceUsername { get; set; }
         /// <summary>
         /// Never persisted to disk. On resume the token is
@@ -43,7 +24,7 @@ namespace CassandraMigrationProcessor
 
         // Target: OSS Cassandra
         public string? TargetContactPoint { get; set; }
-        public int TargetPort { get; set; } = 9042;
+        public int TargetPort { get; set; } = MigrationDefaults.DefaultCassandraPort;
         public string? TargetUsername { get; set; }
         /// <summary>
         /// Never persisted to disk. On resume the password is
@@ -156,6 +137,17 @@ namespace CassandraMigrationProcessor
 
         [JsonProperty("MigrationUnitBasics")]
         public List<MigrationUnitBasic>? Tables { get; set; }
+
+        [JsonIgnore]
+        public ConnectionOptions SourceConnection => new(
+            SourceContactPoint ?? "", SourcePort,
+            SourceUsername, SourcePassword, true);
+
+        [JsonIgnore]
+        public ConnectionOptions TargetConnection => new(
+            TargetContactPoint ?? "", TargetPort,
+            TargetUsername, TargetPassword, true,
+            MaxConnectionsPerHost);
 
     }
 }

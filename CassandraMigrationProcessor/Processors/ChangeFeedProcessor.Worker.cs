@@ -140,7 +140,7 @@ namespace CassandraMigrationProcessor.Processors
                     {
                         var statement = new SimpleStatement(cql);
                         statement.SetPageSize(_config.CqlCopyPageSize > 0
-                                ? _config.CqlCopyPageSize : 500);
+                                ? _config.CqlCopyPageSize : MigrationDefaults.DefaultPageSize);
                         statement.SetAutoPage(false);
 
                         if (continuationState != null)
@@ -289,7 +289,7 @@ namespace CassandraMigrationProcessor.Processors
                     {
                         var statement = new SimpleStatement(cql);
                         statement.SetPageSize(_config.CqlCopyPageSize > 0
-                                ? _config.CqlCopyPageSize : 500);
+                                ? _config.CqlCopyPageSize : MigrationDefaults.DefaultPageSize);
                         statement.SetAutoPage(false);
 
                         if (continuationState != null)

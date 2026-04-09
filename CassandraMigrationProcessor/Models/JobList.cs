@@ -8,7 +8,7 @@ using System.Threading;
 
 #pragma warning disable CS8618 // Non-nullable field must contain a non-null value when exiting constructor. Consider adding the 'required' modifier or declaring as nullable.
 
-namespace CassandraMigrationProcessor
+namespace CassandraMigrationProcessor.Models
 {
     public class JobList
     {
@@ -28,7 +28,7 @@ namespace CassandraMigrationProcessor
 
         private static readonly object _writeLock = new object();
         private static readonly object _loadLock = new object();
-        private Log _log;
+        private MigrationLog _log;
 
         public class ConnectionAccessor
         {
@@ -50,7 +50,7 @@ namespace CassandraMigrationProcessor
             public IEnumerable<string> Keys => _dict.Keys;
         }
 
-        public void SetLog(Log _log)
+        public void SetLog(MigrationLog _log)
         {
             this._log = _log;
         }

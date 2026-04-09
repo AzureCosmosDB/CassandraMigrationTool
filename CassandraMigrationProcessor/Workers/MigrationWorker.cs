@@ -23,20 +23,19 @@ namespace CassandraMigrationProcessor.Workers
     /// </summary>
     public class MigrationWorker
     {
-        private readonly Log _log;
+        private readonly MigrationLog _log;
         private MigrationProcessor? _activeProcessor;
         private ISession? _sourceSession;
         private int _consecutiveAuthErrors;
-        private const int MaxConsecutiveAuthErrors = 3;
 
         // Parallel table migration: track active processors
         // per migration unit for concurrent table copies
         private readonly ConcurrentDictionary<string, MigrationProcessor>
             _activeProcessors = new();
 
-        public MigrationWorker(Log log)
+        public MigrationWorker(MigrationLog MigrationLog)
         {
-            _log = log;
+            _log = MigrationLog;
         }
 
         /// <summary>
@@ -52,16 +51,16 @@ namespace CassandraMigrationProcessor.Workers
 
             try
             {
-                var units = Helper.GetMigrationUnitsToMigrate(job);
+                var units = MigrationHelper.GetMigrationUnitsToMigrate(job);
 
                 if (units == null || units.Count == 0)
                 {
                     // All tables already copied. If online
                     // mode, restart the change feed processors
                     // so pause/resume works correctly.
-                    if (Helper.IsOnline(job)
-                        && Helper.IsOfflineJobCompleted(job)
-                        && Helper.AnyValidTable(job))
+                    if (MigrationHelper.IsOnline(job)
+                        && MigrationHelper.IsOfflineJobCompleted(job)
+                        && MigrationHelper.AnyValidTable(job))
                     {
                         _log.WriteLine("All tables copied. Resuming " + "change feed processors.", LogType.Info);
 
@@ -71,7 +70,7 @@ namespace CassandraMigrationProcessor.Workers
 
                         foreach (var mub in job.Tables)
                         {
-                            if (!Helper.IsMigrationUnitValid(mub) || !mub.CopyComplete)
+                            if (!MigrationHelper.IsMigrationUnitValid(mub) || !mub.CopyComplete)
                                 continue;
                             var mu = MigrationJobContext.GetMigrationUnit(mub.Id);
                             if (mu != null)
@@ -114,16 +113,15 @@ namespace CassandraMigrationProcessor.Workers
                             return;
 
                         if (Volatile.Read(ref _consecutiveAuthErrors)
-                            >= MaxConsecutiveAuthErrors)
+                            >= MigrationDefaults.MaxConsecutiveAuthErrors)
                         {
                             abortRequested = true;
                             return;
                         }
 
                         // Retry on transient 429/overload errors
-                        const int MaxTableRetries = 3;
                         for (int attempt = 1;
-                            attempt <= MaxTableRetries;
+                            attempt <= MigrationDefaults.MaxTableRetries;
                             attempt++)
                         {
                             try
@@ -132,7 +130,7 @@ namespace CassandraMigrationProcessor.Workers
                                 break; // success
                             }
                             catch (Exception ex) when (CassandraClientFactory.IsRetryableException(ex)
-                                && attempt < MaxTableRetries)
+                                && attempt < MigrationDefaults.MaxTableRetries)
                             {
                                 int delayMs = CassandraClientFactory.GetRetryDelayMs(ex, attempt);
                                 _log.WriteLine($"Table retry {attempt} for {migrationUnit.KeyspaceName}.{migrationUnit.TableName}: {ex.Message}",
@@ -151,7 +149,7 @@ namespace CassandraMigrationProcessor.Workers
                 }
 
                 // All tables processed — handle completion by mode
-                if (Helper.IsOnline(job))
+                if (MigrationHelper.IsOnline(job))
                 {
                     // Online: change feed already started per-table
                     // as each completed. Keep worker alive until
@@ -166,7 +164,7 @@ namespace CassandraMigrationProcessor.Workers
                 else
                 {
                     // Offline mode — mark completed
-                    if (Helper.IsOfflineJobCompleted(job)
+                    if (MigrationHelper.IsOfflineJobCompleted(job)
                         && !MigrationJobContext.ControlledPauseRequested
                         && job.Status != JobStatus.Cancelled
                         && job.Status != JobStatus.Paused)
@@ -270,7 +268,7 @@ namespace CassandraMigrationProcessor.Workers
 
                 migrationUnit.BulkCopyStartedOn ??= DateTime.UtcNow;
 
-                // Log feed range count for this table
+                // MigrationLog feed range count for this table
                 if (!job.IsSimulatedRun)
                 {
                     try
@@ -288,7 +286,7 @@ namespace CassandraMigrationProcessor.Workers
                 }
 
                 // Record change feed start time before bulk copy
-                if (Helper.IsOnline(job))
+                if (MigrationHelper.IsOnline(job))
                 {
                     migrationUnit.ChangeFeedStartToken ??= DateTime.UtcNow.ToString(
                         "yyyy-MM-ddTHH:mm:ss.fffZ",
@@ -433,13 +431,13 @@ namespace CassandraMigrationProcessor.Workers
         /// Populate the migration-unit list for a new job
         /// by discovering keyspaces and tables from source.
         /// </summary>
-        public static List<MigrationUnit> DiscoverTables(Log log, MigrationJob job)
+        public static List<MigrationUnit> DiscoverTables(MigrationLog MigrationLog, MigrationJob job)
         {
             MigrationJobContext.AddVerboseLog("MigrationWorker.DiscoverTables");
 
             var result = new List<MigrationUnit>();
 
-            using (var session = CassandraClientFactory.CreateSourceSession(log, job, "system"))
+            using (var session = CassandraClientFactory.CreateSourceSession(MigrationLog, job, "system"))
             {
                 var keyspaces = CassandraHelper.ListKeyspaces(session);
 
@@ -456,7 +454,7 @@ namespace CassandraMigrationProcessor.Workers
 
             int ksCount = result
                 .Select(r => r.KeyspaceName).Distinct().Count();
-            log.WriteLine($"Discovered {result.Count} tables across {ksCount} keyspaces");
+            MigrationLog.WriteLine($"Discovered {result.Count} tables across {ksCount} keyspaces");
 
             return result;
         }

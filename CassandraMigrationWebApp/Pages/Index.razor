@@ -7,6 +7,7 @@
 @using CassandraMigrationProcessor
 @using CassandraMigrationProcessor.Context
 @using CassandraMigrationProcessor.Helpers
+@using CassandraMigrationProcessor.Models
 
 
 <div class="card" style="border: none; box-shadow: none; background: transparent;">
@@ -83,7 +84,7 @@
                                     <div class="text-truncate" style="color: var(--az-text-disabled, #a19f9d); font-size: 11px;">→ @migration.TargetContactPoint</div>
                                 </td>
                                 <td>
-                                    @if (Helper.IsOnline(migration))
+                                    @if (MigrationHelper.IsOnline(migration))
                                     {
                                         <span class="badge bg-info">Online</span>
                                     }
@@ -305,7 +306,7 @@
         }
     }
 
-    private CassandraMigrationProcessor.MigrationSettings GetConfig()
+    private CassandraMigrationProcessor.Models.MigrationSettings GetConfig()
     {
         return JobManager.GetConfig();
     }
@@ -317,7 +318,7 @@
         _editSettingsOpen = true;
     }
 
-    private void HandleConfigurationSaved(CassandraMigrationProcessor.MigrationSettings updatedConfig)
+    private void HandleConfigurationSaved(CassandraMigrationProcessor.Models.MigrationSettings updatedConfig)
     {
         _editSettingsOpen = false;
 

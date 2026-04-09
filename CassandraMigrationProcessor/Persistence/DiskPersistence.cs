@@ -5,7 +5,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text;
-
+using CassandraMigrationProcessor.Models;
 namespace CassandraMigrationProcessor.Persistence
 {
     /// <summary>
@@ -164,7 +164,7 @@ namespace CassandraMigrationProcessor.Persistence
             }
             catch (Exception ex)
             {
-                Helper.LogToFile($"[DiskPersistence] Error upserting document {id}. Details: {ex}", "DiskPersistence.txt");
+                MigrationHelper.LogToFile($"[DiskPersistence] Error upserting document {id}. Details: {ex}", "DiskPersistence.txt");
                 return false;
             }
         }
@@ -192,7 +192,7 @@ namespace CassandraMigrationProcessor.Persistence
             }
             catch (Exception ex)
             {
-                Helper.LogToFile($"[DiskPersistence] Error reading document {id}. Details: {ex}", "DiskPersistence.txt");
+                MigrationHelper.LogToFile($"[DiskPersistence] Error reading document {id}. Details: {ex}", "DiskPersistence.txt");
                 return null;
             }
         }
@@ -259,7 +259,7 @@ namespace CassandraMigrationProcessor.Persistence
             }
             catch (Exception ex)
             {
-                Helper.LogToFile($"[DiskPersistence] Error deleting document/folder {id}. Details: {ex}", "DiskPersistence.txt");
+                MigrationHelper.LogToFile($"[DiskPersistence] Error deleting document/folder {id}. Details: {ex}", "DiskPersistence.txt");
                 return false;
             }
         }
@@ -304,7 +304,7 @@ namespace CassandraMigrationProcessor.Persistence
             }
             catch (Exception ex)
             {
-                Helper.LogToFile($"[DiskPersistence] Error listing document IDs. Details: {ex}", "DiskPersistence.txt");
+                MigrationHelper.LogToFile($"[DiskPersistence] Error listing document IDs. Details: {ex}", "DiskPersistence.txt");
                 return new List<string>();
             }
         }
@@ -470,21 +470,21 @@ namespace CassandraMigrationProcessor.Persistence
                 foreach (var offset in selectedOffsets)
                 {
                     fs.Position = offset;
-                    var log = TryReadLogEntry(br);
-                    if (log != null)
-                        logBucket.Logs!.Add(log);
+                    var MigrationLog = TryReadLogEntry(br);
+                    if (MigrationLog != null)
+                        logBucket.Logs!.Add(MigrationLog);
                 }
             }
             catch (Exception ex)
             {
-                Helper.LogToFile($"Error reading paginated logs. Details: {ex}", "DiskPersistence.txt");
+                MigrationHelper.LogToFile($"Error reading paginated logs. Details: {ex}", "DiskPersistence.txt");
             }
 
             // Format logs
             var sb = new System.Text.StringBuilder();
-            foreach (var log in logBucket.Logs)
+            foreach (var MigrationLog in logBucket.Logs)
             {
-                char typeChar = log.Type switch
+                char typeChar = MigrationLog.Type switch
                 {
                     LogType.Error => 'E',
                     LogType.Warning => 'W',
@@ -494,8 +494,8 @@ namespace CassandraMigrationProcessor.Persistence
                     LogType.Verbose => 'V',
                     _ => '?'
                 };
-                string dateTime = log.Datetime.ToString("MM/dd/yyyy HH:mm:ss");
-                sb.AppendLine($"{typeChar}|{dateTime}|{log.Message}");
+                string dateTime = MigrationLog.Datetime.ToString("MM/dd/yyyy HH:mm:ss");
+                sb.AppendLine($"{typeChar}|{dateTime}|{MigrationLog.Message}");
             }
 
             return System.Text.Encoding.UTF8.GetBytes(sb.ToString());
@@ -510,10 +510,10 @@ namespace CassandraMigrationProcessor.Persistence
             // Format logs as multi-line string with Type|DateTime|Message format
             var sb = new System.Text.StringBuilder();
 
-            foreach (var log in logs.Logs)
+            foreach (var MigrationLog in logs.Logs)
             {
                 // Convert LogType to single character (E=Error, W=Warning, I=Info, D=Debug, V=Verbose)
-                char typeChar = log.Type switch
+                char typeChar = MigrationLog.Type switch
                 {
                     LogType.Error => 'E',
                     LogType.Warning => 'W',
@@ -525,10 +525,10 @@ namespace CassandraMigrationProcessor.Persistence
                 };
 
                 // Format DateTime as short format (MM/dd/yyyy HH:mm:ss)
-                string dateTime = log.Datetime.ToString("MM/dd/yyyy HH:mm:ss");
+                string dateTime = MigrationLog.Datetime.ToString("MM/dd/yyyy HH:mm:ss");
 
                 // Build the line: Type|DateTime|Message
-                sb.AppendLine($"{typeChar}|{dateTime}|{log.Message}");
+                sb.AppendLine($"{typeChar}|{dateTime}|{MigrationLog.Message}");
             }
 
             return System.Text.Encoding.UTF8.GetBytes(sb.ToString());
@@ -559,7 +559,7 @@ namespace CassandraMigrationProcessor.Persistence
             }
             catch (Exception ex)
             {
-                throw new InvalidOperationException("Log Init failed", ex);
+                throw new InvalidOperationException("MigrationLog Init failed", ex);
             }
         }
 
@@ -571,7 +571,7 @@ namespace CassandraMigrationProcessor.Persistence
 
             var logBucket = new LogBucket();
             logBucket.Logs ??= new List<LogObject>();
-            logBucket.Logs.Add(new LogObject(LogType.Error, $"Unable to load the log file; original file backed up as {backupFileName}"));
+            logBucket.Logs.Add(new LogObject(LogType.Error, $"Unable to load the MigrationLog file; original file backed up as {backupFileName}"));
             WriteBinaryLog(jobId, logBucket.Logs);
             return ParseLogBinFile(binPath);
         }
@@ -592,17 +592,17 @@ namespace CassandraMigrationProcessor.Persistence
                 using var fs = StorageStreamFactory.OpenAppend(binPath);
                 using var bw = new BinaryWriter(fs);
 
-                foreach (var log in logs)
+                foreach (var MigrationLog in logs)
                 {
                     try
                     {
-                        var message = log.Message ?? string.Empty;
+                        var message = MigrationLog.Message ?? string.Empty;
                         var messageBytes = Encoding.UTF8.GetBytes(message);
 
                         bw.Write(messageBytes.Length);
                         bw.Write(messageBytes);
-                        bw.Write((byte)log.Type);
-                        bw.Write(log.Datetime.ToBinary());
+                        bw.Write((byte)MigrationLog.Type);
+                        bw.Write(MigrationLog.Datetime.ToBinary());
                     }
                     catch (Exception)
                     {
@@ -615,7 +615,7 @@ namespace CassandraMigrationProcessor.Persistence
             }
             catch (Exception ex)
             {
-                Helper.LogToFile($"Error writing binary log. Details: {ex}", "DiskPersistence.txt");
+                MigrationHelper.LogToFile($"Error writing binary MigrationLog. Details: {ex}", "DiskPersistence.txt");
                 throw;
             }
         }
@@ -635,7 +635,7 @@ namespace CassandraMigrationProcessor.Persistence
                 if (fs == null) return logBucket;
                 using var br = new BinaryReader(fs);
 
-                // First pass: collect offsets of valid log entries
+                // First pass: collect offsets of valid MigrationLog entries
                 while (fs.Position < fs.Length)
                 {
                     long offset = fs.Position;
@@ -694,14 +694,14 @@ namespace CassandraMigrationProcessor.Persistence
                 foreach (var offset in selectedOffsets)
                 {
                     fs.Position = offset;
-                    var log = TryReadLogEntry(br);
-                    if (log != null)
-                        logBucket.Logs!.Add(log);
+                    var MigrationLog = TryReadLogEntry(br);
+                    if (MigrationLog != null)
+                        logBucket.Logs!.Add(MigrationLog);
                 }
             }
             catch (Exception ex)
             {
-                Helper.LogToFile($"Error parsing binary log file. Details: {ex}", "DiskPersistence.txt");
+                MigrationHelper.LogToFile($"Error parsing binary MigrationLog file. Details: {ex}", "DiskPersistence.txt");
             }
 
             return logBucket;
@@ -745,7 +745,7 @@ namespace CassandraMigrationProcessor.Persistence
             }
             catch (Exception ex)
             {
-                Helper.LogToFile($"Exception while reading log entry. Details: {ex}", "DiskPersistence.txt");
+                MigrationHelper.LogToFile($"Exception while reading MigrationLog entry. Details: {ex}", "DiskPersistence.txt");
                 return null;
             }
         }
@@ -775,7 +775,7 @@ namespace CassandraMigrationProcessor.Persistence
         }
 
         /// <summary>
-        /// Deletes all log entries for a given JobId by deleting the binary log file
+        /// Deletes all MigrationLog entries for a given JobId by deleting the binary MigrationLog file
         /// </summary>
         /// <param name="jobId">Job ID to delete logs for</param>
         /// <returns>1 if file was deleted, 0 if file didn't exist, -1 if error occurred</returns>
@@ -804,7 +804,7 @@ namespace CassandraMigrationProcessor.Persistence
             }
             catch (Exception ex)
             {
-                Helper.LogToFile($"[DiskPersistence] Error deleting logs for job {jobId}. Details: {ex}", "DiskPersistence.txt");
+                MigrationHelper.LogToFile($"[DiskPersistence] Error deleting logs for job {jobId}. Details: {ex}", "DiskPersistence.txt");
                 return -1;
             }
         }

@@ -1,4 +1,4 @@
-namespace CassandraMigrationProcessor
+namespace CassandraMigrationProcessor.Models
 {
     /// <summary>
     /// Log type enumeration with severity levels (lower = more severe)

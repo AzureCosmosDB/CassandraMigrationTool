@@ -1,10 +1,11 @@
 using Newtonsoft.Json;
 using CassandraMigrationProcessor.Context;
+using CassandraMigrationProcessor.Helpers;
 using System;
 using System.Collections.Generic;
 using System.Threading;
 
-namespace CassandraMigrationProcessor
+namespace CassandraMigrationProcessor.Models
 {
     public class NameValuePair
     {
@@ -166,7 +167,7 @@ namespace CassandraMigrationProcessor
             string tableName,
             List<MigrationChunk> migrationChunks)
         {
-            this.Id = Helper.GenerateMigrationUnitId(
+            this.Id = MigrationHelper.GenerateMigrationUnitId(
                 keyspaceName, tableName);
             this.KeyspaceName = keyspaceName;
             this.TableName = tableName;
@@ -210,7 +211,7 @@ namespace CassandraMigrationProcessor
             if (mub == null)
                 mub = new MigrationUnitBasic();
 
-            mub.Id = Helper.GenerateMigrationUnitId(
+            mub.Id = MigrationHelper.GenerateMigrationUnitId(
                 this.KeyspaceName, this.TableName);
             mub.JobId = this.JobId;
             mub.KeyspaceName = this.KeyspaceName;

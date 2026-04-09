@@ -1,5 +1,5 @@
 @page "/migrationjobviewer/{jobId}"
-@using MigrationJobType = CassandraMigrationProcessor.MigrationJob
+@using MigrationJobType = CassandraMigrationProcessor.Models.MigrationJob
 @using CassandraMigrationWebApp.Components
 @using CassandraMigrationWebApp.Helpers
 @using CassandraMigrationProcessor
@@ -68,7 +68,7 @@
                 </span>
             }
             
-            @if (CurrentlyLoadedMigrationJob != null && Helper.IsOnline(CurrentlyLoadedMigrationJob))
+            @if (CurrentlyLoadedMigrationJob != null && MigrationHelper.IsOnline(CurrentlyLoadedMigrationJob))
             {
                 var lagInfo = GetChangeFeedLag();
                 <span class="badge @(lagInfo.IsLow ? "bg-success" : "bg-warning text-dark") me-1"
@@ -132,7 +132,7 @@
                 <div class="col">
                     <small class="text-muted">
                         <strong>Type:</strong> @sj.JobType
-                        @if (Helper.IsOnline(sj)) { <span> · <strong>Mode:</strong> Online (CDC)</span> }
+                        @if (MigrationHelper.IsOnline(sj)) { <span> · <strong>Mode:</strong> Online (CDC)</span> }
                         else { <span> · <strong>Mode:</strong> Offline</span> }
                         @if (sj.StartedOn.HasValue) { <span> · <strong>Started:</strong> @sj.StartedOn.Value.ToString("yyyy-MM-dd HH:mm:ss") UTC</span> }
                         @if (sj.IsSimulatedRun) { <span class="badge bg-info ms-1">Simulated</span> }
@@ -242,7 +242,7 @@
 
 @if (_resetChangeStreamDialogOpen && CurrentlyLoadedMigrationJob != null)
 {
-    <ResetChangeStream MigrationUnits="@((@JobManager.GetMigrationUnits(CurrentlyLoadedMigrationJob) ?? new List<MigrationUnit>()).Where(mu => Helper.IsMigrationUnitValid(mu)).ToList())" OnCollectionsUpdated="@OnCSReset" />
+    <ResetChangeStream MigrationUnits="@((@JobManager.GetMigrationUnits(CurrentlyLoadedMigrationJob) ?? new List<MigrationUnit>()).Where(mu => MigrationHelper.IsMigrationUnitValid(mu)).ToList())" OnCollectionsUpdated="@OnCSReset" />
 }
 @if (_collectionDetailsDialogOpen && _selectedMigrationUnit != null)
 {
@@ -319,7 +319,7 @@
                     Rows Copied
                     <i class="bi @GetSortIcon("RowsCopied") ms-1"></i>
                 </th>
-                @if (CurrentlyLoadedMigrationJob != null && Helper.IsOnline(CurrentlyLoadedMigrationJob))
+                @if (CurrentlyLoadedMigrationJob != null && MigrationHelper.IsOnline(CurrentlyLoadedMigrationJob))
                 {
                     <th class="sortable-header @GetSortClass("TimeSinceLastChange")" @onclick='() => SortBy("TimeSinceLastChange")' style="cursor: pointer;">
                         Last Checked
@@ -359,7 +359,7 @@
                                 else if (mu.SkippedDueToMaxRetries)
                                 { copyStatus = "Skipped (Max Retries)"; barColor = "bg-warning"; pct = 100; }
                                 else if (mu.CopyComplete && CurrentlyLoadedMigrationJob != null
-                                    && Helper.IsOnline(CurrentlyLoadedMigrationJob)
+                                    && MigrationHelper.IsOnline(CurrentlyLoadedMigrationJob)
                                     && CurrentlyLoadedMigrationJob.Status == JobStatus.Running)
                                 { copyStatus = "Replaying"; barColor = "bg-info"; pct = 100; }
                                 else if (mu.CopyComplete)
@@ -399,10 +399,10 @@
                             @(mu.CopyRowsCopied > 0 ? mu.CopyRowsCopied.ToString("N0") : "-")
                         </td>
 
-                        @if (CurrentlyLoadedMigrationJob != null && Helper.IsOnline(CurrentlyLoadedMigrationJob))
+                        @if (CurrentlyLoadedMigrationJob != null && MigrationHelper.IsOnline(CurrentlyLoadedMigrationJob))
                         {
                             <td title="Avg Read Latency: @mu.ChangeFeedAvgReadLatencyInMS.ToString("F2") ms | Avg Write Latency: @mu.ChangeFeedAvgWriteLatencyInMS.ToString("F2") ms">                           
-                                @(mu.ChangeFeedLastChecked.HasValue ? Helper.GetTimestampDiff(mu.ChangeFeedLastChecked.Value) : "NA")
+                                @(mu.ChangeFeedLastChecked.HasValue ? MigrationHelper.GetTimestampDiff(mu.ChangeFeedLastChecked.Value) : "NA")
                             </td>
                             <td>
                                 @mu.ChangeFeedUpdatesInLastBatch
@@ -486,7 +486,7 @@
 {
     <div class="d-flex align-items-center mb-3 mt-4">
         <button class="btn btn-primary mx-2" title="You can add or remove collections from this job. Be sure to pause the job before doing so." @onclick="ManageCollections" disabled="@_isLoadingCollections">Update Tables</button>
-        @if (CurrentlyLoadedMigrationJob != null && Helper.IsOnline(CurrentlyLoadedMigrationJob))
+        @if (CurrentlyLoadedMigrationJob != null && MigrationHelper.IsOnline(CurrentlyLoadedMigrationJob))
         {
             <button class="btn btn-warning mx-2" title="Reset the change feed checkpoint." @onclick="ResetChangeStream">
                 Reset Change Feed
@@ -677,7 +677,7 @@ else if (@_showLogBackupFile)
     // Paginated download fields
     private bool _showPaginatedDownloadDialog = false;
     private int _logEntryCount = 0;
-    private CassandraMigrationProcessor.MigrationSettings? _config;
+    private CassandraMigrationProcessor.Models.MigrationSettings? _config;
 
     // Loading spinner state for collection loading
     private bool _isLoadingCollections = false;
@@ -740,15 +740,15 @@ else if (@_showLogBackupFile)
                 return true;
 
             // Change Stream Lag (Time Since Last Change)
-            if (CurrentlyLoadedMigrationJob!=null && Helper.IsOnline(CurrentlyLoadedMigrationJob) == true)
+            if (CurrentlyLoadedMigrationJob!=null && MigrationHelper.IsOnline(CurrentlyLoadedMigrationJob) == true)
             {
-                var lagText = mu.ChangeFeedLastChecked.HasValue ? Helper.GetTimestampDiff(mu.ChangeFeedLastChecked.Value) : "NA";
+                var lagText = mu.ChangeFeedLastChecked.HasValue ? MigrationHelper.GetTimestampDiff(mu.ChangeFeedLastChecked.Value) : "NA";
                 if (lagText.Contains(searchText, StringComparison.OrdinalIgnoreCase))
                     return true;
             }
 
             // Last Batch Changes Count
-            if (Helper.IsOnline(CurrentlyLoadedMigrationJob) == true)
+            if (MigrationHelper.IsOnline(CurrentlyLoadedMigrationJob) == true)
             {
                 var batchCount = mu.ChangeFeedUpdatesInLastBatch.ToString();
                 if (batchCount.Contains(searchText, StringComparison.OrdinalIgnoreCase))
@@ -876,7 +876,7 @@ else if (@_showLogBackupFile)
         if (migrationUnit == null || migrationUnit.ChangeFeedLastChecked == null || migrationUnit.ChangeFeedLastChecked == DateTime.MinValue)
             return "NA";
 
-        return Helper.GetTimestampDiff(migrationUnit.ChangeFeedLastChecked.Value);
+        return MigrationHelper.GetTimestampDiff(migrationUnit.ChangeFeedLastChecked.Value);
     }
 
     private DateTime GetSortValueForLastBatch(MigrationUnitBasic mu)
@@ -1187,7 +1187,7 @@ else if (@_showLogBackupFile)
         _logEntryCount = await GetLogCount(JobId);
 
         // Load config to get LogPageSize threshold
-        _config ??= new CassandraMigrationProcessor.MigrationSettings();
+        _config ??= new CassandraMigrationProcessor.Models.MigrationSettings();
         _config.Load();
         int logThreshold = _config.LogPageSize;
 
@@ -1501,7 +1501,7 @@ else if (@_showLogBackupFile)
                 GetTargetConnectionString(mj),
                 mj.Namespaces ?? string.Empty,
                 mj.JobType,
-                Helper.IsOnline(mj));
+                MigrationHelper.IsOnline(mj));
         });
 
         StartAutoRefresh();
@@ -1674,7 +1674,7 @@ else if (@_showLogBackupFile)
             //         Helper.AddMigrationUnit(mu, CurrentlyLoadedMigrationJob);
             //     }
             // }
-            if (!Helper.AddMigrationUnits(migrationUnits, CurrentlyLoadedMigrationJob))
+            if (!MigrationHelper.AddMigrationUnits(migrationUnits, CurrentlyLoadedMigrationJob))
             {
                 _errorMessage = "Target namespace clash detected. Multiple source collections cannot map to the same target collection.";
                 return;

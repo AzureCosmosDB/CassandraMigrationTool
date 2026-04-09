@@ -1,4 +1,6 @@
 using CassandraMigrationProcessor;
+using CassandraMigrationProcessor.Models;
+using CassandraMigrationProcessor.Helpers;
 using CassandraMigrationProcessor.Persistence;
 using System.Security.Cryptography;
 using System.Text;
@@ -16,7 +18,7 @@ namespace CassandraMigrationWebApp.Service
 
         public PasswordManager()
         {
-            var workingFolder = Helper.GetWorkingFolder();
+            var workingFolder = WorkingFolderResolver.GetWorkingFolder();
 
             if (!Directory.Exists(workingFolder))
             {

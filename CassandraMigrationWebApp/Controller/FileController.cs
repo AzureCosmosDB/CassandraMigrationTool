@@ -1,6 +1,8 @@
-﻿using Microsoft.AspNetCore.Components.Web;
+using Microsoft.AspNetCore.Components.Web;
 using Microsoft.AspNetCore.Mvc;
 using CassandraMigrationProcessor;
+using CassandraMigrationProcessor.Models;
+using CassandraMigrationProcessor.Helpers;
 using CassandraMigrationProcessor.Context;
 using System.Text;
 
@@ -11,15 +13,15 @@ public class FileController : ControllerBase
 {
 
 
-    [HttpGet("download/log/{Id}")]
+    [HttpGet("download/MigrationLog/{Id}")]
     public IActionResult DownloadFile(string Id)
     {
-        string fileSharePath = $"{Helper.GetWorkingFolder()}migrationlogs"; // UNC path to your file share
+        string fileSharePath = $"{WorkingFolderResolver.GetWorkingFolder()}migrationlogs"; // UNC path to your file share
         string filePath;
 
         filePath = Path.Combine(fileSharePath, Id + ".bin");
 
-        var fileBytes = new Log().DownloadLogsAsJsonBytes(Id, 0, 0);
+        var fileBytes = new MigrationLog().DownloadLogsAsJsonBytes(Id, 0, 0);
         var contentType = "application/octet-stream";
         return File(fileBytes, contentType, $"{Id}.txt");
 
@@ -72,13 +74,13 @@ public class FileController : ControllerBase
         return File(fileBytes, contentType, $"{jobId}.json");
     }
 
-    [HttpGet("download/log/{Id}/count")]
+    [HttpGet("download/MigrationLog/{Id}/count")]
     public IActionResult GetLogCount(string Id)
     {
         try
         {
-            Log log = new Log();
-            int count = log.GetLogCount(Id);
+            MigrationLog MigrationLog = new MigrationLog();
+            int count = MigrationLog.GetLogCount(Id);
             return Ok(new { count = count });
         }
         catch (Exception ex)
@@ -87,7 +89,7 @@ public class FileController : ControllerBase
         }
     }
 
-    [HttpGet("download/log/{Id}/page/{pageNumber}/{pageSize}")]
+    [HttpGet("download/MigrationLog/{Id}/page/{pageNumber}/{pageSize}")]
     public IActionResult DownloadLogPage(string Id, int pageNumber, int pageSize)
     {
         try
@@ -95,7 +97,7 @@ public class FileController : ControllerBase
             // Calculate skip/take for pagination
             int skip = (pageNumber - 1) * pageSize;
 
-            var fileBytes = new Log().DownloadLogsPaginated(Id, skip, pageSize);
+            var fileBytes = new MigrationLog().DownloadLogsPaginated(Id, skip, pageSize);
             var contentType = "application/octet-stream";
             return File(fileBytes, contentType, $"{Id}_page_{pageNumber}.txt");
         }

@@ -3,6 +3,7 @@ using CassandraMigrationProcessor.Context;
 using CassandraMigrationProcessor.Helpers.Cassandra;
 using CassandraMigrationProcessor.Helpers.JobManagement;
 using CassandraMigrationProcessor.Models;
+using CassandraMigrationProcessor.Helpers;
 using CassandraMigrationProcessor.Workers;
 using System;
 using System.Threading;
@@ -20,7 +21,7 @@ namespace CassandraMigrationProcessor.Processors
         protected ISession? _targetSession;
         protected MigrationSettings _config;
         protected CancellationTokenSource _cancellation;
-        protected Log _log;
+        protected MigrationLog _log;
         protected MigrationJob _job;
         protected MigrationWorker? _worker;
         protected ChangeFeedProcessor? _changeFeedProcessor;
@@ -29,10 +30,10 @@ namespace CassandraMigrationProcessor.Processors
         public volatile bool ProcessRunning;
         public volatile bool IsChangeFeedRunning;
 
-        protected MigrationProcessor(Log log, ISession sourceSession, MigrationSettings config, MigrationJob job,
+        protected MigrationProcessor(MigrationLog MigrationLog, ISession sourceSession, MigrationSettings config, MigrationJob job,
             MigrationWorker? worker = null)
         {
-            _log = log;
+            _log = MigrationLog;
             _sourceSession = sourceSession;
             _targetSession = null;
             _config = config;
@@ -115,7 +116,7 @@ namespace CassandraMigrationProcessor.Processors
         {
             MigrationJobContext.AddVerboseLog($"MigrationProcessor.AddTableToChangeFeedQueue: mu={mu.Id}");
 
-            if (!Helper.IsOnline(_job)) return false;
+            if (!MigrationHelper.IsOnline(_job)) return false;
 
             lock (_changeFeedLock)
             {
@@ -151,9 +152,9 @@ namespace CassandraMigrationProcessor.Processors
             MigrationJobContext.AddVerboseLog("MigrationProcessor.RunChangeFeedForAllTables");
 
             if (IsChangeFeedRunning) return false;
-            if (!Helper.IsOnline(_job)) return false;
-            if (!Helper.IsOfflineJobCompleted(_job)) return false;
-            if (!Helper.AnyValidTable(_job)) return false;
+            if (!MigrationHelper.IsOnline(_job)) return false;
+            if (!MigrationHelper.IsOfflineJobCompleted(_job)) return false;
+            if (!MigrationHelper.AnyValidTable(_job)) return false;
 
             IsChangeFeedRunning = true;
 
@@ -184,8 +185,8 @@ namespace CassandraMigrationProcessor.Processors
         /// </summary>
         public void StopOfflineOrInvokeChangeFeed()
         {
-            if (!Helper.IsOnline(_job)
-                && Helper.IsOfflineJobCompleted(_job))
+            if (!MigrationHelper.IsOnline(_job)
+                && MigrationHelper.IsOfflineJobCompleted(_job))
             {
                 // Do NOT mark completed if cancelled or paused
                 if (!MigrationJobContext.ControlledPauseRequested

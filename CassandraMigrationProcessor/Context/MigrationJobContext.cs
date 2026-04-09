@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Configuration;
 using Newtonsoft.Json;
+using CassandraMigrationProcessor.Helpers;
 using CassandraMigrationProcessor.Helpers.JobManagement;
 using CassandraMigrationProcessor.Persistence;
 using System;
@@ -7,7 +8,8 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
 using System.Threading.Tasks;
-using static CassandraMigrationProcessor.JobList;
+using static CassandraMigrationProcessor.Models.JobList;
+using CassandraMigrationProcessor.Models;
 
 namespace CassandraMigrationProcessor.Context
 {
@@ -17,7 +19,7 @@ namespace CassandraMigrationProcessor.Context
     public static class MigrationJobContext
     {
         private static readonly object _writeJobListLock = new object();
-        private static Log _log;
+        private static MigrationLog _log;
 
         public static MigrationUnitCache MigrationUnitsCache
         { get; set; }
@@ -68,7 +70,7 @@ namespace CassandraMigrationProcessor.Context
         public static void RequestControlledPause(string location)
         {
             if (_log == null)
-                throw new Exception("Log not initialized.");
+                throw new Exception("MigrationLog not initialized.");
 
             _log.WriteLine(
                 $"{location} caused controlled pause.", LogType.Warning);
@@ -103,10 +105,10 @@ namespace CassandraMigrationProcessor.Context
             _log?.WriteLine(message, LogType.Verbose);
         }
 
-        public static void InitializeLog(Log log)
+        public static void InitializeLog(MigrationLog MigrationLog)
         {
-            if (_log == null) { _log = log; }
-            AddVerboseLog("Initialized MigrationJobContext log.");
+            if (_log == null) { _log = MigrationLog; }
+            AddVerboseLog("Initialized MigrationJobContext MigrationLog.");
         }
 
         public static MigrationJob? CurrentlyActiveJob
@@ -140,7 +142,7 @@ namespace CassandraMigrationProcessor.Context
 
         public static void Initialize(IConfiguration configuration)
         {
-            Helper.LogToFile("MigrationJobContext.Initialize started");
+            MigrationHelper.LogToFile("MigrationJobContext.Initialize started");
 
             bool isLocal = true;
             var stateStoreCSorPath = string.Empty;
@@ -163,7 +165,7 @@ namespace CassandraMigrationProcessor.Context
             Store = new DiskPersistence();
             var localPath =
                 string.IsNullOrEmpty(stateStoreCSorPath)
-                ? Helper.GetWorkingFolder()
+                ? WorkingFolderResolver.GetWorkingFolder()
                 : stateStoreCSorPath;
             Store.Initialize(localPath, appId ?? string.Empty);
 

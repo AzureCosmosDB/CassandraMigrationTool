@@ -8,7 +8,7 @@ using System.Security.Authentication;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
-
+using CassandraMigrationProcessor.Models;
 namespace CassandraMigrationProcessor.Helpers.Cassandra
 {
     /// <summary>
@@ -28,7 +28,7 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
         private static Timer? _tokenRefreshTimer;
         private static readonly object _refreshLock = new();
         private static ISession? _managedSourceSession;
-        private static Log? _lastLog;
+        private static MigrationLog? _lastLog;
         private static DateTime _tokenExpiresAt = DateTime.MinValue;
 
         /// <summary>
@@ -90,11 +90,11 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
         /// every 50 minutes (tokens typically live 60-75 min).
         /// </summary>
         public static void StartTokenRefreshTimer(
-            string currentToken, Log log)
+            string currentToken, MigrationLog MigrationLog)
         {
             lock (_refreshLock)
             {
-                _lastLog = log;
+                _lastLog = MigrationLog;
                 StopTokenRefreshTimer();
 
                 DateTime expiry = GetTokenExpiry(currentToken);
@@ -142,7 +142,7 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
                     {
                         var oldSession = _managedSourceSession;
                         _managedSourceSession = CreateSourceSession(
-                            _lastLog ?? new Log(),
+                            _lastLog ?? new MigrationLog(),
                             _lastSourceContactPoint,
                             _lastSourcePort,
                             _lastSourceUsername ?? string.Empty,
@@ -157,7 +157,7 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
 
                     // Schedule next refresh
                     StartTokenRefreshTimer(freshToken,
-                        _lastLog ?? new Log());
+                        _lastLog ?? new MigrationLog());
                 }
                 catch (Exception ex)
                 {
@@ -204,15 +204,15 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
         /// old session. Also restarts the token refresh timer.
         /// </summary>
         public static ISession ReconnectSourceWithFreshToken(
-            Log log)
+            MigrationLog MigrationLog)
         {
             string freshToken = GetFreshAadToken();
 
             // Restart refresh timer with new token
-            StartTokenRefreshTimer(freshToken, log);
+            StartTokenRefreshTimer(freshToken, MigrationLog);
 
             var newSession = CreateSourceSession(
-                log,
+                MigrationLog,
                 _lastSourceContactPoint!,
                 _lastSourcePort,
                 _lastSourceUsername ?? string.Empty,
@@ -233,7 +233,7 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
         /// Retries on 429/OverloadedException with backoff.
         /// </summary>
         public static ISession CreateSourceSession(
-            Log log,
+            MigrationLog MigrationLog,
             string contactPoint,
             int port,
             string username,
@@ -245,7 +245,7 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
             _lastSourcePort = port;
             _lastSourceUsername = username;
             _lastSourceKeyspace = keyspace;
-            _lastLog = log;
+            _lastLog = MigrationLog;
 
             var sslOptions = new SSLOptions(
                 SslProtocols.Tls12, true,
@@ -288,7 +288,7 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
                     if (IsLikelyAadToken(password))
                     {
                         _managedSourceSession = session;
-                        StartTokenRefreshTimer(password, log);
+                        StartTokenRefreshTimer(password, MigrationLog);
                     }
 
                     return session;
@@ -299,7 +299,7 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
                 {
                     cluster?.Dispose();
                     int delayMs = GetRetryDelayMs(ex, attempt);
-                    log.WriteLine(
+                    MigrationLog.WriteLine(
                         $"Source connect retry " +
                         $"{attempt}: {ex.Message}",
                         LogType.Warning);
@@ -333,7 +333,7 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
             if (IsLikelyAadToken(password))
             {
                 _managedSourceSession = finalSession;
-                StartTokenRefreshTimer(password, log);
+                StartTokenRefreshTimer(password, MigrationLog);
             }
 
             return finalSession;
@@ -400,7 +400,7 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
         /// Tries SSL first, falls back to plain if SSL fails.
         /// </summary>
         public static ISession CreateTargetSession(
-            Log log,
+            MigrationLog MigrationLog,
             string contactPoint,
             int port,
             string username,
@@ -520,7 +520,7 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
         /// token automatically.
         /// </summary>
         public static ISession CreateSourceSession(
-            Log log, MigrationJob job, string keyspace)
+            MigrationLog MigrationLog, MigrationJob job, string keyspace)
         {
             string password = job.SourcePassword ?? string.Empty;
 
@@ -547,7 +547,7 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
             }
 
             return CreateSourceSession(
-                log,
+                MigrationLog,
                 job.SourceContactPoint!,
                 job.SourcePort,
                 username,
@@ -563,7 +563,7 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
         /// Falls back to no-auth connection if ARM discovery fails.
         /// </summary>
         public static ISession CreateTargetSession(
-            Log log, MigrationJob job, string keyspace)
+            MigrationLog MigrationLog, MigrationJob job, string keyspace)
         {
             string password = job.TargetPassword ?? string.Empty;
             string username = job.TargetUsername ?? string.Empty;
@@ -603,7 +603,7 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
             }
 
             return CreateTargetSession(
-                log,
+                MigrationLog,
                 job.TargetContactPoint!,
                 job.TargetPort,
                 username,
@@ -834,6 +834,38 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
                 // ARM Cosmos account search error — fall through
             }
             return null;
+        }
+
+        /// <summary>
+        /// Create source session from ConnectionOptions.
+        /// </summary>
+        public static ISession CreateSourceSession(
+            MigrationLog log, ConnectionOptions conn, string keyspace)
+        {
+            return CreateSourceSession(
+                log,
+                conn.Host,
+                conn.Port,
+                conn.Username ?? string.Empty,
+                conn.Password ?? string.Empty,
+                keyspace);
+        }
+
+        /// <summary>
+        /// Create target session from ConnectionOptions.
+        /// </summary>
+        public static ISession CreateTargetSession(
+            MigrationLog log, ConnectionOptions conn, string keyspace)
+        {
+            return CreateTargetSession(
+                log,
+                conn.Host,
+                conn.Port,
+                conn.Username ?? string.Empty,
+                conn.Password ?? string.Empty,
+                keyspace,
+                conn.UseSsl,
+                conn.MaxConnectionsPerHost);
         }
     }
 }

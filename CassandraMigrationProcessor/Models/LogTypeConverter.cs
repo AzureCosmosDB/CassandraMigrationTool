@@ -2,7 +2,7 @@ using System;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
-namespace CassandraMigrationProcessor
+namespace CassandraMigrationProcessor.Models
 {
     /// <summary>
     /// Custom JSON converter for LogType enum that handles backward compatibility.

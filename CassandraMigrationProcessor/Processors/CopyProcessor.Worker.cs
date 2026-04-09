@@ -1,5 +1,6 @@
 using Cassandra;
 using CassandraMigrationProcessor.Context;
+using CassandraMigrationProcessor.Helpers;
 using CassandraMigrationProcessor.Helpers.Cassandra;
 using CassandraMigrationProcessor.Models;
 using System;
@@ -27,8 +28,10 @@ namespace CassandraMigrationProcessor.Processors
             try
             {
                 var job = ctx.Job;
-                workerTargetSession = CassandraClientFactory.CreateTargetSession(_log, job, "");
-                workerSourceSession = CassandraClientFactory.CreateSourceSession(_log, job, ctx.Context.KeyspaceName);
+                workerTargetSession = CassandraClientFactory.CreateTargetSession(
+                    _log, job.TargetConnection, "");
+                workerSourceSession = CassandraClientFactory.CreateSourceSession(
+                    _log, job.SourceConnection, ctx.Context.KeyspaceName);
 
                 var (preparedInsert, _) = await CassandraHelper.PrepareInsertAsync(workerTargetSession,
                         ctx.Context.TargetKeyspaceName,
@@ -237,7 +240,7 @@ namespace CassandraMigrationProcessor.Processors
                         if (ctx.TotalRowCount > 0)
                         {
                             ctx.MigrationUnit.CopyPercent = ctx.InitialPercent +
-                                (Math.Min(99.9, (double)written / ctx.TotalRowCount * 100)
+                                (Math.Min(MigrationDefaults.ProgressCapPercent, (double)written / ctx.TotalRowCount * 100)
                                 * ctx.ContributionFactor);
                         }
                         ctx.MigrationUnit.UpdateParentJob();
@@ -245,7 +248,7 @@ namespace CassandraMigrationProcessor.Processors
                         // Save checkpoint every 10s
                         long prevTicks = Volatile.Read(ref ctx.LastCheckpointTicks);
                         long nowTicks = DateTime.UtcNow.Ticks;
-                        if ((nowTicks - prevTicks) / TimeSpan.TicksPerSecond >= 10
+                        if ((nowTicks - prevTicks) / TimeSpan.TicksPerSecond >= MigrationDefaults.CheckpointIntervalSeconds
                             && Interlocked.CompareExchange(ref ctx.LastCheckpointTicks, nowTicks, prevTicks) == prevTicks)
                         {
                             MigrationJobContext.SaveMigrationUnit(ctx.MigrationUnit, true);

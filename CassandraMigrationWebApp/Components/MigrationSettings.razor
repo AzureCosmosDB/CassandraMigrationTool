@@ -1,4 +1,5 @@
 @using CassandraMigrationProcessor
+@using CassandraMigrationProcessor.Models
 
 <div class="modal fade show d-block bg-dark bg-opacity-75" id="myModal" aria-modal="true" role="dialog">
     <div class="modal-dialog bg-dark">
@@ -25,7 +26,7 @@
                 <div class="@(activeTab == "OfflineDataMovement" ? "" : "d-none")">
                     <div class="mb-3">
                         <label for="cql-copy-page-size" class="form-label">CQL Copy page size</label>
-                        <input type="number" id="cql-copy-page-size" class="form-control" @bind="(_configurationBackup ??= new CassandraMigrationProcessor.MigrationSettings()).CqlCopyPageSize" />
+                        <input type="number" id="cql-copy-page-size" class="form-control" @bind="(_configurationBackup ??= new CassandraMigrationProcessor.Models.MigrationSettings()).CqlCopyPageSize" />
                     </div>
                 </div>
 
@@ -33,19 +34,19 @@
                 <div class="@(activeTab == "ChangeStream" ? "" : "d-none")">
                     <div class="mb-3">
                         <label for="max-rows-per-batch" class="form-label">Max rows per change feed batch</label>
-                        <input type="number" id="max-rows-per-batch" class="form-control" @bind="(_configurationBackup ??= new CassandraMigrationProcessor.MigrationSettings()).ChangeFeedMaxRowsInBatch" />
+                        <input type="number" id="max-rows-per-batch" class="form-control" @bind="(_configurationBackup ??= new CassandraMigrationProcessor.Models.MigrationSettings()).ChangeFeedMaxRowsInBatch" />
                     </div>
                     <div class="mb-3">
                         <label for="csbatchdurationmax" class="form-label">Max duration (in seconds) for change feed batch</label>
-                        <input type="number" id="csbatchdurationmax" class="form-control" @bind="(_configurationBackup ??= new CassandraMigrationProcessor.MigrationSettings()).ChangeFeedBatchDuration" />
+                        <input type="number" id="csbatchdurationmax" class="form-control" @bind="(_configurationBackup ??= new CassandraMigrationProcessor.Models.MigrationSettings()).ChangeFeedBatchDuration" />
                     </div>
                     <div class="mb-3">
                         <label for="csbatchdurationmin" class="form-label">Min duration (in seconds) for change feed batch</label>
-                        <input type="number" id="csbatchdurationmin" class="form-control" @bind="(_configurationBackup ??= new CassandraMigrationProcessor.MigrationSettings()).ChangeFeedBatchDurationMin" />
+                        <input type="number" id="csbatchdurationmin" class="form-control" @bind="(_configurationBackup ??= new CassandraMigrationProcessor.Models.MigrationSettings()).ChangeFeedBatchDurationMin" />
                     </div>
                     <div class="mb-3">
                         <label for="cs-tables-inbatch" class="form-label">Max tables per change feed batch</label>
-                        <input type="number" id="cs-tables-inbatch" class="form-control" @bind="(_configurationBackup ??= new CassandraMigrationProcessor.MigrationSettings()).ChangeFeedMaxTablesInBatch" />
+                        <input type="number" id="cs-tables-inbatch" class="form-control" @bind="(_configurationBackup ??= new CassandraMigrationProcessor.Models.MigrationSettings()).ChangeFeedMaxTablesInBatch" />
                     </div>
                 </div>
 
@@ -53,7 +54,7 @@
                 <div class="@(activeTab == "Other" ? "" : "d-none")">
                     <div class="mb-3">
                         <label for="log-page-size" class="form-label">Log page size</label>
-                        <input type="text" id="log-page-size" class="form-control" @bind="(_configurationBackup ??= new CassandraMigrationProcessor.MigrationSettings()).LogPageSize" />
+                        <input type="text" id="log-page-size" class="form-control" @bind="(_configurationBackup ??= new CassandraMigrationProcessor.Models.MigrationSettings()).LogPageSize" />
                     </div>
                 </div>
 
@@ -76,10 +77,10 @@
 @code
 {
     [Parameter]
-    public CassandraMigrationProcessor.MigrationSettings? _configuration { get; set; }
+    public CassandraMigrationProcessor.Models.MigrationSettings? _configuration { get; set; }
 
     [Parameter]
-    public EventCallback<CassandraMigrationProcessor.MigrationSettings?> On_configurationSaved { get; set; }
+    public EventCallback<CassandraMigrationProcessor.Models.MigrationSettings?> On_configurationSaved { get; set; }
 
     private string errorMessage = string.Empty;
     private string activeTab = "OfflineDataMovement";
@@ -99,11 +100,11 @@
         activeTab = "Other";
     }
 
-    CassandraMigrationProcessor.MigrationSettings? _configurationBackup;
+    CassandraMigrationProcessor.Models.MigrationSettings? _configurationBackup;
 
     protected override void OnInitialized()
     {
-        _configurationBackup = (CassandraMigrationProcessor.MigrationSettings?)(_configuration?.Clone()) ?? new CassandraMigrationProcessor.MigrationSettings();
+        _configurationBackup = (CassandraMigrationProcessor.Models.MigrationSettings?)(_configuration?.Clone()) ?? new CassandraMigrationProcessor.Models.MigrationSettings();
     }
 
     private async Task HandleSubmit()
@@ -150,8 +151,8 @@
             return;
         }
 
-        _configurationBackup ??= new CassandraMigrationProcessor.MigrationSettings();
-        _configuration = (CassandraMigrationProcessor.MigrationSettings)_configurationBackup.Clone();
+        _configurationBackup ??= new CassandraMigrationProcessor.Models.MigrationSettings();
+        _configuration = (CassandraMigrationProcessor.Models.MigrationSettings)_configurationBackup.Clone();
 
         if (On_configurationSaved.HasDelegate)
         {

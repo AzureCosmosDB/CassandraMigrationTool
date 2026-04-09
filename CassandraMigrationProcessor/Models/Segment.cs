@@ -1,4 +1,4 @@
-namespace CassandraMigrationProcessor
+namespace CassandraMigrationProcessor.Models
 {
     public class Segment
     {

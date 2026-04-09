@@ -1,7 +1,7 @@
-﻿using CassandraMigrationProcessor.Context;
+using CassandraMigrationProcessor.Context;
 using System;
 using System.Collections.Concurrent;
-
+using CassandraMigrationProcessor.Models;
 namespace CassandraMigrationProcessor.Helpers.JobManagement
 {
     public class MigrationUnitCache

@@ -1,6 +1,6 @@
 using System.Collections.Generic;
 
-namespace CassandraMigrationProcessor
+namespace CassandraMigrationProcessor.Models
 {
     public class MigrationChunk
     {

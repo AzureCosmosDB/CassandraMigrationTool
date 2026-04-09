@@ -8,11 +8,11 @@ namespace CassandraMigrationProcessor.Workers
     /// <summary>
     /// Shared progress tracker for parallel feed-range
     /// workers. Consolidates counts from all workers
-    /// and emits a single periodic log line.
+    /// and emits a single periodic MigrationLog line.
     /// </summary>
     public class CopyProgressTracker
     {
-        private readonly Log _log;
+        private readonly MigrationLog _log;
         private readonly string _keyspace;
         private readonly string _table;
         private readonly int _workerCount;
@@ -90,10 +90,10 @@ namespace CassandraMigrationProcessor.Workers
             }
         }
 
-        public CopyProgressTracker(Log log, string keyspace, string table, int workerCount, int totalRanges = 0,
+        public CopyProgressTracker(MigrationLog MigrationLog, string keyspace, string table, int workerCount, int totalRanges = 0,
             long initialCopied = 0)
         {
-            _log = log;
+            _log = MigrationLog;
             _keyspace = keyspace;
             _table = table;
             _workerCount = workerCount;
@@ -152,8 +152,8 @@ namespace CassandraMigrationProcessor.Workers
         }
 
         /// <summary>
-        /// Emit a periodic progress log line if the minimum
-        /// interval has elapsed since the last log.
+        /// Emit a periodic progress MigrationLog line if the minimum
+        /// interval has elapsed since the last MigrationLog.
         /// </summary>
         private void LogIfDue()
         {
@@ -168,7 +168,7 @@ namespace CassandraMigrationProcessor.Workers
             long failed = TotalFailed;
             double elapsed = _stopwatch.Elapsed.TotalSeconds;
 
-            // Recent speed (since last log)
+            // Recent speed (since last MigrationLog)
             double windowSec = elapsed - _windowTime;
             long windowRows = copied - _windowCopied;
             if (windowSec > 0)
@@ -212,7 +212,7 @@ namespace CassandraMigrationProcessor.Workers
         }
 
         /// <summary>
-        /// Log final summary when all workers complete.
+        /// MigrationLog final summary when all workers complete.
         /// </summary>
         public void LogFinal()
         {

@@ -1,6 +1,7 @@
 using CassandraMigrationProcessor.Context;
 using CassandraMigrationProcessor.Helpers.JobManagement;
 using CassandraMigrationProcessor.Models;
+using CassandraMigrationProcessor.Helpers;
 using System;
 using System.Linq;
 using System.Threading.Tasks;
@@ -112,7 +113,7 @@ namespace CassandraMigrationProcessor.Processors
 
                     // Only remove from cache if offline — online mode
                     // needs the MU in cache for ChangeFeedProcessor
-                    if (!Helper.IsOnline(_job))
+                    if (!MigrationHelper.IsOnline(_job))
                     {
                         MigrationJobContext.MigrationUnitsCache.RemoveMigrationUnit(migrationUnit.Id);
                     }

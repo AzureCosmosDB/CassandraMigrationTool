@@ -1,5 +1,6 @@
 using Cassandra;
 using CassandraMigrationProcessor.Context;
+using CassandraMigrationProcessor.Helpers;
 using CassandraMigrationProcessor.Helpers.Cassandra;
 using CassandraMigrationProcessor.Models;
 using CassandraMigrationProcessor.Workers;
@@ -28,16 +29,19 @@ namespace CassandraMigrationProcessor.Processors
         /// to the pool (so another worker can read the next
         /// page), then writes rows and marks the chunk done.
         /// </summary>
-        private async Task<TaskResult> CopyWithFeedRangesAsync(MigrationUnit migrationUnit, int chunkIndex,
-            double initialPercent,
-            double contributionFactor,
-            long totalRowCount,
-            ProcessorContext processorContext,
-            List<string> feedRanges)
+        private async Task<TaskResult> CopyWithFeedRangesAsync(PipelineRequest request)
         {
-            int totalBudget = Environment.ProcessorCount * 13;
+            var migrationUnit = request.MigrationUnit;
+            var chunkIndex = request.ChunkIndex;
+            var initialPercent = request.InitialPercent;
+            var contributionFactor = request.ContributionFactor;
+            var totalRowCount = request.TotalRowCount;
+            var processorContext = request.Context;
+            var feedRanges = request.FeedRanges;
+
+            int totalBudget = Environment.ProcessorCount * MigrationDefaults.WorkerMultiplier;
             int parallelTables = Math.Max(1, _job.ParallelThreads);
-            int autoWorkers = Math.Max(4, totalBudget / parallelTables);
+            int autoWorkers = Math.Max(MigrationDefaults.MinWorkers, totalBudget / parallelTables);
             int workerCount = _job.MaxFeedRangeParallelism > 0
                 ? _job.MaxFeedRangeParallelism
                 : autoWorkers;
@@ -119,7 +123,7 @@ namespace CassandraMigrationProcessor.Processors
                 ? jobPageSize
                 : _config.CqlCopyPageSize > 0
                     ? _config.CqlCopyPageSize
-                    : 500;
+                    : MigrationDefaults.DefaultPageSize;
 
             var tracker = new CopyProgressTracker(_log, processorContext.KeyspaceName, processorContext.TableName,
                 workerCount, pendingRanges.Count,

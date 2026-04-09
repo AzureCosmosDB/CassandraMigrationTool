@@ -1,7 +1,7 @@
 using Newtonsoft.Json;
 using Newtonsoft.Json.Converters;
 
-namespace CassandraMigrationProcessor
+namespace CassandraMigrationProcessor.Models
 {
     /// <summary>
     /// Status of a table during migration.

@@ -3,7 +3,7 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
-
+using CassandraMigrationProcessor.Models;
 namespace CassandraMigrationProcessor.Context
 {
     // TODO: Convert to injectable singleton service.
