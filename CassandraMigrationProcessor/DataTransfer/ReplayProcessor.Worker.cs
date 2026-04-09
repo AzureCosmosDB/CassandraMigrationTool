@@ -12,7 +12,7 @@ using System.Threading.Tasks;
 
 namespace CassandraMigrationProcessor.DataTransfer
 {
-    public partial class ChangeFeedProcessor
+    public partial class ReplayProcessor
     {
         /// <summary>
         /// Attempts to delay for the specified interval, returning false if cancelled.

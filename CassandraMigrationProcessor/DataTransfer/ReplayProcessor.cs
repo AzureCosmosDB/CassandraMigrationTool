@@ -24,7 +24,7 @@ namespace CassandraMigrationProcessor.DataTransfer
     /// long-poll hang. PagingState acts as the continuation
     /// token.
     /// </summary>
-    public partial class ChangeFeedProcessor
+    public partial class ReplayProcessor
     {
         private readonly MigrationLog _log;
         private ISession _sourceSession;
@@ -46,7 +46,7 @@ namespace CassandraMigrationProcessor.DataTransfer
             set => _executionCancelled = value;
         }
 
-        public ChangeFeedProcessor(MigrationLog MigrationLog, ISession sourceSession, ISession targetSession, MigrationUnitCache muCache,
+        public ReplayProcessor(MigrationLog MigrationLog, ISession sourceSession, ISession targetSession, MigrationUnitCache muCache,
             MigrationSettings config,
             MigrationJob job,
             bool singleTable = true,

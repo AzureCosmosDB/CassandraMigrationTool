@@ -24,7 +24,7 @@ namespace CassandraMigrationProcessor.DataTransfer
         protected MigrationLog _log;
         protected MigrationJob _job;
         protected MigrationWorker? _worker;
-        protected ChangeFeedProcessor? _changeFeedProcessor;
+        protected ReplayProcessor? _changeFeedProcessor;
         private readonly object _changeFeedLock = new();
 
         public volatile bool ProcessRunning;
@@ -116,7 +116,7 @@ namespace CassandraMigrationProcessor.DataTransfer
 
         /// <summary>
         /// Enqueue a single table for change-feed processing.
-        /// Creates the target session and <see cref="ChangeFeedProcessor"/>
+        /// Creates the target session and <see cref="ReplayProcessor"/>
         /// on first call. Thread-safe for concurrent calls from
         /// parallel bulk-copy threads.
         /// </summary>
@@ -135,7 +135,7 @@ namespace CassandraMigrationProcessor.DataTransfer
                 if (_changeFeedProcessor == null)
                 {
                     var freshSourceSession = CassandraClientFactory.CreateSourceSession(_log, _job, mu.KeyspaceName);
-                    _changeFeedProcessor = new ChangeFeedProcessor(_log, freshSourceSession, _targetSession!,
+                    _changeFeedProcessor = new ReplayProcessor(_log, freshSourceSession, _targetSession!,
                         MigrationJobContext.MigrationUnitsCache, _config,
                         _job);
                 }
@@ -167,7 +167,7 @@ namespace CassandraMigrationProcessor.DataTransfer
             if (_changeFeedProcessor == null)
             {
                 var freshSourceSession = CassandraClientFactory.CreateSourceSession(_log, _job, string.Empty);
-                _changeFeedProcessor = new ChangeFeedProcessor(_log, freshSourceSession, _targetSession!,
+                _changeFeedProcessor = new ReplayProcessor(_log, freshSourceSession, _targetSession!,
                     MigrationJobContext.MigrationUnitsCache,
                     _config, _job, false, _worker);
             }
