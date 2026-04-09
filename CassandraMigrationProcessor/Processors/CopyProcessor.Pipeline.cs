@@ -157,17 +157,9 @@ namespace CassandraMigrationProcessor.Processors
             };
 
             _log.WriteLine($"Launching {workerCount} workers for {processorContext.KeyspaceName}.{processorContext.TableName} ({pendingRanges.Count} feed ranges, page size={configuredPageSize})...");
-            var workers = Enumerable.Range(0, workerCount)
-                .Select(workerId => Task.Run(() => RunWorkerAsync(workerId, ctx))).ToArray();
-
-            try
-            {
-                await Task.WhenAll(workers);
-            }
-            catch (OperationCanceledException)
-            {
-            }
-
+            using var pool = new WorkerPool(_log, _cancellation, workerCount);
+            pool.Start(workerId => RunWorkerAsync(workerId, ctx));
+            await pool.WaitForCompletionAsync();
             ctx.PartitionPool.Writer.TryComplete();
 
             ctx.Tracker.LogFinal();

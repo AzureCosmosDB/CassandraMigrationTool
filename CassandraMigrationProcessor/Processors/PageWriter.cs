@@ -1,5 +1,6 @@
 using Cassandra;
 using CassandraMigrationProcessor.Helpers;
+using CassandraMigrationProcessor.Helpers.Cassandra;
 using CassandraMigrationProcessor.Models;
 using System;
 using System.Collections.Generic;
@@ -19,15 +20,18 @@ namespace CassandraMigrationProcessor.Processors
         private readonly CancellationTokenSource _cancellation;
         private readonly ISession _targetSession;
         private readonly PreparedStatement _preparedInsert;
+        private readonly int _workerId;
 
         private const int WriteTimeoutMs = 60_000;
 
-        public PageWriter(MigrationLog log, CancellationTokenSource cancellation, ISession targetSession, PreparedStatement preparedInsert)
+        public PageWriter(MigrationLog log, CancellationTokenSource cancellation, ConnectionOptions targetConnection, List<(string Name, string Type, string Kind, string ClusteringOrder, int Position)> columns, string targetKeyspace, string targetTable, int workerId)
         {
             _log = log;
             _cancellation = cancellation;
-            _targetSession = targetSession;
-            _preparedInsert = preparedInsert;
+            _workerId = workerId;
+            _targetSession = CassandraClientFactory.CreateTargetSession(log, targetConnection, "");
+            var (ps, _) = CassandraHelper.PrepareInsert(_targetSession, targetKeyspace, targetTable, columns);
+            _preparedInsert = ps;
         }
 
         public void Dispose() => MigrationHelper.SafeDispose(_targetSession, "PageWriter target session");
@@ -38,8 +42,7 @@ namespace CassandraMigrationProcessor.Processors
         /// </summary>
         public async Task WriteAsync(List<object[]> rows,
             CopyProcessor.WorkChunk workChunk,
-            CopyProcessor.PipelineContext ctx,
-            int workerId)
+            CopyProcessor.PipelineContext ctx)
         {
             if (rows.Count == 0)
             {
@@ -77,12 +80,12 @@ namespace CassandraMigrationProcessor.Processors
                         var ex = task.Exception!.InnerException!;
                         Interlocked.Increment(ref ctx.TotalFailed);
                         Interlocked.Increment(ref writeFail);
-                        _log.WriteLine($"[W{workerId}] INSERT failed: {ex.GetType().Name}: {ex.Message}",
+                        _log.WriteLine($"[W{_workerId}] INSERT failed: {ex.GetType().Name}: {ex.Message}",
                             LogType.Error);
 
                         if (ExceptionClassifier.IsFatal(ex))
                         {
-                            _log.WriteLine($"[W{workerId}] FATAL: {ex.GetType().Name} — failing job",
+                            _log.WriteLine($"[W{_workerId}] FATAL: {ex.GetType().Name} — failing job",
                                 LogType.Error);
                             Interlocked.Exchange(ref ctx.FatalErrorFlag, 1);
                             try { _cancellation.Cancel(); }
@@ -114,7 +117,7 @@ namespace CassandraMigrationProcessor.Processors
             if (writeFail == 0) workChunk.IsCompleted = true;
             else
             {
-                _log.WriteLine($"[W{workerId}] {writeFail}/{rows.Count} writes failed — checkpoint NOT advanced (will retry on resume)",
+                _log.WriteLine($"[W{_workerId}] {writeFail}/{rows.Count} writes failed — checkpoint NOT advanced (will retry on resume)",
                     LogType.Warning);
             }
 
@@ -138,3 +141,5 @@ namespace CassandraMigrationProcessor.Processors
         }
     }
 }
+
+

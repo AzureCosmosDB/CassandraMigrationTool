@@ -83,12 +83,9 @@ namespace CassandraMigrationProcessor.Processors
             try
             {
                 var job = ctx.Job;
-                var sourceSession = CassandraClientFactory.CreateSourceSession(_log, job.SourceConnection, ctx.Context.KeyspaceName);
-                var targetSession = CassandraClientFactory.CreateTargetSession(_log, job.TargetConnection, "");
-                var (preparedInsert, _) = await CassandraHelper.PrepareInsertAsync(
-                    targetSession, ctx.Context.TargetKeyspaceName, ctx.Context.TargetTableName, ctx.Columns);
-                reader = new PageReader(_log, _cancellation, sourceSession);
-                writer = new PageWriter(_log, _cancellation, targetSession, preparedInsert);
+                reader = new PageReader(_log, _cancellation, job.SourceConnection, ctx.Context.KeyspaceName, workerId);
+                writer = new PageWriter(_log, _cancellation, job.TargetConnection, ctx.Columns,
+                    ctx.Context.TargetKeyspaceName, ctx.Context.TargetTableName, workerId);
 
                 while (!_cancellation.Token.IsCancellationRequested && Volatile.Read(ref ctx.FatalErrorFlag) == 0)
                 {
@@ -103,8 +100,7 @@ namespace CassandraMigrationProcessor.Processors
 
                     try
                     {
-                        var (rows, workChunk, isLastPage) = await reader.ReadAsync(
-                            partition, ctx, workerId);
+                        var (rows, workChunk, isLastPage) = await reader.ReadAsync(partition, ctx);
 
                         if (rows == null)
                         {
@@ -118,7 +114,7 @@ namespace CassandraMigrationProcessor.Processors
                         if (!isLastPage)
                             await ctx.PartitionPool.Writer.WriteAsync(partition, _cancellation.Token);
 
-                        await writer.WriteAsync(rows, workChunk!, ctx, workerId);
+                        await writer.WriteAsync(rows, workChunk!, ctx);
 
                         if (partition.IsExhausted) MarkRangeCompleted(partition, ctx);
                         else SavePartitionCheckpoint(partition, ctx);
@@ -186,3 +182,5 @@ namespace CassandraMigrationProcessor.Processors
         }
     }
 }
+
+

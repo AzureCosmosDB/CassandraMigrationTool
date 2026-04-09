@@ -1,5 +1,6 @@
 using Cassandra;
 using CassandraMigrationProcessor.Helpers;
+using CassandraMigrationProcessor.Helpers.Cassandra;
 using CassandraMigrationProcessor.Models;
 using System;
 using System.Collections.Generic;
@@ -18,16 +19,19 @@ namespace CassandraMigrationProcessor.Processors
         private readonly MigrationLog _log;
         private readonly CancellationTokenSource _cancellation;
         private readonly ISession _sourceSession;
+        private readonly int _workerId;
 
         private const int ReadTimeoutMs = 60_000;
         private const int MaxReadRetries = 3;
         private const int RetryDelayMs = 5000;
 
-        public PageReader(MigrationLog log, CancellationTokenSource cancellation, ISession sourceSession)
+        public PageReader(MigrationLog log, CancellationTokenSource cancellation,
+            ConnectionOptions sourceConnection, string keyspace, int workerId)
         {
             _log = log;
             _cancellation = cancellation;
-            _sourceSession = sourceSession;
+            _workerId = workerId;
+            _sourceSession = CassandraClientFactory.CreateSourceSession(log, sourceConnection, keyspace);
         }
 
         public void Dispose() => MigrationHelper.SafeDispose(_sourceSession, "PageReader source session");
@@ -37,7 +41,7 @@ namespace CassandraMigrationProcessor.Processors
         /// tracker. Returns null rows on fatal read failure.
         /// </summary>
         public async Task<(List<object[]>? rows, CopyProcessor.WorkChunk? workChunk, bool isLastPage)>
-            ReadAsync(CopyProcessor.Partition partition, CopyProcessor.PipelineContext ctx, int workerId)
+            ReadAsync(CopyProcessor.Partition partition, CopyProcessor.PipelineContext ctx)
         {
             var stopwatch = Stopwatch.StartNew();
             var stmt = new SimpleStatement(BuildSelectCql(ctx.Context, partition.FeedRange));
@@ -60,7 +64,7 @@ namespace CassandraMigrationProcessor.Processors
                 catch (System.Exception ex) when (attempt < MaxReadRetries
                     && ExceptionClassifier.IsTransient(ex))
                 {
-                    _log.WriteLine($"[W{workerId}] Read timeout (attempt {attempt}/{MaxReadRetries})",
+                    _log.WriteLine($"[W{_workerId}] Read timeout (attempt {attempt}/{MaxReadRetries})",
                         LogType.Warning);
                     await Task.Delay(attempt * RetryDelayMs, _cancellation.Token);
                 }
@@ -104,3 +108,4 @@ namespace CassandraMigrationProcessor.Processors
             $" WHERE COSMOS_CHANGEFEED_FROM_START() = true AND COSMOS_FEEDRANGE() = '{range}'";
     }
 }
+
