@@ -49,12 +49,8 @@ namespace CassandraMigrationProcessor.Processors
         {
             MigrationJobContext.AddVerboseLog($"CopyProcessor.ProcessChunkAsync: {migrationUnit.KeyspaceName}.{migrationUnit.TableName}[{chunkIndex}]");
 
-            _log.WriteLine($"Counting source documents for {context.KeyspaceName}.{context.TableName} (SELECT COUNT(*) with 120s timeout)...");
             long rowCount = await CassandraHelper.GetRowCountAsync(context.SourceSession, context.KeyspaceName,
                 context.TableName);
-            _log.WriteLine(rowCount >= 0
-                    ? $"Source document count: {rowCount:N0} for {context.KeyspaceName}.{context.TableName}"
-                    : $"Could not determine document count for {context.KeyspaceName}.{context.TableName} (COUNT timed out)");
 
             if (rowCount > 0)
             {
@@ -65,28 +61,26 @@ namespace CassandraMigrationProcessor.Processors
             migrationUnit.MigrationChunks[chunkIndex].SourceQueryRowCount = rowCount;
             context.DownloadCount += rowCount;
 
-            _log.WriteLine($"Count for {context.KeyspaceName}.{context.TableName}[{chunkIndex}] is {rowCount}");
-
-            if (_targetSession == null
-                && !_job.IsSimulatedRun)
+            if (_targetSession == null && !_job.IsSimulatedRun)
             {
                 _targetSession = CassandraClientFactory.CreateTargetSession(_log, _job, string.Empty);
                 await CassandraHelper.EnsureKeyspaceExistsAsync(_targetSession, context.TargetKeyspaceName);
             }
 
-            _log.WriteLine($"Discovering feed ranges for {context.KeyspaceName}.{context.TableName}...");
             var feedRanges = await CassandraHelper.GetFeedRangesAsync(_sourceSession!, context.KeyspaceName,
                 context.TableName);
-            _log.WriteLine($"Found {feedRanges.Count} feed ranges for {context.KeyspaceName}.{context.TableName}");
+
+            _log.WriteLine($"{context.KeyspaceName}.{context.TableName}: " +
+                $"{(rowCount >= 0 ? $"{rowCount:N0} rows" : "count unavailable")}, " +
+                $"{feedRanges.Count} feed range(s)");
 
             if (_job.IsSimulatedRun)
             {
-                _log.WriteLine($"Simulated: would copy {rowCount} rows from {context.KeyspaceName}.{context.TableName}");
+                _log.WriteLine($"Simulated: {context.KeyspaceName}.{context.TableName}");
                 return TaskResult.Success;
             }
 
             TaskResult result;
-            _log.WriteLine($"Pipeline copy: {feedRanges.Count} feed range(s) for {context.KeyspaceName}.{context.TableName}");
             result = await CopyWithFeedRangesAsync(new PipelineRequest(migrationUnit, chunkIndex, initialPercent, contributionFactor,
                 rowCount, context, feedRanges));
 

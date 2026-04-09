@@ -277,7 +277,7 @@ namespace CassandraMigrationProcessor.Processors
                     if (ctx.PartitionPool.Reader.TryRead(out var p))
                         return p;
             }
-            catch (OperationCanceledException) { }
+            catch (OperationCanceledException) { /* cancelled — return null */ }
             return null;
         }
     }

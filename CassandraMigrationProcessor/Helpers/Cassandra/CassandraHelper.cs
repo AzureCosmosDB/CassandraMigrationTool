@@ -122,7 +122,14 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
                     return count;
                 }
             }
-            catch { }
+            catch (Exception ex)
+            {
+                // Timeout is expected for large tables — proceed without %
+                if (ExceptionClassifier.IsTransient(ex))
+                    return -1;
+                // Non-transient (auth, schema) — propagate so caller knows
+                throw;
+            }
 
             return -1;
         }
