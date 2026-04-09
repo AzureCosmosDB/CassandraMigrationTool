@@ -2,8 +2,6 @@
 @inject Service.JobManager JobManager
 @inject NavigationManager NavigationManager
 @inject IJSRuntime JS
-@inject Service.FileService FileService
-@inject HttpClient HttpClient
 
 @using CassandraMigrationWebApp.Components
 @using CassandraMigrationProcessor
@@ -290,6 +288,8 @@
                 if (_selectedMigrationJob != null)
                 {
                     string jobId = _selectedMigrationJob.Id;
+                    // Display-only removal from a fresh copy;
+                    // actual deletion happens in ClearJobFiles below.
                     GetMigrations().Remove(_selectedMigrationJob);
 
                     try

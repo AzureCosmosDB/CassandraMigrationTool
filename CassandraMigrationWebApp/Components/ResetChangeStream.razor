@@ -193,7 +193,7 @@
     // Pagination helper
     private PaginationHelper<MigrationUnit> _paginationHelper = null!;
 
-    protected override void OnInitialized()
+    protected override void OnParametersSet()
     {
         updatedMigrationUnits = new List<MigrationUnit>();
         

@@ -1,5 +1,6 @@
 using Cassandra;
 using CassandraMigrationProcessor.Context;
+using CassandraMigrationProcessor.Helpers;
 using CassandraMigrationProcessor.Helpers.Cassandra;
 using CassandraMigrationProcessor.Models;
 using System;
@@ -108,11 +109,16 @@ namespace CassandraMigrationProcessor.Processors
                 int consecutiveErrors = 0;
                 const int MaxReconnectAttempts = 50;
                 byte[]? continuationState = null;
-                if (mu.FeedRangeContinuationTokens != null
-                    && mu.FeedRangeContinuationTokens.TryGetValue(feedRange, out var saved)
-                    && !string.IsNullOrEmpty(saved))
+                if (mu.FeedRangeContinuationTokens != null)
                 {
-                    continuationState = Convert.FromBase64String(saved);
+                    lock (mu.FeedRangeContinuationTokens)
+                    {
+                        if (mu.FeedRangeContinuationTokens.TryGetValue(feedRange, out var saved)
+                            && !string.IsNullOrEmpty(saved))
+                        {
+                            continuationState = Convert.FromBase64String(saved);
+                        }
+                    }
                 }
 
                 string startTime = !string.IsNullOrEmpty(mu.ChangeFeedStartToken)
@@ -365,12 +371,7 @@ namespace CassandraMigrationProcessor.Processors
                         _log.WriteLine($"CF error {mu.KeyspaceName}.{mu.TableName}: {ex.Message}", LogType.Error);
 
                         if (consecutiveErrors <= MaxReconnectAttempts
-                            && (ex.GetType().Name.Contains("NoHost")
-                                || ex.GetType().Name.Contains("Socket")
-                                || ex.GetType().Name.Contains("Auth")
-                                || ex.Message.Contains("disposed")
-                                || ex.Message.Contains("unauthorized")
-                                || ex.Message.Contains("401")))
+                            && ExceptionClassifier.IsTransient(ex))
                         {
                             try
                             {
@@ -384,7 +385,13 @@ namespace CassandraMigrationProcessor.Processors
                                 {
                                     newSource = CassandraClientFactory.CreateSourceSession(_log, job, string.Empty);
                                 }
+                                var oldSession = _sourceSession;
                                 _sourceSession = newSource;
+                                try { oldSession?.Dispose(); }
+                                catch (Exception dex)
+                                {
+                                    Console.WriteLine($"[WARN] CF old source session dispose failed: {dex.Message}");
+                                }
                                 columns = CassandraHelper.GetTableColumns(_sourceSession, mu.KeyspaceName,
                                         mu.TableName);
                                 userColumns = columns

@@ -86,12 +86,15 @@ namespace CassandraMigrationProcessor.Context
 
                 job.Tables.RemoveAt(index);
 
+                if (!MigrationJobContext.SaveMigrationJob(job))
+                    return false;
+
                 var filePath = Path.Combine(
                     JobStore.JobsFolder, unit.JobId,
                     $"{unit.Id}.json");
                 MigrationJobContext.Store.Delete(filePath);
 
-                return MigrationJobContext.SaveMigrationJob(job);
+                return true;
             }
             catch (Exception ex)
             {

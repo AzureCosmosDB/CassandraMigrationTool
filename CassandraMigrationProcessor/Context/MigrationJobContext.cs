@@ -165,7 +165,7 @@ namespace CassandraMigrationProcessor.Context
                 string.IsNullOrEmpty(stateStoreCSorPath)
                 ? Helper.GetWorkingFolder()
                 : stateStoreCSorPath;
-            Store.Initialize(localPath, string.Empty);
+            Store.Initialize(localPath, appId ?? string.Empty);
 
             JobList = LoadJobList(
                 out bool notFound, out string errorMessage);

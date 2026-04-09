@@ -174,7 +174,7 @@ namespace CassandraMigrationProcessor.Persistence
         /// </summary>
         /// <param name="id">Unique identifier of the document (must include .json extension, e.g., "job1\mu1.json")</param>
         /// <returns>JSON content if found, null otherwise</returns>
-        public string Read(string id)
+        public string? Read(string id)
         {
             EnsureInitialized();
 
@@ -557,9 +557,9 @@ namespace CassandraMigrationProcessor.Persistence
                     return new LogBucket();
                 }
             }
-            catch
+            catch (Exception ex)
             {
-                throw new Exception("Log Init failed");
+                throw new InvalidOperationException("Log Init failed", ex);
             }
         }
 

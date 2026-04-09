@@ -113,7 +113,7 @@ namespace CassandraMigrationProcessor.Workers
                         if (MigrationJobContext.ControlledPauseRequested)
                             return;
 
-                        if (_consecutiveAuthErrors
+                        if (Volatile.Read(ref _consecutiveAuthErrors)
                             >= MaxConsecutiveAuthErrors)
                         {
                             abortRequested = true;
@@ -145,7 +145,7 @@ namespace CassandraMigrationProcessor.Workers
 
                 if (abortRequested)
                 {
-                    _log.WriteLine($"Aborting: {_consecutiveAuthErrors}" + " consecutive auth failures.",
+                    _log.WriteLine($"Aborting: {Volatile.Read(ref _consecutiveAuthErrors)}" + " consecutive auth failures.",
                         LogType.Error);
                     return TaskResult.Abort;
                 }
@@ -340,7 +340,7 @@ namespace CassandraMigrationProcessor.Workers
                 if (IsAuthError(ex))
                 {
                     Interlocked.Increment(ref _consecutiveAuthErrors);
-                    _log.WriteLine($"Auth failure #{_consecutiveAuthErrors} on {migrationUnit.KeyspaceName}.{migrationUnit.TableName}",
+                    _log.WriteLine($"Auth failure #{Volatile.Read(ref _consecutiveAuthErrors)} on {migrationUnit.KeyspaceName}.{migrationUnit.TableName}",
                         LogType.Warning);
                 }
                 else
@@ -390,21 +390,6 @@ namespace CassandraMigrationProcessor.Workers
             {
                 MigrationJobContext.AddVerboseLog($"Session cleanup error: {ex.Message}");
             }
-        }
-
-        /// <summary>
-        /// Force-invalidate the source session so
-        /// EnsureSourceSession creates a new one.
-        /// Used after auth failures (expired tokens).
-        /// </summary>
-        private void ForceInvalidateSession()
-        {
-            try { _sourceSession?.Dispose(); }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[WARN] ForceInvalidateSession dispose failed: {ex.Message}");
-            }
-            _sourceSession = null;
         }
 
         /// <summary>

@@ -159,9 +159,11 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
                     StartTokenRefreshTimer(freshToken,
                         _lastLog ?? new Log());
                 }
-                catch (Exception)
+                catch (Exception ex)
                 {
                     // Retry in 2 minutes on failure
+                    Console.WriteLine($"[WARN] Token refresh failed: {ex.Message}");
+                    _lastLog?.WriteLine($"Token refresh failed, retrying in 2 min: {ex.Message}", LogType.Warning);
                     StopTokenRefreshTimer();
                     _tokenRefreshTimer = new Timer(
                         TokenRefreshCallback, null,

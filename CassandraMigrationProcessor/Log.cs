@@ -111,6 +111,17 @@ namespace CassandraMigrationProcessor
 
                     var logObj = new LogObject(logType, message);
 
+                    // Populate verbose monitor messages
+                    if (logType == LogType.Verbose || logType == LogType.Info || logType == LogType.Warning || logType == LogType.Error)
+                    {
+                        lock (_verboseLock)
+                        {
+                            _verboseMessages.Add(logObj);
+                            while (_verboseMessages.Count > MaxLogEntries)
+                                _verboseMessages.RemoveAt(0);
+                        }
+                    }
+
                     // Add new log
                     _logBucket.Logs ??= new List<LogObject>();
                     _logBucket.Logs.Add(logObj);

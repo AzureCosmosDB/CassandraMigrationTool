@@ -414,13 +414,9 @@ namespace CassandraMigrationWebApp.Service
                                     }
                                     catch (Exception vex)
                                     {
-                                        bool isThrottle = vex.Message?.Contains("429") == true
-                                            || vex.Message?.Contains("rate", StringComparison.OrdinalIgnoreCase) == true
-                                            || vex.Message?.Contains("TooMany", StringComparison.OrdinalIgnoreCase) == true;
-                                        if (isThrottle && att < 10)
+                                        if (CassandraMigrationProcessor.Helpers.ExceptionClassifier.IsThrottle(vex) && att < 10)
                                         {
                                             int delaySec = Math.Min(att * 3, 30);
-                                            // Thread.Sleep is acceptable here: runs on a Task.Run threadpool thread
                                             Thread.Sleep(delaySec * 1000);
                                             continue;
                                         }

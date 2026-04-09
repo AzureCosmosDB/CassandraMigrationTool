@@ -54,8 +54,9 @@ namespace CassandraMigrationWebApp.Service
 
                 return true;
             }
-            catch
+            catch (Exception ex)
             {
+                Console.WriteLine($"[WARN] AuthenticationService.IsAuthenticatedAsync failed: {ex.Message}");
                 return false;
             }
         }
@@ -73,8 +74,9 @@ namespace CassandraMigrationWebApp.Service
                 var expiryResult = await _sessionStorage.GetAsync<DateTime>(AuthExpiryKey);
                 return expiryResult.Success ? expiryResult.Value : null;
             }
-            catch
+            catch (Exception ex)
             {
+                Console.WriteLine($"[WARN] AuthenticationService.GetExpiryTimeAsync failed: {ex.Message}");
                 return null;
             }
         }

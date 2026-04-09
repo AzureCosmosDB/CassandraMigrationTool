@@ -337,7 +337,12 @@ namespace CassandraMigrationProcessor
 
                 foreach (var mu in newUnits)
                 {
-                    MigrationJobContext.SaveMigrationUnit(mu, false);
+                    if (!MigrationJobContext.SaveMigrationUnit(mu, false))
+                    {
+                        log?.WriteLine(
+                            $"Warning: failed to save migration unit {mu.KeyspaceName}.{mu.TableName}",
+                            LogType.Warning);
+                    }
                     AddMigrationUnit(mu, job);
                 }
                 MigrationJobContext.SaveMigrationJob(job);

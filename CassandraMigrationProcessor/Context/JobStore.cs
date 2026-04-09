@@ -90,23 +90,22 @@ namespace CassandraMigrationProcessor.Context
 
         public static bool SaveJob(MigrationJob job)
         {
+            if (job == null) return false;
+
             try
             {
-                if (job != null)
+                lock (_writeJobLock)
                 {
-                    lock (_writeJobLock)
+                    SerializeAndPersist(job);
+                    _jobs[job.Id] = job;
+                    if (!string.IsNullOrEmpty(
+                            MigrationJobContext
+                                .ActiveMigrationJobId)
+                        && job.Id
+                            == MigrationJobContext
+                                .ActiveMigrationJobId)
                     {
-                        SerializeAndPersist(job);
-                        _jobs[job.Id] = job;
-                        if (!string.IsNullOrEmpty(
-                                MigrationJobContext
-                                    .ActiveMigrationJobId)
-                            && job.Id
-                                == MigrationJobContext
-                                    .ActiveMigrationJobId)
-                        {
-                            _cachedActiveJob = job;
-                        }
+                        _cachedActiveJob = job;
                     }
                 }
                 return true;

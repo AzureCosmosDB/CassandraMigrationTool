@@ -57,6 +57,8 @@ namespace CassandraMigrationProcessor.Helpers.JobManagement
                     attempt++;
                     int currentBackoffSeconds = delay / 1000;
                     var shouldRetry = await exceptionHandler(ex, attempt, currentBackoffSeconds);
+                    if (shouldRetry == TaskResult.Canceled)
+                        return TaskResult.Canceled;
                     if (shouldRetry == TaskResult.Abort || attempt >= maxTries)
                         return TaskResult.Abort;
 

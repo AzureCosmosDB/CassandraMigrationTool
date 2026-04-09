@@ -49,9 +49,13 @@ namespace CassandraMigrationProcessor.Processors
             migrationUnit.CompletedCopyFeedRanges = completed;
             migrationUnit.CopyFeedRangeCheckpoints = checkpoints;
 
-            var pendingRanges = feedRanges
-                .Where(r => !completed.Contains(r))
-                .ToList();
+            List<string> pendingRanges;
+            lock (checkpoints)
+            {
+                pendingRanges = feedRanges
+                    .Where(r => !completed.Contains(r))
+                    .ToList();
+            }
 
             if (pendingRanges.Count == 0)
             {
@@ -174,7 +178,12 @@ namespace CassandraMigrationProcessor.Processors
             _log.WriteLine($"Pipeline complete for {processorContext.KeyspaceName}.{processorContext.TableName}:");
             _log.WriteLine($"  This session:  {sessionWritten:N0} read, {sessionWritten:N0} written, {finalFailed:N0} failed");
             _log.WriteLine($"  Cumulative:    {finalWritten:N0} total rows copied");
-            _log.WriteLine($"  Ranges:        {ctx.Completed.Count}/{feedRanges.Count} completed");
+            int completedCount;
+            lock (ctx.Checkpoints)
+            {
+                completedCount = ctx.Completed.Count;
+            }
+            _log.WriteLine($"  Ranges:        {completedCount}/{feedRanges.Count} completed");
             _log.WriteLine($"  Duration:      {elapsed.TotalSeconds:F1}s ({avgSpeed:F0} rows/sec)");
 
             var chunk = migrationUnit.MigrationChunks[chunkIndex];
@@ -183,7 +192,11 @@ namespace CassandraMigrationProcessor.Processors
             chunk.TargetFailedRowCount = finalFailed;
             migrationUnit.CopyRowsCopied = finalWritten;
             migrationUnit.ActualRowCount = Math.Max(migrationUnit.ActualRowCount, finalRead);
-            bool allRangesComplete = ctx.Completed.Count >= feedRanges.Count;
+            bool allRangesComplete;
+            lock (ctx.Checkpoints)
+            {
+                allRangesComplete = ctx.Completed.Count >= feedRanges.Count;
+            }
             if (chunk.Segments.Count == 0)
             {
                 chunk.Segments.Add(new Segment

@@ -154,13 +154,6 @@ else
         };
     }
 
-    private static string FormatPercent(double value)
-    {
-        if (value >= 100) return "100%";
-        if (value <= 0) return "0%";
-        return $"{value:F1}%";
-    }
-
     private static string GetDuration(DateTime? start, DateTime? end)
     {
         if (!start.HasValue || !end.HasValue || start.Value == DateTime.MinValue || end.Value == DateTime.MinValue)

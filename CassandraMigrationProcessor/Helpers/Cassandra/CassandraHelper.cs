@@ -28,21 +28,21 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
             int maxRetries = DefaultMaxRetries,
             int baseDelayMs = RetryBaseDelayMs)
         {
+            Exception? lastException = null;
             for (int attempt = 1; attempt <= maxRetries; attempt++)
             {
                 try
                 {
                     return await operation();
                 }
-                catch (Exception ex) when (attempt < maxRetries && (ex is TimeoutException
-                     || ex.GetType().Name.Contains("Timeout")
-                     || ex.InnerException is TimeoutException))
+                catch (Exception ex) when (attempt < maxRetries
+                    && ExceptionClassifier.IsTransient(ex))
                 {
+                    lastException = ex;
                     await Task.Delay(attempt * baseDelayMs);
                 }
             }
-            // Should not reach here, but satisfy the compiler
-            return await operation();
+            throw lastException ?? new TimeoutException("Operation timed out after all retries");
         }
         /// <summary>
         /// List all keyspaces (excluding system keyspaces).
@@ -231,18 +231,18 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
                 }
                 catch (Exception ex)
                 {
-                    bool isThrottle = ex.Message?.Contains("429") == true
-                        || ex.Message?.Contains("rate", StringComparison.OrdinalIgnoreCase) == true
-                        || ex.Message?.Contains("TooMany", StringComparison.OrdinalIgnoreCase) == true;
-
-                    if (isThrottle && attempt < ThrottleMaxRetries)
+                    if (ExceptionClassifier.IsThrottle(ex) && attempt < ThrottleMaxRetries)
                     {
                         int delaySec = Math.Min(attempt * 3, 30);
                         await Task.Delay(delaySec * 1000);
                         continue;
                     }
 
-                    return false;
+                    if (ExceptionClassifier.IsNotFound(ex))
+                        return false;
+
+                    // Transient errors → re-throw so callers can handle
+                    throw;
                 }
             }
             return false;

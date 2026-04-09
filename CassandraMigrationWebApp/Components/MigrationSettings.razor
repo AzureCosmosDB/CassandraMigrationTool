@@ -106,7 +106,7 @@
         _configurationBackup = (CassandraMigrationProcessor.MigrationSettings?)(_configuration?.Clone()) ?? new CassandraMigrationProcessor.MigrationSettings();
     }
 
-    private void HandleSubmit()
+    private async Task HandleSubmit()
     {
         if ((_configurationBackup?.LogPageSize ?? 0) < 1000 || (_configurationBackup?.LogPageSize ?? 0) > 100000)
         {
@@ -155,15 +155,15 @@
 
         if (On_configurationSaved.HasDelegate)
         {
-            On_configurationSaved.InvokeAsync(_configuration);
+            await On_configurationSaved.InvokeAsync(_configuration);
         }
     }
 
-    private void Cancel()
+    private async Task Cancel()
     {
         if (On_configurationSaved.HasDelegate)
         {
-            On_configurationSaved.InvokeAsync(null);
+            await On_configurationSaved.InvokeAsync(null);
         }
     }
 }

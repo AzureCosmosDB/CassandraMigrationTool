@@ -18,61 +18,11 @@ namespace CassandraMigrationProcessor.Processors
 
         private static string TruncRange(string r) => r.Length > 30 ? r[..15] + "..." : r;
 
-        /// <summary>
-        /// Determines if a write error is transient and should
-        /// be retried. Uses concrete driver exception types.
-        /// </summary>
         private static bool IsRetriableWriteError(Exception ex)
-        {
-            if (ex is AggregateException agg
-                && agg.InnerException != null)
-                ex = agg.InnerException;
+            => Helpers.ExceptionClassifier.IsTransient(ex);
 
-            // Transient Cassandra driver errors
-            if (ex is Cassandra.NoHostAvailableException
-                || ex is Cassandra.WriteTimeoutException
-                || ex is Cassandra.ReadTimeoutException
-                || ex is Cassandra.UnavailableException
-                || ex is Cassandra.OverloadedException)
-                return true;
-
-            // Transient system errors
-            if (ex is TimeoutException
-                || ex is System.IO.IOException
-                || ex is System.Net.Sockets.SocketException)
-                return true;
-
-            // Cosmos DB 429 (may appear as wrapped message)
-            var msg = ex.Message ?? string.Empty;
-            if (msg.Contains("429")
-                || msg.Contains("TooManyRequests", StringComparison.OrdinalIgnoreCase))
-                return true;
-
-            return false;
-        }
-
-        /// <summary>
-        /// Errors that should immediately fail the entire job.
-        /// Uses concrete driver exception types.
-        /// </summary>
         private static bool IsFatalError(Exception ex)
-        {
-            if (ex is AggregateException agg
-                && agg.InnerException != null)
-                ex = agg.InnerException;
-
-            // Auth failures
-            if (ex is Cassandra.AuthenticationException
-                || ex is Cassandra.UnauthorizedException)
-                return true;
-
-            // Schema/syntax errors
-            if (ex is Cassandra.InvalidQueryException
-                || ex is Cassandra.SyntaxError)
-                return true;
-
-            return false;
-        }
+            => Helpers.ExceptionClassifier.IsFatal(ex);
 
         /// <summary>
         /// Tracks a pending or completed read-write cycle.

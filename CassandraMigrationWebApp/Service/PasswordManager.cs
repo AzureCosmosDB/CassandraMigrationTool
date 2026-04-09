@@ -40,6 +40,8 @@ namespace CassandraMigrationWebApp.Service
                 _encryptionKey = File.ReadAllBytes(_keyFilePath);
                 if (_encryptionKey.Length == 32)
                     return _encryptionKey;
+
+                Console.WriteLine("[WARN] PasswordManager: invalid keyfile detected, regenerating key. Previously stored passwords will be invalidated.");
             }
 
             // Generate a new random 256-bit key

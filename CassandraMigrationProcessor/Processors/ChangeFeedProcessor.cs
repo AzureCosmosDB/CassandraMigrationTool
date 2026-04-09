@@ -38,7 +38,12 @@ namespace CassandraMigrationProcessor.Processors
         private readonly ConcurrentDictionary<string, Task>
             _activeTasks = new();
 
-        public bool ExecutionCancelled { get; set; }
+        private volatile bool _executionCancelled;
+        public bool ExecutionCancelled
+        {
+            get => _executionCancelled;
+            set => _executionCancelled = value;
+        }
 
         public ChangeFeedProcessor(Log log, ISession sourceSession, ISession targetSession, MigrationUnitCache muCache,
             MigrationSettings config,

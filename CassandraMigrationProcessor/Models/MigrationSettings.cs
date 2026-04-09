@@ -80,6 +80,8 @@ namespace CassandraMigrationProcessor
 
         public void Load()
         {
+            if (MigrationJobContext.Store == null) return;
+
             if (MigrationJobContext.Store.Exists(_filePath))
             {
                 string json = MigrationJobContext.Store.Read(_filePath);
@@ -106,6 +108,12 @@ namespace CassandraMigrationProcessor
 
         public bool Save(out string errorMessage)
         {
+            if (MigrationJobContext.Store == null)
+            {
+                errorMessage = "Store not initialized";
+                return false;
+            }
+
             try
             {
                 string json = JsonConvert.SerializeObject(this);

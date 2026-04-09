@@ -293,8 +293,8 @@ namespace CassandraMigrationProcessor.Processors
                     resultSet = await sourceSession.ExecuteAsync(stmt);
                     break;
                 }
-                catch (Exception ex) when (attempt < MaxReadRetries && (ex is TimeoutException || ex.GetType().Name
-                         .Contains("Timeout") || ex.GetType().Name.Contains("NoHostAvail")))
+                catch (Exception ex) when (attempt < MaxReadRetries
+                    && Helpers.ExceptionClassifier.IsTransient(ex))
                 {
                     _log.WriteLine($"[W{workerId}] Read timeout (attempt {attempt}/{MaxReadRetries})",
                         LogType.Warning);

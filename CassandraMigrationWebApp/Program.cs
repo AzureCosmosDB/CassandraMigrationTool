@@ -13,10 +13,11 @@ var builder = WebApplication.CreateBuilder(args);
 var diagLogPath = Path.Combine(
     Environment.GetEnvironmentVariable("HOME") ?? ".",
     "LogFiles", "app-diag.log");
+StreamWriter? diagStream = null;
 try
 {
     Directory.CreateDirectory(Path.GetDirectoryName(diagLogPath)!);
-    var diagStream = new StreamWriter(diagLogPath, append: true) { AutoFlush = true };
+    diagStream = new StreamWriter(diagLogPath, append: true) { AutoFlush = true };
     Console.SetOut(diagStream);
     Console.SetError(diagStream);
     Console.WriteLine($"=== App starting at {DateTime.UtcNow:O} ===");
@@ -85,6 +86,17 @@ builder.Services.AddScoped<AuthenticationStateProvider, CustomAuthenticationStat
 builder.Services.AddAuthorizationCore();
 
 var app = builder.Build();
+
+// Register disposal of diagnostic log stream on shutdown
+var lifetime = app.Services.GetRequiredService<IHostApplicationLifetime>();
+if (diagStream != null)
+{
+    lifetime.ApplicationStopping.Register(() =>
+    {
+        try { diagStream.Dispose(); }
+        catch { /* best-effort cleanup */ }
+    });
+}
 
 // _configure the HTTP request pipeline.
 if (!app.Environment.IsDevelopment())
