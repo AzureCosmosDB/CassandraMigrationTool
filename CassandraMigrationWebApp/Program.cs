@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Components.Web;
 using CassandraMigrationWebApp.Service;
 using CassandraMigrationProcessor;
 using Microsoft.AspNetCore.Components.Authorization;
+using CassandraMigrationProcessor.Infrastructure;
 using CassandraMigrationProcessor.Context;
 
 var builder = WebApplication.CreateBuilder(args);

@@ -1,5 +1,5 @@
 using Newtonsoft.Json;
-using CassandraMigrationProcessor.Helpers;
+using CassandraMigrationProcessor.Infrastructure;
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -47,7 +47,7 @@ namespace CassandraMigrationProcessor.Persistence
                     _storagePath = connectionStringOrPath;
                     _appId = appId;
                     // Create directory if it doesn't exist (no-op for blob storage)
-                    StorageStreamFactory.EnsureDirectoryExists(_storagePath);
+                    FileSystem.EnsureDirectoryExists(_storagePath);
 
                     _isInitialized = true;
                 }
@@ -123,7 +123,7 @@ namespace CassandraMigrationProcessor.Persistence
 
                 // Create the directory structure if it doesn't exist (no-op for blob storage)
                 var directoryPath = Path.Combine(pathParts.ToArray());
-                StorageStreamFactory.EnsureDirectoryExists(directoryPath);
+                FileSystem.EnsureDirectoryExists(directoryPath);
 
                 // Add the last part as the filename (already has .json extension)
                 var fileName = SanitizeFileName(parts[^1]);
@@ -185,7 +185,7 @@ namespace CassandraMigrationProcessor.Persistence
             return SafeExecute(() =>
             {
                 var filePath = GetFilePath(id);
-                return StorageStreamFactory.WriteAllText(filePath, jsonContent);
+                return FileSystem.WriteAllText(filePath, jsonContent);
             }, false, $"Write({id})");
         }
 
@@ -207,7 +207,7 @@ namespace CassandraMigrationProcessor.Persistence
             return SafeExecute<string?>(() =>
             {
                 var filePath = GetFilePath(id);
-                return StorageStreamFactory.ReadAllText(filePath);
+                return FileSystem.ReadAllText(filePath);
             }, null, $"Read({id})");
         }
 
@@ -229,7 +229,7 @@ namespace CassandraMigrationProcessor.Persistence
             return SafeExecute(() =>
             {
                 var filePath = GetFilePath(id);
-                return StorageStreamFactory.Exists(filePath);
+                return FileSystem.Exists(filePath);
             }, false, $"Exists({id})");
         }
 
@@ -253,16 +253,16 @@ namespace CassandraMigrationProcessor.Persistence
                 {
                     var filePath = GetFilePath(id);
 
-                    if (!StorageStreamFactory.Exists(filePath))
+                    if (!FileSystem.Exists(filePath))
                         return false;
 
-                    StorageStreamFactory.DeleteIfExists(filePath);
+                    FileSystem.DeleteIfExists(filePath);
                     return true;
                 }
                 else
                 {
                     var directoryPath = GetDirectoryPath(id);
-                    return StorageStreamFactory.DeleteDirectory(directoryPath, recursive: true);
+                    return FileSystem.DeleteDirectory(directoryPath, recursive: true);
                 }
             }, false, $"Delete({id})");
         }
@@ -280,12 +280,12 @@ namespace CassandraMigrationProcessor.Persistence
             {
                 var ids = new List<string>();
 
-                var files = StorageStreamFactory.ListFiles(_storagePath!, "*" + FILE_EXTENSION, recursive: true);
+                var files = FileSystem.ListFiles(_storagePath!, "*" + FILE_EXTENSION, recursive: true);
 
                 foreach (var file in files)
                 {
                     string relativePath;
-                    if (StorageStreamFactory.UseBlobStorage)
+                    if (FileSystem.UseBlobStorage)
                     {
                         relativePath = file;
                     }
@@ -315,7 +315,7 @@ namespace CassandraMigrationProcessor.Persistence
 
             return SafeExecute(() =>
             {
-                if (StorageStreamFactory.UseBlobStorage)
+                if (FileSystem.UseBlobStorage)
                     return true;
                 return Directory.Exists(_storagePath);
             }, false, "TestConnection");

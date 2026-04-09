@@ -1,9 +1,9 @@
 using Cassandra;
 using CassandraMigrationProcessor.Context;
-using CassandraMigrationProcessor.Helpers;
-using CassandraMigrationProcessor.Helpers.Cassandra;
+using CassandraMigrationProcessor.Infrastructure;
+using CassandraMigrationProcessor.CassandraDriver;
 using CassandraMigrationProcessor.Models;
-using CassandraMigrationProcessor.Processors;
+using CassandraMigrationProcessor.Pipeline;
 using System;
 using System.Collections.Generic;
 using System.Collections.Concurrent;
@@ -11,7 +11,7 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 
-namespace CassandraMigrationProcessor.Workers
+namespace CassandraMigrationProcessor.Pipeline
 {
     /// <summary>
     /// Orchestrates a Cassandra-to-Cassandra migration with table-level

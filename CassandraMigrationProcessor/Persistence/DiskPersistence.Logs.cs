@@ -1,4 +1,4 @@
-using CassandraMigrationProcessor.Helpers;
+using CassandraMigrationProcessor.Infrastructure;
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -31,9 +31,9 @@ namespace CassandraMigrationProcessor.Persistence
                 var folder = Path.Combine(_storagePath, "migrationlogs");
                 var binPath = Path.Combine(folder, $"{jobId}.bin");
 
-                StorageStreamFactory.EnsureDirectoryExists(folder);
+                FileSystem.EnsureDirectoryExists(folder);
 
-                using var fs = StorageStreamFactory.OpenAppend(binPath);
+                using var fs = FileSystem.OpenAppend(binPath);
                 using var bw = new BinaryWriter(fs);
 
                 var messageBytes = Encoding.UTF8.GetBytes(logObject.Message);
@@ -49,13 +49,13 @@ namespace CassandraMigrationProcessor.Persistence
             var folder = Path.Combine(_storagePath, "migrationlogs");
             var binPath = Path.Combine(folder, $"{id}.bin");
 
-            if (!StorageStreamFactory.Exists(binPath))
+            if (!FileSystem.Exists(binPath))
                 return 0;
 
             return SafeExecute(() =>
             {
                 int count = 0;
-                using var fs = StorageStreamFactory.OpenReadShared(binPath);
+                using var fs = FileSystem.OpenReadShared(binPath);
                 if (fs == null) return 0;
                 using var br = new BinaryReader(fs);
 
@@ -94,12 +94,12 @@ namespace CassandraMigrationProcessor.Persistence
             var logBucket = new LogBucket { Logs = new List<LogObject>() };
             var offsets = new List<long>();
 
-            if (!StorageStreamFactory.Exists(binPath))
+            if (!FileSystem.Exists(binPath))
                 return Array.Empty<byte>();
 
             SafeExecuteVoid(() =>
             {
-                using var fs = StorageStreamFactory.OpenReadShared(binPath);
+                using var fs = FileSystem.OpenReadShared(binPath);
                 if (fs == null) return;
                 using var br = new BinaryReader(fs);
 
@@ -182,7 +182,7 @@ namespace CassandraMigrationProcessor.Persistence
                     var folder = Path.Combine(_storagePath, "migrationlogs");
                     var binPath = Path.Combine(folder, $"{id}.bin");
 
-                    if (StorageStreamFactory.Exists(binPath))
+                    if (FileSystem.Exists(binPath))
                     {
                         var logBucket = ParseLogBinFile(binPath);
                         if (logBucket.Logs == null || logBucket.Logs.Count == 0)
@@ -216,9 +216,9 @@ namespace CassandraMigrationProcessor.Persistence
                 var folder = Path.Combine(_storagePath!, "migrationlogs");
                 var binPath = Path.Combine(folder, $"{jobId}.bin");
 
-                if (StorageStreamFactory.Exists(binPath))
+                if (FileSystem.Exists(binPath))
                 {
-                    StorageStreamFactory.DeleteIfExists(binPath);
+                    FileSystem.DeleteIfExists(binPath);
                     return 1L;
                 }
                 else
@@ -232,7 +232,7 @@ namespace CassandraMigrationProcessor.Persistence
         {
             backupFileName = CreateFileCopyWithTimestamp(currentLogFilePath);
 
-            StorageStreamFactory.DeleteIfExists(currentLogFilePath);
+            FileSystem.DeleteIfExists(currentLogFilePath);
 
             var logBucket = new LogBucket();
             logBucket.Logs ??= new List<LogObject>();
@@ -251,9 +251,9 @@ namespace CassandraMigrationProcessor.Persistence
 
             try
             {
-                StorageStreamFactory.EnsureDirectoryExists(folder);
+                FileSystem.EnsureDirectoryExists(folder);
 
-                using var fs = StorageStreamFactory.OpenAppend(binPath);
+                using var fs = FileSystem.OpenAppend(binPath);
                 using var bw = new BinaryWriter(fs);
 
                 foreach (var MigrationLog in logs)
@@ -289,12 +289,12 @@ namespace CassandraMigrationProcessor.Persistence
             var logBucket = new LogBucket { Logs = new List<LogObject>() };
             var offsets = new List<long>();
 
-            if (!StorageStreamFactory.Exists(binPath))
+            if (!FileSystem.Exists(binPath))
                 return logBucket;
 
             SafeExecuteVoid(() =>
             {
-                using var fs = StorageStreamFactory.OpenReadShared(binPath);
+                using var fs = FileSystem.OpenReadShared(binPath);
                 if (fs == null) return;
                 using var br = new BinaryReader(fs);
 
@@ -402,7 +402,7 @@ namespace CassandraMigrationProcessor.Persistence
             if (string.IsNullOrEmpty(sourceFilePath))
                 throw new ArgumentException("Source file path cannot be null or empty.", nameof(sourceFilePath));
 
-            if (!StorageStreamFactory.Exists(sourceFilePath))
+            if (!FileSystem.Exists(sourceFilePath))
                 throw new FileNotFoundException("Source file not found.", sourceFilePath);
 
             string directory = Path.GetDirectoryName(sourceFilePath) ?? string.Empty;
@@ -412,9 +412,9 @@ namespace CassandraMigrationProcessor.Persistence
             string newFileName = $"{fileNameWithoutExtension}_{timestamp}{extension}";
             string newFilePath = Path.Combine(directory, newFileName);
 
-            if (!StorageStreamFactory.Exists(newFilePath))
+            if (!FileSystem.Exists(newFilePath))
             {
-                StorageStreamFactory.CopyFile(sourceFilePath, newFilePath);
+                FileSystem.CopyFile(sourceFilePath, newFilePath);
             }
 
             return newFileName;

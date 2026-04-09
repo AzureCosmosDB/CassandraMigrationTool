@@ -1,5 +1,6 @@
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
+using CassandraMigrationProcessor.Infrastructure;
 using System;
 using System.Collections.Generic;
 using System.IO;

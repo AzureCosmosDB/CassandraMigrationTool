@@ -1,7 +1,7 @@
 using System.Collections.Concurrent;
 using CassandraMigrationProcessor;
 using CassandraMigrationProcessor.Context;
-using CassandraMigrationProcessor.Helpers.JobManagement;
+using CassandraMigrationProcessor.Context;
 using CassandraMigrationProcessor.Models;
 using CassandraMigrationProcessor.Persistence;
 

@@ -3,7 +3,7 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
-using CassandraMigrationProcessor.Helpers;
+using CassandraMigrationProcessor.Infrastructure;
 using CassandraMigrationProcessor.Models;
 namespace CassandraMigrationProcessor.Context
 {

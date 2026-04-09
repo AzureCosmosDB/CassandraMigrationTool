@@ -8,6 +8,6 @@ namespace CassandraMigrationProcessor.Models
         double InitialPercent,
         double ContributionFactor,
         long TotalRowCount,
-        ProcessorContext Context,
+        TableContext Context,
         List<string> FeedRanges);
 }

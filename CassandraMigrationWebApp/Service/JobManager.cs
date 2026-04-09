@@ -4,9 +4,9 @@ using System.IO;
 using System.Linq;
 using System.Threading;
 using CassandraMigrationProcessor;
-using CassandraMigrationProcessor.Helpers;
+using CassandraMigrationProcessor.Infrastructure;
 using CassandraMigrationProcessor.Models;
-using CassandraMigrationProcessor.Workers;
+using CassandraMigrationProcessor.Pipeline;
 using CassandraMigrationProcessor.Context;
 
 namespace CassandraMigrationWebApp.Service
@@ -108,7 +108,7 @@ namespace CassandraMigrationWebApp.Service
                 _ctx.Store.Delete($"{Path.Combine(JobStore.JobsFolder, jobId)}");
                 _ctx.Store.DeleteLogs(jobId);
 
-                string dumpPath = Path.Combine(WorkingFolderResolver.GetWorkingFolder(), "cassandradump", jobId);
+                string dumpPath = Path.Combine(DataDirectoryResolver.GetWorkingFolder(), "cassandradump", jobId);
                 if (Directory.Exists(dumpPath))
                     Directory.Delete(dumpPath, true);
             });
@@ -353,10 +353,10 @@ namespace CassandraMigrationWebApp.Service
                     // Connect to source and list all tables in this keyspace
                     try
                     {
-                        using (var session = CassandraMigrationProcessor.Helpers.Cassandra.CassandraClientFactory
+                        using (var session = CassandraMigrationProcessor.CassandraDriver.CassandraClientFactory
                             .CreateSourceSession(_log, job, keyspace))
                         {
-                            var tables = CassandraMigrationProcessor.Helpers.Cassandra.CassandraQueries
+                            var tables = CassandraMigrationProcessor.CassandraDriver.CassandraQueries
                                 .ListTables(session, keyspace);
                             foreach (var tableName in tables)
                             {
@@ -377,7 +377,7 @@ namespace CassandraMigrationWebApp.Service
                                     }
                                     catch (Exception vex)
                                     {
-                                        if (CassandraMigrationProcessor.Helpers.ExceptionClassifier.IsThrottle(vex) && att < 10)
+                                        if (CassandraMigrationProcessor.Infrastructure.ExceptionClassifier.IsThrottle(vex) && att < 10)
                                         {
                                             int delaySec = Math.Min(att * 3, 30);
                                             Thread.Sleep(delaySec * 1000);

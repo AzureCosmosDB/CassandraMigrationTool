@@ -1,6 +1,6 @@
 using CassandraMigrationProcessor;
 using CassandraMigrationProcessor.Models;
-using CassandraMigrationProcessor.Helpers;
+using CassandraMigrationProcessor.Infrastructure;
 using CassandraMigrationProcessor.Persistence;
 using System.Security.Cryptography;
 using System.Text;
@@ -18,7 +18,7 @@ namespace CassandraMigrationWebApp.Service
 
         public PasswordManager()
         {
-            var workingFolder = WorkingFolderResolver.GetWorkingFolder();
+            var workingFolder = DataDirectoryResolver.GetWorkingFolder();
 
             if (!Directory.Exists(workingFolder))
             {
@@ -67,7 +67,7 @@ namespace CassandraMigrationWebApp.Service
 
         public Task<string?> GetStoredPasswordAsync()
         {
-            if (!StorageStreamFactory.Exists(_passwordFilePath))
+            if (!FileSystem.Exists(_passwordFilePath))
             {
                 return Task.FromResult<string?>(null);
             }
@@ -88,7 +88,7 @@ namespace CassandraMigrationWebApp.Service
 
         public Task<bool> IsPasswordSetAsync()
         {
-            return Task.FromResult(StorageStreamFactory.Exists(_passwordFilePath));
+            return Task.FromResult(FileSystem.Exists(_passwordFilePath));
         }
 
         public Task SetPasswordAsync(string newPassword)

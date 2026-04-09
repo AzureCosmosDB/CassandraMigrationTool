@@ -1,7 +1,7 @@
 using Microsoft.Extensions.Configuration;
 using Newtonsoft.Json;
-using CassandraMigrationProcessor.Helpers;
-using CassandraMigrationProcessor.Helpers.JobManagement;
+using CassandraMigrationProcessor.Infrastructure;
+using CassandraMigrationProcessor.Context;
 using CassandraMigrationProcessor.Persistence;
 using System;
 using System.Collections.Concurrent;
@@ -161,7 +161,7 @@ namespace CassandraMigrationProcessor.Context
             Store = new DiskPersistence();
             var localPath =
                 string.IsNullOrEmpty(stateStoreCSorPath)
-                ? WorkingFolderResolver.GetWorkingFolder()
+                ? DataDirectoryResolver.GetWorkingFolder()
                 : stateStoreCSorPath;
             Store.Initialize(localPath, appId ?? string.Empty);
 

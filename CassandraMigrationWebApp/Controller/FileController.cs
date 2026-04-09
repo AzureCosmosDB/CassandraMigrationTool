@@ -1,6 +1,6 @@
 using Microsoft.AspNetCore.Mvc;
 using CassandraMigrationProcessor;
-using CassandraMigrationProcessor.Helpers;
+using CassandraMigrationProcessor.Infrastructure;
 using CassandraMigrationProcessor.Context;
 using CassandraMigrationWebApp.Service;
 using System.Text;
