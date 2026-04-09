@@ -62,11 +62,11 @@ namespace CassandraMigrationProcessor.Processors
 
             if (_targetSession == null && !_job.IsSimulatedRun)
             {
-                _targetSession = CassandraClientFactory.CreateTargetSession(_log, _job, string.Empty);
-                await SchemaManager.EnsureKeyspaceExistsAsync(_targetSession, context.TargetKeyspaceName);
+                var target = EnsureTargetSession();
+                await SchemaManager.EnsureKeyspaceExistsAsync(target, context.TargetKeyspaceName);
             }
 
-            var feedRanges = await CassandraHelper.GetFeedRangesAsync(_sourceSession!, context.KeyspaceName,
+            var feedRanges = await CassandraHelper.GetFeedRangesAsync(context.SourceSession, context.KeyspaceName,
                 context.TableName);
 
             _log.WriteLine($"{context.KeyspaceName}.{context.TableName}: " +

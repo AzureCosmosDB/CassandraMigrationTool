@@ -107,9 +107,10 @@ namespace CassandraMigrationProcessor.Processors
             if (partitions == null)
                 return TaskResult.Success;
 
-            // ── Stage 2: Schema sync ──
+            // ── Stage 2: Schema sync (uses metadata sessions, not per-worker sessions) ──
+            var targetSession = EnsureTargetSession();
             var columns = await SchemaManager.SyncSchemaAsync(
-                _sourceSession!, _targetSession!,
+                processorContext.SourceSession, targetSession,
                 processorContext.KeyspaceName, processorContext.TableName,
                 processorContext.TargetKeyspaceName, processorContext.TargetTableName);
             if (columns.Count == 0)

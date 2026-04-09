@@ -17,7 +17,7 @@ namespace CassandraMigrationProcessor.Processors
     /// </summary>
     public abstract class MigrationProcessor : IDisposable
     {
-        protected ISession? _sourceSession;
+        protected readonly ISession _sourceSession;
         protected ISession? _targetSession;
         protected MigrationSettings _config;
         protected CancellationTokenSource _cancellation;
@@ -35,11 +35,21 @@ namespace CassandraMigrationProcessor.Processors
         {
             _log = MigrationLog;
             _sourceSession = sourceSession;
-            _targetSession = null;
             _config = config;
             _job = job;
             _cancellation = new CancellationTokenSource();
             _worker = worker;
+        }
+
+        /// <summary>
+        /// Lazily creates the target session. Returns the
+        /// existing one if already created.
+        /// </summary>
+        protected ISession EnsureTargetSession()
+        {
+            if (_targetSession == null)
+                _targetSession = CassandraClientFactory.CreateTargetSession(_log, _job, string.Empty);
+            return _targetSession;
         }
 
         /// <summary>
@@ -98,7 +108,7 @@ namespace CassandraMigrationProcessor.Processors
                 TableName = tableName,
                 TargetKeyspaceName = targetKeyspaceName,
                 TargetTableName = targetTableName,
-                SourceSession = _sourceSession!,
+                SourceSession = _sourceSession,
             };
 
             return context;
@@ -118,12 +128,11 @@ namespace CassandraMigrationProcessor.Processors
             {
                 if (_targetSession == null)
                 {
-                    _targetSession = CassandraClientFactory.CreateTargetSession(_log, _job, string.Empty);
-                    SchemaManager.EnsureKeyspaceExists(_targetSession, mu.GetEffectiveTargetKeyspaceName());
+                    var target = EnsureTargetSession();
+                    SchemaManager.EnsureKeyspaceExists(target, mu.GetEffectiveTargetKeyspaceName());
                 }
 
-                if (_changeFeedProcessor == null
-                    && _sourceSession != null)
+                if (_changeFeedProcessor == null)
                 {
                     var freshSourceSession = CassandraClientFactory.CreateSourceSession(_log, _job, mu.KeyspaceName);
                     _changeFeedProcessor = new ChangeFeedProcessor(_log, freshSourceSession, _targetSession!,
@@ -152,14 +161,10 @@ namespace CassandraMigrationProcessor.Processors
 
             IsChangeFeedRunning = true;
 
-            if (_targetSession == null
-                && !_job.IsSimulatedRun)
-            {
-                _targetSession = CassandraClientFactory.CreateTargetSession(_log, _job, string.Empty);
-            }
+            if (_targetSession == null && !_job.IsSimulatedRun)
+                EnsureTargetSession();
 
-            if (_changeFeedProcessor == null
-                && _sourceSession != null)
+            if (_changeFeedProcessor == null)
             {
                 var freshSourceSession = CassandraClientFactory.CreateSourceSession(_log, _job, string.Empty);
                 _changeFeedProcessor = new ChangeFeedProcessor(_log, freshSourceSession, _targetSession!,
