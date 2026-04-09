@@ -21,9 +21,8 @@ Tool.
 7. [Step 4 — Monitor Progress](#step-4--monitor-progress)
 8. [Step 5 — Cutover](#step-5--cutover)
 9. [Supported Data Types](#supported-data-types)
-10. [Full Fidelity Change Feed (FFCF)](#full-fidelity-change-feed-ffcf)
-11. [Troubleshooting](#troubleshooting)
-12. [FAQ](#faq)
+10. [Troubleshooting](#troubleshooting)
+11. [FAQ](#faq)
 
 ---
 
@@ -36,7 +35,7 @@ three phases:
 |-------|-------------|----------|
 | **Schema Copy** | Reads source keyspace schema (tables, columns, primary keys, clustering order) and recreates it on the target | None |
 | **Bulk Data Copy** | Copies all existing rows from source to target in parallel batches | None |
-| **Change Feed Replay** | Continuously reads Cosmos DB Full Fidelity Change Feed (FFCF) and replays inserts, updates, and deletes to the target | None |
+| **Change Feed Replay** | Continuously reads Cosmos DB change feed and replays inserts and updates to the target | None |
 
 When you are ready to switch your application to the new
 cluster, you perform a brief **cutover** (seconds to
@@ -51,25 +50,6 @@ application.
 ### Source (Cosmos DB Cassandra API)
 
 - An Azure Cosmos DB account with Cassandra API
-- **Full Fidelity Change Feed (FFCF)** must be enabled
-  on tables you want to migrate with minimal downtime.
-  The retention property must be set at **CREATE TABLE**
-  time:
-
-  ```cql
-  CREATE TABLE my_table (
-      ...
-  ) WITH cosmosdb_fullfidelity_changefeed_retention_minutes = 1440;
-  ```
-
-  > ⚠️ **Important**: `ALTER TABLE` to add retention will
-  > appear to succeed but does **not** enable FFCF. If
-  > your tables were not created with this property, you
-  > must recreate them (see the
-  > [FFCF section](#full-fidelity-change-feed-ffcf)).
-  > Tables without FFCF will still get a full bulk copy
-  > but cannot do live change replay.
-
 - **Authentication**: Either local auth (username/password)
   or Azure AD (AAD) authentication. AAD is recommended
   for production use.
@@ -261,19 +241,12 @@ The migration executes automatically in this order:
 - Automatically handles all data types including
   collections, blobs, and UUIDs
 
-### Phase 3: Change Feed Replay (FFCF tables only)
-- Starts polling the Cosmos DB Full Fidelity Change Feed
+### Phase 3: Change Feed Replay
+- Starts polling the Cosmos DB change feed
 - Replays changes to the target:
   - **Inserts** → INSERT on target
   - **Updates** → INSERT (upsert) on target
-  - **Row deletes** → DELETE on target
 - Continues running until you trigger cutover
-
-> **Note**: Tables without FFCF enabled will get bulk copy
-> only. Any writes to non-FFCF tables during migration
-> will NOT be captured. For zero data loss, ensure all
-> actively written tables have FFCF enabled before
-> starting.
 
 ---
 
@@ -329,9 +302,8 @@ When you're ready to switch to the target cluster:
 
 | Scenario | Typical Downtime |
 |----------|-----------------|
-| Low-traffic app with FFCF tables | **< 30 seconds** |
-| High-traffic app with FFCF tables | **1–5 minutes** |
-| Tables without FFCF | Duration of bulk copy (no live sync) |
+| Low-traffic app with change feed | **< 30 seconds** |
+| High-traffic app with change feed | **1–5 minutes** |
 
 ---
 
@@ -372,80 +344,6 @@ When you're ready to switch to the target cluster:
 | Static columns | ✅ |
 | Empty tables | ✅ |
 | Primary-key-only tables | ✅ |
-
----
-
-## Full Fidelity Change Feed (FFCF)
-
-### What is FFCF?
-
-FFCF is a Cosmos DB Cassandra API feature that provides
-a complete, ordered stream of all mutations to a table.
-Unlike regular change feed (which only returns
-last-write-wins snapshots and does not capture deletes),
-FFCF captures **every individual mutation** — inserts,
-updates, column-level deletes, and row deletes — as
-separate events. This enables the migration tool to
-replay all changes for zero data loss.
-
-| Feature | Regular Change Feed | FFCF |
-|---------|-------------------|------|
-| Inserts | ✅ Last image only | ✅ Each insert |
-| Updates | ❌ Intermediate lost | ✅ Each update |
-| Deletes | ❌ Not captured | ✅ Row + column deletes |
-| Ordering | Last-write-wins | Per-mutation events |
-
-### How to Enable FFCF
-
-The retention property must be set at `CREATE TABLE` time:
-
-```cql
-CREATE TABLE my_keyspace.my_table (
-    id uuid PRIMARY KEY,
-    name text,
-    data blob
-) WITH cosmosdb_fullfidelity_changefeed_retention_minutes = 1440;
-```
-
-> ⚠️ `ALTER TABLE ... WITH
-> cosmosdb_fullfidelity_changefeed_retention_minutes`
-> will appear to succeed but does **not** actually enable
-> FFCF. You must create the table with this property.
-
-Set the retention value to cover the full expected
-migration duration (see table below).
-
-### If Your Tables Were Not Created with FFCF
-
-If your existing tables don't have FFCF enabled, you
-need to recreate them:
-
-1. Create a new table with the same schema + FFCF:
-   ```cql
-   CREATE TABLE my_keyspace.my_table_v2 (
-       ... same columns and keys ...
-   ) WITH cosmosdb_fullfidelity_changefeed_retention_minutes = 1440;
-   ```
-2. Copy data from the old table to the new one
-3. Update your application to use the new table name
-4. Then start the migration
-
-Alternatively, if downtime is acceptable, the tool will
-perform a full bulk copy without live change replay.
-Stop all writes to the source before starting migration
-to avoid data loss.
-
-### Recommended Retention Settings
-
-| Migration Size | Retention (minutes) | Duration |
-|---------------|---------------------|----------|
-| < 1 GB | 1440 | 24 hours |
-| 1–10 GB | 2880 | 48 hours |
-| 10–100 GB | 10080 | 7 days |
-| > 100 GB | 20160 | 14 days |
-
-Set retention to at least 2× your expected migration
-duration to provide safety margin.
 
 ---
 
@@ -490,14 +388,6 @@ duration to provide safety margin.
   throughput (429 throttling), network timeout
 - You can **resume** a failed migration — it picks up
   where it left off
-
-**FFCF not capturing changes**
-- Verify the table was **created** with the retention
-  property: `WITH
-  cosmosdb_fullfidelity_changefeed_retention_minutes`
-- `ALTER TABLE` to add retention does **not** enable
-  FFCF — the table must be recreated
-- Check that the retention period hasn't expired
 
 ### Performance
 
@@ -551,30 +441,8 @@ during the active migration session. They are never
 written to disk or persisted in job state files. When
 using AAD authentication, no passwords are needed at all.
 
-**Q: What if some tables have FFCF and some don't?**
-A: The tool handles both. FFCF-enabled tables get live
-change replay (minimal downtime). Non-FFCF tables get
-bulk copy only — for these, stop writes before starting
-migration to avoid data loss.
-
-**Q: Can I enable FFCF on existing tables?**
-A: No. The retention property must be set at `CREATE
-TABLE` time. `ALTER TABLE` appears to succeed but does
-not actually enable FFCF. You need to recreate the table
-with `cosmosdb_fullfidelity_changefeed_retention_minutes`
-and copy the data over.
-
-**Q: What's the difference between regular change feed
-and FFCF?**
-A: Regular change feed returns only the final state of a
-row (last-write-wins) and does not capture deletes. FFCF
-returns every individual mutation as a separate event,
-including inserts, updates, column deletes, and row
-deletes. The migration tool requires FFCF to ensure zero
-data loss during online migration.
-
 ---
 
-*Document version: 1.1 — March 2026*
-*Updated: FFCF can be enabled on existing tables via
-ALTER TABLE with retention policy only.*
+*Document version: 1.2 — March 2026*
+*Updated: Uses standard Cosmos DB Cassandra change feed
+(`COSMOS_CHANGEFEED_START_TIME()`).*
