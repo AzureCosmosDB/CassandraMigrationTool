@@ -58,7 +58,7 @@ namespace CassandraMigrationProcessor.DataTransfer
                         TaskResult result = await new RetryHelper().ExecuteTask(
                                 () => ProcessChunkAsync(migrationUnit, chunkIndex, context, initialPercent,
                                     contributionFactor),
-                                (ex, attemptCount, currentBackoff) => CopyProcess_ExceptionHandler(ex, attemptCount,
+                                (ex, attemptCount, currentBackoff) => HandleChunkException(ex, attemptCount,
                                         "Chunk processor",
                                         context.KeyspaceName,
                                         context.TableName,
@@ -112,7 +112,7 @@ namespace CassandraMigrationProcessor.DataTransfer
                     MigrationJobContext.SaveMigrationUnit(migrationUnit, true);
 
                     // Only remove from cache if offline — online mode
-                    // needs the MU in cache for ChangeFeedProcessor
+                    // needs the MU in cache for ReplayProcessor
                     if (!MigrationUtilities.IsOnline(_job))
                     {
                         MigrationJobContext.MigrationUnitsCache.RemoveMigrationUnit(migrationUnit.Id);
