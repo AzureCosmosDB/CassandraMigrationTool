@@ -4,44 +4,118 @@ using CassandraMigrationProcessor.Infrastructure;
 using CassandraMigrationProcessor.CassandraDriver;
 using CassandraMigrationProcessor.Models;
 using System;
-using System.Collections.Concurrent;
 using System.Collections.Generic;
-using System.Diagnostics;
 using System.Linq;
-using System.Threading;
-using System.Threading.Channels;
 using System.Threading.Tasks;
 
 namespace CassandraMigrationProcessor.DataTransfer
 {
     /// <summary>
-    /// Copies rows from source Cassandra (Cosmos DB) to
-    /// target Cassandra (OSS) using feed-range partitioned workers.
-    ///
-    ///  Partition Pool (Channel) ──► Worker (read + write)
-    ///         ▲                         │
-    ///         └──── recycle ◄────────────┘ (if more pages)
+    /// Orchestrates bulk copy for each table: counts rows,
+    /// discovers feed ranges, delegates pipeline execution
+    /// to <see cref="BulkCopyRunner"/>.
     /// </summary>
-    internal partial class BulkCopyEngine : MigrationProcessor
+    internal class BulkCopyEngine : MigrationProcessor
     {
-        private static bool IsFatalError(Exception ex) => ExceptionClassifier.IsFatal(ex);
-
         public BulkCopyEngine(MigrationLog log, ISession sourceSession, MigrationSettings config, MigrationJob job,
             MigrationWorker? migrationWorker = null)
             : base(log, sourceSession, config, job, migrationWorker)
         {
         }
 
-        private Task<TaskResult> HandleChunkException(Exception ex, int attemptCount, string processName,
-            string keyspace, string table, int chunkIndex, int currentBackoff)
+        public override async Task<TaskResult> StartProcessAsync(string migrationUnitId)
         {
-            if (ex is OperationCanceledException) return Task.FromResult(TaskResult.Abort);
-            _log.WriteLine($"{processName} attempt {attemptCount} for {keyspace}.{table}[{chunkIndex}] failed. Details:{ex}. Retrying in {currentBackoff}s...",
-                LogType.Warning);
-            return Task.FromResult(TaskResult.Retry);
-        }
+            var migrationUnit = MigrationJobContext.GetMigrationUnit(migrationUnitId);
+            migrationUnit.ParentJob = _job;
+            ProcessRunning = true;
 
-        // ── Chunk processing: count rows, discover feed ranges, invoke pipeline ──
+            var context = SetTableContext(migrationUnit);
+
+            if (migrationUnit.CopyComplete)
+            {
+                _log.WriteLine($"Copy for {context.KeyspaceName}.{context.TableName} already completed.", LogType.Debug);
+                return TaskResult.Success;
+            }
+
+            _log.WriteLine($"{context.KeyspaceName}.{context.TableName} Copy started", LogType.Info);
+
+            if (!migrationUnit.CopyComplete && !_cancellation.Token.IsCancellationRequested)
+            {
+                if (migrationUnit.MigrationChunks == null || migrationUnit.MigrationChunks.Count == 0)
+                    migrationUnit.MigrationChunks = new List<MigrationChunk> { new MigrationChunk() };
+
+                for (int chunkIndex = 0; chunkIndex < migrationUnit.MigrationChunks.Count; chunkIndex++)
+                {
+                    if (MigrationJobContext.ControlledPauseRequested)
+                    {
+                        _log.WriteLine($"Controlled pause before chunk {chunkIndex}", LogType.Info);
+                        break;
+                    }
+
+                    _cancellation.Token.ThrowIfCancellationRequested();
+
+                    double initialPercent = ((double)100 / migrationUnit.MigrationChunks.Count) * chunkIndex;
+                    double contributionFactor = 1.0 / migrationUnit.MigrationChunks.Count;
+
+                    if (migrationUnit.MigrationChunks[chunkIndex].IsDownloaded != true)
+                    {
+                        TaskResult result = await new RetryHelper().ExecuteTask(
+                                () => ProcessChunkAsync(migrationUnit, chunkIndex, context, initialPercent, contributionFactor),
+                                (ex, _, _) => HandleChunkException(ex),
+                                _log, ct: _cancellation.Token);
+
+                        if (result == TaskResult.Canceled)
+                        {
+                            _log.WriteLine($"Copy paused for {context.KeyspaceName}.{context.TableName}[{chunkIndex}].", LogType.Info);
+                            StopProcessing(isPause: true);
+                            return TaskResult.Canceled;
+                        }
+
+                        if (result == TaskResult.Abort || result == TaskResult.FailedAfterRetries)
+                        {
+                            _log.WriteLine($"Copy failed for {context.KeyspaceName}.{context.TableName}[{chunkIndex}] after retries.", LogType.Error);
+                            StopProcessing();
+                            return result;
+                        }
+                    }
+                    else
+                    {
+                        context.DownloadCount += migrationUnit.MigrationChunks[chunkIndex].SourceQueryRowCount;
+                    }
+                }
+
+                if (MigrationJobContext.ControlledPauseRequested)
+                {
+                    _log.WriteLine("Controlled pause - exiting", LogType.Debug);
+                    StopProcessing(isPause: true);
+                    return TaskResult.Success;
+                }
+
+                migrationUnit.SourceCountDuringCopy = migrationUnit.MigrationChunks.Sum(c => c.SourceQueryRowCount);
+                long failed = migrationUnit.MigrationChunks.Sum(c => c.TargetFailedRowCount);
+
+                if (failed <= 0 && migrationUnit.MigrationChunks.All(c => c.IsDownloaded == true))
+                {
+                    migrationUnit.BulkCopyEndedOn = DateTime.UtcNow;
+                    migrationUnit.CopyPercent = 100;
+                    migrationUnit.CopyComplete = true;
+                    migrationUnit.UpdateParentJob();
+
+                    AddTableToChangeFeedQueue(migrationUnit);
+                    MigrationJobContext.SaveMigrationUnit(migrationUnit, true);
+
+                    if (!MigrationUtilities.IsOnline(_job))
+                        MigrationJobContext.MigrationUnitsCache.RemoveMigrationUnit(migrationUnit.Id);
+                }
+                else
+                {
+                    _log.WriteLine($"Copy for {context.KeyspaceName}.{context.TableName} had failures.", LogType.Error);
+                    return TaskResult.Retry;
+                }
+            }
+
+            return TaskResult.Success;
+        }
 
         private async Task<TaskResult> ProcessChunkAsync(MigrationUnit migrationUnit, int chunkIndex,
             TableContext context, double initialPercent, double contributionFactor)
@@ -77,206 +151,35 @@ namespace CassandraMigrationProcessor.DataTransfer
                 return TaskResult.Success;
             }
 
-            var result = await CopyWithFeedRangesAsync(new PipelineRequest(migrationUnit, chunkIndex, initialPercent,
+            var runner = new BulkCopyRunner(_log, _job, _config, _cancellation, EnsureTargetSession);
+            var result = await runner.RunAsync(new PipelineRequest(migrationUnit, chunkIndex, initialPercent,
                 contributionFactor, rowCount, context, feedRanges));
 
             if (result == TaskResult.Success)
             {
                 if (!_cancellation.Token.IsCancellationRequested
                     && !MigrationJobContext.ControlledPauseRequested
-                    && migrationUnit.MigrationChunks[chunkIndex].Segments
-                        .All(seg => seg.IsProcessed == true))
+                    && migrationUnit.MigrationChunks[chunkIndex].Segments.All(seg => seg.IsProcessed == true))
                 {
                     migrationUnit.MigrationChunks[chunkIndex].IsDownloaded = true;
                     migrationUnit.MigrationChunks[chunkIndex].IsUploaded = true;
                 }
                 MigrationJobContext.SaveMigrationUnit(migrationUnit, false);
-                return TaskResult.Success;
             }
             else if (result == TaskResult.Canceled)
             {
                 _log.WriteLine($"Copy paused for {context.KeyspaceName}.{context.TableName}[{chunkIndex}].", LogType.Info);
-                return TaskResult.Canceled;
             }
             else
             {
                 _log.WriteLine($"Copy failed for {context.KeyspaceName}.{context.TableName}[{chunkIndex}].", LogType.Error);
-                return TaskResult.Retry;
             }
+            return result;
         }
 
-        // ── Partition seeding ──
-        private record PartitionStageResult(
-            Channel<Partition> Pool,
-            HashSet<string> Completed,
-            Dictionary<string, string?> Checkpoints,
-            int PendingCount);
-
-        private async Task<PartitionStageResult?> SeedPartitionsAsync(
-            MigrationUnit migrationUnit, List<string> feedRanges,
-            string keyspace, string table)
+        private static Task<TaskResult> HandleChunkException(Exception ex)
         {
-            var completed = migrationUnit.CompletedCopyFeedRanges;
-            var checkpoints = migrationUnit.CopyFeedRangeCheckpoints;
-
-            List<string> pendingRanges;
-            lock (checkpoints)
-            {
-                pendingRanges = feedRanges
-                    .Where(r => !completed.Contains(r))
-                    .ToList();
-            }
-
-            if (pendingRanges.Count == 0)
-            {
-                _log.WriteLine($"All {feedRanges.Count} ranges already completed for {keyspace}.{table}", LogType.Info);
-                return null;
-            }
-
-            _log.WriteLine($"Pipeline copy: {pendingRanges.Count} ranges ({completed.Count} already done) for {keyspace}.{table}", LogType.Info);
-
-            var pool = Channel.CreateBounded<Partition>(new BoundedChannelOptions(pendingRanges.Count)
-                { FullMode = BoundedChannelFullMode.Wait });
-
-            int resumedCount = 0;
-            foreach (var range in pendingRanges)
-            {
-                byte[]? pagingState = null;
-                if (checkpoints.TryGetValue(range, out var base64Token)
-                    && base64Token != null)
-                {
-                    pagingState = Convert.FromBase64String(base64Token);
-                    resumedCount++;
-                }
-                await pool.Writer.WriteAsync(new Partition(range, pagingState));
-            }
-            if (resumedCount > 0)
-                _log.WriteLine($"Resuming {resumedCount}/{pendingRanges.Count} ranges from checkpoint", LogType.Info);
-
-            return new PartitionStageResult(pool, completed, checkpoints, pendingRanges.Count);
-        }
-
-        private int ResolveWorkerCount()
-        {
-            if (_job.MaxFeedRangeParallelism > 0)
-                return _job.MaxFeedRangeParallelism;
-            int totalBudget = Environment.ProcessorCount * MigrationDefaults.WorkerMultiplier;
-            int parallelTables = Math.Max(1, _job.ParallelThreads);
-            return Math.Max(MigrationDefaults.MinWorkers, totalBudget / parallelTables);
-        }
-
-        private int ResolvePageSize()
-        {
-            int jobPageSize = _job?.PageSize ?? 0;
-            if (jobPageSize > 0) return jobPageSize;
-            if (_config.CqlCopyPageSize > 0) return _config.CqlCopyPageSize;
-            return MigrationDefaults.DefaultPageSize;
-        }
-
-        private async Task<TaskResult> CopyWithFeedRangesAsync(PipelineRequest request)
-        {
-            var mu = request.MigrationUnit;
-            var ctx0 = request.Context;
-            int workerCount = ResolveWorkerCount();
-            int pageSize = ResolvePageSize();
-
-            // ── Stage 1: Partition seeding ──
-            var partitions = await SeedPartitionsAsync(
-                mu, request.FeedRanges, ctx0.KeyspaceName, ctx0.TableName);
-            if (partitions == null)
-                return TaskResult.Success;
-
-            // ── Stage 2: Schema sync ──
-            var columns = await SchemaManager.SyncSchemaAsync(
-                ctx0.SourceSession, EnsureTargetSession(),
-                ctx0.KeyspaceName, ctx0.TableName,
-                ctx0.TargetKeyspaceName, ctx0.TargetTableName);
-            if (columns.Count == 0)
-            {
-                _log.WriteLine($"No columns for {ctx0.KeyspaceName}.{ctx0.TableName}", LogType.Error);
-                return TaskResult.Abort;
-            }
-
-            long priorCopied = mu.CopyRowsCopied;
-            var tracker = new CopyProgressTracker(_log, ctx0.KeyspaceName, ctx0.TableName,
-                workerCount, partitions.PendingCount, priorCopied,
-                mu, request.ChunkIndex,
-                request.InitialPercent, request.ContributionFactor, request.TotalRowCount);
-
-            var stopwatch = Stopwatch.StartNew();
-
-            // ── Stage 3: Worker execution ──
-            var ctx = new PipelineContext(
-                partitions.Pool,
-                new WorkerConfig(_job.SourceConnection, _job.TargetConnection, columns, ctx0),
-                new RangeState(partitions.Completed, partitions.Checkpoints, request.FeedRanges),
-                new PipelineCounters(),
-                tracker);
-
-            _log.WriteLine($"Launching {workerCount} workers for {ctx0.KeyspaceName}.{ctx0.TableName} ({partitions.PendingCount} feed ranges, page size={pageSize})...", LogType.Info);
-            using var pool = new WorkerPool(_log, workerCount, _cancellation);
-            pool.Start(workerId => RunWorkerAsync(workerId, ctx, pageSize));
-            await pool.WaitForCompletionAsync();
-            ctx.PartitionPool.Writer.TryComplete();
-
-            // ── Finalization ──
-            return FinalizeResults(ctx, mu, request, priorCopied, stopwatch.Elapsed);
-        }
-
-        private TaskResult FinalizeResults(PipelineContext ctx, MigrationUnit mu,
-            PipelineRequest request, long priorCopied, TimeSpan elapsed)
-        {
-            var tracker = ctx.Tracker;
-            tracker.LogFinal();
-
-            long written = tracker.TotalCopied;
-            long failed = tracker.TotalFailed;
-            long read = tracker.TotalRead;
-            long sessionWritten = written - priorCopied;
-            double speed = elapsed.TotalSeconds > 0 ? sessionWritten / elapsed.TotalSeconds : 0;
-
-            int completedCount;
-            lock (ctx.Ranges.Checkpoints) { completedCount = ctx.Ranges.Completed.Count; }
-            _log.WriteLine($"Pipeline complete for {request.Context.KeyspaceName}.{request.Context.TableName}: " +
-                $"session={sessionWritten:N0} written, {failed:N0} failed | " +
-                $"cumulative={written:N0} | {completedCount}/{request.FeedRanges.Count} ranges | " +
-                $"{elapsed.TotalSeconds:F1}s ({speed:F0} rows/sec)", LogType.Info);
-
-            var chunk = mu.MigrationChunks[request.ChunkIndex];
-            chunk.SourceResultRowCount = written;
-            chunk.TargetInsertedRowCount = written;
-            chunk.TargetFailedRowCount = failed;
-            mu.CopyRowsCopied = written;
-            mu.ActualRowCount = Math.Max(mu.ActualRowCount, read);
-
-            bool allComplete;
-            lock (ctx.Ranges.Checkpoints)
-            {
-                allComplete = ctx.Ranges.Completed.Count >= request.FeedRanges.Count;
-            }
-            if (chunk.Segments.Count == 0)
-            {
-                chunk.Segments.Add(new Segment
-                {
-                    Id = "0",
-                    IsProcessed = allComplete,
-                    ResultDocCount = written
-                });
-            }
-            else if (allComplete)
-            {
-                foreach (var seg in chunk.Segments)
-                    seg.IsProcessed = true;
-            }
-            MigrationJobContext.SaveMigrationUnit(mu, true);
-
-            if (Volatile.Read(ref ctx.Counters.FatalErrorFlag) != 0)
-                return TaskResult.Abort;
-            if (ctx.Counters.WorkerErrors.Any(r => r == TaskResult.Abort))
-                return TaskResult.Abort;
-            if (ctx.Counters.WorkerErrors.Any(r => r == TaskResult.Canceled))
-                return TaskResult.Canceled;
-            return failed > 0 ? TaskResult.Retry : TaskResult.Success;
+            return Task.FromResult(ex is OperationCanceledException ? TaskResult.Abort : TaskResult.Retry);
         }
     }
 }
