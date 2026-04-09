@@ -4,7 +4,6 @@ using CassandraMigrationProcessor.Infrastructure;
 using CassandraMigrationProcessor.CassandraDriver;
 using CassandraMigrationProcessor.Models;
 using System;
-using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
@@ -16,11 +15,7 @@ namespace CassandraMigrationProcessor.DataTransfer
 {
     /// <summary>
     /// Executes the bulk copy pipeline for a single table:
-    /// seed partitions → sync schema → run workers → finalize.
-    ///
-    ///  Partition Pool (Channel) ──► Worker (read + write)
-    ///         ▲                         │
-    ///         └──── recycle ◄────────────┘ (if more pages)
+    /// seed partitions → sync schema → launch workers → finalize.
     /// </summary>
     internal class BulkCopyRunner
     {
@@ -39,8 +34,6 @@ namespace CassandraMigrationProcessor.DataTransfer
             _cancellation = cancellation;
             _ensureTargetSession = ensureTargetSession;
         }
-
-        // ── Public entry point ──
 
         public async Task<TaskResult> RunAsync(PipelineRequest request)
         {
@@ -83,12 +76,12 @@ namespace CassandraMigrationProcessor.DataTransfer
 
             _log.WriteLine($"Launching {workerCount} workers for {ctx0.KeyspaceName}.{ctx0.TableName} ({partitions.PendingCount} feed ranges, page size={pageSize})...", LogType.Info);
             using var pool = new WorkerPool(_log, workerCount, _cancellation);
-            pool.Start(workerId => RunWorkerAsync(workerId, ctx, pageSize));
+            pool.Start(workerId => new BulkCopyWorker(_log, _cancellation, workerId, pageSize).RunAsync(ctx));
             await pool.WaitForCompletionAsync();
             ctx.PartitionPool.Writer.TryComplete();
 
             // Stage 4: Finalize
-            return FinalizeResults(ctx, mu, request, priorCopied, stopwatch.Elapsed);
+            return Finalize(ctx, mu, request, priorCopied, stopwatch.Elapsed);
         }
 
         // ── Partition seeding ──
@@ -140,130 +133,7 @@ namespace CassandraMigrationProcessor.DataTransfer
             return new PartitionStageResult(pool, completed, checkpoints, pendingRanges.Count);
         }
 
-        // ── Worker loop ──
-
-        private async Task RunWorkerAsync(int workerId, PipelineContext ctx, int pageSize)
-        {
-            ctx.Tracker.WorkerStarted();
-            PageReader? reader = null;
-            PageWriter? writer = null;
-            try
-            {
-                reader = new PageReader(_log, ctx.Worker.SourceConnection, ctx.Worker.Context.KeyspaceName,
-                    ctx.Worker.Columns.Select(c => c.Name).ToList(), pageSize, workerId, _cancellation);
-                writer = new PageWriter(_log, ctx.Worker.TargetConnection, ctx.Worker.Columns,
-                    ctx.Worker.Context.TargetKeyspaceName, ctx.Worker.Context.TargetTableName, pageSize, workerId, _cancellation);
-
-                while (!_cancellation.Token.IsCancellationRequested && Volatile.Read(ref ctx.Counters.FatalErrorFlag) == 0)
-                {
-                    var partition = await TakeNextPartitionAsync(ctx);
-                    if (partition == null) break;
-
-                    try
-                    {
-                        if (!partition.IsExhausted)
-                        {
-                            var result = await reader.ReadAsync(partition, ctx);
-                            if (result == null)
-                            {
-                                _log.WriteLine($"[W{workerId}] FATAL: Read failed — failing job", LogType.Error);
-                                Interlocked.Exchange(ref ctx.Counters.FatalErrorFlag, 1);
-                                SafeCancel();
-                                break;
-                            }
-
-                            if (!result.IsLastPage)
-                                await ctx.PartitionPool.Writer.WriteAsync(partition, _cancellation.Token);
-
-                            await writer.WriteAsync(result.Rows, result.WorkChunk, ctx);
-                        }
-
-                        SavePartitionCheckpoint(partition, ctx);
-                        if (partition.IsExhausted) MarkRangeCompleted(partition, ctx);
-                    }
-                    catch (OperationCanceledException)
-                    {
-                        ctx.Counters.WorkerErrors.Add(TaskResult.Canceled);
-                        SavePartitionCheckpoint(partition, ctx);
-                        ctx.PartitionPool.Writer.TryComplete();
-                    }
-                    catch (Exception ex)
-                    {
-                        _log.WriteLine($"[W{workerId}] Error: {ex.GetType().Name}: {ex.Message}", LogType.Error);
-
-                        if (ExceptionClassifier.IsFatal(ex))
-                        {
-                            _log.WriteLine($"[W{workerId}] FATAL — failing job", LogType.Error);
-                            Interlocked.Exchange(ref ctx.Counters.FatalErrorFlag, 1);
-                            SafeCancel();
-                            ctx.Counters.WorkerErrors.Add(TaskResult.Abort);
-                        }
-                        else
-                        {
-                            ctx.Counters.WorkerErrors.Add(TaskResult.Retry);
-                        }
-
-                        SavePartitionCheckpoint(partition, ctx);
-                        ctx.Tracker.RangeCompleted(partition.FeedRange, TaskResult.Retry);
-                        ctx.PartitionPool.Writer.TryComplete();
-                    }
-                    finally
-                    {
-                        ctx.Tracker.UpdateMigrationUnit();
-                    }
-                }
-            }
-            finally
-            {
-                MigrationUtilities.SafeDispose(writer, "worker PageWriter");
-                MigrationUtilities.SafeDispose(reader, "worker PageReader");
-                ctx.Tracker.WorkerExited();
-            }
-        }
-
-        // ── Helpers ──
-
-        private void SafeCancel()
-        {
-            try { _cancellation.Cancel(); }
-            catch (Exception ex) { Console.Error.WriteLine($"[WARN] BulkCopyRunner cancel failed: {ex.Message}"); }
-        }
-
-        private static void SavePartitionCheckpoint(Partition partition, PipelineContext ctx)
-        {
-            lock (ctx.Ranges.Checkpoints)
-            {
-                var token = partition.GetResumeToken();
-                if (token != null)
-                    ctx.Ranges.Checkpoints[partition.FeedRange] = Convert.ToBase64String(token);
-                else if (partition.LastPagingState != null)
-                    ctx.Ranges.Checkpoints[partition.FeedRange] = Convert.ToBase64String(partition.LastPagingState);
-            }
-        }
-
-        private static void MarkRangeCompleted(Partition partition, PipelineContext ctx)
-        {
-            lock (ctx.Ranges.Checkpoints)
-            {
-                ctx.Ranges.Checkpoints.Remove(partition.FeedRange);
-                ctx.Ranges.Completed.Add(partition.FeedRange);
-            }
-            ctx.Tracker.RangeCompleted(partition.FeedRange, TaskResult.Success);
-            if (ctx.Ranges.Completed.Count >= ctx.Ranges.FeedRanges.Count)
-                ctx.PartitionPool.Writer.TryComplete();
-        }
-
-        private async Task<Partition?> TakeNextPartitionAsync(PipelineContext ctx)
-        {
-            try
-            {
-                if (await ctx.PartitionPool.Reader.WaitToReadAsync(_cancellation.Token))
-                    if (ctx.PartitionPool.Reader.TryRead(out var p))
-                        return p;
-            }
-            catch (OperationCanceledException) { }
-            return null;
-        }
+        // ── Config resolution ──
 
         private int ResolveWorkerCount()
         {
@@ -282,7 +152,9 @@ namespace CassandraMigrationProcessor.DataTransfer
             return MigrationDefaults.DefaultPageSize;
         }
 
-        private TaskResult FinalizeResults(PipelineContext ctx, MigrationUnit mu,
+        // ── Finalization ──
+
+        private TaskResult Finalize(PipelineContext ctx, MigrationUnit mu,
             PipelineRequest request, long priorCopied, TimeSpan elapsed)
         {
             var tracker = ctx.Tracker;
