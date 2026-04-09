@@ -20,32 +20,24 @@ namespace CassandraMigrationProcessor.Processors
         /// <summary>
         /// Unified worker pipeline with partition pool:
         ///
+        ///  Stage 1: SeedPartitions (detect ranges, restore checkpoints)
+        ///  Stage 2: Schema sync
+        ///  Stage 3: Worker execution
+        ///
         ///  Partition Pool (Channel) ──► Worker (read + write)
         ///         ▲                         │
         ///         └──── recycle ◄────────────┘ (if more pages)
-        ///
-        /// Each worker takes a partition, reads one page,
-        /// creates a WorkChunk, recycles the partition back
-        /// to the pool (so another worker can read the next
-        /// page), then writes rows and marks the chunk done.
         /// </summary>
-        private async Task<TaskResult> CopyWithFeedRangesAsync(PipelineRequest request)
+        private record PartitionStageResult(
+            Channel<Partition> Pool,
+            HashSet<string> Completed,
+            Dictionary<string, string?> Checkpoints,
+            int PendingCount);
+
+        private async Task<PartitionStageResult?> SeedPartitionsAsync(
+            MigrationUnit migrationUnit, List<string> feedRanges,
+            int workerCount, string keyspace, string table)
         {
-            var migrationUnit = request.MigrationUnit;
-            var chunkIndex = request.ChunkIndex;
-            var initialPercent = request.InitialPercent;
-            var contributionFactor = request.ContributionFactor;
-            var totalRowCount = request.TotalRowCount;
-            var processorContext = request.Context;
-            var feedRanges = request.FeedRanges;
-
-            int totalBudget = Environment.ProcessorCount * MigrationDefaults.WorkerMultiplier;
-            int parallelTables = Math.Max(1, _job.ParallelThreads);
-            int autoWorkers = Math.Max(MigrationDefaults.MinWorkers, totalBudget / parallelTables);
-            int workerCount = _job.MaxFeedRangeParallelism > 0
-                ? _job.MaxFeedRangeParallelism
-                : autoWorkers;
-
             var completed = migrationUnit.CompletedCopyFeedRanges
                 ?? new HashSet<string>();
             var checkpoints = migrationUnit.CopyFeedRangeCheckpoints
@@ -63,27 +55,15 @@ namespace CassandraMigrationProcessor.Processors
 
             if (pendingRanges.Count == 0)
             {
-                _log.WriteLine($"All {feedRanges.Count} ranges already completed for {processorContext.KeyspaceName}.{processorContext.TableName}", LogType.Info);
-                return TaskResult.Success;
+                _log.WriteLine($"All {feedRanges.Count} ranges already completed for {keyspace}.{table}", LogType.Info);
+                return null;
             }
 
-            _log.WriteLine($"Pipeline copy: {pendingRanges.Count} ranges ({completed.Count} already done), {workerCount} workers for {processorContext.KeyspaceName}.{processorContext.TableName}", LogType.Info);
+            _log.WriteLine($"Pipeline copy: {pendingRanges.Count} ranges ({completed.Count} already done), {workerCount} workers for {keyspace}.{table}", LogType.Info);
 
-            var columns = await SchemaManager.SyncSchemaAsync(
-                _sourceSession!, _targetSession!,
-                processorContext.KeyspaceName, processorContext.TableName,
-                processorContext.TargetKeyspaceName, processorContext.TargetTableName);
-            if (columns.Count == 0)
-            {
-                _log.WriteLine($"No columns for {processorContext.KeyspaceName}.{processorContext.TableName}", LogType.Error);
-                return TaskResult.Abort;
-            }
-
-            var partitionPool = Channel.CreateBounded<Partition>(new BoundedChannelOptions(
+            var pool = Channel.CreateBounded<Partition>(new BoundedChannelOptions(
                     pendingRanges.Count + workerCount)
-                {
-                    FullMode = BoundedChannelFullMode.Wait
-                });
+                { FullMode = BoundedChannelFullMode.Wait });
 
             int resumedCount = 0;
             foreach (var range in pendingRanges)
@@ -95,10 +75,48 @@ namespace CassandraMigrationProcessor.Processors
                     pagingState = Convert.FromBase64String(base64Token);
                     resumedCount++;
                 }
-                await partitionPool.Writer.WriteAsync(new Partition(range, pagingState));
+                await pool.Writer.WriteAsync(new Partition(range, pagingState));
             }
             if (resumedCount > 0)
                 _log.WriteLine($"Resuming {resumedCount}/{pendingRanges.Count} ranges from checkpoint", LogType.Info);
+
+            return new PartitionStageResult(pool, completed, checkpoints, pendingRanges.Count);
+        }
+
+        private async Task<TaskResult> CopyWithFeedRangesAsync(PipelineRequest request)
+        {
+            var migrationUnit = request.MigrationUnit;
+            var chunkIndex = request.ChunkIndex;
+            var initialPercent = request.InitialPercent;
+            var contributionFactor = request.ContributionFactor;
+            var totalRowCount = request.TotalRowCount;
+            var processorContext = request.Context;
+            var feedRanges = request.FeedRanges;
+
+            int totalBudget = Environment.ProcessorCount * MigrationDefaults.WorkerMultiplier;
+            int parallelTables = Math.Max(1, _job.ParallelThreads);
+            int autoWorkers = Math.Max(MigrationDefaults.MinWorkers, totalBudget / parallelTables);
+            int workerCount = _job.MaxFeedRangeParallelism > 0
+                ? _job.MaxFeedRangeParallelism
+                : autoWorkers;
+
+            // ── Stage 1: Partition seeding ──
+            var partitions = await SeedPartitionsAsync(
+                migrationUnit, feedRanges, workerCount,
+                processorContext.KeyspaceName, processorContext.TableName);
+            if (partitions == null)
+                return TaskResult.Success;
+
+            // ── Stage 2: Schema sync ──
+            var columns = await SchemaManager.SyncSchemaAsync(
+                _sourceSession!, _targetSession!,
+                processorContext.KeyspaceName, processorContext.TableName,
+                processorContext.TargetKeyspaceName, processorContext.TargetTableName);
+            if (columns.Count == 0)
+            {
+                _log.WriteLine($"No columns for {processorContext.KeyspaceName}.{processorContext.TableName}", LogType.Error);
+                return TaskResult.Abort;
+            }
 
             long priorCopied = migrationUnit.CopyRowsCopied;
 
@@ -110,21 +128,22 @@ namespace CassandraMigrationProcessor.Processors
                     : MigrationDefaults.DefaultPageSize;
 
             var tracker = new CopyProgressTracker(_log, processorContext.KeyspaceName, processorContext.TableName,
-                workerCount, pendingRanges.Count,
+                workerCount, partitions.PendingCount,
                 priorCopied,
                 migrationUnit, chunkIndex,
                 initialPercent, contributionFactor, totalRowCount);
 
             var stopwatch = Stopwatch.StartNew();
 
+            // ── Stage 3: Worker execution ──
             var ctx = new PipelineContext(
-                partitionPool,
+                partitions.Pool,
                 new WorkerConfig(_job.SourceConnection, _job.TargetConnection, columns, processorContext),
-                new RangeState(completed, checkpoints, feedRanges),
+                new RangeState(partitions.Completed, partitions.Checkpoints, feedRanges),
                 new PipelineCounters(),
                 tracker);
 
-            _log.WriteLine($"Launching {workerCount} workers for {processorContext.KeyspaceName}.{processorContext.TableName} ({pendingRanges.Count} feed ranges, page size={configuredPageSize})...", LogType.Info);
+            _log.WriteLine($"Launching {workerCount} workers for {processorContext.KeyspaceName}.{processorContext.TableName} ({partitions.PendingCount} feed ranges, page size={configuredPageSize})...", LogType.Info);
             using var pool = new WorkerPool(_log, workerCount, _cancellation);
             pool.Start(workerId => RunWorkerAsync(workerId, ctx, configuredPageSize));
             await pool.WaitForCompletionAsync();
