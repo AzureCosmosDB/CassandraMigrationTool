@@ -6,43 +6,21 @@ using System.Threading.Channels;
 
 namespace CassandraMigrationProcessor.Processors
 {
-    internal class WorkerConfig
-    {
-        public ConnectionOptions SourceConnection { get; }
-        public ConnectionOptions TargetConnection { get; }
-        public List<(string Name, string Type, string Kind, string ClusteringOrder, int Position)> Columns { get; }
-        public ProcessorContext Context { get; }
+    internal record WorkerConfig(
+        ConnectionOptions SourceConnection,
+        ConnectionOptions TargetConnection,
+        List<(string Name, string Type, string Kind, string ClusteringOrder, int Position)> Columns,
+        ProcessorContext Context);
 
-        public WorkerConfig(ConnectionOptions source, ConnectionOptions target,
-            List<(string Name, string Type, string Kind, string ClusteringOrder, int Position)> columns,
-            ProcessorContext context)
-        {
-            SourceConnection = source;
-            TargetConnection = target;
-            Columns = columns;
-            Context = context;
-        }
-    }
-
-    internal class RangeState
-    {
-        public HashSet<string> Completed { get; }
-        public Dictionary<string, string?> Checkpoints { get; }
-        public List<string> FeedRanges { get; }
-
-        public RangeState(HashSet<string> completed,
-            Dictionary<string, string?> checkpoints,
-            List<string> feedRanges)
-        {
-            Completed = completed;
-            Checkpoints = checkpoints;
-            FeedRanges = feedRanges;
-        }
-    }
+    internal record RangeState(
+        HashSet<string> Completed,
+        Dictionary<string, string?> Checkpoints,
+        List<string> FeedRanges);
 
     /// <summary>
     /// Non-progress pipeline flags. Row counters live in
     /// <see cref="CopyProgressTracker"/> (single source of truth).
+    /// Kept as class: FatalErrorFlag needs Interlocked/ref access.
     /// </summary>
     internal class PipelineCounters
     {
@@ -51,25 +29,12 @@ namespace CassandraMigrationProcessor.Processors
     }
 
     /// <summary>
-    /// Shared mutable state passed to each worker.
+    /// Shared state passed to each worker.
     /// </summary>
-    internal class PipelineContext
-    {
-        public Channel<Partition> PartitionPool { get; }
-        public WorkerConfig Worker { get; }
-        public RangeState Ranges { get; }
-        public PipelineCounters Counters { get; }
-        public CopyProgressTracker Tracker { get; }
-
-        public PipelineContext(Channel<Partition> partitionPool,
-            WorkerConfig worker, RangeState ranges,
-            PipelineCounters counters, CopyProgressTracker tracker)
-        {
-            PartitionPool = partitionPool;
-            Worker = worker;
-            Ranges = ranges;
-            Counters = counters;
-            Tracker = tracker;
-        }
-    }
+    internal record PipelineContext(
+        Channel<Partition> PartitionPool,
+        WorkerConfig Worker,
+        RangeState Ranges,
+        PipelineCounters Counters,
+        CopyProgressTracker Tracker);
 }

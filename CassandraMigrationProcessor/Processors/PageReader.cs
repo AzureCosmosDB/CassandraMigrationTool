@@ -44,19 +44,7 @@ namespace CassandraMigrationProcessor.Processors
         public void Dispose() => MigrationHelper.SafeDispose(_sourceSession, "PageReader source session");
 
         /// <summary>Result of a page read attempt.</summary>
-        internal class ReadResult
-        {
-            public List<object[]> Rows { get; }
-            public WorkChunk WorkChunk { get; }
-            public bool IsLastPage { get; }
-
-            public ReadResult(List<object[]> rows, WorkChunk workChunk, bool isLastPage)
-            {
-                Rows = rows;
-                WorkChunk = workChunk;
-                IsLastPage = isLastPage;
-            }
-        }
+        internal record ReadResult(List<object[]> Rows, WorkChunk WorkChunk, bool IsLastPage);
 
         /// <summary>
         /// Reads a single page, updates partition state and tracker.
