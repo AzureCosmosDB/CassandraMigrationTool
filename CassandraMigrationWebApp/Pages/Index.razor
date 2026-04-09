@@ -262,12 +262,12 @@
         _selectedMigrationJob = JobManager.GetMigrationJobById(id);       
         if (!JobManager.IsProcessRunning(id ?? string.Empty))
         {
-            _message = "Are you sure you want to delete " + _selectedMigrationJob.Name + " ?";
+            _message = "Are you sure you want to delete " + _selectedMigrationJob?.Name + " ?";
             _yesNoDialogOpen = true;
         }
         else
         {
-            _message = "Can't delete active job " + _selectedMigrationJob.Name + ". Please stop the job and try again.";
+            _message = "Can't delete active job " + _selectedMigrationJob?.Name + ". Please stop the job and try again.";
             _messageDialogOpen = true;
         }
     }

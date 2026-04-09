@@ -352,7 +352,12 @@ namespace CassandraMigrationProcessor.Workers
             }
             finally
             {
-                _activeProcessors.TryRemove(migrationUnit.Id, out _);
+                _activeProcessors.TryRemove(migrationUnit.Id, out var removedProcessor);
+                try { (removedProcessor as IDisposable)?.Dispose(); }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[WARN] MigrationWorker processor dispose failed: {ex.Message}");
+                }
                 try { localSourceSession?.Dispose(); }
                 catch (Exception ex)
                 {

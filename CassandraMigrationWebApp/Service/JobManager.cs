@@ -420,6 +420,7 @@ namespace CassandraMigrationWebApp.Service
                                         if (isThrottle && att < 10)
                                         {
                                             int delaySec = Math.Min(att * 3, 30);
+                                            // Thread.Sleep is acceptable here: runs on a Task.Run threadpool thread
                                             Thread.Sleep(delaySec * 1000);
                                             continue;
                                         }

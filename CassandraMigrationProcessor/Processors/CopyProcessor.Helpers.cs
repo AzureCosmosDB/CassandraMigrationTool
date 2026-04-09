@@ -135,6 +135,7 @@ namespace CassandraMigrationProcessor.Processors
                 {
                     while (_head != null && _head.IsCompleted)
                         _head = _head.Next;
+                    if (_head == null) _tail = null;
 
                     if (_tail == null)
                         _head = _tail = chunk;

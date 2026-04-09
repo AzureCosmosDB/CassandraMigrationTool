@@ -361,7 +361,7 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
             string pkClause;
             if (clusteringKeys.Count > 0)
             {
-                pkClause = $"({string.Join(", $", partitionKeys)}), {string.Join(", ", clusteringKeys)}";
+                pkClause = $"({string.Join(", ", partitionKeys)}), {string.Join(", ", clusteringKeys)}";
             }
             else
             {

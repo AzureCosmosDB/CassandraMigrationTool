@@ -672,11 +672,11 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
         {
             try
             {
-                var req = new HttpRequestMessage(HttpMethod.Get,
+                using var req = new HttpRequestMessage(HttpMethod.Get,
                     "http://169.254.169.254/metadata/instance" +
                     "?api-version=2021-02-01");
                 req.Headers.Add("Metadata", "true");
-                var resp = await _armHttpClient.SendAsync(req);
+                using var resp = await _armHttpClient.SendAsync(req);
                 if (!resp.IsSuccessStatusCode) return null;
                 var json = await resp.Content.ReadAsStringAsync();
                 using var doc = JsonDocument.Parse(json);
@@ -706,10 +706,10 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
                     $"{subscriptionId}/providers/Microsoft.DocumentDB/" +
                     $"cassandraClusters?api-version=2024-05-15";
 
-                var req = new HttpRequestMessage(HttpMethod.Get, url);
+                using var req = new HttpRequestMessage(HttpMethod.Get, url);
                 req.Headers.Authorization =
                     new AuthenticationHeaderValue("Bearer", armToken);
-                var resp = await _armHttpClient.SendAsync(req);
+                using var resp = await _armHttpClient.SendAsync(req);
                 if (!resp.IsSuccessStatusCode) return null;
 
                 var json = await resp.Content.ReadAsStringAsync();

@@ -28,7 +28,7 @@ public class FileController : ControllerBase
     [HttpGet("download/migrationunit/{jobId}/{migrationUnitId}")]
     public IActionResult DownloadMigrationUnit(string jobId, string migrationUnitId)
     {
-        var filePath = $"{JobStore.JobsFolder}\\{jobId}\\{migrationUnitId}.json";
+        var filePath = Path.Combine(JobStore.JobsFolder, jobId, $"{migrationUnitId}.json");
 
         // Use the persistence storage to read the document
         if (MigrationJobContext.Store == null || !MigrationJobContext.Store.Exists(filePath))

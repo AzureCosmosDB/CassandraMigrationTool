@@ -53,6 +53,8 @@ namespace CassandraMigrationProcessor.Processors
             // Cancel first so workers see the signal
             _cancellation?.Cancel();
 
+            IsChangeFeedRunning = false;
+
             if (_changeFeedProcessor != null)
                 _changeFeedProcessor.ExecutionCancelled = true;
 
@@ -213,6 +215,7 @@ namespace CassandraMigrationProcessor.Processors
 
         public void Dispose()
         {
+            IsChangeFeedRunning = false;
             _cancellation?.Dispose();
             try { _targetSession?.Dispose(); }
             catch (Exception ex) { Console.WriteLine($"[WARN] MigrationProcessor target session dispose failed: {ex.Message}"); }

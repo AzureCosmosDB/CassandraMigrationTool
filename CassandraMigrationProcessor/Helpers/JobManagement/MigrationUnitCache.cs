@@ -43,10 +43,10 @@ namespace CassandraMigrationProcessor.Helpers.JobManagement
 
         public bool UpdateMigrationUnit(MigrationUnit migrationUnit)
         {
-            MigrationJobContext.AddVerboseLog($"MigrationUnitCache.UpdateMigrationUnit: migrationUnitId={migrationUnit.Id}");
-
             if (migrationUnit == null || string.IsNullOrEmpty(migrationUnit.Id) || string.IsNullOrEmpty(migrationUnit.JobId))
                 return false;
+
+            MigrationJobContext.AddVerboseLog($"MigrationUnitCache.UpdateMigrationUnit: migrationUnitId={migrationUnit.Id}");
 
             var cacheKey = BuildCacheKey(migrationUnit.Id, migrationUnit.JobId);
             _migrationUnits[cacheKey] = migrationUnit;

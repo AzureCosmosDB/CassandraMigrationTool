@@ -25,7 +25,7 @@ namespace CassandraMigrationProcessor.Workers
         private int _peakActiveWorkers;
         private int _completedRanges;
         private int _totalRanges;
-        private DateTime _lastLogTime = DateTime.MinValue;
+        private long _lastLogTicks = 0;
 
         // Sliding window for recent speed
         private long _windowCopied;
@@ -157,11 +157,12 @@ namespace CassandraMigrationProcessor.Workers
         /// </summary>
         private void LogIfDue()
         {
-            var now = DateTime.UtcNow;
-            if ((now - _lastLogTime).TotalSeconds
-                < LogIntervalSeconds)
+            long nowTicks = DateTime.UtcNow.Ticks;
+            long prevTicks = Volatile.Read(ref _lastLogTicks);
+            if ((nowTicks - prevTicks) / TimeSpan.TicksPerSecond < LogIntervalSeconds)
                 return;
-            _lastLogTime = now;
+            if (Interlocked.CompareExchange(ref _lastLogTicks, nowTicks, prevTicks) != prevTicks)
+                return;
 
             long copied = TotalCopied;
             long failed = TotalFailed;

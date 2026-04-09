@@ -34,7 +34,7 @@ namespace CassandraMigrationProcessor.Context
             {
                 if (mu == null) return false;
 
-                if (MigrationJobContext.CurrentlyActiveJob != null)
+                if (mu.ParentJob == null && MigrationJobContext.CurrentlyActiveJob != null)
                     mu.ParentJob =
                         MigrationJobContext.CurrentlyActiveJob;
 
