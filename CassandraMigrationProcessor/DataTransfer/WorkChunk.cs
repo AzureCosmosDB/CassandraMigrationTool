@@ -1,4 +1,4 @@
-namespace CassandraMigrationProcessor.Pipeline
+namespace CassandraMigrationProcessor.DataTransfer
 {
     /// <summary>
     /// Tracks a pending or completed read-write cycle.

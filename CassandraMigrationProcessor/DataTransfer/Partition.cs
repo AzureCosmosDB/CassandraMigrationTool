@@ -1,6 +1,6 @@
 using System.Threading;
 
-namespace CassandraMigrationProcessor.Pipeline
+namespace CassandraMigrationProcessor.DataTransfer
 {
     /// <summary>
     /// Represents a feed range partition with its work

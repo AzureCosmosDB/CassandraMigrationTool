@@ -11,14 +11,14 @@ using System.Threading;
 using System.Threading.Channels;
 using System.Threading.Tasks;
 
-namespace CassandraMigrationProcessor.Pipeline
+namespace CassandraMigrationProcessor.DataTransfer
 {
-    internal partial class CopyProcessor
+    internal partial class BulkCopyEngine
     {
         private void SafeCancel()
         {
             try { _cancellation.Cancel(); }
-            catch (Exception ex) { Console.Error.WriteLine($"[WARN] CopyProcessor cancel failed: {ex.Message}"); }
+            catch (Exception ex) { Console.Error.WriteLine($"[WARN] BulkCopyEngine cancel failed: {ex.Message}"); }
         }
 
         private static void SavePartitionCheckpoint(Partition partition, PipelineContext ctx)

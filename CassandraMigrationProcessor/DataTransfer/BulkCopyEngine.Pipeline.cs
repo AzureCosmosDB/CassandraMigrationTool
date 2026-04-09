@@ -3,7 +3,7 @@ using CassandraMigrationProcessor.Context;
 using CassandraMigrationProcessor.Infrastructure;
 using CassandraMigrationProcessor.CassandraDriver;
 using CassandraMigrationProcessor.Models;
-using CassandraMigrationProcessor.Pipeline;
+using CassandraMigrationProcessor.DataTransfer;
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
@@ -13,9 +13,9 @@ using System.Threading;
 using System.Threading.Channels;
 using System.Threading.Tasks;
 
-namespace CassandraMigrationProcessor.Pipeline
+namespace CassandraMigrationProcessor.DataTransfer
 {
-    internal partial class CopyProcessor
+    internal partial class BulkCopyEngine
     {
         /// <summary>
         /// Unified worker pipeline with partition pool:

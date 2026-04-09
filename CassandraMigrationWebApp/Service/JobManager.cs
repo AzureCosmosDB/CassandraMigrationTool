@@ -6,7 +6,7 @@ using System.Threading;
 using CassandraMigrationProcessor;
 using CassandraMigrationProcessor.Infrastructure;
 using CassandraMigrationProcessor.Models;
-using CassandraMigrationProcessor.Pipeline;
+using CassandraMigrationProcessor.DataTransfer;
 using CassandraMigrationProcessor.Context;
 
 namespace CassandraMigrationWebApp.Service

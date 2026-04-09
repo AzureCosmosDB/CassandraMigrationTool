@@ -3,7 +3,7 @@ using CassandraMigrationProcessor.Context;
 using CassandraMigrationProcessor.Infrastructure;
 using CassandraMigrationProcessor.CassandraDriver;
 using CassandraMigrationProcessor.Models;
-using CassandraMigrationProcessor.Pipeline;
+using CassandraMigrationProcessor.DataTransfer;
 using System;
 using System.Collections.Generic;
 using System.Collections.Concurrent;
@@ -11,7 +11,7 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 
-namespace CassandraMigrationProcessor.Pipeline
+namespace CassandraMigrationProcessor.DataTransfer
 {
     /// <summary>
     /// Orchestrates a Cassandra-to-Cassandra migration with table-level
@@ -97,7 +97,7 @@ namespace CassandraMigrationProcessor.Pipeline
         {
             _log.WriteLine("All tables copied. Resuming change feed processors.", LogType.Info);
             EnsureSourceSession(job, job.Tables!.First().KeyspaceName);
-            _activeProcessor = new CopyProcessor(_log, _sourceSession!, config, job, this);
+            _activeProcessor = new BulkCopyEngine(_log, _sourceSession!, config, job, this);
 
             foreach (var mub in job.Tables)
             {
@@ -230,7 +230,7 @@ namespace CassandraMigrationProcessor.Pipeline
         private async Task RunCopyForUnitAsync(MigrationJob job, MigrationSettings config,
             ISession sourceSession, MigrationUnit mu, CancellationToken ct)
         {
-            var processor = new CopyProcessor(_log, sourceSession, config, job, this);
+            var processor = new BulkCopyEngine(_log, sourceSession, config, job, this);
             _activeProcessors[mu.Id] = processor;
             ct.ThrowIfCancellationRequested();
 

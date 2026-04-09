@@ -8,7 +8,7 @@ using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
 
-namespace CassandraMigrationProcessor.Pipeline
+namespace CassandraMigrationProcessor.DataTransfer
 {
     /// <summary>
     /// Reads a single page from the source Cassandra cluster,

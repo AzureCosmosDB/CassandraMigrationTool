@@ -1,10 +1,10 @@
 using CassandraMigrationProcessor.Models;
-using CassandraMigrationProcessor.Pipeline;
+using CassandraMigrationProcessor.DataTransfer;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Threading.Channels;
 
-namespace CassandraMigrationProcessor.Pipeline
+namespace CassandraMigrationProcessor.DataTransfer
 {
     internal record WorkerConfig(
         ConnectionOptions SourceConnection,

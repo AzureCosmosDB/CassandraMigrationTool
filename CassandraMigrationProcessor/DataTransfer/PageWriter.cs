@@ -8,7 +8,7 @@ using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
 
-namespace CassandraMigrationProcessor.Pipeline
+namespace CassandraMigrationProcessor.DataTransfer
 {
     /// <summary>
     /// Writes extracted rows to the target Cassandra cluster
@@ -92,7 +92,7 @@ namespace CassandraMigrationProcessor.Pipeline
                             try { _cancellation.Cancel(); }
                             catch (Exception cancelEx)
                             {
-                                Console.Error.WriteLine($"[WARN] CopyProcessor batch cancel failed: {cancelEx.Message}");
+                                Console.Error.WriteLine($"[WARN] BulkCopyEngine batch cancel failed: {cancelEx.Message}");
                             }
                         }
                         else if (!ExceptionClassifier.IsTransient(ex))

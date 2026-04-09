@@ -5,7 +5,7 @@ using System;
 using System.Diagnostics;
 using System.Threading;
 
-namespace CassandraMigrationProcessor.Pipeline
+namespace CassandraMigrationProcessor.DataTransfer
 {
     /// <summary>
     /// Single source of truth for all copy-pipeline progress:

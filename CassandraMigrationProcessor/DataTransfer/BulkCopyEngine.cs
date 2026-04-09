@@ -6,24 +6,24 @@ using CassandraMigrationProcessor.CassandraDriver;
 using CassandraMigrationProcessor.Infrastructure;
 using CassandraMigrationProcessor.Models;
 using CassandraMigrationProcessor.Infrastructure;
-using CassandraMigrationProcessor.Pipeline;
+using CassandraMigrationProcessor.DataTransfer;
 using System;
 using System.Linq;
 using System.Threading.Tasks;
 
-namespace CassandraMigrationProcessor.Pipeline
+namespace CassandraMigrationProcessor.DataTransfer
 {
     /// <summary>
     /// Copies rows from source Cassandra (Cosmos DB) to
     /// target Cassandra (OSS) using the DataStax driver.
     /// </summary>
-    internal partial class CopyProcessor : MigrationProcessor
+    internal partial class BulkCopyEngine : MigrationProcessor
     {
         private static string TruncRange(string r) => r.Length > 30 ? r[..15] + "..." : r;
         private static bool IsRetriableWriteError(Exception ex) => Infrastructure.ExceptionClassifier.IsTransient(ex);
         private static bool IsFatalError(Exception ex) => Infrastructure.ExceptionClassifier.IsFatal(ex);
 
-        public CopyProcessor(MigrationLog MigrationLog, ISession sourceSession, MigrationSettings config, MigrationJob job,
+        public BulkCopyEngine(MigrationLog MigrationLog, ISession sourceSession, MigrationSettings config, MigrationJob job,
             MigrationWorker? migrationWorker = null)
             : base(MigrationLog, sourceSession, config, job, migrationWorker)
         {

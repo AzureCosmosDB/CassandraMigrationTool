@@ -6,9 +6,9 @@ using System;
 using System.Linq;
 using System.Threading.Tasks;
 
-namespace CassandraMigrationProcessor.Pipeline
+namespace CassandraMigrationProcessor.DataTransfer
 {
-    internal partial class CopyProcessor
+    internal partial class BulkCopyEngine
     {
         public override async Task<TaskResult> StartProcessAsync(string migrationUnitId)
         {
