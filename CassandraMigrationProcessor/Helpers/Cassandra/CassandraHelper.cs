@@ -105,31 +105,12 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
         /// </summary>
         public static async Task<long> GetRowCountAsync(ISession session, string keyspace, string table)
         {
-            // 1) Try system.size_estimates (works on OSS Cassandra
-            //    and Azure MI, but NOT on Cosmos DB Cassandra API)
-            try
-            {
-                var estStmt = new SimpleStatement("SELECT mean_partition_size, partitions_count " +
-                    "FROM system.size_estimates " + "WHERE keyspace_name = ? AND table_name = ?",
-                    keyspace, table);
-                estStmt.SetReadTimeoutMillis(SizeEstimateTimeoutMs);
-                var estRs = await session.ExecuteAsync(estStmt);
-                long totalPartitions = 0;
-                foreach (var row in estRs)
-                {
-                    totalPartitions += row.GetValue<long>("partitions_count");
-                }
-                if (totalPartitions > 0) return totalPartitions;
-            }
-            catch (Exception ex) { }
-
-            // 2) Try COUNT(*) with short timeout (30s).
-            //    For large Cosmos DB tables this will time out —
-            //    that's expected; migration proceeds without %.
+            // COUNT(*) with short timeout. For large tables
+            // this may time out — migration proceeds without %.
             try
             {
                 var statement = new SimpleStatement($"SELECT COUNT(*) FROM \"{keyspace}\".\"{table}\"");
-                statement.SetReadTimeoutMillis(SchemaQueryTimeoutMs); // 30s max
+                statement.SetReadTimeoutMillis(SchemaQueryTimeoutMs);
                 statement.SetConsistencyLevel(ConsistencyLevel.One);
                 var resultSet = await session.ExecuteAsync(statement);
                 var row = resultSet.FirstOrDefault();
@@ -137,13 +118,11 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
                 {
                     long count;
                     try { count = row.GetValue<long>("count"); }
-                    catch (ArgumentException)
-                    { count = row.GetValue<long>(0); }
-
+                    catch (ArgumentException) { count = row.GetValue<long>(0); }
                     return count;
                 }
             }
-            catch (Exception ex) { }
+            catch { }
 
             return -1;
         }
