@@ -351,16 +351,8 @@ namespace CassandraMigrationProcessor.Workers
             finally
             {
                 _activeProcessors.TryRemove(migrationUnit.Id, out var removedProcessor);
-                try { (removedProcessor as IDisposable)?.Dispose(); }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"[WARN] MigrationWorker processor dispose failed: {ex.Message}");
-                }
-                try { localSourceSession?.Dispose(); }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"[WARN] MigrationWorker localSourceSession dispose failed: {ex.Message}");
-                }
+                MigrationHelper.SafeDispose(removedProcessor as IDisposable, "MigrationWorker processor");
+                MigrationHelper.SafeDispose(localSourceSession, "MigrationWorker localSourceSession");
             }
         }
 
@@ -379,15 +371,8 @@ namespace CassandraMigrationProcessor.Workers
 
         private void CleanupSession()
         {
-            try
-            {
-                _sourceSession?.Dispose();
-                _sourceSession = null;
-            }
-            catch (Exception ex)
-            {
-                MigrationJobContext.AddVerboseLog($"Session cleanup error: {ex.Message}");
-            }
+            MigrationHelper.SafeDispose(_sourceSession, "MigrationWorker source session");
+            _sourceSession = null;
         }
 
         /// <summary>

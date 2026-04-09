@@ -268,7 +268,7 @@ namespace CassandraMigrationProcessor.Context
 
         public static bool SaveJobList()
         {
-            try
+            return MigrationHelper.SafeExecute(() =>
             {
                 if (JobList != null)
                 {
@@ -283,12 +283,7 @@ namespace CassandraMigrationProcessor.Context
                     }
                 }
                 return true;
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[WARN] SaveJobList failed: {ex.Message}");
-                return false;
-            }
+            }, false, "SaveJobList");
         }
     }
 }

@@ -14,6 +14,11 @@ namespace CassandraMigrationProcessor.Processors
 {
     internal partial class CopyProcessor
     {
+        private void SafeCancel()
+        {
+            try { _cancellation.Cancel(); }
+            catch (Exception ex) { Console.WriteLine($"[WARN] CopyProcessor cancel failed: {ex.Message}"); }
+        }
         /// <summary>
         /// Unified worker: reads one page from source, creates
         /// a WorkChunk, recycles the partition back into the
@@ -99,11 +104,7 @@ namespace CassandraMigrationProcessor.Processors
                             _log.WriteLine($"[W{workerId}] FATAL: Read failed after retries for range {TruncRange(partition.FeedRange)} — failing job to prevent data loss",
                                 LogType.Error);
                             Interlocked.Exchange(ref ctx.FatalErrorFlag, 1);
-                            try { _cancellation.Cancel(); }
-                            catch (Exception ex)
-                            {
-                                Console.WriteLine($"[WARN] Cancel failed: {ex.Message}");
-                            }
+                            SafeCancel();
                             break;
                         }
 
@@ -193,11 +194,7 @@ namespace CassandraMigrationProcessor.Processors
                             _log.WriteLine($"[W{workerId}] FATAL: {ex.GetType().Name} — failing job",
                                 LogType.Error);
                             Interlocked.Exchange(ref ctx.FatalErrorFlag, 1);
-                            try { _cancellation.Cancel(); }
-                            catch (Exception cancelEx)
-                            {
-                                Console.WriteLine($"[WARN] CopyProcessor cancel failed: {cancelEx.Message}");
-                            }
+                            SafeCancel();
                             ctx.WorkerErrors.Add(TaskResult.Abort);
                         }
                         else
@@ -261,10 +258,8 @@ namespace CassandraMigrationProcessor.Processors
             }
             finally
             {
-                try { workerTargetSession?.Dispose(); }
-                catch (Exception ex) { Console.WriteLine($"[WARN] CopyProcessor worker target session dispose failed: {ex.Message}"); }
-                try { workerSourceSession?.Dispose(); }
-                catch (Exception ex) { Console.WriteLine($"[WARN] CopyProcessor worker source session dispose failed: {ex.Message}"); }
+                MigrationHelper.SafeDispose(workerTargetSession, "CopyProcessor worker target session");
+                MigrationHelper.SafeDispose(workerSourceSession, "CopyProcessor worker source session");
                 ctx.Tracker.WorkerExited();
             }
         }

@@ -14,6 +14,19 @@ namespace CassandraMigrationProcessor.Helpers
     public static class NamespaceParser
     {
         /// <summary>
+        /// Attempts JSON deserialization, returning null on failure.
+        /// Consolidates the repeated try-parse-catch pattern.
+        /// </summary>
+        private static List<TableMapping>? TryDeserializeJson(string input, string context)
+        {
+            try { return JsonConvert.DeserializeObject<List<TableMapping>>(input); }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[WARN] {context}: {ex.Message}");
+                return null;
+            }
+        }
+        /// <summary>
         /// Parse a namespace string (JSON or CSV format) into TableMapping entries.
         /// Returns null if the input is invalid.
         /// </summary>
@@ -23,18 +36,10 @@ namespace CassandraMigrationProcessor.Helpers
                 return null;
 
             // Try JSON format first
-            try
-            {
-                var parsed = JsonConvert
-                    .DeserializeObject<List<TableMapping>>(input);
-                if (parsed != null)
-                    return parsed;
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine(
-                    $"[WARN] JSON parse failed during namespace parsing: {ex.Message}");
-            }
+            var parsed = TryDeserializeJson(input, "JSON parse failed during namespace parsing");
+            if (parsed != null)
+                return parsed;
+
             var entries = input.Split(new[] { ',', '\n', '\r', ';' })
                 .Select(s => s.Trim())
                 .Where(s => !string.IsNullOrEmpty(s))
@@ -66,17 +71,8 @@ namespace CassandraMigrationProcessor.Helpers
                 return unitsToAdd;
 
             // Try JSON format first
-            List<TableMapping>? loadedObject = null;
-            try
-            {
-                loadedObject = JsonConvert
-                    .DeserializeObject<List<TableMapping>>(
-                        namespacesToMigrate);
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[WARN] PopulateJobTablesAsync JSON parse failed, trying CSV: {ex.Message}");
-            }
+            List<TableMapping>? loadedObject = TryDeserializeJson(
+                namespacesToMigrate, "PopulateJobTablesAsync JSON parse failed, trying CSV");
 
             if (loadedObject != null)
             {
@@ -160,13 +156,7 @@ namespace CassandraMigrationProcessor.Helpers
             }
 
             // Re-serialize to normalized JSON if the original was JSON
-            List<TableMapping>? jsonCheck = null;
-            try { jsonCheck = JsonConvert.DeserializeObject<List<TableMapping>>(input); }
-            catch (Exception ex)
-            {
-                Console.WriteLine(
-                    $"[WARN] JSON re-parse failed during validation: {ex.Message}");
-            }
+            var jsonCheck = TryDeserializeJson(input, "JSON re-parse failed during validation");
 
             string normalizedOutput = jsonCheck != null
                 ? JsonConvert.SerializeObject(parsed)

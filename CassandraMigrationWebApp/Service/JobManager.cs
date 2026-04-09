@@ -46,20 +46,11 @@ namespace CassandraMigrationWebApp.Service
         /// </summary>
         public void UpdateWebAppBaseUrlFromBrowser(string baseUri)
         {
-            try
-            {
-                if (string.IsNullOrEmpty(baseUri))
-                    return;
+            if (string.IsNullOrEmpty(baseUri))
+                return;
 
-                // Remove trailing slash if present
-                _webAppBaseUrl = baseUri.TrimEnd('/');
-
-                MigrationHelper.LogToFile($"WebAppBaseUrl updated from browser: {_webAppBaseUrl}");
-            }
-            catch (Exception ex)
-            {
-                MigrationHelper.LogToFile($"Error updating WebAppBaseUrl from browser. Details: {ex}");
-            }
+            _webAppBaseUrl = baseUri.TrimEnd('/');
+            MigrationHelper.LogToFile($"WebAppBaseUrl updated from browser: {_webAppBaseUrl}");
         }
 
         public bool UpdateConfig(CassandraMigrationProcessor.Models.MigrationSettings updated_config, out string errorMessage)
@@ -118,26 +109,16 @@ namespace CassandraMigrationWebApp.Service
         {
             MigrationJobContext.JobList.MigrationJobIds?.Remove(jobId);
             MigrationJobContext.SaveJobList();
-            ;
-            try
+
+            Task.Run(() =>
             {
-                Task.Run(() =>
-                {
-                    MigrationJobContext.Store.Delete($"{Path.Combine(JobStore.JobsFolder, jobId)}");
-                    MigrationJobContext.Store.DeleteLogs(jobId);
-                    //clearing  dumped files
+                MigrationJobContext.Store.Delete($"{Path.Combine(JobStore.JobsFolder, jobId)}");
+                MigrationJobContext.Store.DeleteLogs(jobId);
 
-                    string dumpPath = Path.Combine(WorkingFolderResolver.GetWorkingFolder(), "cassandradump", jobId);
-                    if (Directory.Exists(dumpPath))
-                        Directory.Delete(dumpPath, true);
-
-                });
-            }
-            catch
-            {
-            }
-
-
+                string dumpPath = Path.Combine(WorkingFolderResolver.GetWorkingFolder(), "cassandradump", jobId);
+                if (Directory.Exists(dumpPath))
+                    Directory.Delete(dumpPath, true);
+            });
         }
 
         #endregion 

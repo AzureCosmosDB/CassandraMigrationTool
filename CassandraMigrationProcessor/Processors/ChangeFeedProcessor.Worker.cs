@@ -14,6 +14,54 @@ namespace CassandraMigrationProcessor.Processors
 {
     public partial class ChangeFeedProcessor
     {
+        /// <summary>
+        /// Attempts to delay for the specified interval, returning false if cancelled.
+        /// Consolidates the repeated try/Task.Delay/catch-OperationCanceled pattern.
+        /// </summary>
+        private async Task<bool> DelayOrBreak(int ms, CancellationToken ct)
+        {
+            try { await Task.Delay(ms, ct); return true; }
+            catch (OperationCanceledException) { return false; }
+        }
+
+        /// <summary>
+        /// Attempts to reconnect the source session with a fresh token or new connection.
+        /// Returns true on success. All errors are handled internally.
+        /// </summary>
+        private bool TryReconnectSource(MigrationUnit mu,
+            ref PreparedStatement ps, ref List<string> colNames)
+        {
+            try
+            {
+                var job = MigrationJobContext.CurrentlyActiveJob;
+                ISession newSource;
+                if (CassandraClientFactory.IsLikelyAadToken(job.SourcePassword))
+                    newSource = CassandraClientFactory.ReconnectSourceWithFreshToken(_log);
+                else
+                    newSource = CassandraClientFactory.CreateSourceSession(_log, job, string.Empty);
+
+                MigrationHelper.SafeDispose(_sourceSession, "CF old source session");
+                _sourceSession = newSource;
+
+                var columns = CassandraHelper.GetTableColumns(_sourceSession, mu.KeyspaceName, mu.TableName);
+                var userColumns = columns
+                    .Where(c => !c.Name.StartsWith("system_", StringComparison.OrdinalIgnoreCase))
+                    .ToList();
+                var newInsert = CassandraHelper.PrepareInsert(_targetSession!,
+                    mu.GetEffectiveTargetKeyspaceName(),
+                    mu.GetEffectiveTargetTableName(),
+                    userColumns);
+                ps = newInsert.Ps;
+                colNames = newInsert.ColumnNames;
+                return true;
+            }
+            catch (Exception rex)
+            {
+                _log.WriteLine($"CF reconnect failed: {rex.Message}", LogType.Warning);
+                return false;
+            }
+        }
+
         private async Task PollLoopAsync(string muId, CancellationToken ct)
         {
             try
@@ -226,13 +274,11 @@ namespace CassandraMigrationProcessor.Processors
 
                         // Exponential backoff on errors (cap 60s)
                         int errorDelay = Math.Min(intervalMs * consecutiveErrors, 60_000);
-                        try { await Task.Delay(errorDelay, ct); }
-                        catch (OperationCanceledException) { break; }
+                        if (!await DelayOrBreak(errorDelay, ct)) break;
                         continue;
                     }
 
-                    try { await Task.Delay(intervalMs, ct); }
-                    catch (OperationCanceledException) { break; }
+                    if (!await DelayOrBreak(intervalMs, ct)) break;
                 }
             }
             catch (Exception ex)
@@ -373,38 +419,7 @@ namespace CassandraMigrationProcessor.Processors
                         if (consecutiveErrors <= MaxReconnectAttempts
                             && ExceptionClassifier.IsTransient(ex))
                         {
-                            try
-                            {
-                                var job = MigrationJobContext.CurrentlyActiveJob;
-                                ISession newSource;
-                                if (CassandraClientFactory.IsLikelyAadToken(job.SourcePassword))
-                                {
-                                    newSource = CassandraClientFactory.ReconnectSourceWithFreshToken(_log);
-                                }
-                                else
-                                {
-                                    newSource = CassandraClientFactory.CreateSourceSession(_log, job, string.Empty);
-                                }
-                                var oldSession = _sourceSession;
-                                _sourceSession = newSource;
-                                try { oldSession?.Dispose(); }
-                                catch (Exception dex)
-                                {
-                                    Console.WriteLine($"[WARN] CF old source session dispose failed: {dex.Message}");
-                                }
-                                columns = CassandraHelper.GetTableColumns(_sourceSession, mu.KeyspaceName,
-                                        mu.TableName);
-                                userColumns = columns
-                                    .Where(c => !c.Name.StartsWith("system_", StringComparison.OrdinalIgnoreCase))
-                                    .ToList();
-                                var newInsert = CassandraHelper.PrepareInsert(_targetSession!,
-                                        mu.GetEffectiveTargetKeyspaceName(),
-                                        mu.GetEffectiveTargetTableName(),
-                                        userColumns);
-                                ps = newInsert.Ps;
-                                colNames = newInsert.ColumnNames;
-                            }
-                            catch (Exception rex) { }
+                            TryReconnectSource(mu, ref ps, ref colNames);
                         }
                         else if (consecutiveErrors
                             > MaxReconnectAttempts)
@@ -416,13 +431,11 @@ namespace CassandraMigrationProcessor.Processors
 
                         // Exponential backoff on errors
                         int errorDelay = Math.Min(intervalMs * consecutiveErrors, 60_000);
-                        try { await Task.Delay(errorDelay, ct); }
-                        catch (OperationCanceledException) { break; }
+                        if (!await DelayOrBreak(errorDelay, ct)) break;
                         continue;
                     }
 
-                    try { await Task.Delay(intervalMs, ct); }
-                    catch (OperationCanceledException) { break; }
+                    if (!await DelayOrBreak(intervalMs, ct)) break;
                 }
 
                 _log.WriteLine($"Change feed stopped for {mu.KeyspaceName}.{mu.TableName}, total applied={totalApplied}");

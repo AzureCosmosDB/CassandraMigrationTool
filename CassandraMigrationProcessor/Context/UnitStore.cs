@@ -1,6 +1,7 @@
 using Newtonsoft.Json;
 using System;
 using System.IO;
+using CassandraMigrationProcessor.Helpers;
 using CassandraMigrationProcessor.Models;
 namespace CassandraMigrationProcessor.Context
 {
@@ -30,7 +31,7 @@ namespace CassandraMigrationProcessor.Context
         public static bool SaveUnit(
             MigrationUnit mu, bool updateParent)
         {
-            try
+            return MigrationHelper.SafeExecute(() =>
             {
                 if (mu == null) return false;
 
@@ -64,12 +65,7 @@ namespace CassandraMigrationProcessor.Context
                         .UpdateMigrationUnit(mu);
 
                 return true;
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[WARN] SaveUnit failed: {ex.Message}");
-                return false;
-            }
+            }, false, "SaveUnit");
         }
 
         public static bool RemoveUnit(MigrationUnitBasic unit)
@@ -77,7 +73,7 @@ namespace CassandraMigrationProcessor.Context
             if (unit == null || unit.ParentJob == null)
                 return false;
 
-            try
+            return MigrationHelper.SafeExecute(() =>
             {
                 var job = unit.ParentJob;
                 var index = job.Tables
@@ -95,13 +91,7 @@ namespace CassandraMigrationProcessor.Context
                 MigrationJobContext.Store.Delete(filePath);
 
                 return true;
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine(
-                    $"[WARN] RemoveUnit failed: {ex.Message}");
-                return false;
-            }
+            }, false, "RemoveUnit");
         }
 
         public static MigrationUnit GetFromStorage(
@@ -109,7 +99,7 @@ namespace CassandraMigrationProcessor.Context
         {
             MigrationJobContext.AddVerboseLog(
                 $"GetMigrationUnit: jobId={jobId}, unitId={unitId}");
-            try
+            return MigrationHelper.SafeExecute(() =>
             {
                 var filePath = Path.Combine(
                     JobStore.JobsFolder, jobId, $"{unitId}.json");
@@ -117,12 +107,7 @@ namespace CassandraMigrationProcessor.Context
                     .Read(filePath);
                 return JsonConvert
                     .DeserializeObject<MigrationUnit>(json);
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[WARN] GetFromStorage({jobId}, {unitId}) failed: {ex.Message}");
-                return null;
-            }
+            }, (MigrationUnit)null, $"GetFromStorage({jobId}, {unitId})");
         }
     }
 }

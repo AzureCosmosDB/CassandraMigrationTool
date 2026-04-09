@@ -38,22 +38,15 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
         /// </summary>
         public static string GetFreshAadToken()
         {
-            try
-            {
-                var credential =
-                    new Azure.Identity.DefaultAzureCredential();
-                var tokenResult = credential.GetToken(
-                    new Azure.Core.TokenRequestContext(
-                        new[] { "https://cosmos.azure.com/.default" }));
+            var credential =
+                new Azure.Identity.DefaultAzureCredential();
+            var tokenResult = credential.GetToken(
+                new Azure.Core.TokenRequestContext(
+                    new[] { "https://cosmos.azure.com/.default" }));
 
-                _tokenExpiresAt = tokenResult.ExpiresOn.UtcDateTime;
+            _tokenExpiresAt = tokenResult.ExpiresOn.UtcDateTime;
 
-                return tokenResult.Token;
-            }
-            catch
-            {
-                throw;
-            }
+            return tokenResult.Token;
         }
 
         /// <summary>
@@ -148,11 +141,7 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
                             _lastSourceUsername ?? string.Empty,
                             freshToken,
                             _lastSourceKeyspace ?? string.Empty);
-                        try { oldSession.Dispose(); }
-                        catch (Exception ex)
-                        {
-                            Console.WriteLine($"[WARN] TokenRefresh old session dispose failed: {ex.Message}");
-                        }
+                        MigrationHelper.SafeDispose(oldSession, "TokenRefresh old session");
                     }
 
                     // Schedule next refresh

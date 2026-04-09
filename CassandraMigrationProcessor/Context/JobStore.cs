@@ -3,6 +3,7 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
+using CassandraMigrationProcessor.Helpers;
 using CassandraMigrationProcessor.Models;
 namespace CassandraMigrationProcessor.Context
 {
@@ -49,7 +50,7 @@ namespace CassandraMigrationProcessor.Context
             if (_jobs.TryGetValue(jobId, out var cached))
                 return cached;
 
-            try
+            return MigrationHelper.SafeExecute(() =>
             {
                 var filePath = GetJobDefinitionPath(jobId);
                 var json = MigrationJobContext.Store.Read(
@@ -60,12 +61,7 @@ namespace CassandraMigrationProcessor.Context
                     return null;
                 _jobs[jobId] = loadedObject;
                 return loadedObject;
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[WARN] LoadJob({jobId}) failed: {ex.Message}");
-                return null;
-            }
+            }, (MigrationJob?)null, $"LoadJob({jobId})");
         }
 
         public static MigrationJob? GetJob(string jobId)
@@ -92,7 +88,7 @@ namespace CassandraMigrationProcessor.Context
         {
             if (job == null) return false;
 
-            try
+            return MigrationHelper.SafeExecute(() =>
             {
                 lock (_writeJobLock)
                 {
@@ -109,12 +105,7 @@ namespace CassandraMigrationProcessor.Context
                     }
                 }
                 return true;
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[WARN] SaveJob failed: {ex.Message}");
-                return false;
-            }
+            }, false, "SaveJob");
         }
 
         internal static void PersistActiveJobUnderLock()

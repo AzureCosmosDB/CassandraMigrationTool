@@ -68,6 +68,32 @@ namespace CassandraMigrationProcessor.Persistence
         }
 
         /// <summary>
+        /// Executes an action and returns a fallback value on failure, logging the error.
+        /// Consolidates the repeated try/catch-log-return pattern across persistence methods.
+        /// </summary>
+        private T SafeExecute<T>(Func<T> action, T fallback, string operation)
+        {
+            try { return action(); }
+            catch (Exception ex)
+            {
+                MigrationHelper.LogToFile($"[DiskPersistence] {operation}: {ex.Message}", "DiskPersistence.txt");
+                return fallback;
+            }
+        }
+
+        /// <summary>
+        /// Executes a void action, logging any error without re-throwing.
+        /// </summary>
+        private void SafeExecuteVoid(Action action, string operation)
+        {
+            try { action(); }
+            catch (Exception ex)
+            {
+                MigrationHelper.LogToFile($"[DiskPersistence] {operation}: {ex.Message}", "DiskPersistence.txt");
+            }
+        }
+
+        /// <summary>
         /// Gets the file path for a document id.
         /// Handles hierarchical IDs like "job1\mu1.json" by creating folder structure.
         /// The ID should include the .json extension for files.
@@ -156,17 +182,11 @@ namespace CassandraMigrationProcessor.Persistence
             if (!id.EndsWith(FILE_EXTENSION))
                 throw new ArgumentException($"ID must end with {FILE_EXTENSION} extension", nameof(id));
 
-            try
+            return SafeExecute(() =>
             {
                 var filePath = GetFilePath(id);
-                // Use StorageStreamFactory for blob storage support
                 return StorageStreamFactory.WriteAllText(filePath, jsonContent);
-            }
-            catch (Exception ex)
-            {
-                MigrationHelper.LogToFile($"[DiskPersistence] Error upserting document {id}. Details: {ex}", "DiskPersistence.txt");
-                return false;
-            }
+            }, false, $"Write({id})");
         }
 
         /// <summary>
@@ -184,17 +204,11 @@ namespace CassandraMigrationProcessor.Persistence
             if (!id.EndsWith(FILE_EXTENSION))
                 throw new ArgumentException($"ID must end with {FILE_EXTENSION} extension", nameof(id));
 
-            try
+            return SafeExecute<string?>(() =>
             {
                 var filePath = GetFilePath(id);
-                // Use StorageStreamFactory for blob storage support
                 return StorageStreamFactory.ReadAllText(filePath);
-            }
-            catch (Exception ex)
-            {
-                MigrationHelper.LogToFile($"[DiskPersistence] Error reading document {id}. Details: {ex}", "DiskPersistence.txt");
-                return null;
-            }
+            }, null, $"Read({id})");
         }
 
         /// <summary>
@@ -212,15 +226,11 @@ namespace CassandraMigrationProcessor.Persistence
             if (!id.EndsWith(FILE_EXTENSION))
                 throw new ArgumentException($"ID must end with {FILE_EXTENSION} extension", nameof(id));
 
-            try
+            return SafeExecute(() =>
             {
                 var filePath = GetFilePath(id);
                 return StorageStreamFactory.Exists(filePath);
-            }
-            catch
-            {
-                return false;
-            }
+            }, false, $"Exists({id})");
         }
 
         /// <summary>
@@ -237,11 +247,10 @@ namespace CassandraMigrationProcessor.Persistence
             if (string.IsNullOrWhiteSpace(id))
                 throw new ArgumentException("ID cannot be null or empty", nameof(id));
 
-            try
+            return SafeExecute(() =>
             {
                 if (id.EndsWith(FILE_EXTENSION))
                 {
-                    // Delete file
                     var filePath = GetFilePath(id);
 
                     if (!StorageStreamFactory.Exists(filePath))
@@ -252,16 +261,10 @@ namespace CassandraMigrationProcessor.Persistence
                 }
                 else
                 {
-                    // Delete folder (and all contents)
                     var directoryPath = GetDirectoryPath(id);
                     return StorageStreamFactory.DeleteDirectory(directoryPath, recursive: true);
                 }
-            }
-            catch (Exception ex)
-            {
-                MigrationHelper.LogToFile($"[DiskPersistence] Error deleting document/folder {id}. Details: {ex}", "DiskPersistence.txt");
-                return false;
-            }
+            }, false, $"Delete({id})");
         }
 
         /// <summary>
@@ -273,20 +276,17 @@ namespace CassandraMigrationProcessor.Persistence
         {
             EnsureInitialized();
 
-            try
+            return SafeExecute(() =>
             {
                 var ids = new List<string>();
 
-                // Recursively find all .json files using StorageStreamFactory
                 var files = StorageStreamFactory.ListFiles(_storagePath!, "*" + FILE_EXTENSION, recursive: true);
 
                 foreach (var file in files)
                 {
-                    // Get relative path from storage root
                     string relativePath;
                     if (StorageStreamFactory.UseBlobStorage)
                     {
-                        // For blob storage, the file is already a relative blob name
                         relativePath = file;
                     }
                     else
@@ -294,19 +294,13 @@ namespace CassandraMigrationProcessor.Persistence
                         relativePath = Path.GetRelativePath(_storagePath!, file);
                     }
 
-                    // Convert path separators to backslash for consistency (keep .json extension)
                     var id = relativePath.Replace('/', '\\').Replace(Path.DirectorySeparatorChar, '\\');
 
                     ids.Add(id);
                 }
 
                 return ids;
-            }
-            catch (Exception ex)
-            {
-                MigrationHelper.LogToFile($"[DiskPersistence] Error listing document IDs. Details: {ex}", "DiskPersistence.txt");
-                return new List<string>();
-            }
+            }, new List<string>(), "ListIds");
         }
 
 
@@ -319,17 +313,12 @@ namespace CassandraMigrationProcessor.Persistence
             if (!_isInitialized || string.IsNullOrEmpty(_storagePath))
                 return false;
 
-            try
+            return SafeExecute(() =>
             {
-                // For blob storage, assume connection is valid if initialized
                 if (StorageStreamFactory.UseBlobStorage)
                     return true;
                 return Directory.Exists(_storagePath);
-            }
-            catch
-            {
-                return false;
-            }
+            }, false, "TestConnection");
         }
 
         /// <summary>
@@ -350,7 +339,7 @@ namespace CassandraMigrationProcessor.Persistence
             if (logObject == null)
                 throw new ArgumentNullException(nameof(logObject));
 
-            try
+            SafeExecuteVoid(() =>
             {
                 var folder = Path.Combine(_storagePath, "migrationlogs");
                 var binPath = Path.Combine(folder, $"{jobId}.bin");
@@ -365,13 +354,7 @@ namespace CassandraMigrationProcessor.Persistence
                 bw.Write(messageBytes);
                 bw.Write((byte)logObject.Type);
                 bw.Write(logObject.Datetime.ToBinary());
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine(
-                    $"PushLogEntry ERROR: {ex.GetType().Name}: {ex.Message} " +
-                    $"path={Path.Combine(_storagePath ?? "null", "migrationlogs", jobId + ".bin")}");
-            }
+            }, $"PushLogEntry({jobId})");
         }
 
         public int GetLogCount(string id)
@@ -382,9 +365,9 @@ namespace CassandraMigrationProcessor.Persistence
             if (!StorageStreamFactory.Exists(binPath))
                 return 0;
 
-            int count = 0;
-            try
+            return SafeExecute(() =>
             {
+                int count = 0;
                 using var fs = StorageStreamFactory.OpenReadShared(binPath);
                 if (fs == null) return 0;
                 using var br = new BinaryReader(fs);
@@ -412,13 +395,9 @@ namespace CassandraMigrationProcessor.Persistence
                         break;
                     }
                 }
-            }
-            catch (Exception)
-            {
-                return 0;
-            }
 
-            return count;
+                return count;
+            }, 0, $"GetLogCount({id})");
         }
 
         public byte[] DownloadLogsPaginated(string id, int skip, int take)
@@ -431,10 +410,10 @@ namespace CassandraMigrationProcessor.Persistence
             if (!StorageStreamFactory.Exists(binPath))
                 return Array.Empty<byte>();
 
-            try
+            SafeExecuteVoid(() =>
             {
                 using var fs = StorageStreamFactory.OpenReadShared(binPath);
-                if (fs == null) return Array.Empty<byte>();
+                if (fs == null) return;
                 using var br = new BinaryReader(fs);
 
                 // First pass: collect all offsets
@@ -474,11 +453,7 @@ namespace CassandraMigrationProcessor.Persistence
                     if (MigrationLog != null)
                         logBucket.Logs!.Add(MigrationLog);
                 }
-            }
-            catch (Exception ex)
-            {
-                MigrationHelper.LogToFile($"Error reading paginated logs. Details: {ex}", "DiskPersistence.txt");
-            }
+            }, $"DownloadLogsPaginated({id})");
 
             // Format logs
             var sb = new System.Text.StringBuilder();
@@ -629,10 +604,10 @@ namespace CassandraMigrationProcessor.Persistence
             if (!StorageStreamFactory.Exists(binPath))
                 return logBucket;
 
-            try
+            SafeExecuteVoid(() =>
             {
                 using var fs = StorageStreamFactory.OpenReadShared(binPath);
-                if (fs == null) return logBucket;
+                if (fs == null) return;
                 using var br = new BinaryReader(fs);
 
                 // First pass: collect offsets of valid MigrationLog entries
@@ -698,11 +673,7 @@ namespace CassandraMigrationProcessor.Persistence
                     if (MigrationLog != null)
                         logBucket.Logs!.Add(MigrationLog);
                 }
-            }
-            catch (Exception ex)
-            {
-                MigrationHelper.LogToFile($"Error parsing binary MigrationLog file. Details: {ex}", "DiskPersistence.txt");
-            }
+            }, "ParseLogBinFile");
 
             return logBucket;
         }
@@ -711,7 +682,7 @@ namespace CassandraMigrationProcessor.Persistence
         {
             const int MaxReasonableLength = 1_000_000;
 
-            try
+            return SafeExecute<LogObject?>(() =>
             {
                 if (br.BaseStream.Position + 4 > br.BaseStream.Length)
                     return null;
@@ -719,21 +690,15 @@ namespace CassandraMigrationProcessor.Persistence
                 int len = br.ReadInt32();
 
                 if (len < 0 || len > MaxReasonableLength)
-                {
                     return null;
-                }
 
                 long requiredBytes = len + 1 + 8;
                 if (br.BaseStream.Position + requiredBytes > br.BaseStream.Length)
-                {
                     return null;
-                }
 
                 byte[] bytes = br.ReadBytes(len);
                 if (bytes.Length != len)
-                {
                     return null;
-                }
 
                 string msg = Encoding.UTF8.GetString(bytes);
                 byte typeByte = br.ReadByte();
@@ -742,12 +707,7 @@ namespace CassandraMigrationProcessor.Persistence
                 DateTime datetime = DateTime.FromBinary(dateBinary);
 
                 return new LogObject(type, msg) { Datetime = datetime };
-            }
-            catch (Exception ex)
-            {
-                MigrationHelper.LogToFile($"Exception while reading MigrationLog entry. Details: {ex}", "DiskPersistence.txt");
-                return null;
-            }
+            }, null, "TryReadLogEntry");
         }
 
         private string CreateFileCopyWithTimestamp(string sourceFilePath)
@@ -787,7 +747,7 @@ namespace CassandraMigrationProcessor.Persistence
             if (string.IsNullOrWhiteSpace(jobId))
                 throw new ArgumentException("Job ID cannot be null or empty", nameof(jobId));
 
-            try
+            return SafeExecute(() =>
             {
                 var folder = Path.Combine(_storagePath!, "migrationlogs");
                 var binPath = Path.Combine(folder, $"{jobId}.bin");
@@ -795,18 +755,13 @@ namespace CassandraMigrationProcessor.Persistence
                 if (StorageStreamFactory.Exists(binPath))
                 {
                     StorageStreamFactory.DeleteIfExists(binPath);
-                    return 1;
+                    return 1L;
                 }
                 else
                 {
-                    return 0;
+                    return 0L;
                 }
-            }
-            catch (Exception ex)
-            {
-                MigrationHelper.LogToFile($"[DiskPersistence] Error deleting logs for job {jobId}. Details: {ex}", "DiskPersistence.txt");
-                return -1;
-            }
+            }, -1L, $"DeleteLogs({jobId})");
         }
 
     }

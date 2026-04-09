@@ -54,6 +54,33 @@ namespace CassandraMigrationProcessor.Helpers
             }
         }
 
+        /// <summary>
+        /// Disposes an object, swallowing and logging any exception.
+        /// Use instead of try { obj?.Dispose(); } catch { ... } blocks.
+        /// </summary>
+        public static void SafeDispose(IDisposable? obj, string name)
+        {
+            try { obj?.Dispose(); }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"[WARN] {name} dispose failed: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Executes an action, returning a fallback on failure.
+        /// Shared helper for the repeated try/catch-warn-return pattern.
+        /// </summary>
+        public static T SafeExecute<T>(Func<T> action, T fallback, string operation)
+        {
+            try { return action(); }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[WARN] {operation}: {ex.Message}");
+                return fallback;
+            }
+        }
+
         #endregion
 
         public static string GenerateMigrationUnitId(
