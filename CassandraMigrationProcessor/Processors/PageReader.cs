@@ -37,11 +37,18 @@ namespace CassandraMigrationProcessor.Processors
 
         public void Dispose() => MigrationHelper.SafeDispose(_sourceSession, "PageReader source session");
 
+        /// <summary>Result of a page read attempt.</summary>
+        internal class ReadResult
+        {
+            public List<object[]> Rows { get; init; } = new();
+            public CopyProcessor.WorkChunk? WorkChunk { get; init; }
+            public bool IsLastPage { get; init; }
+        }
+
         /// <summary>
-        /// Reads a single page, updates partition state and
-        /// tracker. Returns null rows on fatal read failure.
+        /// Reads a single page, updates partition state and tracker.
         /// </summary>
-        public async Task<(List<object[]>? rows, CopyProcessor.WorkChunk? workChunk, bool isLastPage)>
+        public async Task<ReadResult?>
             ReadAsync(CopyProcessor.Partition partition, CopyProcessor.PipelineContext ctx)
         {
             var stopwatch = Stopwatch.StartNew();
@@ -74,7 +81,7 @@ namespace CassandraMigrationProcessor.Processors
             if (resultSet == null)
             {
                 ctx.WorkerErrors.Add(TaskResult.Retry);
-                return (null, null, true);
+                return null;
             }
 
             byte[]? nextPaging = resultSet.PagingState;
@@ -101,7 +108,7 @@ namespace CassandraMigrationProcessor.Processors
             var workChunk = partition.AddChunkAndTrim(nextPaging);
             if (isLastPage) partition.IsExhausted = true;
 
-            return (rows, workChunk, isLastPage);
+            return new ReadResult { Rows = rows, WorkChunk = workChunk, IsLastPage = isLastPage };
         }
 
         internal static string BuildSelectCql(ProcessorContext context, string range) =>

@@ -92,32 +92,29 @@ namespace CassandraMigrationProcessor.Processors
                     var partition = await TakeNextPartitionAsync(ctx);
                     if (partition == null) break;
 
-                    if (partition.IsExhausted)
-                    {
-                        MarkRangeCompleted(partition, ctx);
-                        continue;
-                    }
-
                     try
                     {
-                        var (rows, workChunk, isLastPage) = await reader.ReadAsync(partition, ctx);
-
-                        if (rows == null)
+                        if (!partition.IsExhausted)
                         {
-                            _log.WriteLine($"[W{workerId}] FATAL: Read failed — failing job", LogType.Error);
-                            Interlocked.Exchange(ref ctx.FatalErrorFlag, 1);
-                            SafeCancel();
-                            break;
+                            var result = await reader.ReadAsync(partition, ctx);
+
+                            if (result == null)
+                            {
+                                _log.WriteLine($"[W{workerId}] FATAL: Read failed — failing job", LogType.Error);
+                                Interlocked.Exchange(ref ctx.FatalErrorFlag, 1);
+                                SafeCancel();
+                                break;
+                            }
+
+                            if (!result.IsLastPage)
+                                await ctx.PartitionPool.Writer.WriteAsync(partition, _cancellation.Token);
+
+                            await writer.WriteAsync(result.Rows, result.WorkChunk!, ctx);
                         }
 
-                        // Recycle partition for next page read
-                        if (!isLastPage)
-                            await ctx.PartitionPool.Writer.WriteAsync(partition, _cancellation.Token);
-
-                        await writer.WriteAsync(rows, workChunk!, ctx);
-
+                        // Always save checkpoint; additionally mark completed if exhausted
+                        SavePartitionCheckpoint(partition, ctx);
                         if (partition.IsExhausted) MarkRangeCompleted(partition, ctx);
-                        else SavePartitionCheckpoint(partition, ctx);
                     }
                     catch (OperationCanceledException)
                     {
