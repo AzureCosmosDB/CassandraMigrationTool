@@ -36,7 +36,7 @@ namespace CassandraMigrationProcessor.Processors
 
         private async Task<PartitionStageResult?> SeedPartitionsAsync(
             MigrationUnit migrationUnit, List<string> feedRanges,
-            int workerCount, string keyspace, string table)
+            string keyspace, string table)
         {
             var completed = migrationUnit.CompletedCopyFeedRanges;
             var checkpoints = migrationUnit.CopyFeedRangeCheckpoints;
@@ -55,10 +55,9 @@ namespace CassandraMigrationProcessor.Processors
                 return null;
             }
 
-            _log.WriteLine($"Pipeline copy: {pendingRanges.Count} ranges ({completed.Count} already done), {workerCount} workers for {keyspace}.{table}", LogType.Info);
+            _log.WriteLine($"Pipeline copy: {pendingRanges.Count} ranges ({completed.Count} already done) for {keyspace}.{table}", LogType.Info);
 
-            var pool = Channel.CreateBounded<Partition>(new BoundedChannelOptions(
-                    pendingRanges.Count + workerCount)
+            var pool = Channel.CreateBounded<Partition>(new BoundedChannelOptions(pendingRanges.Count)
                 { FullMode = BoundedChannelFullMode.Wait });
 
             int resumedCount = 0;
@@ -98,7 +97,7 @@ namespace CassandraMigrationProcessor.Processors
 
             // ── Stage 1: Partition seeding ──
             var partitions = await SeedPartitionsAsync(
-                migrationUnit, feedRanges, workerCount,
+                migrationUnit, feedRanges,
                 processorContext.KeyspaceName, processorContext.TableName);
             if (partitions == null)
                 return TaskResult.Success;
