@@ -44,13 +44,13 @@ namespace CassandraMigrationProcessor.Processors
                 while (!_cancellation.Token.IsCancellationRequested
                     && Volatile.Read(ref ctx.FatalErrorFlag) == 0)
                 {
-                    Partition partition;
-                    try
-                    {
-                        partition = await ctx.PartitionPool.Reader.ReadAsync(_cancellation.Token);
-                    }
+                    bool available;
+                    try { available = await ctx.PartitionPool.Reader.WaitToReadAsync(_cancellation.Token); }
                     catch (OperationCanceledException) { break; }
-                    catch (ChannelClosedException) { break; }
+                    if (!available) break; // channel completed
+
+                    if (!ctx.PartitionPool.Reader.TryRead(out var partition))
+                        continue;
 
                     if (_cancellation.Token.IsCancellationRequested
                         || Volatile.Read(ref ctx.FatalErrorFlag) != 0)
