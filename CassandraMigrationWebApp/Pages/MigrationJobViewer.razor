@@ -195,7 +195,7 @@
                         <i class="bi bi-cpu"></i>
                         <strong>Workers/table:</strong> @(sj.MaxFeedRangeParallelism > 0 ? sj.MaxFeedRangeParallelism.ToString() : $"auto ({Math.Max(4, Environment.ProcessorCount * 15 / Math.Max(1, sj.ParallelThreads))})")
                         · <strong>Parallel tables:</strong> @sj.ParallelThreads
-                        · <strong>Connections/host:</strong> @(sj.MaxConnectionsPerHost > 0 ? sj.MaxConnectionsPerHost.ToString() : "8")
+                        · <strong>Connections/host:</strong> @(sj.MaxConnectionsPerHost > 0 ? sj.MaxConnectionsPerHost.ToString() : "1")
                         · <strong>Page size:</strong> @(sj.PageSize > 0 ? sj.PageSize.ToString() : "500")
                     </small>
                 </div>

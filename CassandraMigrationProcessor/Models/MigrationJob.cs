@@ -139,7 +139,7 @@ namespace CassandraMigrationProcessor
 
         /// <summary>
         /// Max Cassandra driver connections per host.
-        /// 0 = default (8 local, 4 remote).
+        /// 0 = default (1 per worker session).
         /// </summary>
         public int MaxConnectionsPerHost { get; set; } = 0;
 

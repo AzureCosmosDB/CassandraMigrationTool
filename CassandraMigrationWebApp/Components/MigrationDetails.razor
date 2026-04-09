@@ -178,8 +178,8 @@
                         </div>
                         <div class="row mb-3">
                             <div class="col-md-6">
-                                <label for="connectionsPerHost" class="form-label" title="Max Cassandra driver connections per host on target. 0 = default (8). Higher values increase throughput but need more resources.">Connections per host</label>
-                                <input type="number" id="connectionsPerHost" class="form-control" @bind="connectionsPerHost" min="0" max="128" placeholder="Default (8)"/>
+                                <label for="connectionsPerHost" class="form-label" title="Cassandra driver connections per host per worker. 0 = default (1).">Connections per host</label>
+                                <input type="number" id="connectionsPerHost" class="form-control" @bind="connectionsPerHost" min="0" max="128" placeholder="Default (1)"/>
                             </div>
                         </div>
                         <div class="row mb-3">

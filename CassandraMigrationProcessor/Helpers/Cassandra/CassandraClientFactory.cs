@@ -451,7 +451,7 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
             int maxConnectionsPerHost = 0)
         {
             int localMax = maxConnectionsPerHost > 0
-                ? maxConnectionsPerHost : 8;
+                ? maxConnectionsPerHost : 1;
             int localCore = Math.Max(1, localMax / 2);
             int remoteMax = Math.Max(1, localMax / 2);
             int remoteCore = Math.Max(1, remoteMax / 2);
