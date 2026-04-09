@@ -1,7 +1,7 @@
 using Cassandra;
-using CassandraMigrationProcessor.Context;
 using CassandraMigrationProcessor.Helpers;
 using CassandraMigrationProcessor.Models;
+using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Threading;
@@ -13,28 +13,31 @@ namespace CassandraMigrationProcessor.Processors
     /// Reads a single page from the source Cassandra cluster,
     /// extracting row values for downstream writing.
     /// </summary>
-    internal class PageReader
+    internal class PageReader : IDisposable
     {
         private readonly MigrationLog _log;
         private readonly CancellationTokenSource _cancellation;
+        private readonly ISession _sourceSession;
 
         private const int ReadTimeoutMs = 60_000;
         private const int MaxReadRetries = 3;
         private const int RetryDelayMs = 5000;
 
-        public PageReader(MigrationLog log, CancellationTokenSource cancellation)
+        public PageReader(MigrationLog log, CancellationTokenSource cancellation, ISession sourceSession)
         {
             _log = log;
             _cancellation = cancellation;
+            _sourceSession = sourceSession;
         }
+
+        public void Dispose() => MigrationHelper.SafeDispose(_sourceSession, "PageReader source session");
 
         /// <summary>
         /// Reads a single page, updates partition state and
         /// tracker. Returns null rows on fatal read failure.
         /// </summary>
         public async Task<(List<object[]>? rows, CopyProcessor.WorkChunk? workChunk, bool isLastPage)>
-            ReadAsync(CopyProcessor.Partition partition, ISession sourceSession,
-                CopyProcessor.PipelineContext ctx, int workerId)
+            ReadAsync(CopyProcessor.Partition partition, CopyProcessor.PipelineContext ctx, int workerId)
         {
             var stopwatch = Stopwatch.StartNew();
             var stmt = new SimpleStatement(BuildSelectCql(ctx.Context, partition.FeedRange));
@@ -51,7 +54,7 @@ namespace CassandraMigrationProcessor.Processors
             {
                 try
                 {
-                    resultSet = await sourceSession.ExecuteAsync(stmt);
+                    resultSet = await _sourceSession.ExecuteAsync(stmt);
                     break;
                 }
                 catch (System.Exception ex) when (attempt < MaxReadRetries

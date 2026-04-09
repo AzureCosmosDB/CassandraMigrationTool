@@ -17,7 +17,7 @@ namespace CassandraMigrationProcessor.Processors
         private void SafeCancel()
         {
             try { _cancellation.Cancel(); }
-            catch (Exception ex) { Console.WriteLine($"[WARN] CopyProcessor cancel failed: {ex.Message}"); }
+            catch (Exception ex) { Console.Error.WriteLine($"[WARN] CopyProcessor cancel failed: {ex.Message}"); }
         }
 
         private static void SavePartitionCheckpoint(Partition partition, PipelineContext ctx)
@@ -78,17 +78,17 @@ namespace CassandraMigrationProcessor.Processors
         private async Task RunWorkerAsync(int workerId, PipelineContext ctx)
         {
             ctx.Tracker.WorkerStarted();
-            ISession? workerTargetSession = null;
-            ISession? workerSourceSession = null;
+            PageReader? reader = null;
+            PageWriter? writer = null;
             try
             {
                 var job = ctx.Job;
-                workerTargetSession = CassandraClientFactory.CreateTargetSession(_log, job.TargetConnection, "");
-                workerSourceSession = CassandraClientFactory.CreateSourceSession(_log, job.SourceConnection, ctx.Context.KeyspaceName);
-                var reader = new PageReader(_log, _cancellation);
-                var writer = new PageWriter(_log, _cancellation);
+                var sourceSession = CassandraClientFactory.CreateSourceSession(_log, job.SourceConnection, ctx.Context.KeyspaceName);
+                var targetSession = CassandraClientFactory.CreateTargetSession(_log, job.TargetConnection, "");
                 var (preparedInsert, _) = await CassandraHelper.PrepareInsertAsync(
-                    workerTargetSession, ctx.Context.TargetKeyspaceName, ctx.Context.TargetTableName, ctx.Columns);
+                    targetSession, ctx.Context.TargetKeyspaceName, ctx.Context.TargetTableName, ctx.Columns);
+                reader = new PageReader(_log, _cancellation, sourceSession);
+                writer = new PageWriter(_log, _cancellation, targetSession, preparedInsert);
 
                 while (!_cancellation.Token.IsCancellationRequested && Volatile.Read(ref ctx.FatalErrorFlag) == 0)
                 {
@@ -104,7 +104,7 @@ namespace CassandraMigrationProcessor.Processors
                     try
                     {
                         var (rows, workChunk, isLastPage) = await reader.ReadAsync(
-                            partition, workerSourceSession!, ctx, workerId);
+                            partition, ctx, workerId);
 
                         if (rows == null)
                         {
@@ -116,12 +116,9 @@ namespace CassandraMigrationProcessor.Processors
 
                         // Recycle partition for next page read
                         if (!isLastPage)
-                        {
-                            try { await ctx.PartitionPool.Writer.WriteAsync(partition, _cancellation.Token); }
-                            catch (OperationCanceledException) { partition.IsExhausted = true; }
-                        }
+                            await ctx.PartitionPool.Writer.WriteAsync(partition, _cancellation.Token);
 
-                        await writer.WriteAsync(rows, preparedInsert, workerTargetSession!, workChunk!, ctx, workerId);
+                        await writer.WriteAsync(rows, workChunk!, ctx, workerId);
 
                         if (partition.IsExhausted) MarkRangeCompleted(partition, ctx);
                         else SavePartitionCheckpoint(partition, ctx);
@@ -160,8 +157,8 @@ namespace CassandraMigrationProcessor.Processors
             }
             finally
             {
-                MigrationHelper.SafeDispose(workerTargetSession, "worker target session");
-                MigrationHelper.SafeDispose(workerSourceSession, "worker source session");
+                MigrationHelper.SafeDispose(writer, "worker PageWriter");
+                MigrationHelper.SafeDispose(reader, "worker PageReader");
                 ctx.Tracker.WorkerExited();
             }
         }

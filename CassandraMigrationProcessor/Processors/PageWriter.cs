@@ -13,28 +13,40 @@ namespace CassandraMigrationProcessor.Processors
     /// Writes extracted rows to the target Cassandra cluster
     /// concurrently, tracking latency and errors.
     /// </summary>
-    internal class PageWriter
+    internal class PageWriter : IDisposable
     {
         private readonly MigrationLog _log;
         private readonly CancellationTokenSource _cancellation;
+        private readonly ISession _targetSession;
+        private readonly PreparedStatement _preparedInsert;
 
         private const int WriteTimeoutMs = 60_000;
 
-        public PageWriter(MigrationLog log, CancellationTokenSource cancellation)
+        public PageWriter(MigrationLog log, CancellationTokenSource cancellation, ISession targetSession, PreparedStatement preparedInsert)
         {
             _log = log;
             _cancellation = cancellation;
+            _targetSession = targetSession;
+            _preparedInsert = preparedInsert;
         }
+
+        public void Dispose() => MigrationHelper.SafeDispose(_targetSession, "PageWriter target session");
 
         /// <summary>
         /// Writes extracted rows to the target cluster in
         /// parallel, tracking progress and handling errors.
         /// </summary>
-        public async Task WriteAsync(List<object[]> rows, PreparedStatement preparedInsert, ISession targetSession,
+        public async Task WriteAsync(List<object[]> rows,
             CopyProcessor.WorkChunk workChunk,
             CopyProcessor.PipelineContext ctx,
             int workerId)
         {
+            if (rows.Count == 0)
+            {
+                workChunk.IsCompleted = true;
+                return;
+            }
+
             var stopwatch = Stopwatch.StartNew();
             int writeDone = 0;
             int writeFail = 0;
@@ -47,12 +59,12 @@ namespace CassandraMigrationProcessor.Processors
                     || Volatile.Read(ref ctx.FatalErrorFlag) != 0)
                     break;
 
-                var bound = preparedInsert.Bind(rowValues);
+                var bound = _preparedInsert.Bind(rowValues);
                 bound.SetReadTimeoutMillis(WriteTimeoutMs);
                 bound.SetConsistencyLevel(ConsistencyLevel.LocalOne);
 
                 var writeStart = Stopwatch.GetTimestamp();
-                writeTasks.Add(targetSession.ExecuteAsync(bound).ContinueWith(task =>
+                writeTasks.Add(_targetSession.ExecuteAsync(bound).ContinueWith(task =>
                 {
                     long elapsed = (Stopwatch.GetTimestamp()
                             - writeStart)
@@ -76,7 +88,7 @@ namespace CassandraMigrationProcessor.Processors
                             try { _cancellation.Cancel(); }
                             catch (Exception cancelEx)
                             {
-                                Console.WriteLine($"[WARN] CopyProcessor batch cancel failed: {cancelEx.Message}");
+                                Console.Error.WriteLine($"[WARN] CopyProcessor batch cancel failed: {cancelEx.Message}");
                             }
                         }
                         else if (!ExceptionClassifier.IsTransient(ex))
