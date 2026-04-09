@@ -45,9 +45,9 @@ namespace CassandraMigrationProcessor.Workers
 
         private const int LogIntervalSeconds = 5;
 
-        public long TotalCopied => Interlocked.Read(ref _totalCopied);
-        public long TotalFailed => Interlocked.Read(ref _totalFailed);
-        public long TotalSkipped => Interlocked.Read(ref _totalSkipped);
+        public long TotalCopied => Volatile.Read(ref _totalCopied);
+        public long TotalFailed => Volatile.Read(ref _totalFailed);
+        public long TotalSkipped => Volatile.Read(ref _totalSkipped);
         public int ActiveWorkers => _activeWorkers;
 
         /// <summary>
@@ -182,9 +182,9 @@ namespace CassandraMigrationProcessor.Workers
                 : $"{_recentRowsPerSecond:F0}/s";
 
             long pages = Interlocked.Read(ref _readPages);
-            long readTimeMs = Interlocked.Read(ref _readTimeMs);
-            long writeTimeMs = Interlocked.Read(ref _writeTimeMs);
-            long writeOps = Interlocked.Read(ref _writeOps);
+            long readTimeMs = Volatile.Read(ref _readTimeMs);
+            long writeTimeMs = Volatile.Read(ref _writeTimeMs);
+            long writeOps = Volatile.Read(ref _writeOps);
             long avgReadMs = pages > 0 ? readTimeMs / pages : 0;
             long avgWriteMs = pages > 0 ? writeTimeMs / pages : 0;
             string avgRead = avgReadMs > 0
@@ -192,7 +192,7 @@ namespace CassandraMigrationProcessor.Workers
             string avgWrite = avgWriteMs > 0
                 ? $"{avgWriteMs}ms" : "-";
 
-            long totalB = Interlocked.Read(ref _totalBytes);
+            long totalB = Volatile.Read(ref _totalBytes);
             double mbps = elapsed > 0
                 ? totalB / 1024.0 / 1024.0 / elapsed : 0;
             string throughput = mbps >= 1

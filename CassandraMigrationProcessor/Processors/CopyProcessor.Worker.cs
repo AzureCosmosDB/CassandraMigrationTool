@@ -226,10 +226,9 @@ namespace CassandraMigrationProcessor.Processors
                     }
                     finally
                     {
-                        long written = Interlocked.Read(ref ctx.TotalWritten);
-                        long failed = Interlocked.Read(ref ctx.TotalFailed);
-                        var chunk = ctx.MigrationUnit.MigrationChunks[
-                                ctx.ChunkIndex];
+                        long written = Volatile.Read(ref ctx.TotalWritten);
+                        long failed = Volatile.Read(ref ctx.TotalFailed);
+                        var chunk = ctx.MigrationUnit.MigrationChunks[ctx.ChunkIndex];
                         chunk.SourceResultRowCount = written;
                         chunk.TargetInsertedRowCount = written;
                         chunk.TargetFailedRowCount = failed;
@@ -238,18 +237,16 @@ namespace CassandraMigrationProcessor.Processors
                         if (ctx.TotalRowCount > 0)
                         {
                             ctx.MigrationUnit.CopyPercent = ctx.InitialPercent +
-                                (Math.Min(99.9, (double)written
-                                    / ctx.TotalRowCount * 100)
+                                (Math.Min(99.9, (double)written / ctx.TotalRowCount * 100)
                                 * ctx.ContributionFactor);
                         }
                         ctx.MigrationUnit.UpdateParentJob();
 
-                        long prevTicks = Interlocked.Read(ref ctx.LastCheckpointTicks);
-                        var now = DateTime.UtcNow;
-                        if ((now.Ticks - prevTicks)
-                            / TimeSpan.TicksPerSecond >= 10
-                            && Interlocked.CompareExchange(ref ctx.LastCheckpointTicks, now.Ticks, prevTicks)
-                                == prevTicks)
+                        // Save checkpoint every 10s
+                        long prevTicks = Volatile.Read(ref ctx.LastCheckpointTicks);
+                        long nowTicks = DateTime.UtcNow.Ticks;
+                        if ((nowTicks - prevTicks) / TimeSpan.TicksPerSecond >= 10
+                            && Interlocked.CompareExchange(ref ctx.LastCheckpointTicks, nowTicks, prevTicks) == prevTicks)
                         {
                             MigrationJobContext.SaveMigrationUnit(ctx.MigrationUnit, true);
                         }

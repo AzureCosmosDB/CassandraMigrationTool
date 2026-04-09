@@ -163,9 +163,9 @@ namespace CassandraMigrationProcessor.Processors
             ctx.PartitionPool.Writer.TryComplete();
 
             ctx.Tracker.LogFinal();
-            long finalWritten = Interlocked.Read(ref ctx.TotalWritten);
-            long finalFailed = Interlocked.Read(ref ctx.TotalFailed);
-            long finalRead = Interlocked.Read(ref ctx.TotalRead);
+            long finalWritten = Volatile.Read(ref ctx.TotalWritten);
+            long finalFailed = Volatile.Read(ref ctx.TotalFailed);
+            long finalRead = Volatile.Read(ref ctx.TotalRead);
             long sessionWritten = finalWritten - priorCopied;
 
             var elapsed = stopwatch.Elapsed;
