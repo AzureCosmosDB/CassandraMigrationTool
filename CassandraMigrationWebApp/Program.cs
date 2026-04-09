@@ -69,6 +69,7 @@ if (!string.IsNullOrEmpty(useLocalDisk))
 builder.Services.AddRazorPages();
 builder.Services.AddServerSideBlazor();
 builder.Services.AddSingleton(builder.Configuration);
+builder.Services.AddSingleton<MigrationContextService>();
 builder.Services.AddSingleton<JobManager>();
 builder.Services.AddScoped<FileService>();
 

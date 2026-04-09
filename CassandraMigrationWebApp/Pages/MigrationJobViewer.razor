@@ -3,12 +3,12 @@
 @using CassandraMigrationWebApp.Components
 @using CassandraMigrationWebApp.Helpers
 @using CassandraMigrationProcessor
-@using CassandraMigrationProcessor.Context
 @using CassandraMigrationProcessor.Helpers
 @using CassandraMigrationProcessor.Models
 @using System.Linq
 
 @inject Service.JobManager JobManager
+@inject Service.MigrationContextService MigrationContext
 @inject NavigationManager NavigationManager
 @inject IJSRuntime JS
 @inject Service.FileService FileService
@@ -246,7 +246,7 @@
 }
 @if (_collectionDetailsDialogOpen && _selectedMigrationUnit != null)
 {
-    <CollectionDetails MigrationJob="@CurrentlyLoadedMigrationJob" MigrationUnit="@MigrationJobContext.GetMigrationUnit(_selectedMigrationUnit.Id, CurrentlyLoadedMigrationJob.Id)" OnClose="HandleCollectionDetailsClose" />
+    <CollectionDetails MigrationJob="@CurrentlyLoadedMigrationJob" MigrationUnit="@MigrationContext.GetUnit(_selectedMigrationUnit.Id, CurrentlyLoadedMigrationJob.Id)" OnClose="HandleCollectionDetailsClose" />
 }
 
 @* Collections Loading Spinner *@
@@ -623,7 +623,7 @@ else if (@_showLogBackupFile)
     public MigrationJob? CurrentlyLoadedMigrationJob
     {   get
         {
-            return MigrationJobContext.GetMigrationJob(JobId);
+            return MigrationContext.GetJob(JobId);
         }
     }
 
@@ -634,12 +634,12 @@ else if (@_showLogBackupFile)
     /// </summary>
     private string GetSourceConnectionString(MigrationJob job)
     {
-        if (MigrationJobContext.SourceConnectionString.TryGetValue(job.Id, out var val) && !string.IsNullOrEmpty(val))
+        if (MigrationContext.SourceConnectionString.TryGetValue(job.Id, out var val) && !string.IsNullOrEmpty(val))
             return val;
         // Reconstruct from persisted job data
         var cs = job.SourceContactPoint ?? string.Empty;
         if (!string.IsNullOrEmpty(cs))
-            MigrationJobContext.SourceConnectionString[job.Id] = cs;
+            MigrationContext.SourceConnectionString[job.Id] = cs;
         return cs;
     }
 
@@ -648,11 +648,11 @@ else if (@_showLogBackupFile)
     /// </summary>
     private string GetTargetConnectionString(MigrationJob job)
     {
-        if (MigrationJobContext.TargetConnectionString.TryGetValue(job.Id, out var val) && !string.IsNullOrEmpty(val))
+        if (MigrationContext.TargetConnectionString.TryGetValue(job.Id, out var val) && !string.IsNullOrEmpty(val))
             return val;
         var cs = job.TargetContactPoint ?? string.Empty;
         if (!string.IsNullOrEmpty(cs))
-            MigrationJobContext.TargetConnectionString[job.Id] = cs;
+            MigrationContext.TargetConnectionString[job.Id] = cs;
         return cs;
     }
 
@@ -871,7 +871,7 @@ else if (@_showLogBackupFile)
 
     private string GetTimeSinceLastBatch(MigrationJob job,MigrationUnitBasic mu)
     {
-        MigrationUnit migrationUnit = MigrationJobContext.GetMigrationUnit(mu.Id, job.Id);
+        MigrationUnit migrationUnit = MigrationContext.GetUnit(mu.Id, job.Id);
 
         if (migrationUnit == null || migrationUnit.ChangeFeedLastChecked == null || migrationUnit.ChangeFeedLastChecked == DateTime.MinValue)
             return "NA";
@@ -881,7 +881,7 @@ else if (@_showLogBackupFile)
 
     private DateTime GetSortValueForLastBatch(MigrationUnitBasic mu)
     {
-        MigrationUnit migrationUnit = MigrationJobContext.GetMigrationUnit(mu.Id, CurrentlyLoadedMigrationJob.Id);
+        MigrationUnit migrationUnit = MigrationContext.GetUnit(mu.Id, CurrentlyLoadedMigrationJob.Id);
 
         if (migrationUnit == null || migrationUnit.ChangeFeedLastChecked == null || migrationUnit.ChangeFeedLastChecked == DateTime.MinValue)
             return DateTime.MinValue;
@@ -1033,7 +1033,7 @@ else if (@_showLogBackupFile)
     {
         if (CurrentlyLoadedMigrationJob != null && Enum.TryParse<LogType>(e.Value?.ToString(), out var newLogLevel))
         {
-            MigrationJobContext.UpdateLogLevel(newLogLevel, CurrentlyLoadedMigrationJob);
+            MigrationContext.UpdateLogLevel(newLogLevel, CurrentlyLoadedMigrationJob);
             await InvokeAsync(StateHasChanged);
         }
     }
@@ -1162,7 +1162,7 @@ else if (@_showLogBackupFile)
     private List<MigrationJob> GetMigrations()
     {
         var ids = JobManager.GetMigrationIds();
-        var list = MigrationJobContext.PopulateMigrationJobs(ids);
+        var list = MigrationContext.PopulateJobs(ids);
         return list;
     }
 
@@ -1417,7 +1417,7 @@ else if (@_showLogBackupFile)
                 // BB-1 fix: Tell user why job can't start
                 string activeId = JobManager?.GetRunningJobId() ?? string.Empty;
                 var activeJob = !string.IsNullOrEmpty(activeId)
-                    ? MigrationJobContext.GetMigrationJob(activeId)
+                    ? MigrationContext.GetJob(activeId)
                     : null;
                 string activeName = activeJob?.Name ?? activeId;
                 _errorMessage = $"Another migration job \"{activeName}\" is currently running. "
@@ -1467,10 +1467,10 @@ else if (@_showLogBackupFile)
         mj.SourceUseAad = job.SourceUseAad;
 
         if (!string.IsNullOrEmpty(sourceConnectionString))
-            MigrationJobContext.SourceConnectionString[mj.Id] = sourceConnectionString;
+            MigrationContext.SourceConnectionString[mj.Id] = sourceConnectionString;
 
         if (!string.IsNullOrEmpty(targetConnectionString))
-            MigrationJobContext.TargetConnectionString[mj.Id] = targetConnectionString;
+            MigrationContext.TargetConnectionString[mj.Id] = targetConnectionString;
 
         mj.Status = JobStatus.Running;
 
@@ -1478,10 +1478,10 @@ else if (@_showLogBackupFile)
             mj.StartedOn = DateTime.UtcNow;
 
         // Clear pending auto-start flag so it doesn't fire again
-        MigrationJobContext.PendingAutoStartJobIds.TryRemove(mj.Id, out _);
+        MigrationContext.PendingAutoStartJobIds.TryRemove(mj.Id, out _);
 
-        MigrationJobContext.SaveMigrationJob(mj);
-        MigrationJobContext.SaveJobList();
+        MigrationContext.SaveJob(mj);
+        MigrationContext.SaveJobList();
 
 
         // Check if we should show the loading spinner
@@ -1595,7 +1595,7 @@ else if (@_showLogBackupFile)
         // BB-2 fix: After page refresh, double-check the
         // static ActiveMigrationJobId in case the singleton
         // JobManager's state is stale for this job ID.
-        if (MigrationJobContext.ActiveMigrationJobId == JobId)
+        if (MigrationContext.ActiveMigrationJobId == JobId)
         {
             var job = CurrentlyLoadedMigrationJob;
             if (job != null && job.Status != JobStatus.Cancelled && job.Status != JobStatus.Completed)
@@ -1655,8 +1655,8 @@ else if (@_showLogBackupFile)
             foreach (var tobDel in delList)
             {
                 tobDel.ParentJob = CurrentlyLoadedMigrationJob;
-                UnitStore.RemoveUnit(tobDel);
-                MigrationJobContext.MigrationUnitsCache?.RemoveMigrationUnit(tobDel.Id);//remove from cache
+                MigrationContext.RemoveUnit(tobDel);
+                MigrationContext.MigrationUnitsCache?.RemoveMigrationUnit(tobDel.Id);//remove from cache
             }
 
             foreach (var mu in migrationUnits)
@@ -1669,7 +1669,7 @@ else if (@_showLogBackupFile)
             // {
             //     if (!CurrentlyLoadedMigrationJob.Tables.Any(x => x.DatabaseName == mu.DatabaseName && x.CollectionName == mu.CollectionName))
             //     {
-            //         MigrationJobContext.SaveMigrationUnit(mu,false);
+            //         MigrationContext.SaveUnit(mu,false);
             //         //CurrentlyLoadedMigrationJob.Tables.Add(mu.GetBasic());
             //         Helper.AddMigrationUnit(mu, CurrentlyLoadedMigrationJob);
             //     }
@@ -1682,7 +1682,7 @@ else if (@_showLogBackupFile)
 
             CurrentlyLoadedMigrationJob.Namespaces = string.Join(",", migrationUnits.Select(mu => $"{mu.KeyspaceName}.{mu.TableName}"));
 
-            MigrationJobContext.SaveMigrationJob(CurrentlyLoadedMigrationJob);
+            MigrationContext.SaveJob(CurrentlyLoadedMigrationJob);
 
             Refresh(null);
         }
@@ -1700,28 +1700,28 @@ else if (@_showLogBackupFile)
             if (result.DiaLogType == YesNoDialog.Category.CutoverNot
                 || result.DiaLogType == YesNoDialog.Category.CompleteNot)
             {
-                MigrationJobContext.AddVerboseLog($"YesNoDialogSubmit Cutover {result.DiaLogType}");
+                MigrationContext.AddVerboseLog($"YesNoDialogSubmit Cutover {result.DiaLogType}");
                 JobManager.StopMigration();                
                 if (CurrentlyLoadedMigrationJob != null)
                 {
                     CurrentlyLoadedMigrationJob.Status = JobStatus.Completed;
                 }
 
-                if (MigrationJobContext.SaveMigrationJob(CurrentlyLoadedMigrationJob))
+                if (MigrationContext.SaveJob(CurrentlyLoadedMigrationJob))
                     return;
 
                 _refreshTimer = null;
             }
             else if (result.DiaLogType == YesNoDialog.Category.CancelNot)
             {
-                MigrationJobContext.AddVerboseLog($"YesNoDialogSubmit Cancel {result.DiaLogType}");
+                MigrationContext.AddVerboseLog($"YesNoDialogSubmit Cancel {result.DiaLogType}");
                 JobManager.StopMigration();                
                 if (CurrentlyLoadedMigrationJob != null)
                 {
                     CurrentlyLoadedMigrationJob.Status = JobStatus.Cancelled;
                 }
 
-                if (MigrationJobContext.SaveMigrationJob(CurrentlyLoadedMigrationJob))
+                if (MigrationContext.SaveJob(CurrentlyLoadedMigrationJob))
                     return;
 
                 _refreshTimer = null;
@@ -1736,16 +1736,16 @@ else if (@_showLogBackupFile)
         // won't downgrade from Paused to Pending
         if (CurrentlyLoadedMigrationJob != null)
             CurrentlyLoadedMigrationJob.Status = JobStatus.Paused;
-        MigrationJobContext.SaveMigrationJob(CurrentlyLoadedMigrationJob);
+        MigrationContext.SaveJob(CurrentlyLoadedMigrationJob);
         JobManager.StopMigration();
     }
 
     private void PauseJobControlled()
     {
         _errorMessage = string.Empty;
-        MigrationJobContext.RequestControlledPause("UI Button Click");
+        MigrationContext.RequestControlledPause("UI Button Click");
 
-        if (MigrationJobContext.SaveMigrationJob(CurrentlyLoadedMigrationJob))
+        if (MigrationContext.SaveJob(CurrentlyLoadedMigrationJob))
             return;
     }
 
@@ -1755,7 +1755,7 @@ else if (@_showLogBackupFile)
         string activeJob = JobManager?.GetRunningJobId() ?? string.Empty;
         if (activeJob != string.Empty && activeJob != JobId)
         {
-            var job = MigrationJobContext.GetMigrationJob(activeJob);
+            var job = MigrationContext.GetJob(activeJob);
             if (job != null && job.Status != JobStatus.Cancelled && job.Status != JobStatus.Completed)
                 return false;
             else
@@ -1783,7 +1783,7 @@ else if (@_showLogBackupFile)
 
         // Only auto-start if this job was just created
         // from the Index page (in-memory flag, not persisted)
-        if (!MigrationJobContext.PendingAutoStartJobIds
+        if (!MigrationContext.PendingAutoStartJobIds
                 .ContainsKey(CurrentlyLoadedMigrationJob.Id))
             return false;
 
@@ -1814,7 +1814,7 @@ else if (@_showLogBackupFile)
         if (job.Status == JobStatus.Cancelled) return "Cancelled";
         if (IsJobRunning())
         {
-            if (MigrationJobContext.ControlledPauseRequested)
+            if (MigrationContext.ControlledPauseRequested)
                 return "Pausing...";
             return "Running";
         }
@@ -1830,7 +1830,7 @@ else if (@_showLogBackupFile)
         if (job.Status == JobStatus.Cancelled) return "bg-secondary";
         if (IsJobRunning())
         {
-            if (MigrationJobContext.ControlledPauseRequested)
+            if (MigrationContext.ControlledPauseRequested)
                 return "bg-warning text-dark";
             return "bg-primary";
         }

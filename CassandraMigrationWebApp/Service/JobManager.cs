@@ -23,12 +23,14 @@ namespace CassandraMigrationWebApp.Service
         private DateTime _lastJobHeartBeat = DateTime.MinValue;
         private string _lastJobID = string.Empty;
         private readonly IConfiguration _configuration;
+        private readonly MigrationContextService _ctx;
         private string? _webAppBaseUrl = null;
         private readonly SemaphoreSlim _syncBackLock = new SemaphoreSlim(1, 1);
 
-        public JobManager(IConfiguration configuration)
+        public JobManager(IConfiguration configuration, MigrationContextService ctx)
         {
             _configuration = configuration;
+            _ctx = ctx;
 
             MigrationJobContext.Initialize(_configuration);
 
@@ -77,7 +79,7 @@ namespace CassandraMigrationWebApp.Service
             {
                 foreach (var mub in mj.Tables)
                 {
-                    var mu = MigrationJobContext.GetMigrationUnit(mub.Id, mj.Id);
+                    var mu = _ctx.GetUnit(mub.Id, mj.Id);
                     if (mu != null)
                         units.Add(mu);
                 }
@@ -88,23 +90,23 @@ namespace CassandraMigrationWebApp.Service
 
         public MigrationJob? GetMigrationJobById(string id, bool active = true)
         {
-            return MigrationJobContext.GetMigrationJob(id);
+            return _ctx.GetJob(id);
         }
 
         public List<string> GetMigrationIds()
         {
-            return MigrationJobContext.JobList.MigrationJobIds;
+            return _ctx.JobList.MigrationJobIds;
         }
 
         public void ClearJobFiles(string jobId)
         {
-            MigrationJobContext.JobList.MigrationJobIds?.Remove(jobId);
-            MigrationJobContext.SaveJobList();
+            _ctx.JobList.MigrationJobIds?.Remove(jobId);
+            _ctx.SaveJobList();
 
             Task.Run(() =>
             {
-                MigrationJobContext.Store.Delete($"{Path.Combine(JobStore.JobsFolder, jobId)}");
-                MigrationJobContext.Store.DeleteLogs(jobId);
+                _ctx.Store.Delete($"{Path.Combine(JobStore.JobsFolder, jobId)}");
+                _ctx.Store.DeleteLogs(jobId);
 
                 string dumpPath = Path.Combine(WorkingFolderResolver.GetWorkingFolder(), "cassandradump", jobId);
                 if (Directory.Exists(dumpPath))
@@ -211,16 +213,16 @@ namespace CassandraMigrationWebApp.Service
         /// </summary>
         public bool IsControlledPauseRequested()
         {
-            return MigrationJobContext.ControlledPauseRequested;
+            return _ctx.ControlledPauseRequested;
         }
 
         public Task CancelMigration(string id)
         {
-            var migration = MigrationJobContext.GetMigrationJob(id);
+            var migration = _ctx.GetJob(id);
             if (migration != null)
             {
                 migration.Status = JobStatus.Cancelled;
-                MigrationJobContext.SaveMigrationJob(migration);
+                _ctx.SaveJob(migration);
             }
             // Also stop the running pipeline so it doesn't
             // finish and mark the job as completed
@@ -248,8 +250,8 @@ namespace CassandraMigrationWebApp.Service
                 _runningJobId = job.Id;
             }
 
-            MigrationJobContext.SourceConnectionString[job.Id] = sourceConnectionString;
-            MigrationJobContext.TargetConnectionString[job.Id] = targetConnectionString;
+            _ctx.SourceConnectionString[job.Id] = sourceConnectionString;
+            _ctx.TargetConnectionString[job.Id] = targetConnectionString;
 
             // Clear IsStarted on all other jobs so stale flags don't
             // cause unwanted auto-resume after an app recycle.
@@ -260,11 +262,11 @@ namespace CassandraMigrationWebApp.Service
                 if (other != null && other.Status == JobStatus.Running)
                 {
                     other.Status = JobStatus.Pending;
-                    MigrationJobContext.SaveMigrationJob(other);
+                    _ctx.SaveJob(other);
                 }
             }
 
-            MigrationJobContext.ActiveMigrationJobId = job.Id;
+            _ctx.ActiveMigrationJobId = job.Id;
             job.Status = JobStatus.Running;
 
             var config = new MigrationSettings();
@@ -300,10 +302,10 @@ namespace CassandraMigrationWebApp.Service
                 finally
                 {
                     // Determine final status
-                    if (MigrationJobContext.ControlledPauseRequested)
+                    if (_ctx.ControlledPauseRequested)
                     {
                         job.Status = JobStatus.Paused;
-                        MigrationJobContext.ResetControlledPause();
+                        _ctx.ResetControlledPause();
                     }
                     else if (job.Status == JobStatus.Running)
                     {
@@ -316,7 +318,7 @@ namespace CassandraMigrationWebApp.Service
                             job.Status = JobStatus.Pending;
                     }
 
-                    MigrationJobContext.SaveMigrationJob(job);
+                    _ctx.SaveJob(job);
                     _runningJobId = string.Empty;
                 }
             });

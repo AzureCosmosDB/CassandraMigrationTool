@@ -14,12 +14,8 @@ using System.Threading.Tasks;
 namespace CassandraMigrationProcessor.Workers
 {
     /// <summary>
-    /// Orchestrates a Cassandra-to-Cassandra migration:
-    ///   1. Opens source session via CassandraClientFactory
-    ///   2. For each MigrationUnit, creates CopyProcessor
-    ///      and runs the copy
-    ///   3. Optionally starts ChangeFeedProcessor for
-    ///      ongoing replication
+    /// Orchestrates a Cassandra-to-Cassandra migration with table-level
+    /// parallelism and optional change-feed replication.
     /// </summary>
     public class MigrationWorker
     {
@@ -27,23 +23,10 @@ namespace CassandraMigrationProcessor.Workers
         private MigrationProcessor? _activeProcessor;
         private ISession? _sourceSession;
         private int _consecutiveAuthErrors;
+        private readonly ConcurrentDictionary<string, MigrationProcessor> _activeProcessors = new();
 
-        // Parallel table migration: track active processors
-        // per migration unit for concurrent table copies
-        private readonly ConcurrentDictionary<string, MigrationProcessor>
-            _activeProcessors = new();
+        public MigrationWorker(MigrationLog migrationLog) => _log = migrationLog;
 
-        public MigrationWorker(MigrationLog MigrationLog)
-        {
-            _log = MigrationLog;
-        }
-
-        /// <summary>
-        /// Start or resume migration for the active job.
-        /// Processes each <see cref="MigrationUnit"/> with
-        /// table-level parallelism and optional change-feed
-        /// replication.
-        /// </summary>
         public async Task<TaskResult> StartAsync(MigrationJob job, MigrationSettings config,
             CancellationToken cancellationToken)
         {
@@ -53,49 +36,16 @@ namespace CassandraMigrationProcessor.Workers
 
                 if (units == null || units.Count == 0)
                 {
-                    // All tables already copied. If online
-                    // mode, restart the change feed processors
-                    // so pause/resume works correctly.
                     if (MigrationHelper.IsOnline(job)
                         && MigrationHelper.IsOfflineJobCompleted(job)
                         && MigrationHelper.AnyValidTable(job))
-                    {
-                        _log.WriteLine("All tables copied. Resuming change feed processors.", LogType.Info);
-
-                        EnsureSourceSession(job, job.Tables!.First().KeyspaceName);
-
-                        _activeProcessor = new CopyProcessor(_log, _sourceSession!, config, job, this);
-
-                        foreach (var mub in job.Tables)
-                        {
-                            if (!MigrationHelper.IsMigrationUnitValid(mub) || !mub.CopyComplete)
-                                continue;
-                            var mu = MigrationJobContext.GetMigrationUnit(mub.Id);
-                            if (mu != null)
-                                _activeProcessor.AddTableToChangeFeedQueue(mu);
-                        }
-
-                        // Keep worker alive while CF runs
-                        while (!cancellationToken.IsCancellationRequested
-                            && !MigrationJobContext.ControlledPauseRequested)
-                        {
-                            await Task.Delay(2000, cancellationToken);
-                        }
-
-                        return cancellationToken.IsCancellationRequested
-                            ? TaskResult.Canceled
-                            : TaskResult.Success;
-                    }
+                        return await ResumeChangeFeedAsync(job, config, cancellationToken);
 
                     _log.WriteLine("No remaining migration units.", LogType.Warning);
                     return TaskResult.Success;
                 }
 
-                // Determine parallelism: use job setting,
-                // capped to a reasonable max for table-level
-                // concurrency (not row-level).
                 int maxParallel = Math.Max(1, Math.Min(job.ParallelThreads, units.Count));
-
                 _log.WriteLine($"Migrating {units.Count} tables with max parallelism={maxParallel}");
 
                 var abortRequested = false;
@@ -105,74 +55,25 @@ namespace CassandraMigrationProcessor.Workers
                         MaxDegreeOfParallelism = maxParallel,
                         CancellationToken = cancellationToken
                     },
-                    async (migrationUnit, token) =>
+                    async (mu, token) =>
                     {
                         if (MigrationJobContext.ControlledPauseRequested)
                             return;
-
-                        if (Volatile.Read(ref _consecutiveAuthErrors)
-                            >= MigrationDefaults.MaxConsecutiveAuthErrors)
+                        if (Volatile.Read(ref _consecutiveAuthErrors) >= MigrationDefaults.MaxConsecutiveAuthErrors)
                         {
                             abortRequested = true;
                             return;
                         }
-
-                        // Retry on transient 429/overload errors
-                        for (int attempt = 1;
-                            attempt <= MigrationDefaults.MaxTableRetries;
-                            attempt++)
-                        {
-                            try
-                            {
-                                await ProcessMigrationUnitAsync(job, config, migrationUnit, token);
-                                break; // success
-                            }
-                            catch (Exception ex) when (CassandraClientFactory.IsRetryableException(ex)
-                                && attempt < MigrationDefaults.MaxTableRetries)
-                            {
-                                int delayMs = CassandraClientFactory.GetRetryDelayMs(ex, attempt);
-                                _log.WriteLine($"Table retry {attempt} for {migrationUnit.KeyspaceName}.{migrationUnit.TableName}: {ex.Message}",
-                                    LogType.Warning);
-                                await Task.Delay(delayMs, token);
-                            }
-                        }
-
+                        await ProcessWithRetryAsync(job, config, mu, token);
                     });
 
                 if (abortRequested)
                 {
-                    _log.WriteLine($"Aborting: {Volatile.Read(ref _consecutiveAuthErrors)} consecutive auth failures.",
-                        LogType.Error);
+                    _log.WriteLine($"Aborting: {Volatile.Read(ref _consecutiveAuthErrors)} consecutive auth failures.", LogType.Error);
                     return TaskResult.Abort;
                 }
 
-                // All tables processed — handle completion by mode
-                if (MigrationHelper.IsOnline(job))
-                {
-                    // Online: change feed already started per-table
-                    // as each completed. Keep worker alive until
-                    // pause/cancel.
-                    _log.WriteLine("All tables copied. Change feed replaying.");
-                    while (!cancellationToken.IsCancellationRequested
-                        && !MigrationJobContext.ControlledPauseRequested)
-                    {
-                        await Task.Delay(2000, cancellationToken);
-                    }
-                }
-                else
-                {
-                    // Offline mode — mark completed
-                    if (MigrationHelper.IsOfflineJobCompleted(job)
-                        && !MigrationJobContext.ControlledPauseRequested
-                        && job.Status != JobStatus.Cancelled
-                        && job.Status != JobStatus.Paused)
-                    {
-                        _log.WriteLine($"Job {job.Id} Completed");
-                        job.Status = JobStatus.Completed;
-                        MigrationJobContext.SaveMigrationJob(job);
-                    }
-                }
-
+                await HandleCompletionAsync(job, cancellationToken);
                 return TaskResult.Success;
             }
             catch (OperationCanceledException)
@@ -191,180 +92,197 @@ namespace CassandraMigrationProcessor.Workers
             }
         }
 
-        /// <summary>
-        /// Process a single migration unit: validate source/target
-        /// tables, create schema if needed, capture change-feed
-        /// tokens, and run the bulk copy.
-        /// </summary>
-        private async Task ProcessMigrationUnitAsync(MigrationJob job, MigrationSettings config,
-            MigrationUnit migrationUnit,
+        private async Task<TaskResult> ResumeChangeFeedAsync(MigrationJob job, MigrationSettings config,
             CancellationToken cancellationToken)
         {
-            _log.WriteLine($"Processing {migrationUnit.KeyspaceName}.{migrationUnit.TableName}");
+            _log.WriteLine("All tables copied. Resuming change feed processors.", LogType.Info);
+            EnsureSourceSession(job, job.Tables!.First().KeyspaceName);
+            _activeProcessor = new CopyProcessor(_log, _sourceSession!, config, job, this);
 
-            // Reset Failed status on retry/resume so the table
-            // gets a fresh chance (Bug 3 fix)
-            if (migrationUnit.SourceStatus == TableStatus.Failed)
+            foreach (var mub in job.Tables)
             {
-                migrationUnit.SourceStatus = TableStatus.OK;
-                MigrationJobContext.SaveMigrationUnit(migrationUnit, true);
+                if (!MigrationHelper.IsMigrationUnitValid(mub) || !mub.CopyComplete)
+                    continue;
+                var mu = MigrationJobContext.GetMigrationUnit(mub.Id);
+                if (mu != null)
+                    _activeProcessor.AddTableToChangeFeedQueue(mu);
             }
 
-            // Each parallel table gets its own source session
-            // so concurrent copies don't interfere.
+            while (!cancellationToken.IsCancellationRequested && !MigrationJobContext.ControlledPauseRequested)
+                await Task.Delay(2000, cancellationToken);
+
+            return cancellationToken.IsCancellationRequested ? TaskResult.Canceled : TaskResult.Success;
+        }
+
+        private async Task ProcessWithRetryAsync(MigrationJob job, MigrationSettings config,
+            MigrationUnit mu, CancellationToken token)
+        {
+            for (int attempt = 1; attempt <= MigrationDefaults.MaxTableRetries; attempt++)
+            {
+                try
+                {
+                    await ProcessMigrationUnitAsync(job, config, mu, token);
+                    return;
+                }
+                catch (Exception ex) when (CassandraClientFactory.IsRetryableException(ex)
+                    && attempt < MigrationDefaults.MaxTableRetries)
+                {
+                    int delayMs = CassandraClientFactory.GetRetryDelayMs(ex, attempt);
+                    _log.WriteLine($"Table retry {attempt} for {mu.KeyspaceName}.{mu.TableName}: {ex.Message}", LogType.Warning);
+                    await Task.Delay(delayMs, token);
+                }
+            }
+        }
+
+        private async Task HandleCompletionAsync(MigrationJob job, CancellationToken cancellationToken)
+        {
+            if (MigrationHelper.IsOnline(job))
+            {
+                _log.WriteLine("All tables copied. Change feed replaying.");
+                while (!cancellationToken.IsCancellationRequested && !MigrationJobContext.ControlledPauseRequested)
+                    await Task.Delay(2000, cancellationToken);
+            }
+            else if (MigrationHelper.IsOfflineJobCompleted(job)
+                && !MigrationJobContext.ControlledPauseRequested
+                && job.Status != JobStatus.Cancelled
+                && job.Status != JobStatus.Paused)
+            {
+                _log.WriteLine($"Job {job.Id} Completed");
+                job.Status = JobStatus.Completed;
+                MigrationJobContext.SaveMigrationJob(job);
+            }
+        }
+
+        private async Task ProcessMigrationUnitAsync(MigrationJob job, MigrationSettings config,
+            MigrationUnit mu, CancellationToken cancellationToken)
+        {
+            if (mu.SourceStatus == TableStatus.Failed)
+            {
+                mu.SourceStatus = TableStatus.OK;
+                MigrationJobContext.SaveMigrationUnit(mu, true);
+            }
+
             ISession? localSourceSession = null;
             try
             {
-                localSourceSession = CassandraClientFactory.CreateSourceSession(_log, job, migrationUnit.KeyspaceName);
+                localSourceSession = CassandraClientFactory.CreateSourceSession(_log, job, mu.KeyspaceName);
 
-                // Validate table exists on source
-                if (!await CassandraHelper.TableExistsAsync(localSourceSession!,
-                    migrationUnit.KeyspaceName, migrationUnit.TableName))
+                if (!await CassandraHelper.TableExistsAsync(localSourceSession!, mu.KeyspaceName, mu.TableName))
                 {
-                    _log.WriteLine($"Source table {migrationUnit.KeyspaceName}.{migrationUnit.TableName} not found.",
-                        LogType.Error);
-                    migrationUnit.SourceStatus = TableStatus.NotFound;
-                    MigrationJobContext.SaveMigrationUnit(migrationUnit, true);
+                    _log.WriteLine($"Source table {mu.KeyspaceName}.{mu.TableName} not found.", LogType.Error);
+                    mu.SourceStatus = TableStatus.NotFound;
+                    MigrationJobContext.SaveMigrationUnit(mu, true);
                     return;
                 }
 
-                // Ensure target keyspace + table
                 if (!job.IsSimulatedRun)
-                {
-                    using (var targetSession = CassandraClientFactory.CreateTargetSession(_log, job, string.Empty))
-                    {
-                        await CassandraHelper.EnsureKeyspaceExistsAsync(targetSession, migrationUnit.KeyspaceName);
+                    await SetupTargetSchemaAsync(job, localSourceSession!, mu);
 
-                        if (job.DropTargetTableBeforeStart
-                            && await CassandraHelper.TableExistsAsync(targetSession,
-                                migrationUnit.KeyspaceName, migrationUnit.TableName))
-                        {
-                            _log.WriteLine($"Dropping target table {migrationUnit.KeyspaceName}.{migrationUnit.TableName} (DropTargetTableBeforeStart)");
-                            await targetSession.ExecuteAsync(new SimpleStatement(
-                                    $"DROP TABLE \"{migrationUnit.KeyspaceName}\"" +
-                                    $".\"{migrationUnit.TableName}\""));
-                        }
+                mu.BulkCopyStartedOn ??= DateTime.UtcNow;
 
-                        if (!await CassandraHelper.TableExistsAsync(targetSession,
-                            migrationUnit.KeyspaceName, migrationUnit.TableName))
-                        {
-                            await CassandraHelper.CreateTableFromSourceAsync(localSourceSession!, targetSession,
-                                migrationUnit.KeyspaceName, migrationUnit.TableName,
-                                migrationUnit.KeyspaceName, migrationUnit.TableName);
-                            _log.WriteLine($"Created target table {migrationUnit.KeyspaceName}.{migrationUnit.TableName}");
-                        }
-                        else
-                        {
-                            // Table exists — sync schema
-                            // (adds missing columns via ALTER)
-                            await CassandraHelper.CreateTableFromSourceAsync(localSourceSession!, targetSession,
-                                migrationUnit.KeyspaceName, migrationUnit.TableName,
-                                migrationUnit.KeyspaceName, migrationUnit.TableName);
-                        }
-                    }
-                }
-
-                migrationUnit.BulkCopyStartedOn ??= DateTime.UtcNow;
-
-                // MigrationLog feed range count for this table
                 if (!job.IsSimulatedRun)
-                {
-                    try
-                    {
-                        var rangeCount = (await CassandraHelper.GetFeedRangesAsync(localSourceSession!,
-                                migrationUnit.KeyspaceName,
-                                migrationUnit.TableName)
-                                ).Count;
-                        _log.WriteLine($"Feed ranges: {rangeCount} for {migrationUnit.KeyspaceName}.{migrationUnit.TableName}");
-                    }
-                    catch (Exception ex)
-                    {
-                        _log.WriteLine($"GetFeedRanges failed: {ex.Message}", LogType.Warning);
-                    }
-                }
+                    await LogFeedRangesAsync(localSourceSession!, mu);
 
-                // Record change feed start time before bulk copy
                 if (MigrationHelper.IsOnline(job))
                 {
-                    migrationUnit.ChangeFeedStartToken ??= DateTime.UtcNow.ToString(
-                        "yyyy-MM-ddTHH:mm:ss.fffZ",
-                        System.Globalization.CultureInfo.InvariantCulture);
+                    mu.ChangeFeedStartToken ??= DateTime.UtcNow.ToString(
+                        "yyyy-MM-ddTHH:mm:ss.fffZ", System.Globalization.CultureInfo.InvariantCulture);
                 }
 
-                MigrationJobContext.SaveMigrationUnit(migrationUnit, true);
-
-                var processor = new CopyProcessor(_log, localSourceSession!, config, job, this);
-                _activeProcessors[migrationUnit.Id] = processor;
-
-                cancellationToken.ThrowIfCancellationRequested();
-
-                TaskResult result = await processor.StartProcessAsync(migrationUnit.Id);
-
-                switch (result)
-                {
-                    case TaskResult.Success:
-                        _log.WriteLine($"Copy succeeded for {migrationUnit.KeyspaceName}.{migrationUnit.TableName}");
-                        break;
-
-                    case TaskResult.Canceled:
-                        _log.WriteLine($"Copy paused for {migrationUnit.KeyspaceName}.{migrationUnit.TableName}");
-                        break;
-
-                    default:
-                        _log.WriteLine($"Copy failed for {migrationUnit.KeyspaceName}.{migrationUnit.TableName}",
-                            LogType.Error);
-                        break;
-                }
-
-                MigrationJobContext.SaveMigrationUnit(migrationUnit, true);
+                MigrationJobContext.SaveMigrationUnit(mu, true);
+                await RunCopyForUnitAsync(job, config, localSourceSession!, mu, cancellationToken);
+                MigrationJobContext.SaveMigrationUnit(mu, true);
             }
-            catch (OperationCanceledException)
-            {
-                _log.WriteLine($"Cancelled {migrationUnit.KeyspaceName}.{migrationUnit.TableName}");
-                throw;
-            }
+            catch (OperationCanceledException) { throw; }
             catch (Exception ex)
             {
-                _log.WriteLine($"Error processing {migrationUnit.KeyspaceName}.{migrationUnit.TableName}: {ex}",
-                    LogType.Error);
-
-                // BB-3 fix: Mark MU as failed so the UI shows
-                // "Failed" instead of "0.0%"
-                migrationUnit.SourceStatus = TableStatus.Failed;
-
-                // Detect auth errors (expired token)
-                if (IsAuthError(ex))
-                {
-                    Interlocked.Increment(ref _consecutiveAuthErrors);
-                    _log.WriteLine($"Auth failure #{Volatile.Read(ref _consecutiveAuthErrors)} on {migrationUnit.KeyspaceName}.{migrationUnit.TableName}",
-                        LogType.Warning);
-                }
-                else
-                {
-                    Interlocked.Exchange(ref _consecutiveAuthErrors, 0);
-                }
-
-                MigrationJobContext.SaveMigrationUnit(migrationUnit, true);
+                HandleMigrationUnitError(mu, ex);
             }
             finally
             {
-                _activeProcessors.TryRemove(migrationUnit.Id, out var removedProcessor);
-                MigrationHelper.SafeDispose(removedProcessor as IDisposable, "MigrationWorker processor");
+                _activeProcessors.TryRemove(mu.Id, out var removed);
+                MigrationHelper.SafeDispose(removed as IDisposable, "MigrationWorker processor");
                 MigrationHelper.SafeDispose(localSourceSession, "MigrationWorker localSourceSession");
             }
         }
 
-        private void EnsureSourceSession(MigrationJob job, string keyspace)
+        private async Task SetupTargetSchemaAsync(MigrationJob job, ISession sourceSession, MigrationUnit mu)
         {
-            if (_sourceSession != null
-                && !_sourceSession.IsDisposed)
+            using var targetSession = CassandraClientFactory.CreateTargetSession(_log, job, string.Empty);
+            await CassandraHelper.EnsureKeyspaceExistsAsync(targetSession, mu.KeyspaceName);
+
+            if (job.DropTargetTableBeforeStart
+                && await CassandraHelper.TableExistsAsync(targetSession, mu.KeyspaceName, mu.TableName))
             {
-                return;
+                _log.WriteLine($"Dropping target table {mu.KeyspaceName}.{mu.TableName} (DropTargetTableBeforeStart)");
+                await targetSession.ExecuteAsync(new SimpleStatement(
+                    $"DROP TABLE \"{mu.KeyspaceName}\".\"{mu.TableName}\""));
             }
 
-            _sourceSession = CassandraClientFactory.CreateSourceSession(_log, job, keyspace);
+            bool existed = await CassandraHelper.TableExistsAsync(targetSession, mu.KeyspaceName, mu.TableName);
 
-            _log.WriteLine($"Source session created for {job.SourceContactPoint}");
+            // Creates table or syncs schema (adds missing columns via ALTER if table exists)
+            await CassandraHelper.CreateTableFromSourceAsync(sourceSession, targetSession,
+                mu.KeyspaceName, mu.TableName, mu.KeyspaceName, mu.TableName);
+
+            if (!existed)
+                _log.WriteLine($"Created target table {mu.KeyspaceName}.{mu.TableName}");
+        }
+
+        private async Task RunCopyForUnitAsync(MigrationJob job, MigrationSettings config,
+            ISession sourceSession, MigrationUnit mu, CancellationToken ct)
+        {
+            var processor = new CopyProcessor(_log, sourceSession, config, job, this);
+            _activeProcessors[mu.Id] = processor;
+            ct.ThrowIfCancellationRequested();
+
+            TaskResult result = await processor.StartProcessAsync(mu.Id);
+
+            if (result == TaskResult.Success)
+                _log.WriteLine($"Copy succeeded for {mu.KeyspaceName}.{mu.TableName}");
+            else if (result == TaskResult.Canceled)
+                _log.WriteLine($"Copy paused for {mu.KeyspaceName}.{mu.TableName}");
+            else
+                _log.WriteLine($"Copy failed for {mu.KeyspaceName}.{mu.TableName}", LogType.Error);
+        }
+
+        private async Task LogFeedRangesAsync(ISession session, MigrationUnit mu)
+        {
+            try
+            {
+                var rangeCount = (await CassandraHelper.GetFeedRangesAsync(session,
+                    mu.KeyspaceName, mu.TableName)).Count;
+                _log.WriteLine($"Feed ranges: {rangeCount} for {mu.KeyspaceName}.{mu.TableName}");
+            }
+            catch (Exception ex)
+            {
+                _log.WriteLine($"GetFeedRanges failed: {ex.Message}", LogType.Warning);
+            }
+        }
+
+        private void HandleMigrationUnitError(MigrationUnit mu, Exception ex)
+        {
+            _log.WriteLine($"Error processing {mu.KeyspaceName}.{mu.TableName}: {ex}", LogType.Error);
+            mu.SourceStatus = TableStatus.Failed;
+
+            if (IsAuthError(ex))
+            {
+                Interlocked.Increment(ref _consecutiveAuthErrors);
+                _log.WriteLine($"Auth failure #{Volatile.Read(ref _consecutiveAuthErrors)} on {mu.KeyspaceName}.{mu.TableName}", LogType.Warning);
+            }
+            else
+            {
+                Interlocked.Exchange(ref _consecutiveAuthErrors, 0);
+            }
+
+            MigrationJobContext.SaveMigrationUnit(mu, true);
+        }
+
+        private void EnsureSourceSession(MigrationJob job, string keyspace)
+        {
+            if (_sourceSession != null && !_sourceSession.IsDisposed)
+                return;
+            _sourceSession = CassandraClientFactory.CreateSourceSession(_log, job, keyspace);
         }
 
         private void CleanupSession()
@@ -373,70 +291,39 @@ namespace CassandraMigrationProcessor.Workers
             _sourceSession = null;
         }
 
-        /// <summary>
-        /// Check if an exception is an auth-related
-        /// failure (expired AAD token, bad credentials).
-        /// </summary>
         private static bool IsAuthError(Exception ex)
         {
             if (ex is Cassandra.AuthenticationException)
                 return true;
-            if (ex.InnerException
-                is Cassandra.AuthenticationException)
+            if (ex.InnerException is Cassandra.AuthenticationException)
                 return true;
-            // NoHostAvailableException can wrap auth errors
             if (ex is Cassandra.NoHostAvailableException nhae)
-            {
-                return nhae.Errors?.Values?.Any(e => e is Cassandra.AuthenticationException)
-                    ?? false;
-            }
+                return nhae.Errors?.Values?.Any(e => e is Cassandra.AuthenticationException) ?? false;
             return false;
         }
 
-        /// <summary>
-        /// Request the active processor to stop gracefully.
-        /// </summary>
         public void Stop()
         {
-            // Stop all active parallel processors
             foreach (var kvp in _activeProcessors)
-            {
                 kvp.Value?.StopProcessing();
-            }
             _activeProcessors.Clear();
-
-            // Legacy single-processor stop
             _activeProcessor?.StopProcessing();
             CleanupSession();
         }
 
-        /// <summary>
-        /// Populate the migration-unit list for a new job
-        /// by discovering keyspaces and tables from source.
-        /// </summary>
-        public static List<MigrationUnit> DiscoverTables(MigrationLog MigrationLog, MigrationJob job)
+        public static List<MigrationUnit> DiscoverTables(MigrationLog migrationLog, MigrationJob job)
         {
             var result = new List<MigrationUnit>();
 
-            using (var session = CassandraClientFactory.CreateSourceSession(MigrationLog, job, "system"))
+            using (var session = CassandraClientFactory.CreateSourceSession(migrationLog, job, "system"))
             {
-                var keyspaces = CassandraHelper.ListKeyspaces(session);
-
-                foreach (var ks in keyspaces)
-                {
-                    var tables = CassandraHelper.ListTables(session, ks);
-
-                    foreach (var tbl in tables)
-                    {
+                foreach (var ks in CassandraHelper.ListKeyspaces(session))
+                    foreach (var tbl in CassandraHelper.ListTables(session, ks))
                         result.Add(new MigrationUnit(job, ks, tbl, new List<MigrationChunk>()));
-                    }
-                }
             }
 
-            int ksCount = result
-                .Select(r => r.KeyspaceName).Distinct().Count();
-            MigrationLog.WriteLine($"Discovered {result.Count} tables across {ksCount} keyspaces");
-
+            int ksCount = result.Select(r => r.KeyspaceName).Distinct().Count();
+            migrationLog.WriteLine($"Discovered {result.Count} tables across {ksCount} keyspaces");
             return result;
         }
     }

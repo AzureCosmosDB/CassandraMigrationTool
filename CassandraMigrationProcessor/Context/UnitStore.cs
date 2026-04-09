@@ -5,9 +5,6 @@ using CassandraMigrationProcessor.Helpers;
 using CassandraMigrationProcessor.Models;
 namespace CassandraMigrationProcessor.Context
 {
-    // TODO: Convert to injectable singleton service.
-    // Currently static for backward compatibility with
-    // the processor library which lacks DI support.
     public static class UnitStore
     {
         private static readonly object _writeMULock = new object();

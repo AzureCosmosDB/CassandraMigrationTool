@@ -13,9 +13,6 @@ using CassandraMigrationProcessor.Models;
 
 namespace CassandraMigrationProcessor.Context
 {
-    // TODO: Convert to injectable singleton service.
-    // Currently static for backward compatibility with
-    // the processor library which lacks DI support.
     public static class MigrationJobContext
     {
         private static readonly object _writeJobListLock = new object();

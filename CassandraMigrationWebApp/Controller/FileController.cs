@@ -2,12 +2,20 @@ using Microsoft.AspNetCore.Mvc;
 using CassandraMigrationProcessor;
 using CassandraMigrationProcessor.Helpers;
 using CassandraMigrationProcessor.Context;
+using CassandraMigrationWebApp.Service;
 using System.Text;
 
 [ApiController]
 [Route("api/[controller]")]
 public class FileController : ControllerBase
 {
+    private readonly MigrationContextService _ctx;
+
+    public FileController(MigrationContextService ctx)
+    {
+        _ctx = ctx;
+    }
+
     [HttpGet("download/MigrationLog/{Id}")]
     public IActionResult DownloadFile(string Id)
     {
@@ -20,20 +28,18 @@ public class FileController : ControllerBase
     {
         var filePath = Path.Combine(JobStore.JobsFolder, jobId, $"{migrationUnitId}.json");
 
-        // Use the persistence storage to read the document
-        if (MigrationJobContext.Store == null || !MigrationJobContext.Store.Exists(filePath))
+        if (_ctx.Store == null || !_ctx.Store.Exists(filePath))
         {
             return NotFound("Migration unit file not found.");
         }
 
-        var jsonContent = MigrationJobContext.Store.Read(filePath);
+        var jsonContent = _ctx.Store.Read(filePath);
 
         if (string.IsNullOrEmpty(jsonContent))
         {
             return NotFound("Migration unit file is empty or could not be read.");
         }
 
-        // Pretty print the JSON
         var jsonObject = Newtonsoft.Json.JsonConvert.DeserializeObject(jsonContent);
         var prettyJson = Newtonsoft.Json.JsonConvert.SerializeObject(jsonObject, Newtonsoft.Json.Formatting.Indented);
 
@@ -46,14 +52,13 @@ public class FileController : ControllerBase
     [HttpGet("download/job/{jobId}")]
     public IActionResult DownloadJob(string jobId)
     {
-        var job = MigrationJobContext.GetMigrationJob(jobId);
+        var job = _ctx.GetJob(jobId);
 
         if (job == null)
         {
             return NotFound("Job file not found.");
         }
 
-        // Pretty print the JSON
         var prettyJson = Newtonsoft.Json.JsonConvert.SerializeObject(job, Newtonsoft.Json.Formatting.Indented);
 
         var fileBytes = Encoding.UTF8.GetBytes(prettyJson);

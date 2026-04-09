@@ -1,11 +1,11 @@
 @page "/"
 @inject Service.JobManager JobManager
+@inject Service.MigrationContextService MigrationContext
 @inject NavigationManager NavigationManager
 @inject IJSRuntime JS
 
 @using CassandraMigrationWebApp.Components
 @using CassandraMigrationProcessor
-@using CassandraMigrationProcessor.Context
 @using CassandraMigrationProcessor.Helpers
 @using CassandraMigrationProcessor.Models
 
@@ -249,7 +249,7 @@
     private List<MigrationJob> GetMigrationsFromManager(bool silent)
     {
         var ids = JobManager.GetMigrationIds();
-        var result = MigrationJobContext.PopulateMigrationJobs(ids);
+        var result = MigrationContext.PopulateJobs(ids);
         // Latest jobs first
         result.Reverse();
         return result;
@@ -364,16 +364,16 @@
             {
                 // Store connection strings if provided
                 if (!string.IsNullOrEmpty(sourceConnectionString))
-                    MigrationJobContext.SourceConnectionString[job.Id] = sourceConnectionString;
+                    MigrationContext.SourceConnectionString[job.Id] = sourceConnectionString;
 
                 if (!string.IsNullOrEmpty(targetConnectionString))
-                    MigrationJobContext.TargetConnectionString[job.Id] = targetConnectionString;
+                    MigrationContext.TargetConnectionString[job.Id] = targetConnectionString;
 
-                MigrationJobContext.JobList.MigrationJobIds.Add(job.Id);
+                MigrationContext.JobList.MigrationJobIds.Add(job.Id);
 
-                MigrationJobContext.PendingAutoStartJobIds.TryAdd(job.Id, 0);
-                MigrationJobContext.SaveMigrationJob(job);
-                MigrationJobContext.SaveJobList();
+                MigrationContext.PendingAutoStartJobIds.TryAdd(job.Id, 0);
+                MigrationContext.SaveJob(job);
+                MigrationContext.SaveJobList();
                 
                 ViewMigration(job.Id);
             }
