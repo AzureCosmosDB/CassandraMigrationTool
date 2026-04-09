@@ -107,7 +107,7 @@ namespace CassandraMigrationProcessor.Processors
                 }, TaskContinuationOptions.ExecuteSynchronously));
             }
 
-            ctx.Progress.Tracker.SetPipelineState(ctx.Ranges.FeedRanges.Count
+            ctx.Tracker.SetPipelineState(ctx.Ranges.FeedRanges.Count
                     - ctx.Ranges.Completed.Count,
                 _pageSize);
             await Task.WhenAll(writeTasks);
@@ -122,9 +122,9 @@ namespace CassandraMigrationProcessor.Processors
             }
 
             stopwatch.Stop();
-            ctx.Progress.Tracker.AddWriteTime(writeLatencySum, rows.Count);
-            ctx.Progress.Tracker.AddCopied(writeDone);
-            ctx.Progress.Tracker.AddFailed(writeFail);
+            ctx.Tracker.AddWriteTime(writeLatencySum, rows.Count);
+            ctx.Tracker.AddCopied(writeDone);
+            ctx.Tracker.AddFailed(writeFail);
 
             long pageBytes = 0;
             foreach (var r in rows)
@@ -137,7 +137,7 @@ namespace CassandraMigrationProcessor.Processors
                     else if (v != null)
                         pageBytes += 8;
                 }
-            ctx.Progress.Tracker.AddBytes(pageBytes);
+            ctx.Tracker.AddBytes(pageBytes);
         }
     }
 }

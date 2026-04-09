@@ -8,32 +8,46 @@ namespace CassandraMigrationProcessor.Processors
 {
     internal class WorkerConfig
     {
-        public ConnectionOptions SourceConnection = null!;
-        public ConnectionOptions TargetConnection = null!;
-        public List<(string Name, string Type, string Kind, string ClusteringOrder, int Position)> Columns = null!;
-        public ProcessorContext Context = null!;
+        public ConnectionOptions SourceConnection { get; }
+        public ConnectionOptions TargetConnection { get; }
+        public List<(string Name, string Type, string Kind, string ClusteringOrder, int Position)> Columns { get; }
+        public ProcessorContext Context { get; }
+
+        public WorkerConfig(ConnectionOptions source, ConnectionOptions target,
+            List<(string Name, string Type, string Kind, string ClusteringOrder, int Position)> columns,
+            ProcessorContext context)
+        {
+            SourceConnection = source;
+            TargetConnection = target;
+            Columns = columns;
+            Context = context;
+        }
     }
 
     internal class RangeState
     {
-        public HashSet<string> Completed = null!;
-        public Dictionary<string, string?> Checkpoints = null!;
-        public List<string> FeedRanges = null!;
+        public HashSet<string> Completed { get; }
+        public Dictionary<string, string?> Checkpoints { get; }
+        public List<string> FeedRanges { get; }
+
+        public RangeState(HashSet<string> completed,
+            Dictionary<string, string?> checkpoints,
+            List<string> feedRanges)
+        {
+            Completed = completed;
+            Checkpoints = checkpoints;
+            FeedRanges = feedRanges;
+        }
     }
 
     /// <summary>
-    /// Non-progress pipeline flags. Row counters now live in
+    /// Non-progress pipeline flags. Row counters live in
     /// <see cref="CopyProgressTracker"/> (single source of truth).
     /// </summary>
     internal class PipelineCounters
     {
         public int FatalErrorFlag;
-        public ConcurrentBag<TaskResult> WorkerErrors = null!;
-    }
-
-    internal class ProgressState
-    {
-        public CopyProgressTracker Tracker = null!;
+        public ConcurrentBag<TaskResult> WorkerErrors { get; } = new();
     }
 
     /// <summary>
@@ -41,10 +55,21 @@ namespace CassandraMigrationProcessor.Processors
     /// </summary>
     internal class PipelineContext
     {
-        public Channel<Partition> PartitionPool = null!;
-        public WorkerConfig Worker = null!;
-        public RangeState Ranges = null!;
-        public PipelineCounters Counters = null!;
-        public ProgressState Progress = null!;
+        public Channel<Partition> PartitionPool { get; }
+        public WorkerConfig Worker { get; }
+        public RangeState Ranges { get; }
+        public PipelineCounters Counters { get; }
+        public CopyProgressTracker Tracker { get; }
+
+        public PipelineContext(Channel<Partition> partitionPool,
+            WorkerConfig worker, RangeState ranges,
+            PipelineCounters counters, CopyProgressTracker tracker)
+        {
+            PartitionPool = partitionPool;
+            Worker = worker;
+            Ranges = ranges;
+            Counters = counters;
+            Tracker = tracker;
+        }
     }
 }

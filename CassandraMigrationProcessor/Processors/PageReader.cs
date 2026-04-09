@@ -46,9 +46,16 @@ namespace CassandraMigrationProcessor.Processors
         /// <summary>Result of a page read attempt.</summary>
         internal class ReadResult
         {
-            public List<object[]> Rows { get; init; } = new();
-            public WorkChunk? WorkChunk { get; init; }
-            public bool IsLastPage { get; init; }
+            public List<object[]> Rows { get; }
+            public WorkChunk WorkChunk { get; }
+            public bool IsLastPage { get; }
+
+            public ReadResult(List<object[]> rows, WorkChunk workChunk, bool isLastPage)
+            {
+                Rows = rows;
+                WorkChunk = workChunk;
+                IsLastPage = isLastPage;
+            }
         }
 
         /// <summary>
@@ -67,7 +74,7 @@ namespace CassandraMigrationProcessor.Processors
             if (partition.LastPagingState != null)
                 stmt.SetPagingState(partition.LastPagingState);
 
-            RowSet resultSet = null;
+            RowSet? resultSet = null;
             for (int attempt = 1; attempt <= MaxReadRetries; attempt++)
             {
                 try
@@ -109,12 +116,12 @@ namespace CassandraMigrationProcessor.Processors
 
             // Update partition and tracker — caller doesn't need to
             partition.LastPagingState = nextPaging;
-            ctx.Progress.Tracker.AddRead(rows.Count);
-            ctx.Progress.Tracker.AddReadTime(stopwatch.ElapsedMilliseconds);
+            ctx.Tracker.AddRead(rows.Count);
+            ctx.Tracker.AddReadTime(stopwatch.ElapsedMilliseconds);
             var workChunk = partition.AddChunkAndTrim(nextPaging);
             if (isLastPage) partition.IsExhausted = true;
 
-            return new ReadResult { Rows = rows, WorkChunk = workChunk, IsLastPage = isLastPage };
+            return new ReadResult(rows, workChunk, isLastPage);
         }
 
         internal static string BuildSelectCql(ProcessorContext context, string range) =>

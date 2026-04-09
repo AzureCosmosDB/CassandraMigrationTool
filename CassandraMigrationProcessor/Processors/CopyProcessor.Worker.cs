@@ -40,7 +40,7 @@ namespace CassandraMigrationProcessor.Processors
                 ctx.Ranges.Checkpoints.Remove(partition.FeedRange);
                 ctx.Ranges.Completed.Add(partition.FeedRange);
             }
-            ctx.Progress.Tracker.RangeCompleted(partition.FeedRange, TaskResult.Success);
+            ctx.Tracker.RangeCompleted(partition.FeedRange, TaskResult.Success);
             TryCloseChannel(ctx);
         }
 
@@ -50,7 +50,7 @@ namespace CassandraMigrationProcessor.Processors
         /// </summary>
         private async Task RunWorkerAsync(int workerId, PipelineContext ctx, int configuredPageSize)
         {
-            ctx.Progress.Tracker.WorkerStarted();
+            ctx.Tracker.WorkerStarted();
             PageReader? reader = null;
             PageWriter? writer = null;
             try
@@ -82,7 +82,7 @@ namespace CassandraMigrationProcessor.Processors
                             if (!result.IsLastPage)
                                 await ctx.PartitionPool.Writer.WriteAsync(partition, _cancellation.Token);
 
-                            await writer.WriteAsync(result.Rows, result.WorkChunk!, ctx);
+                            await writer.WriteAsync(result.Rows, result.WorkChunk, ctx);
                         }
 
                         // Always save checkpoint; additionally mark completed if exhausted
@@ -112,12 +112,12 @@ namespace CassandraMigrationProcessor.Processors
                         }
 
                         SavePartitionCheckpoint(partition, ctx);
-                        ctx.Progress.Tracker.RangeCompleted(partition.FeedRange, TaskResult.Retry);
+                        ctx.Tracker.RangeCompleted(partition.FeedRange, TaskResult.Retry);
                         ctx.PartitionPool.Writer.TryComplete();
                     }
                     finally
                     {
-                        ctx.Progress.Tracker.UpdateMigrationUnit();
+                        ctx.Tracker.UpdateMigrationUnit();
                     }
                 }
             }
@@ -125,7 +125,7 @@ namespace CassandraMigrationProcessor.Processors
             {
                 MigrationHelper.SafeDispose(writer, "worker PageWriter");
                 MigrationHelper.SafeDispose(reader, "worker PageReader");
-                ctx.Progress.Tracker.WorkerExited();
+                ctx.Tracker.WorkerExited();
             }
         }
 

@@ -117,32 +117,12 @@ namespace CassandraMigrationProcessor.Processors
 
             var stopwatch = Stopwatch.StartNew();
 
-            var ctx = new PipelineContext
-            {
-                PartitionPool = partitionPool,
-                Worker = new WorkerConfig
-                {
-                    Columns = columns,
-                    SourceConnection = _job.SourceConnection,
-                    TargetConnection = _job.TargetConnection,
-                    Context = processorContext,
-                },
-                Ranges = new RangeState
-                {
-                    Completed = completed,
-                    Checkpoints = checkpoints,
-                    FeedRanges = feedRanges,
-                },
-                Counters = new PipelineCounters
-                {
-                    FatalErrorFlag = 0,
-                    WorkerErrors = new ConcurrentBag<TaskResult>(),
-                },
-                Progress = new ProgressState
-                {
-                    Tracker = tracker,
-                },
-            };
+            var ctx = new PipelineContext(
+                partitionPool,
+                new WorkerConfig(_job.SourceConnection, _job.TargetConnection, columns, processorContext),
+                new RangeState(completed, checkpoints, feedRanges),
+                new PipelineCounters(),
+                tracker);
 
             _log.WriteLine($"Launching {workerCount} workers for {processorContext.KeyspaceName}.{processorContext.TableName} ({pendingRanges.Count} feed ranges, page size={configuredPageSize})...", LogType.Info);
             using var pool = new WorkerPool(_log, workerCount, _cancellation);
@@ -150,7 +130,7 @@ namespace CassandraMigrationProcessor.Processors
             await pool.WaitForCompletionAsync();
             ctx.PartitionPool.Writer.TryComplete();
 
-            ctx.Progress.Tracker.LogFinal();
+            ctx.Tracker.LogFinal();
             long finalWritten = tracker.TotalCopied;
             long finalFailed = tracker.TotalFailed;
             long finalRead = tracker.TotalRead;
