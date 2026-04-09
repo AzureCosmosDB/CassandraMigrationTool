@@ -48,7 +48,7 @@ namespace CassandraMigrationProcessor.Processors
             double initialPercent,
             double contributionFactor)
         {
-            long rowCount = await CassandraHelper.GetRowCountAsync(context.SourceSession, context.KeyspaceName,
+            long rowCount = await CassandraQueries.GetRowCountAsync(context.SourceSession, context.KeyspaceName,
                 context.TableName);
 
             if (rowCount > 0)
@@ -66,7 +66,7 @@ namespace CassandraMigrationProcessor.Processors
                 await SchemaManager.EnsureKeyspaceExistsAsync(target, context.TargetKeyspaceName);
             }
 
-            var feedRanges = await CassandraHelper.GetFeedRangesAsync(context.SourceSession, context.KeyspaceName,
+            var feedRanges = await CassandraQueries.GetFeedRangesAsync(context.SourceSession, context.KeyspaceName,
                 context.TableName);
 
             _log.WriteLine($"{context.KeyspaceName}.{context.TableName}: " +

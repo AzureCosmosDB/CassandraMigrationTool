@@ -11,7 +11,7 @@ using System.Threading.Tasks;
 
 namespace CassandraMigrationProcessor.Helpers
 {
-    public static class NamespaceParser
+    public static class TableDiscovery
     {
         /// <summary>
         /// Attempts JSON deserialization, returning null on failure.

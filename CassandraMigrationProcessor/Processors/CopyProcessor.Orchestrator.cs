@@ -113,7 +113,7 @@ namespace CassandraMigrationProcessor.Processors
 
                     // Only remove from cache if offline — online mode
                     // needs the MU in cache for ChangeFeedProcessor
-                    if (!MigrationHelper.IsOnline(_job))
+                    if (!MigrationUtilities.IsOnline(_job))
                     {
                         MigrationJobContext.MigrationUnitsCache.RemoveMigrationUnit(migrationUnit.Id);
                     }

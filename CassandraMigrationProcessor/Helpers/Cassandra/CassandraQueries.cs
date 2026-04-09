@@ -13,7 +13,7 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
     /// prepared statements, truncation, and retry logic.
     /// Schema DDL operations live in <see cref="SchemaManager"/>.
     /// </summary>
-    public static class CassandraHelper
+    public static class CassandraQueries
     {
         // Retry/timeout constants
         private const int SchemaQueryTimeoutMs = 30_000;

@@ -10,7 +10,7 @@ using System.Threading;
 
 namespace CassandraMigrationProcessor.Models
 {
-    public class JobList
+    public class JobRegistry
     {
         // Legacy property for backward compatibility - will be removed in future versions
         // This will only be deserialized if present in JSON, but never serialized

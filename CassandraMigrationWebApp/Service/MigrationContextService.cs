@@ -47,7 +47,7 @@ namespace CassandraMigrationWebApp.Service
 
         // -- Job list --
 
-        public JobList JobList => MigrationJobContext.JobList;
+        public JobRegistry JobRegistry => MigrationJobContext.JobRegistry;
 
         public bool SaveJobList()
             => MigrationJobContext.SaveJobList();

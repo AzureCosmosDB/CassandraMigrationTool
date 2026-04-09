@@ -275,7 +275,7 @@
                 return;
             }
 
-            Tuple<bool, string, string> retValue = NamespaceParser.ValidateNamespaceFormat(newCollection, MigrationJob.JobType);
+            Tuple<bool, string, string> retValue = TableDiscovery.ValidateNamespaceFormat(newCollection, MigrationJob.JobType);
             if (!retValue.Item1)
             {
                 errorMessage = retValue.Item3; // Use Item3 for error message
@@ -288,7 +288,7 @@
                 StateHasChanged(); // Update UI to show spinner
 
                 // Use the async method with SourceConnectionString parameter
-                var newunits = await NamespaceParser.PopulateJobTablesAsync(MigrationJob, newCollection);
+                var newunits = await TableDiscovery.PopulateJobTablesAsync(MigrationJob, newCollection);
                 
                 foreach (var mu in newunits)
                 {

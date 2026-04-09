@@ -47,7 +47,7 @@ namespace CassandraMigrationProcessor.Context
             if (_jobs.TryGetValue(jobId, out var cached))
                 return cached;
 
-            return MigrationHelper.SafeExecute(() =>
+            return MigrationUtilities.SafeExecute(() =>
             {
                 var filePath = GetJobDefinitionPath(jobId);
                 var json = MigrationJobContext.Store.Read(
@@ -85,7 +85,7 @@ namespace CassandraMigrationProcessor.Context
         {
             if (job == null) return false;
 
-            return MigrationHelper.SafeExecute(() =>
+            return MigrationUtilities.SafeExecute(() =>
             {
                 lock (_writeJobLock)
                 {

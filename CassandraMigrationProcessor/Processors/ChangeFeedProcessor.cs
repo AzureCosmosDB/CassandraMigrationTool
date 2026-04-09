@@ -81,7 +81,7 @@ namespace CassandraMigrationProcessor.Processors
 
             foreach (var mub in job.Tables)
             {
-                if (!MigrationHelper.IsMigrationUnitValid(mub)) continue;
+                if (!MigrationUtilities.IsMigrationUnitValid(mub)) continue;
                 if (!mub.CopyComplete) continue;
                 if (!_activeTasks.ContainsKey(mub.Id))
                     _pendingTables.Enqueue(mub.Id);

@@ -32,13 +32,13 @@ namespace CassandraMigrationProcessor.Workers
         {
             try
             {
-                var units = MigrationHelper.GetMigrationUnitsToMigrate(job);
+                var units = MigrationUtilities.GetMigrationUnitsToMigrate(job);
 
                 if (units == null || units.Count == 0)
                 {
-                    if (MigrationHelper.IsOnline(job)
-                        && MigrationHelper.IsOfflineJobCompleted(job)
-                        && MigrationHelper.AnyValidTable(job))
+                    if (MigrationUtilities.IsOnline(job)
+                        && MigrationUtilities.IsOfflineJobCompleted(job)
+                        && MigrationUtilities.AnyValidTable(job))
                         return await ResumeChangeFeedAsync(job, config, cancellationToken);
 
                     _log.WriteLine("No remaining migration units.", LogType.Warning);
@@ -101,7 +101,7 @@ namespace CassandraMigrationProcessor.Workers
 
             foreach (var mub in job.Tables)
             {
-                if (!MigrationHelper.IsMigrationUnitValid(mub) || !mub.CopyComplete)
+                if (!MigrationUtilities.IsMigrationUnitValid(mub) || !mub.CopyComplete)
                     continue;
                 var mu = MigrationJobContext.GetMigrationUnit(mub.Id);
                 if (mu != null)
@@ -136,13 +136,13 @@ namespace CassandraMigrationProcessor.Workers
 
         private async Task HandleCompletionAsync(MigrationJob job, CancellationToken cancellationToken)
         {
-            if (MigrationHelper.IsOnline(job))
+            if (MigrationUtilities.IsOnline(job))
             {
                 _log.WriteLine("All tables copied. Change feed replaying.", LogType.Info);
                 while (!cancellationToken.IsCancellationRequested && !MigrationJobContext.ControlledPauseRequested)
                     await Task.Delay(2000, cancellationToken);
             }
-            else if (MigrationHelper.IsOfflineJobCompleted(job)
+            else if (MigrationUtilities.IsOfflineJobCompleted(job)
                 && !MigrationJobContext.ControlledPauseRequested
                 && job.Status != JobStatus.Cancelled
                 && job.Status != JobStatus.Paused)
@@ -183,7 +183,7 @@ namespace CassandraMigrationProcessor.Workers
                 if (!job.IsSimulatedRun)
                     await LogFeedRangesAsync(localSourceSession!, mu);
 
-                if (MigrationHelper.IsOnline(job))
+                if (MigrationUtilities.IsOnline(job))
                 {
                     mu.ChangeFeedStartToken ??= DateTime.UtcNow.ToString(
                         "yyyy-MM-ddTHH:mm:ss.fffZ", System.Globalization.CultureInfo.InvariantCulture);
@@ -201,8 +201,8 @@ namespace CassandraMigrationProcessor.Workers
             finally
             {
                 _activeProcessors.TryRemove(mu.Id, out var removed);
-                MigrationHelper.SafeDispose(removed as IDisposable, "MigrationWorker processor");
-                MigrationHelper.SafeDispose(localSourceSession, "MigrationWorker localSourceSession");
+                MigrationUtilities.SafeDispose(removed as IDisposable, "MigrationWorker processor");
+                MigrationUtilities.SafeDispose(localSourceSession, "MigrationWorker localSourceSession");
             }
         }
 
@@ -248,7 +248,7 @@ namespace CassandraMigrationProcessor.Workers
         {
             try
             {
-                var rangeCount = (await CassandraHelper.GetFeedRangesAsync(session,
+                var rangeCount = (await CassandraQueries.GetFeedRangesAsync(session,
                     mu.KeyspaceName, mu.TableName)).Count;
                 _log.WriteLine($"Feed ranges: {rangeCount} for {mu.KeyspaceName}.{mu.TableName}", LogType.Debug);
             }
@@ -285,7 +285,7 @@ namespace CassandraMigrationProcessor.Workers
 
         private void CleanupSession()
         {
-            MigrationHelper.SafeDispose(_sourceSession, "MigrationWorker source session");
+            MigrationUtilities.SafeDispose(_sourceSession, "MigrationWorker source session");
             _sourceSession = null;
         }
 
@@ -315,8 +315,8 @@ namespace CassandraMigrationProcessor.Workers
 
             using (var session = CassandraClientFactory.CreateSourceSession(migrationLog, job, "system"))
             {
-                foreach (var ks in CassandraHelper.ListKeyspaces(session))
-                    foreach (var tbl in CassandraHelper.ListTables(session, ks))
+                foreach (var ks in CassandraQueries.ListKeyspaces(session))
+                    foreach (var tbl in CassandraQueries.ListTables(session, ks))
                         result.Add(new MigrationUnit(job, ks, tbl, new List<MigrationChunk>()));
             }
 

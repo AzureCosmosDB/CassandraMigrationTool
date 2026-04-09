@@ -279,7 +279,7 @@ namespace CassandraMigrationProcessor.Persistence
             }
             catch (Exception ex)
             {
-                MigrationHelper.LogToFile($"Error writing binary MigrationLog. Details: {ex}", "DiskPersistence.txt");
+                MigrationUtilities.LogToFile($"Error writing binary MigrationLog. Details: {ex}", "DiskPersistence.txt");
                 throw;
             }
         }

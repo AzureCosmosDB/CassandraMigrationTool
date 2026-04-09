@@ -122,7 +122,7 @@ namespace CassandraMigrationProcessor.Processors
         /// </summary>
         public bool AddTableToChangeFeedQueue(MigrationUnit mu)
         {
-            if (!MigrationHelper.IsOnline(_job)) return false;
+            if (!MigrationUtilities.IsOnline(_job)) return false;
 
             lock (_changeFeedLock)
             {
@@ -155,9 +155,9 @@ namespace CassandraMigrationProcessor.Processors
         public bool RunChangeFeedForAllTables()
         {
             if (IsChangeFeedRunning) return false;
-            if (!MigrationHelper.IsOnline(_job)) return false;
-            if (!MigrationHelper.IsOfflineJobCompleted(_job)) return false;
-            if (!MigrationHelper.AnyValidTable(_job)) return false;
+            if (!MigrationUtilities.IsOnline(_job)) return false;
+            if (!MigrationUtilities.IsOfflineJobCompleted(_job)) return false;
+            if (!MigrationUtilities.AnyValidTable(_job)) return false;
 
             IsChangeFeedRunning = true;
 
@@ -184,8 +184,8 @@ namespace CassandraMigrationProcessor.Processors
         /// </summary>
         public void StopOfflineOrInvokeChangeFeed()
         {
-            if (!MigrationHelper.IsOnline(_job)
-                && MigrationHelper.IsOfflineJobCompleted(_job))
+            if (!MigrationUtilities.IsOnline(_job)
+                && MigrationUtilities.IsOfflineJobCompleted(_job))
             {
                 // Do NOT mark completed if cancelled or paused
                 if (!MigrationJobContext.ControlledPauseRequested
@@ -217,7 +217,7 @@ namespace CassandraMigrationProcessor.Processors
         {
             IsChangeFeedRunning = false;
             _cancellation?.Dispose();
-            MigrationHelper.SafeDispose(_targetSession, "MigrationProcessor target session");
+            MigrationUtilities.SafeDispose(_targetSession, "MigrationProcessor target session");
             // _sourceSession is owned by the caller
         }
     }

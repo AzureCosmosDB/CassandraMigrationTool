@@ -40,14 +40,14 @@ namespace CassandraMigrationProcessor.Processors
                 else
                     newSource = CassandraClientFactory.CreateSourceSession(_log, job, string.Empty);
 
-                MigrationHelper.SafeDispose(_sourceSession, "CF old source session");
+                MigrationUtilities.SafeDispose(_sourceSession, "CF old source session");
                 _sourceSession = newSource;
 
                 var columns = SchemaManager.GetTableColumns(_sourceSession, mu.KeyspaceName, mu.TableName);
                 var userColumns = columns
                     .Where(c => !c.Name.StartsWith("system_", StringComparison.OrdinalIgnoreCase))
                     .ToList();
-                var newInsert = CassandraHelper.PrepareInsert(_targetSession!,
+                var newInsert = CassandraQueries.PrepareInsert(_targetSession!,
                     mu.GetEffectiveTargetKeyspaceName(),
                     mu.GetEffectiveTargetTableName(),
                     userColumns);
@@ -74,7 +74,7 @@ namespace CassandraMigrationProcessor.Processors
                 }
 
                 // Discover feed ranges for parallel processing
-                var feedRanges = CassandraHelper.GetFeedRanges(_sourceSession, mu.KeyspaceName, mu.TableName);
+                var feedRanges = CassandraQueries.GetFeedRanges(_sourceSession, mu.KeyspaceName, mu.TableName);
 
                 _log.WriteLine($"Feed ranges discovered: {feedRanges.Count} for {mu.KeyspaceName}.{mu.TableName}", LogType.Debug);
 
@@ -114,7 +114,7 @@ namespace CassandraMigrationProcessor.Processors
                 .Where(c => !c.Name.StartsWith("system_", StringComparison.OrdinalIgnoreCase))
                 .ToList();
 
-            var (ps, colNames) = CassandraHelper.PrepareInsert(_targetSession!, mu.GetEffectiveTargetKeyspaceName(),
+            var (ps, colNames) = CassandraQueries.PrepareInsert(_targetSession!, mu.GetEffectiveTargetKeyspaceName(),
                 mu.GetEffectiveTargetTableName(),
                 userColumns);
 
@@ -318,7 +318,7 @@ namespace CassandraMigrationProcessor.Processors
                     .Where(c => !c.Name.StartsWith("system_", StringComparison.OrdinalIgnoreCase))
                     .ToList();
 
-                var (ps, colNames) = CassandraHelper.PrepareInsert(_targetSession!, mu.GetEffectiveTargetKeyspaceName(),
+                var (ps, colNames) = CassandraQueries.PrepareInsert(_targetSession!, mu.GetEffectiveTargetKeyspaceName(),
                     mu.GetEffectiveTargetTableName(),
                     userColumns);
 

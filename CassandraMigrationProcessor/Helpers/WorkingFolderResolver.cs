@@ -20,7 +20,7 @@ namespace CassandraMigrationProcessor.Helpers
                     $"{MigrationJobContext.AppId}/";
                 if (!Directory.Exists(_workingFolder))
                     Directory.CreateDirectory(_workingFolder);
-                MigrationHelper.LogToFile($"WorkingFolder (Linux): {_workingFolder}");
+                MigrationUtilities.LogToFile($"WorkingFolder (Linux): {_workingFolder}");
                 return _workingFolder;
             }
 
@@ -28,7 +28,7 @@ namespace CassandraMigrationProcessor.Helpers
                 $"{Path.GetTempPath()}migrationjobs"))
             {
                 _workingFolder = Path.GetTempPath();
-                MigrationHelper.LogToFile($"WorkingFolder (Temp): {_workingFolder}");
+                MigrationUtilities.LogToFile($"WorkingFolder (Temp): {_workingFolder}");
                 return _workingFolder;
             }
 
@@ -45,7 +45,7 @@ namespace CassandraMigrationProcessor.Helpers
                 _workingFolder = Path.Combine(homePath, "home\\");
             }
 
-            MigrationHelper.LogToFile($"WorkingFolder (Win): {_workingFolder} (ResourceDrive={homePath})");
+            MigrationUtilities.LogToFile($"WorkingFolder (Win): {_workingFolder} (ResourceDrive={homePath})");
             return _workingFolder;
         }
 

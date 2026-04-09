@@ -76,7 +76,7 @@ namespace CassandraMigrationProcessor.Persistence
             try { return action(); }
             catch (Exception ex)
             {
-                MigrationHelper.LogToFile($"[DiskPersistence] {operation}: {ex.Message}", "DiskPersistence.txt");
+                MigrationUtilities.LogToFile($"[DiskPersistence] {operation}: {ex.Message}", "DiskPersistence.txt");
                 return fallback;
             }
         }
@@ -89,7 +89,7 @@ namespace CassandraMigrationProcessor.Persistence
             try { action(); }
             catch (Exception ex)
             {
-                MigrationHelper.LogToFile($"[DiskPersistence] {operation}: {ex.Message}", "DiskPersistence.txt");
+                MigrationUtilities.LogToFile($"[DiskPersistence] {operation}: {ex.Message}", "DiskPersistence.txt");
             }
         }
 

@@ -129,7 +129,7 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
                             _lastSourceUsername ?? string.Empty,
                             freshToken,
                             _lastSourceKeyspace ?? string.Empty);
-                        MigrationHelper.SafeDispose(oldSession, "TokenRefresh old session");
+                        MigrationUtilities.SafeDispose(oldSession, "TokenRefresh old session");
                     }
 
                     // Schedule next refresh

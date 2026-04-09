@@ -34,7 +34,7 @@ namespace CassandraMigrationWebApp.Service
 
             MigrationJobContext.Initialize(_configuration);
 
-            MigrationHelper.LogToFile("JobManager initialized");
+            MigrationUtilities.LogToFile("JobManager initialized");
         }
 
         #region Configuration Management
@@ -48,7 +48,7 @@ namespace CassandraMigrationWebApp.Service
                 return;
 
             _webAppBaseUrl = baseUri.TrimEnd('/');
-            MigrationHelper.LogToFile($"WebAppBaseUrl updated from browser: {_webAppBaseUrl}");
+            MigrationUtilities.LogToFile($"WebAppBaseUrl updated from browser: {_webAppBaseUrl}");
         }
 
         public bool UpdateConfig(CassandraMigrationProcessor.Models.MigrationSettings updated_config, out string errorMessage)
@@ -95,12 +95,12 @@ namespace CassandraMigrationWebApp.Service
 
         public List<string> GetMigrationIds()
         {
-            return _ctx.JobList.MigrationJobIds;
+            return _ctx.JobRegistry.MigrationJobIds;
         }
 
         public void ClearJobFiles(string jobId)
         {
-            _ctx.JobList.MigrationJobIds?.Remove(jobId);
+            _ctx.JobRegistry.MigrationJobIds?.Remove(jobId);
             _ctx.SaveJobList();
 
             Task.Run(() =>
@@ -278,24 +278,24 @@ namespace CassandraMigrationWebApp.Service
             {
                 try
                 {
-                    MigrationHelper.LogToFile($"Task.Run started for job {job.Id}");
+                    MigrationUtilities.LogToFile($"Task.Run started for job {job.Id}");
 
                     // Expand wildcards (e.g. "socialmedia.*") by connecting to source
                     if (job.Tables == null || job.Tables.Count == 0
                         || job.Tables.Any(m => m.TableName == "*"))
                     {
-                        MigrationHelper.LogToFile($"Expanding wildcards for job {job.Id}, namespaces={namespacesToMigrate}");
+                        MigrationUtilities.LogToFile($"Expanding wildcards for job {job.Id}, namespaces={namespacesToMigrate}");
                         ExpandWildcardTables(job, namespacesToMigrate);
-                        MigrationHelper.LogToFile($"After expand: {job.Tables?.Count ?? 0} units");
+                        MigrationUtilities.LogToFile($"After expand: {job.Tables?.Count ?? 0} units");
                     }
 
-                    MigrationHelper.LogToFile($"Calling MigrationWorker.StartAsync for job {job.Id}");
+                    MigrationUtilities.LogToFile($"Calling MigrationWorker.StartAsync for job {job.Id}");
                     await MigrationWorker.StartAsync(job, config, _migrationCts.Token);
-                    MigrationHelper.LogToFile($"MigrationWorker.StartAsync completed for job {job.Id}");
+                    MigrationUtilities.LogToFile($"MigrationWorker.StartAsync completed for job {job.Id}");
                 }
                 catch (Exception ex)
                 {
-                    MigrationHelper.LogToFile($"Migration failed for Job ID: {job.Id}: {ex}");
+                    MigrationUtilities.LogToFile($"Migration failed for Job ID: {job.Id}: {ex}");
                     Console.WriteLine($"Migration failed for Job ID: {job.Id}: {ex}");
                     _log.WriteLine($"Migration failed: {ex}", LogType.Error);
                 }
@@ -323,7 +323,7 @@ namespace CassandraMigrationWebApp.Service
                 }
             });
 
-            MigrationHelper.LogToFile($"Started migration task for Job ID: {job.Id}");
+            MigrationUtilities.LogToFile($"Started migration task for Job ID: {job.Id}");
             Console.WriteLine($"Started migration for Job ID: {job.Id}");
 
             return Task.CompletedTask;
@@ -356,7 +356,7 @@ namespace CassandraMigrationWebApp.Service
                         using (var session = CassandraMigrationProcessor.Helpers.Cassandra.CassandraClientFactory
                             .CreateSourceSession(_log, job, keyspace))
                         {
-                            var tables = CassandraMigrationProcessor.Helpers.Cassandra.CassandraHelper
+                            var tables = CassandraMigrationProcessor.Helpers.Cassandra.CassandraQueries
                                 .ListTables(session, keyspace);
                             foreach (var tableName in tables)
                             {
@@ -415,7 +415,7 @@ namespace CassandraMigrationWebApp.Service
             {
                 // Clear any wildcard entries
                 job.Tables?.RemoveAll(m => m.TableName == "*");
-                MigrationHelper.AddMigrationUnits(expandedUnits, job, _log);
+                MigrationUtilities.AddMigrationUnits(expandedUnits, job, _log);
             }
         }
 

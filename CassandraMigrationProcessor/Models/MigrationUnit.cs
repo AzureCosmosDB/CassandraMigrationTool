@@ -163,7 +163,7 @@ namespace CassandraMigrationProcessor.Models
             string tableName,
             List<MigrationChunk> migrationChunks)
         {
-            this.Id = MigrationHelper.GenerateMigrationUnitId(
+            this.Id = MigrationUtilities.GenerateMigrationUnitId(
                 keyspaceName, tableName);
             this.KeyspaceName = keyspaceName;
             this.TableName = tableName;
@@ -207,7 +207,7 @@ namespace CassandraMigrationProcessor.Models
             if (mub == null)
                 mub = new MigrationUnitBasic();
 
-            mub.Id = MigrationHelper.GenerateMigrationUnitId(
+            mub.Id = MigrationUtilities.GenerateMigrationUnitId(
                 this.KeyspaceName, this.TableName);
             mub.JobId = this.JobId;
             mub.KeyspaceName = this.KeyspaceName;

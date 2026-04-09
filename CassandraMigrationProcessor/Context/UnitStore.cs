@@ -28,7 +28,7 @@ namespace CassandraMigrationProcessor.Context
         public static bool SaveUnit(
             MigrationUnit mu, bool updateParent)
         {
-            return MigrationHelper.SafeExecute(() =>
+            return MigrationUtilities.SafeExecute(() =>
             {
                 if (mu == null) return false;
 
@@ -70,7 +70,7 @@ namespace CassandraMigrationProcessor.Context
             if (unit == null || unit.ParentJob == null)
                 return false;
 
-            return MigrationHelper.SafeExecute(() =>
+            return MigrationUtilities.SafeExecute(() =>
             {
                 var job = unit.ParentJob;
                 var index = job.Tables
@@ -94,7 +94,7 @@ namespace CassandraMigrationProcessor.Context
         public static MigrationUnit GetFromStorage(
             string jobId, string unitId)
         {
-            return MigrationHelper.SafeExecute(() =>
+            return MigrationUtilities.SafeExecute(() =>
             {
                 var filePath = Path.Combine(
                     JobStore.JobsFolder, jobId, $"{unitId}.json");

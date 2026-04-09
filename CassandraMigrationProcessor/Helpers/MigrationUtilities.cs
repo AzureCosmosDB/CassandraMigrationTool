@@ -13,7 +13,7 @@ using System.Text;
 
 namespace CassandraMigrationProcessor.Helpers
 {
-    public static class MigrationHelper
+    public static class MigrationUtilities
     {
         public static bool IsOnline(MigrationJob job)
         {

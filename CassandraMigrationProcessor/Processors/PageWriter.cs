@@ -32,11 +32,11 @@ namespace CassandraMigrationProcessor.Processors
             _workerId = workerId;
             _pageSize = pageSize;
             _targetSession = CassandraClientFactory.CreateTargetSession(log, targetConnection, "");
-            var (ps, _) = CassandraHelper.PrepareInsert(_targetSession, targetKeyspace, targetTable, columns);
+            var (ps, _) = CassandraQueries.PrepareInsert(_targetSession, targetKeyspace, targetTable, columns);
             _preparedInsert = ps;
         }
 
-        public void Dispose() => MigrationHelper.SafeDispose(_targetSession, "PageWriter target session");
+        public void Dispose() => MigrationUtilities.SafeDispose(_targetSession, "PageWriter target session");
 
         /// <summary>
         /// Writes extracted rows to the target cluster in

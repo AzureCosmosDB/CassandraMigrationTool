@@ -41,7 +41,7 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
         /// </summary>
         public static async Task<bool> KeyspaceExistsAsync(ISession session, string keyspace)
         {
-            var keyspaces = await CassandraHelper.ListKeyspacesAsync(session);
+            var keyspaces = await CassandraQueries.ListKeyspacesAsync(session);
             return keyspaces.Contains(keyspace, StringComparer.OrdinalIgnoreCase);
         }
 
@@ -76,7 +76,7 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
         /// </summary>
         public static async Task<bool> TableExistsAsync(ISession session, string keyspace, string table)
         {
-            var tables = await CassandraHelper.ListTablesAsync(session, keyspace);
+            var tables = await CassandraQueries.ListTablesAsync(session, keyspace);
             if (!tables.Contains(table, StringComparer.OrdinalIgnoreCase))
                 return false;
 

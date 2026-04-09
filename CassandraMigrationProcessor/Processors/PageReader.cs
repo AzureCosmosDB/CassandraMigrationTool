@@ -41,7 +41,7 @@ namespace CassandraMigrationProcessor.Processors
             _sourceSession = CassandraClientFactory.CreateSourceSession(log, sourceConnection, keyspace);
         }
 
-        public void Dispose() => MigrationHelper.SafeDispose(_sourceSession, "PageReader source session");
+        public void Dispose() => MigrationUtilities.SafeDispose(_sourceSession, "PageReader source session");
 
         /// <summary>Result of a page read attempt.</summary>
         internal record ReadResult(List<object[]> Rows, WorkChunk WorkChunk, bool IsLastPage);

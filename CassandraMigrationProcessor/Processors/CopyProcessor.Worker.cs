@@ -123,8 +123,8 @@ namespace CassandraMigrationProcessor.Processors
             }
             finally
             {
-                MigrationHelper.SafeDispose(writer, "worker PageWriter");
-                MigrationHelper.SafeDispose(reader, "worker PageReader");
+                MigrationUtilities.SafeDispose(writer, "worker PageWriter");
+                MigrationUtilities.SafeDispose(reader, "worker PageReader");
                 ctx.Tracker.WorkerExited();
             }
         }

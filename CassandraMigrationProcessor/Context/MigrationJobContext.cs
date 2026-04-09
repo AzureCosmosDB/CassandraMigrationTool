@@ -8,7 +8,7 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
 using System.Threading.Tasks;
-using static CassandraMigrationProcessor.Models.JobList;
+using static CassandraMigrationProcessor.Models.JobRegistry;
 using CassandraMigrationProcessor.Models;
 
 namespace CassandraMigrationProcessor.Context
@@ -56,7 +56,7 @@ namespace CassandraMigrationProcessor.Context
         public static bool ControlledPauseRequested
             => _controlledPauseRequested;
 
-        public static JobList JobList { get; private set; }
+        public static JobRegistry JobRegistry { get; private set; }
 
         public static void ResetControlledPause()
         {
@@ -138,7 +138,7 @@ namespace CassandraMigrationProcessor.Context
 
         public static void Initialize(IConfiguration configuration)
         {
-            MigrationHelper.LogToFile("MigrationJobContext.Initialize started");
+            MigrationUtilities.LogToFile("MigrationJobContext.Initialize started");
 
             bool isLocal = true;
             var stateStoreCSorPath = string.Empty;
@@ -165,14 +165,14 @@ namespace CassandraMigrationProcessor.Context
                 : stateStoreCSorPath;
             Store.Initialize(localPath, appId ?? string.Empty);
 
-            JobList = LoadJobList(
+            JobRegistry = LoadJobList(
                 out bool notFound, out string errorMessage);
-            if (notFound && JobList == null)
+            if (notFound && JobRegistry == null)
             {
-                JobList = new JobList();
-                JobList.MigrationJobIds = new List<string>();
+                JobRegistry = new JobRegistry();
+                JobRegistry.MigrationJobIds = new List<string>();
             }
-            else if (JobList == null
+            else if (JobRegistry == null
                 && !string.IsNullOrEmpty(errorMessage))
             {
                 throw new InvalidOperationException(
@@ -210,14 +210,14 @@ namespace CassandraMigrationProcessor.Context
             string jobId, string unitId)
             => UnitStore.GetFromStorage(jobId, unitId);
 
-        // -- JobList (stays here: global state) --
+        // -- JobRegistry (stays here: global state) --
 
-        private static JobList LoadJobList(
+        private static JobRegistry LoadJobList(
             out bool notFound, out string errorMessage)
         {
             errorMessage = string.Empty;
             notFound = false;
-            string path = $"{JobStore.JobsFolder}\\joblist.json";
+            string path = $"{JobStore.JobsFolder}\\JobRegistry.json";
 
             try
             {
@@ -234,11 +234,11 @@ namespace CassandraMigrationProcessor.Context
                         {
                             string json = Store.Read(path);
                             var obj = JsonConvert
-                                .DeserializeObject<JobList>(json);
+                                .DeserializeObject<JobRegistry>(json);
                             if (obj?.MigrationJobIds != null)
                             {
-                                JobList = obj;
-                                return JobList;
+                                JobRegistry = obj;
+                                return JobRegistry;
                             }
                         }
                     }
@@ -264,17 +264,17 @@ namespace CassandraMigrationProcessor.Context
 
         public static bool SaveJobList()
         {
-            return MigrationHelper.SafeExecute(() =>
+            return MigrationUtilities.SafeExecute(() =>
             {
-                if (JobList != null)
+                if (JobRegistry != null)
                 {
                     lock (_writeJobListLock)
                     {
                         var filePath = Path.Combine(
-                            JobStore.JobsFolder, "joblist.json");
+                            JobStore.JobsFolder, "JobRegistry.json");
                         string json =
                             JsonConvert.SerializeObject(
-                                JobList, Formatting.Indented);
+                                JobRegistry, Formatting.Indented);
                         Store.Write(filePath, json);
                     }
                 }
