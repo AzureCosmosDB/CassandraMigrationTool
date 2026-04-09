@@ -49,13 +49,8 @@ namespace CassandraMigrationProcessor.Processors
                 while (!_cancellation.Token.IsCancellationRequested
                     && Volatile.Read(ref ctx.FatalErrorFlag) == 0)
                 {
-                    bool available;
-                    try { available = await ctx.PartitionPool.Reader.WaitToReadAsync(_cancellation.Token); }
-                    catch (OperationCanceledException) { break; }
-                    if (!available) break; // channel completed
-
-                    if (!ctx.PartitionPool.Reader.TryRead(out var partition))
-                        continue;
+                    var partition = await TakeNextPartitionAsync(ctx);
+                    if (partition == null) break;
 
                     if (_cancellation.Token.IsCancellationRequested
                         || Volatile.Read(ref ctx.FatalErrorFlag) != 0)
@@ -268,6 +263,22 @@ namespace CassandraMigrationProcessor.Processors
         {
             if (ctx.Completed.Count >= ctx.FeedRanges.Count)
                 ctx.PartitionPool.Writer.TryComplete();
+        }
+
+        /// <summary>
+        /// Takes the next partition from the pool. Returns null
+        /// when cancelled or channel completed — no exceptions.
+        /// </summary>
+        private async Task<Partition?> TakeNextPartitionAsync(PipelineContext ctx)
+        {
+            try
+            {
+                if (await ctx.PartitionPool.Reader.WaitToReadAsync(_cancellation.Token))
+                    if (ctx.PartitionPool.Reader.TryRead(out var p))
+                        return p;
+            }
+            catch (OperationCanceledException) { }
+            return null;
         }
     }
 }
