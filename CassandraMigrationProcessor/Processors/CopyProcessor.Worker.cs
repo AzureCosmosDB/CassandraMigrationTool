@@ -103,7 +103,7 @@ namespace CassandraMigrationProcessor.Processors
 
                     try
                     {
-                        var (rows, nextPaging, isLastPage, readTimeMs) = await reader.ReadAsync(
+                        var (rows, workChunk, isLastPage) = await reader.ReadAsync(
                             partition, workerSourceSession!, ctx, workerId);
 
                         if (rows == null)
@@ -114,13 +114,6 @@ namespace CassandraMigrationProcessor.Processors
                             break;
                         }
 
-                        partition.LastPagingState = nextPaging;
-                        Interlocked.Add(ref ctx.TotalRead, rows.Count);
-                        ctx.Tracker.AddReadTime(readTimeMs);
-
-                        var workChunk = partition.AddChunkAndTrim(nextPaging);
-                        if (isLastPage) partition.IsExhausted = true;
-
                         // Recycle partition for next page read
                         if (!isLastPage)
                         {
@@ -128,7 +121,7 @@ namespace CassandraMigrationProcessor.Processors
                             catch (OperationCanceledException) { partition.IsExhausted = true; }
                         }
 
-                        await writer.WriteAsync(rows, preparedInsert, workerTargetSession!, workChunk, ctx, workerId);
+                        await writer.WriteAsync(rows, preparedInsert, workerTargetSession!, workChunk!, ctx, workerId);
 
                         if (partition.IsExhausted) MarkRangeCompleted(partition, ctx);
                         else SavePartitionCheckpoint(partition, ctx);

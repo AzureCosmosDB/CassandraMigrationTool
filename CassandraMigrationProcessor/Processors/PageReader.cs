@@ -29,15 +29,12 @@ namespace CassandraMigrationProcessor.Processors
         }
 
         /// <summary>
-        /// Reads a single page of rows from the source
-        /// partition, retrying on transient timeouts.
-        /// Returns null rows when all retries are exhausted.
+        /// Reads a single page, updates partition state and
+        /// tracker. Returns null rows on fatal read failure.
         /// </summary>
-        public async Task<(List<object[]>? rows, byte[]? nextPaging, bool isLastPage,
-            long readTimeMs)> ReadAsync(CopyProcessor.Partition partition,
-            ISession sourceSession,
-            CopyProcessor.PipelineContext ctx,
-            int workerId)
+        public async Task<(List<object[]>? rows, CopyProcessor.WorkChunk? workChunk, bool isLastPage)>
+            ReadAsync(CopyProcessor.Partition partition, ISession sourceSession,
+                CopyProcessor.PipelineContext ctx, int workerId)
         {
             var stopwatch = Stopwatch.StartNew();
             var stmt = new SimpleStatement(BuildSelectCql(ctx.Context, partition.FeedRange));
@@ -50,8 +47,7 @@ namespace CassandraMigrationProcessor.Processors
                 stmt.SetPagingState(partition.LastPagingState);
 
             RowSet resultSet = null;
-            for (int attempt = 1;
-                attempt <= MaxReadRetries; attempt++)
+            for (int attempt = 1; attempt <= MaxReadRetries; attempt++)
             {
                 try
                 {
@@ -70,12 +66,10 @@ namespace CassandraMigrationProcessor.Processors
             if (resultSet == null)
             {
                 ctx.WorkerErrors.Add(TaskResult.Retry);
-                stopwatch.Stop();
-                return (null, null, true, stopwatch.ElapsedMilliseconds);
+                return (null, null, true);
             }
 
             byte[]? nextPaging = resultSet.PagingState;
-
             var rows = new List<object[]>();
             int available = resultSet.GetAvailableWithoutFetching();
             int consumed = 0;
@@ -83,17 +77,23 @@ namespace CassandraMigrationProcessor.Processors
             {
                 if (consumed >= available) break;
                 consumed++;
-                var rowValues =
-                    new object[ctx.ColumnNames.Count];
-                for (int i = 0;
-                    i < ctx.ColumnNames.Count; i++)
+                var rowValues = new object[ctx.ColumnNames.Count];
+                for (int i = 0; i < ctx.ColumnNames.Count; i++)
                     rowValues[i] = row[ctx.ColumnNames[i]];
                 rows.Add(rowValues);
             }
 
             stopwatch.Stop();
             bool isLastPage = rows.Count == 0 || nextPaging == null;
-            return (rows, nextPaging, isLastPage, stopwatch.ElapsedMilliseconds);
+
+            // Update partition and tracker — caller doesn't need to
+            partition.LastPagingState = nextPaging;
+            Interlocked.Add(ref ctx.TotalRead, rows.Count);
+            ctx.Tracker.AddReadTime(stopwatch.ElapsedMilliseconds);
+            var workChunk = partition.AddChunkAndTrim(nextPaging);
+            if (isLastPage) partition.IsExhausted = true;
+
+            return (rows, workChunk, isLastPage);
         }
 
         internal static string BuildSelectCql(ProcessorContext context, string range) =>
