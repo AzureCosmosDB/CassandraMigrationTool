@@ -190,11 +190,11 @@ namespace CassandraMigrationProcessor
             {
                 lock (_updateParentLock)
                 {
-                    var index = ParentJob.MigrationUnitBasics
+                    var index = ParentJob.Tables
                         .FindIndex(mu => mu.Id == this.Id);
                     if (index == -1) return false;
 
-                    ToSummary(ParentJob.MigrationUnitBasics[index]);
+                    ToSummary(ParentJob.Tables[index]);
                 }
                 return true;
             }

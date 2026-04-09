@@ -155,20 +155,20 @@ namespace CassandraMigrationProcessor
 
         public static bool IsOfflineJobCompleted(MigrationJob job)
         {
-            if (job?.MigrationUnitBasics == null
-                || job.MigrationUnitBasics.Count == 0)
+            if (job?.Tables == null
+                || job.Tables.Count == 0)
                 return false;
 
-            return job.MigrationUnitBasics
+            return job.Tables
                 .Where(mu => IsMigrationUnitValid(mu))
                 .All(mu => mu.CopyComplete);
         }
 
         public static bool AnyValidTable(MigrationJob job)
         {
-            if (job?.MigrationUnitBasics == null)
+            if (job?.Tables == null)
                 return false;
-            return job.MigrationUnitBasics
+            return job.Tables
                 .Any(mu => IsMigrationUnitValid(mu));
         }
 
@@ -176,15 +176,15 @@ namespace CassandraMigrationProcessor
             MigrationJob job)
         {
             List<MigrationUnit> units = new();
-            if (job?.MigrationUnitBasics == null) return units;
+            if (job?.Tables == null) return units;
 
-            foreach (var mub in job.MigrationUnitBasics)
+            foreach (var summary in job.Tables)
             {
-                if (!IsMigrationUnitValid(mub)) continue;
-                if (mub.CopyComplete) continue;
-                if (mub.SkippedDueToMaxRetries) continue;
+                if (!IsMigrationUnitValid(summary)) continue;
+                if (summary.CopyComplete) continue;
+                if (summary.SkippedDueToMaxRetries) continue;
 
-                var mu = MigrationJobContext.GetMigrationUnit(mub.Id);
+                var mu = MigrationJobContext.GetMigrationUnit(summary.Id);
                 if (mu != null)
                 {
                     mu.ParentJob = job;
@@ -300,14 +300,14 @@ namespace CassandraMigrationProcessor
                     if (dotIdx <= 0
                         || dotIdx == fullName.Length - 1) continue;
 
-                    string ks = fullName.Substring(0, dotIdx).Trim();
-                    string tbl = fullName.Substring(dotIdx + 1).Trim();
+                    string keyspace = fullName.Substring(0, dotIdx).Trim();
+                    string table = fullName.Substring(dotIdx + 1).Trim();
 
                     if (!unitsToAdd.Any(x =>
-                        x.KeyspaceName == ks && x.TableName == tbl))
+                        x.KeyspaceName == keyspace && x.TableName == table))
                     {
                         var mu = new MigrationUnit(
-                            job, ks, tbl,
+                            job, keyspace, table,
                             new List<MigrationChunk>());
                         mu.SourceStatus = TableStatus.OK;
                         unitsToAdd.Add(mu);
@@ -324,8 +324,8 @@ namespace CassandraMigrationProcessor
             Log log = null)
         {
             var newUnits = unitsToAdd
-                .Where(mu => !job.MigrationUnitBasics
-                    .Any(mub => mub.Id == GenerateMigrationUnitId(
+                .Where(mu => !job.Tables
+                    .Any(summary => summary.Id == GenerateMigrationUnitId(
                         mu.KeyspaceName, mu.TableName)))
                 .ToList();
 
@@ -349,14 +349,14 @@ namespace CassandraMigrationProcessor
             MigrationUnit mu, MigrationJob job)
         {
             if (job == null) return;
-            if (job.MigrationUnitBasics == null)
-                job.MigrationUnitBasics = new List<MigrationUnitBasic>();
+            if (job.Tables == null)
+                job.Tables = new List<MigrationUnitBasic>();
 
-            if (job.MigrationUnitBasics.Find(m => m.Id == mu.Id) != null)
+            if (job.Tables.Find(m => m.Id == mu.Id) != null)
                 return;
 
             mu.ParentJob = job;
-            job.MigrationUnitBasics.Add(mu.ToSummary());
+            job.Tables.Add(mu.ToSummary());
         }
 
         public static Tuple<bool, string, string> ValidateNamespaceFormat(

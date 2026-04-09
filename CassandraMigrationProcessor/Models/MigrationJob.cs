@@ -53,7 +53,7 @@ namespace CassandraMigrationProcessor
         public string? TargetPassword { get; set; }
 
         [JsonProperty("NameSpaces")]
-        public string? Tables { get; set; }
+        public string? Namespaces { get; set; }
 
         public DateTime? StartedOn { get; set; }
 
@@ -154,7 +154,8 @@ namespace CassandraMigrationProcessor
         public string? ChangeFeedContinuationToken { get; set; }
         public DateTime? ChangeFeedStartedOn { get; set; }
 
-        public List<MigrationUnitBasic>? MigrationUnitBasics { get; set; }
+        [JsonProperty("MigrationUnitBasics")]
+        public List<MigrationUnitBasic>? Tables { get; set; }
 
     }
 }

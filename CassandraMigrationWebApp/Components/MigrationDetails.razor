@@ -370,7 +370,7 @@
             targetPort = Job?.TargetPort ?? 9042;
             targetUsername = Job?.TargetUsername ?? string.Empty;
             targetPassword = Job?.TargetPassword ?? string.Empty;
-            namespaces = Job?.Tables ?? string.Empty;
+            namespaces = Job?.Namespaces ?? string.Empty;
             cdcMode = Job?.CDCMode ?? CDCMode.Offline;
             jobType = Job?.JobType ?? JobType.CqlCopy;
             selectedOption = "CQL Copy";
@@ -477,7 +477,7 @@
             TargetPort = targetPort,
             TargetUsername = targetUsername,
             TargetPassword = targetPassword,
-            Tables = namespaces,
+            Namespaces = namespaces,
             JobType = jobType,
             IsSimulatedRun = isSimulatedRun,
             AppendMode = appendMode,
@@ -487,7 +487,7 @@
             MaxConnectionsPerHost = connectionsPerHost ?? 0,
             PageSize = pageSize ?? 0,
             LogLevel = logLevel,
-            MigrationUnitBasics = new List<MigrationUnitBasic>()
+            Tables = new List<MigrationUnitBasic>()
         };
         if (OnSubmit != null)
         {

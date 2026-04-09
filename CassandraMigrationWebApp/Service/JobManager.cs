@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -86,9 +86,9 @@ namespace CassandraMigrationWebApp.Service
         public List<MigrationUnit> GetMigrationUnits(MigrationJob mj)
         {
             var units = new List<MigrationUnit>();
-            if (mj?.MigrationUnitBasics != null)
+            if (mj?.Tables != null)
             {
-                foreach (var mub in mj.MigrationUnitBasics)
+                foreach (var mub in mj.Tables)
                 {
                     var mu = MigrationJobContext.GetMigrationUnit(mub.Id, mj.Id);
                     if (mu != null)
@@ -233,7 +233,7 @@ namespace CassandraMigrationWebApp.Service
             if (job != null)
             {
                 // Check if all units have completed their copy phase
-                if (job.MigrationUnitBasics != null && job.MigrationUnitBasics.All(mu => mu.CopyComplete))
+                if (job.Tables != null && job.Tables.All(mu => mu.CopyComplete))
                 {
                     return false;
                 }
@@ -317,12 +317,12 @@ namespace CassandraMigrationWebApp.Service
                     Helper.LogToFile($"Task.Run started for job {job.Id}");
 
                     // Expand wildcards (e.g. "socialmedia.*") by connecting to source
-                    if (job.MigrationUnitBasics == null || job.MigrationUnitBasics.Count == 0
-                        || job.MigrationUnitBasics.Any(m => m.TableName == "*"))
+                    if (job.Tables == null || job.Tables.Count == 0
+                        || job.Tables.Any(m => m.TableName == "*"))
                     {
                         Helper.LogToFile($"Expanding wildcards for job {job.Id}, namespaces={namespacesToMigrate}");
                         ExpandWildcardTables(job, namespacesToMigrate);
-                        Helper.LogToFile($"After expand: {job.MigrationUnitBasics?.Count ?? 0} units");
+                        Helper.LogToFile($"After expand: {job.Tables?.Count ?? 0} units");
                     }
 
                     Helper.LogToFile($"Calling MigrationWorker.StartAsync for job {job.Id}");
@@ -345,7 +345,7 @@ namespace CassandraMigrationWebApp.Service
                     }
                     else if (job.Status == JobStatus.Running)
                     {
-                        bool hasFailed = job.MigrationUnitBasics?.Any(
+                        bool hasFailed = job.Tables?.Any(
                             mu => mu.SourceStatus ==
                                 TableStatus.Failed) ?? false;
                         if (hasFailed)
@@ -381,19 +381,19 @@ namespace CassandraMigrationWebApp.Service
                 int dotIdx = fullName.IndexOf('.');
                 if (dotIdx <= 0 || dotIdx == fullName.Length - 1) continue;
 
-                string ks = fullName.Substring(0, dotIdx).Trim();
-                string tbl = fullName.Substring(dotIdx + 1).Trim();
+                string keyspace = fullName.Substring(0, dotIdx).Trim();
+                string table = fullName.Substring(dotIdx + 1).Trim();
 
-                if (tbl == "*")
+                if (table == "*")
                 {
                     // Connect to source and list all tables in this keyspace
                     try
                     {
                         using (var session = CassandraMigrationProcessor.Helpers.Cassandra.CassandraClientFactory
-                            .CreateSourceSession(_log, job, ks))
+                            .CreateSourceSession(_log, job, keyspace))
                         {
                             var tables = CassandraMigrationProcessor.Helpers.Cassandra.CassandraHelper
-                                .ListTables(session, ks);
+                                .ListTables(session, keyspace);
                             foreach (var tableName in tables)
                             {
                                 // Validate table is accessible with retry for 429s
@@ -403,7 +403,7 @@ namespace CassandraMigrationWebApp.Service
                                     try
                                     {
                                         var probe = new Cassandra.SimpleStatement(
-                                            $"SELECT * FROM \"{ks}\".\"{tableName}\"" +
+                                            $"SELECT * FROM \"{keyspace}\".\"{tableName}\"" +
                                             " WHERE COSMOS_CHANGEFEED_FROM_START() = true");
                                         probe.SetPageSize(1);
                                         probe.SetAutoPage(false);
@@ -423,13 +423,13 @@ namespace CassandraMigrationWebApp.Service
                                             Thread.Sleep(delaySec * 1000);
                                             continue;
                                         }
-                                        _log.WriteLine($"Skipping {ks}.{tableName}: {vex.Message}", LogType.Warning);
+                                        _log.WriteLine($"Skipping {keyspace}.{tableName}: {vex.Message}", LogType.Warning);
                                     }
                                 }
                                 if (!accessible) continue;
 
                                 var mu = new MigrationUnit(
-                                    job, ks, tableName,
+                                    job, keyspace, tableName,
                                     new List<MigrationChunk>());
                                 mu.SourceStatus = TableStatus.OK;
                                 expandedUnits.Add(mu);
@@ -438,13 +438,13 @@ namespace CassandraMigrationWebApp.Service
                     }
                     catch (Exception ex)
                     {
-                        _log.WriteLine($"Failed to discover tables in keyspace {ks}: {ex.Message}", LogType.Error);
+                        _log.WriteLine($"Failed to discover tables in keyspace {keyspace}: {ex.Message}", LogType.Error);
                     }
                 }
                 else
                 {
                     var mu = new MigrationUnit(
-                        job, ks, tbl,
+                        job, keyspace, table,
                         new List<MigrationChunk>());
                     mu.SourceStatus = TableStatus.OK;
                     expandedUnits.Add(mu);
@@ -454,7 +454,7 @@ namespace CassandraMigrationWebApp.Service
             if (expandedUnits.Count > 0)
             {
                 // Clear any wildcard entries
-                job.MigrationUnitBasics?.RemoveAll(m => m.TableName == "*");
+                job.Tables?.RemoveAll(m => m.TableName == "*");
                 Helper.AddMigrationUnits(expandedUnits, job, _log);
             }
         }

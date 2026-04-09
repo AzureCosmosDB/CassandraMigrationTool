@@ -1,4 +1,4 @@
-﻿@page "/"
+@page "/"
 @inject Service.JobManager JobManager
 @inject NavigationManager NavigationManager
 @inject IJSRuntime JS
@@ -96,8 +96,8 @@
                                 </td>
                                 <td style="font-size: 12px; white-space: nowrap;">
                                     @{
-                                        long copiedRows = migration.MigrationUnitBasics?.Sum(mu => mu.CopyRowsCopied) ?? 0;
-                                        long totalDocs = migration.MigrationUnitBasics?.Sum(mu => mu.TotalRowCount) ?? 0;
+                                        long copiedRows = migration.Tables?.Sum(mu => mu.CopyRowsCopied) ?? 0;
+                                        long totalDocs = migration.Tables?.Sum(mu => mu.TotalRowCount) ?? 0;
                                     }
                                     @if (totalDocs > 0)
                                     {
@@ -114,7 +114,7 @@
                                 </td>
                                 <td style="font-size: 12px; white-space: nowrap;">
                                     @{
-                                        double speed = migration.MigrationUnitBasics?
+                                        double speed = migration.Tables?
                                             .Where(mu => mu.CopyRowsPerSecond > 0)
                                             .Select(mu => mu.CopyRowsPerSecond)
                                             .DefaultIfEmpty(0).Sum() ?? 0;
@@ -197,7 +197,7 @@
     {
 
         return string.Join(",",
-            migrationJob.MigrationUnitBasics?
+            migrationJob.Tables?
                 .Select(mu => $"{mu.KeyspaceName}.{mu.TableName}") ?? Enumerable.Empty<string>());
     }
 

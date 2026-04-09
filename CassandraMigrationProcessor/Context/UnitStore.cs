@@ -1,4 +1,4 @@
-﻿using Newtonsoft.Json;
+using Newtonsoft.Json;
 using System;
 using System.IO;
 
@@ -80,11 +80,11 @@ namespace CassandraMigrationProcessor.Context
             try
             {
                 var job = unit.ParentJob;
-                var index = job.MigrationUnitBasics
+                var index = job.Tables
                     .FindIndex(mu => mu.Id == unit.Id);
                 if (index == -1) return false;
 
-                job.MigrationUnitBasics.RemoveAt(index);
+                job.Tables.RemoveAt(index);
 
                 var filePath = Path.Combine(
                     JobStore.JobsFolder, unit.JobId,

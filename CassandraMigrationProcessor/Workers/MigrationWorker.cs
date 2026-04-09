@@ -65,11 +65,11 @@ namespace CassandraMigrationProcessor.Workers
                     {
                         _log.WriteLine("All tables copied. Resuming " + "change feed processors.", LogType.Info);
 
-                        EnsureSourceSession(job, job.MigrationUnitBasics!.First().KeyspaceName);
+                        EnsureSourceSession(job, job.Tables!.First().KeyspaceName);
 
                         _activeProcessor = new CopyProcessor(_log, _sourceSession!, config, job, this);
 
-                        foreach (var mub in job.MigrationUnitBasics)
+                        foreach (var mub in job.Tables)
                         {
                             if (!Helper.IsMigrationUnitValid(mub) || !mub.CopyComplete)
                                 continue;

@@ -74,9 +74,9 @@ namespace CassandraMigrationProcessor.Processors
             MigrationJobContext.AddVerboseLog("ChangeFeedProcessor.RunChangeFeedForAllTables");
 
             var job = _job;
-            if (job?.MigrationUnitBasics == null) return;
+            if (job?.Tables == null) return;
 
-            foreach (var mub in job.MigrationUnitBasics)
+            foreach (var mub in job.Tables)
             {
                 if (!Helper.IsMigrationUnitValid(mub)) continue;
                 if (!mub.CopyComplete) continue;

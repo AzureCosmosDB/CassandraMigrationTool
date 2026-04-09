@@ -114,7 +114,7 @@
     var sj = CurrentlyLoadedMigrationJob;
     var statusLabel = GetJobStatusLabel(sj);
     var statusBadge = GetJobStatusBadge(sj);
-    var allUnits = sj.MigrationUnitBasics ?? new List<MigrationUnitBasic>();
+    var allUnits = sj.Tables ?? new List<MigrationUnitBasic>();
     int totalTables = allUnits.Count;
     int copyDone = allUnits.Count(u => u.CopyComplete);
     int inProgress = allUnits.Count(u => !u.CopyComplete && u.CopyPercent > 0);
@@ -202,7 +202,7 @@
                 <div class="col-auto">
                     <small class="text-muted">
                         <i class="bi bi-hdd-network"></i>
-                        <strong>Namespaces:</strong> @(sj.Tables ?? "all")
+                        <strong>Namespaces:</strong> @(sj.Namespaces ?? "all")
                     </small>
                 </div>
                 @if (sj.DropTargetTableBeforeStart)
@@ -266,7 +266,7 @@
 }
 
 @* Collections Filter and Pagination Controls *@
-@if (CurrentlyLoadedMigrationJob != null && CurrentlyLoadedMigrationJob.MigrationUnitBasics != null && CurrentlyLoadedMigrationJob.MigrationUnitBasics.Count > 0 && !_isLoadingCollections)
+@if (CurrentlyLoadedMigrationJob != null && CurrentlyLoadedMigrationJob.Tables != null && CurrentlyLoadedMigrationJob.Tables.Count > 0 && !_isLoadingCollections)
 {
     <div class="collections-filter-section">
         <div class="row">
@@ -333,7 +333,7 @@
             </tr>
         </thead>
         <tbody>
-            @if (!_isLoadingCollections && CurrentlyLoadedMigrationJob != null && CurrentlyLoadedMigrationJob.MigrationUnitBasics != null && GetFilteredAndPagedUnits().Any())
+            @if (!_isLoadingCollections && CurrentlyLoadedMigrationJob != null && CurrentlyLoadedMigrationJob.Tables != null && GetFilteredAndPagedUnits().Any())
             {
                 @foreach (var mu in GetFilteredAndPagedUnits())
                 {
@@ -411,7 +411,7 @@
                     </tr>
                 }
             }
-            else if (!_isLoadingCollections && CurrentlyLoadedMigrationJob != null && CurrentlyLoadedMigrationJob.MigrationUnitBasics!= null && !string.IsNullOrWhiteSpace(_filterText))
+            else if (!_isLoadingCollections && CurrentlyLoadedMigrationJob != null && CurrentlyLoadedMigrationJob.Tables!= null && !string.IsNullOrWhiteSpace(_filterText))
             {
                 <tr>
                     <td colspan="10" class="empty-collections-state">
@@ -421,7 +421,7 @@
                     </td>
                 </tr>
             }
-            else if (!_isLoadingCollections && (CurrentlyLoadedMigrationJob == null || CurrentlyLoadedMigrationJob.MigrationUnitBasics == null || !CurrentlyLoadedMigrationJob.MigrationUnitBasics.Any()))
+            else if (!_isLoadingCollections && (CurrentlyLoadedMigrationJob == null || CurrentlyLoadedMigrationJob.Tables == null || !CurrentlyLoadedMigrationJob.Tables.Any()))
             {
                 <tr>
                     <td colspan="10" class="empty-collections-state">
@@ -899,7 +899,7 @@ else if (@_showLogBackupFile)
         if (CurrentlyLoadedMigrationJob == null) return;
 
         // Check if we need to invalidate the cache
-        var currentUnitsCount = CurrentlyLoadedMigrationJob.MigrationUnitBasics?.Count ?? 0;
+        var currentUnitsCount = CurrentlyLoadedMigrationJob.Tables?.Count ?? 0;
         bool needsUpdate = _cachedFilteredAndPagedUnits == null ||
                           currentUnitsCount != _lastMigrationUnitsCount ||
                           _sortColumn != _lastSortColumn ||
@@ -913,7 +913,7 @@ else if (@_showLogBackupFile)
             return; // Use cached data
         }
 
-        var currentUnits = CurrentlyLoadedMigrationJob.MigrationUnitBasics ?? new List<MigrationUnitBasic>();
+        var currentUnits = CurrentlyLoadedMigrationJob.Tables ?? new List<MigrationUnitBasic>();
 
         // Apply sorting before pagination
         currentUnits = ApplySorting(currentUnits);
@@ -959,7 +959,7 @@ else if (@_showLogBackupFile)
 
     private int GetTotalItemsCount()
     {
-        return CurrentlyLoadedMigrationJob?.MigrationUnitBasics?.Count ?? 0;
+        return CurrentlyLoadedMigrationJob?.Tables?.Count ?? 0;
     }
 
     private int GetFilteredItemsCount()
@@ -1095,7 +1095,7 @@ else if (@_showLogBackupFile)
                 // Trigger immediate refresh
                 if (CurrentlyLoadedMigrationJob != null && (CurrentlyLoadedMigrationJob.Status == JobStatus.Running || JobManager.DidMigrationJobExitRecently(JobId)) && !_showLogBackupFile)
                 {
-                    if (_isLoadingCollections && @CurrentlyLoadedMigrationJob.MigrationUnitBasics != null && @CurrentlyLoadedMigrationJob.MigrationUnitBasics.Count > 0)
+                    if (_isLoadingCollections && @CurrentlyLoadedMigrationJob.Tables != null && @CurrentlyLoadedMigrationJob.Tables.Count > 0)
                     {
                         _isLoadingCollections = false;
                     }
@@ -1261,7 +1261,7 @@ else if (@_showLogBackupFile)
             if (CurrentlyLoadedMigrationJob != null && (CurrentlyLoadedMigrationJob.Status == JobStatus.Running || JobManager.DidMigrationJobExitRecently(JobId)) && !_showLogBackupFile)
             {
                 // Check if we should hide loading spinner
-                if (_isLoadingCollections && @CurrentlyLoadedMigrationJob.MigrationUnitBasics != null && @CurrentlyLoadedMigrationJob.MigrationUnitBasics.Count > 0)
+                if (_isLoadingCollections && @CurrentlyLoadedMigrationJob.Tables != null && @CurrentlyLoadedMigrationJob.Tables.Count > 0)
                 {
                     _isLoadingCollections = false;
                 }
@@ -1344,9 +1344,9 @@ else if (@_showLogBackupFile)
 
     private bool CheckCutoverReadiness()
     {
-        if (CurrentlyLoadedMigrationJob?.MigrationUnitBasics == null)
+        if (CurrentlyLoadedMigrationJob?.Tables == null)
             return false;
-        return CurrentlyLoadedMigrationJob.MigrationUnitBasics.All(mu =>
+        return CurrentlyLoadedMigrationJob.Tables.All(mu =>
             mu.SourceStatus == TableStatus.NotFound || mu.CopyComplete);
     }
 
@@ -1357,10 +1357,10 @@ else if (@_showLogBackupFile)
     /// </summary>
     private (string Display, bool IsLow) GetChangeFeedLag()
     {
-        if (CurrentlyLoadedMigrationJob?.MigrationUnitBasics == null)
+        if (CurrentlyLoadedMigrationJob?.Tables == null)
             return ("N/A", false);
 
-        var mus = CurrentlyLoadedMigrationJob.MigrationUnitBasics
+        var mus = CurrentlyLoadedMigrationJob.Tables
             .Where(mu => mu.ChangeFeedLastChecked.HasValue)
             .ToList();
 
@@ -1485,7 +1485,7 @@ else if (@_showLogBackupFile)
 
 
         // Check if we should show the loading spinner
-        if (mj.MigrationUnitBasics == null || mj.MigrationUnitBasics.Count == 0)
+        if (mj.Tables == null || mj.Tables.Count == 0)
         {
             _isLoadingCollections = true;
             await InvokeAsync(StateHasChanged);
@@ -1499,7 +1499,7 @@ else if (@_showLogBackupFile)
             await JobManager.StartMigration(mj,
                 GetSourceConnectionString(mj),
                 GetTargetConnectionString(mj),
-                mj.Tables ?? string.Empty,
+                mj.Namespaces ?? string.Empty,
                 mj.JobType,
                 Helper.IsOnline(mj));
         });
@@ -1646,11 +1646,11 @@ else if (@_showLogBackupFile)
         if (migrationUnits != null && CurrentlyLoadedMigrationJob != null)
         {
             // Get IDs for comparison
-            var existingIds = CurrentlyLoadedMigrationJob.MigrationUnitBasics.Select(mu => mu.Id).ToHashSet();
+            var existingIds = CurrentlyLoadedMigrationJob.Tables.Select(mu => mu.Id).ToHashSet();
             var newIds = migrationUnits.Select(mu => mu.Id).ToHashSet();
 
             //get ids that are no llonger present in newUnits
-            var delList = CurrentlyLoadedMigrationJob.MigrationUnitBasics.FindAll(mu => !newIds.Contains(mu.Id));
+            var delList = CurrentlyLoadedMigrationJob.Tables.FindAll(mu => !newIds.Contains(mu.Id));
 
             foreach (var tobDel in delList)
             {
@@ -1667,10 +1667,10 @@ else if (@_showLogBackupFile)
             // Add new units that don’t exist in existingUnits
             // foreach (var mu in migrationUnits)
             // {
-            //     if (!CurrentlyLoadedMigrationJob.MigrationUnitBasics.Any(x => x.DatabaseName == mu.DatabaseName && x.CollectionName == mu.CollectionName))
+            //     if (!CurrentlyLoadedMigrationJob.Tables.Any(x => x.DatabaseName == mu.DatabaseName && x.CollectionName == mu.CollectionName))
             //     {
             //         MigrationJobContext.SaveMigrationUnit(mu,false);
-            //         //CurrentlyLoadedMigrationJob.MigrationUnitBasics.Add(mu.GetBasic());
+            //         //CurrentlyLoadedMigrationJob.Tables.Add(mu.GetBasic());
             //         Helper.AddMigrationUnit(mu, CurrentlyLoadedMigrationJob);
             //     }
             // }
@@ -1680,7 +1680,7 @@ else if (@_showLogBackupFile)
                 return;
             }
 
-            CurrentlyLoadedMigrationJob.Tables = string.Join(",", migrationUnits.Select(mu => $"{mu.KeyspaceName}.{mu.TableName}"));
+            CurrentlyLoadedMigrationJob.Namespaces = string.Join(",", migrationUnits.Select(mu => $"{mu.KeyspaceName}.{mu.TableName}"));
 
             MigrationJobContext.SaveMigrationJob(CurrentlyLoadedMigrationJob);
 
