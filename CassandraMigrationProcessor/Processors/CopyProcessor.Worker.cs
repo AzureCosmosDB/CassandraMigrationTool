@@ -23,54 +23,25 @@ namespace CassandraMigrationProcessor.Processors
 
         private static void SavePartitionCheckpoint(Partition partition, PipelineContext ctx)
         {
-            lock (ctx.Checkpoints)
+            lock (ctx.Ranges.Checkpoints)
             {
                 var token = partition.GetResumeToken();
                 if (token != null)
-                    ctx.Checkpoints[partition.FeedRange] = Convert.ToBase64String(token);
+                    ctx.Ranges.Checkpoints[partition.FeedRange] = Convert.ToBase64String(token);
                 else if (partition.LastPagingState != null)
-                    ctx.Checkpoints[partition.FeedRange] = Convert.ToBase64String(partition.LastPagingState);
+                    ctx.Ranges.Checkpoints[partition.FeedRange] = Convert.ToBase64String(partition.LastPagingState);
             }
         }
 
         private static void MarkRangeCompleted(Partition partition, PipelineContext ctx)
         {
-            lock (ctx.Checkpoints)
+            lock (ctx.Ranges.Checkpoints)
             {
-                ctx.Checkpoints.Remove(partition.FeedRange);
-                ctx.Completed.Add(partition.FeedRange);
+                ctx.Ranges.Checkpoints.Remove(partition.FeedRange);
+                ctx.Ranges.Completed.Add(partition.FeedRange);
             }
-            ctx.Tracker.RangeCompleted(partition.FeedRange, TaskResult.Success);
+            ctx.Progress.Tracker.RangeCompleted(partition.FeedRange, TaskResult.Success);
             TryCloseChannel(ctx);
-        }
-
-        private static void UpdateProgress(PipelineContext ctx)
-        {
-            long written = Volatile.Read(ref ctx.TotalWritten);
-            long failed = Volatile.Read(ref ctx.TotalFailed);
-            var progress = ctx.Progress;
-            var chunk = ctx.MigrationUnit.MigrationChunks[progress.ChunkIndex];
-            chunk.SourceResultRowCount = written;
-            chunk.TargetInsertedRowCount = written;
-            chunk.TargetFailedRowCount = failed;
-            ctx.MigrationUnit.CopyRowsCopied = written;
-            ctx.MigrationUnit.CopyRowsPerSecond = ctx.Tracker.RecentSpeed;
-            if (progress.TotalRowCount > 0)
-            {
-                ctx.MigrationUnit.CopyPercent = progress.InitialPercent +
-                    (Math.Min(MigrationDefaults.ProgressCapPercent,
-                        (double)written / progress.TotalRowCount * 100)
-                    * progress.ContributionFactor);
-            }
-            ctx.MigrationUnit.UpdateParentJob();
-
-            long prevTicks = Volatile.Read(ref ctx.LastCheckpointTicks);
-            long nowTicks = DateTime.UtcNow.Ticks;
-            if ((nowTicks - prevTicks) / TimeSpan.TicksPerSecond >= MigrationDefaults.CheckpointIntervalSeconds
-                && Interlocked.CompareExchange(ref ctx.LastCheckpointTicks, nowTicks, prevTicks) == prevTicks)
-            {
-                MigrationJobContext.SaveMigrationUnit(ctx.MigrationUnit, true);
-            }
         }
 
         /// <summary>
@@ -79,17 +50,17 @@ namespace CassandraMigrationProcessor.Processors
         /// </summary>
         private async Task RunWorkerAsync(int workerId, PipelineContext ctx, int configuredPageSize)
         {
-            ctx.Tracker.WorkerStarted();
+            ctx.Progress.Tracker.WorkerStarted();
             PageReader? reader = null;
             PageWriter? writer = null;
             try
             {
-                reader = new PageReader(_log, ctx.SourceConnection, ctx.Context.KeyspaceName,
-                    ctx.Columns.Select(c => c.Name).ToList(), configuredPageSize, workerId, _cancellation);
-                writer = new PageWriter(_log, ctx.TargetConnection, ctx.Columns,
-                    ctx.Context.TargetKeyspaceName, ctx.Context.TargetTableName, configuredPageSize, workerId, _cancellation);
+                reader = new PageReader(_log, ctx.Worker.SourceConnection, ctx.Worker.Context.KeyspaceName,
+                    ctx.Worker.Columns.Select(c => c.Name).ToList(), configuredPageSize, workerId, _cancellation);
+                writer = new PageWriter(_log, ctx.Worker.TargetConnection, ctx.Worker.Columns,
+                    ctx.Worker.Context.TargetKeyspaceName, ctx.Worker.Context.TargetTableName, configuredPageSize, workerId, _cancellation);
 
-                while (!_cancellation.Token.IsCancellationRequested && Volatile.Read(ref ctx.FatalErrorFlag) == 0)
+                while (!_cancellation.Token.IsCancellationRequested && Volatile.Read(ref ctx.Counters.FatalErrorFlag) == 0)
                 {
                     var partition = await TakeNextPartitionAsync(ctx);
                     if (partition == null) break;
@@ -103,7 +74,7 @@ namespace CassandraMigrationProcessor.Processors
                             if (result == null)
                             {
                                 _log.WriteLine($"[W{workerId}] FATAL: Read failed — failing job", LogType.Error);
-                                Interlocked.Exchange(ref ctx.FatalErrorFlag, 1);
+                                Interlocked.Exchange(ref ctx.Counters.FatalErrorFlag, 1);
                                 SafeCancel();
                                 break;
                             }
@@ -120,7 +91,7 @@ namespace CassandraMigrationProcessor.Processors
                     }
                     catch (OperationCanceledException)
                     {
-                        ctx.WorkerErrors.Add(TaskResult.Canceled);
+                        ctx.Counters.WorkerErrors.Add(TaskResult.Canceled);
                         SavePartitionCheckpoint(partition, ctx);
                         ctx.PartitionPool.Writer.TryComplete();
                     }
@@ -131,22 +102,22 @@ namespace CassandraMigrationProcessor.Processors
                         if (IsFatalError(ex))
                         {
                             _log.WriteLine($"[W{workerId}] FATAL — failing job", LogType.Error);
-                            Interlocked.Exchange(ref ctx.FatalErrorFlag, 1);
+                            Interlocked.Exchange(ref ctx.Counters.FatalErrorFlag, 1);
                             SafeCancel();
-                            ctx.WorkerErrors.Add(TaskResult.Abort);
+                            ctx.Counters.WorkerErrors.Add(TaskResult.Abort);
                         }
                         else
                         {
-                            ctx.WorkerErrors.Add(TaskResult.Retry);
+                            ctx.Counters.WorkerErrors.Add(TaskResult.Retry);
                         }
 
                         SavePartitionCheckpoint(partition, ctx);
-                        ctx.Tracker.RangeCompleted(partition.FeedRange, TaskResult.Retry);
+                        ctx.Progress.Tracker.RangeCompleted(partition.FeedRange, TaskResult.Retry);
                         ctx.PartitionPool.Writer.TryComplete();
                     }
                     finally
                     {
-                        UpdateProgress(ctx);
+                        ctx.Progress.Tracker.UpdateMigrationUnit();
                     }
                 }
             }
@@ -154,13 +125,13 @@ namespace CassandraMigrationProcessor.Processors
             {
                 MigrationHelper.SafeDispose(writer, "worker PageWriter");
                 MigrationHelper.SafeDispose(reader, "worker PageReader");
-                ctx.Tracker.WorkerExited();
+                ctx.Progress.Tracker.WorkerExited();
             }
         }
 
         private static void TryCloseChannel(PipelineContext ctx)
         {
-            if (ctx.Completed.Count >= ctx.FeedRanges.Count)
+            if (ctx.Ranges.Completed.Count >= ctx.Ranges.FeedRanges.Count)
                 ctx.PartitionPool.Writer.TryComplete();
         }
 

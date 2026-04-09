@@ -58,7 +58,7 @@ namespace CassandraMigrationProcessor.Processors
             ReadAsync(Partition partition, PipelineContext ctx)
         {
             var stopwatch = Stopwatch.StartNew();
-            var stmt = new SimpleStatement(BuildSelectCql(ctx.Context, partition.FeedRange));
+            var stmt = new SimpleStatement(BuildSelectCql(ctx.Worker.Context, partition.FeedRange));
             stmt.SetPageSize(_pageSize);
             stmt.SetAutoPage(false);
             stmt.SetReadTimeoutMillis(ReadTimeoutMs);
@@ -86,7 +86,7 @@ namespace CassandraMigrationProcessor.Processors
 
             if (resultSet == null)
             {
-                ctx.WorkerErrors.Add(TaskResult.Retry);
+                ctx.Counters.WorkerErrors.Add(TaskResult.Retry);
                 return null;
             }
 
@@ -109,8 +109,8 @@ namespace CassandraMigrationProcessor.Processors
 
             // Update partition and tracker — caller doesn't need to
             partition.LastPagingState = nextPaging;
-            Interlocked.Add(ref ctx.TotalRead, rows.Count);
-            ctx.Tracker.AddReadTime(stopwatch.ElapsedMilliseconds);
+            ctx.Progress.Tracker.AddRead(rows.Count);
+            ctx.Progress.Tracker.AddReadTime(stopwatch.ElapsedMilliseconds);
             var workChunk = partition.AddChunkAndTrim(nextPaging);
             if (isLastPage) partition.IsExhausted = true;
 

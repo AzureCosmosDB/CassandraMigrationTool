@@ -61,7 +61,7 @@ namespace CassandraMigrationProcessor.Processors
             foreach (var rowValues in rows)
             {
                 if (_cancellation.Token.IsCancellationRequested
-                    || Volatile.Read(ref ctx.FatalErrorFlag) != 0)
+                    || Volatile.Read(ref ctx.Counters.FatalErrorFlag) != 0)
                     break;
 
                 var bound = _preparedInsert.Bind(rowValues);
@@ -80,7 +80,6 @@ namespace CassandraMigrationProcessor.Processors
                     if (task.IsFaulted)
                     {
                         var ex = task.Exception!.InnerException!;
-                        Interlocked.Increment(ref ctx.TotalFailed);
                         Interlocked.Increment(ref writeFail);
                         _log.WriteLine($"[W{_workerId}] INSERT failed: {ex.GetType().Name}: {ex.Message}",
                             LogType.Error);
@@ -89,7 +88,7 @@ namespace CassandraMigrationProcessor.Processors
                         {
                             _log.WriteLine($"[W{_workerId}] FATAL: {ex.GetType().Name} — failing job",
                                 LogType.Error);
-                            Interlocked.Exchange(ref ctx.FatalErrorFlag, 1);
+                            Interlocked.Exchange(ref ctx.Counters.FatalErrorFlag, 1);
                             try { _cancellation.Cancel(); }
                             catch (Exception cancelEx)
                             {
@@ -98,19 +97,18 @@ namespace CassandraMigrationProcessor.Processors
                         }
                         else if (!ExceptionClassifier.IsTransient(ex))
                         {
-                            Interlocked.Exchange(ref ctx.FatalErrorFlag, 1);
+                            Interlocked.Exchange(ref ctx.Counters.FatalErrorFlag, 1);
                         }
                     }
                     else
                     {
-                        Interlocked.Increment(ref ctx.TotalWritten);
                         Interlocked.Increment(ref writeDone);
                     }
                 }, TaskContinuationOptions.ExecuteSynchronously));
             }
 
-            ctx.Tracker.SetPipelineState(ctx.FeedRanges.Count
-                    - ctx.Completed.Count,
+            ctx.Progress.Tracker.SetPipelineState(ctx.Ranges.FeedRanges.Count
+                    - ctx.Ranges.Completed.Count,
                 _pageSize);
             await Task.WhenAll(writeTasks);
 
@@ -124,9 +122,9 @@ namespace CassandraMigrationProcessor.Processors
             }
 
             stopwatch.Stop();
-            ctx.Tracker.AddWriteTime(writeLatencySum, rows.Count);
-            ctx.Tracker.AddCopied(writeDone);
-            ctx.Tracker.AddFailed(writeFail);
+            ctx.Progress.Tracker.AddWriteTime(writeLatencySum, rows.Count);
+            ctx.Progress.Tracker.AddCopied(writeDone);
+            ctx.Progress.Tracker.AddFailed(writeFail);
 
             long pageBytes = 0;
             foreach (var r in rows)
@@ -139,7 +137,7 @@ namespace CassandraMigrationProcessor.Processors
                     else if (v != null)
                         pageBytes += 8;
                 }
-            ctx.Tracker.AddBytes(pageBytes);
+            ctx.Progress.Tracker.AddBytes(pageBytes);
         }
     }
 }

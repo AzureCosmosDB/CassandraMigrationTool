@@ -6,39 +6,45 @@ using System.Threading.Channels;
 
 namespace CassandraMigrationProcessor.Processors
 {
-    /// <summary>
-    /// Progress-reporting parameters, constant for the lifetime of a pipeline run.
-    /// </summary>
-    internal class ProgressConfig
+    internal class WorkerConfig
     {
-        public double InitialPercent;
-        public double ContributionFactor;
-        public long TotalRowCount;
-        public int ChunkIndex;
+        public ConnectionOptions SourceConnection = null!;
+        public ConnectionOptions TargetConnection = null!;
+        public List<(string Name, string Type, string Kind, string ClusteringOrder, int Position)> Columns = null!;
+        public ProcessorContext Context = null!;
+    }
+
+    internal class RangeState
+    {
+        public HashSet<string> Completed = null!;
+        public Dictionary<string, string?> Checkpoints = null!;
+        public List<string> FeedRanges = null!;
     }
 
     /// <summary>
-    /// Shared mutable state passed to each worker. Concurrent fields
-    /// (TotalRead, TotalWritten, etc.) use Interlocked/Volatile.
+    /// Non-progress pipeline flags. Row counters now live in
+    /// <see cref="CopyProgressTracker"/> (single source of truth).
+    /// </summary>
+    internal class PipelineCounters
+    {
+        public int FatalErrorFlag;
+        public ConcurrentBag<TaskResult> WorkerErrors = null!;
+    }
+
+    internal class ProgressState
+    {
+        public CopyProgressTracker Tracker = null!;
+    }
+
+    /// <summary>
+    /// Shared mutable state passed to each worker.
     /// </summary>
     internal class PipelineContext
     {
         public Channel<Partition> PartitionPool = null!;
-        public List<(string Name, string Type, string Kind, string ClusteringOrder, int Position)> Columns = null!;
-        public ConnectionOptions SourceConnection = null!;
-        public ConnectionOptions TargetConnection = null!;
-        public HashSet<string> Completed = null!;
-        public Dictionary<string, string?> Checkpoints = null!;
-        public List<string> FeedRanges = null!;
-        public CopyProgressTracker Tracker = null!;
-        public long TotalRead;
-        public long TotalWritten;
-        public long TotalFailed;
-        public int FatalErrorFlag;
-        public ConcurrentBag<TaskResult> WorkerErrors = null!;
-        public ProcessorContext Context = null!;
-        public MigrationUnit MigrationUnit = null!;
-        public ProgressConfig Progress = null!;
-        public long LastCheckpointTicks;
+        public WorkerConfig Worker = null!;
+        public RangeState Ranges = null!;
+        public PipelineCounters Counters = null!;
+        public ProgressState Progress = null!;
     }
 }

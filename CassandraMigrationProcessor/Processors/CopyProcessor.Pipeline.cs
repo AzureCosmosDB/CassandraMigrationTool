@@ -111,35 +111,37 @@ namespace CassandraMigrationProcessor.Processors
 
             var tracker = new CopyProgressTracker(_log, processorContext.KeyspaceName, processorContext.TableName,
                 workerCount, pendingRanges.Count,
-                priorCopied);
+                priorCopied,
+                migrationUnit, chunkIndex,
+                initialPercent, contributionFactor, totalRowCount);
 
             var stopwatch = Stopwatch.StartNew();
 
             var ctx = new PipelineContext
             {
                 PartitionPool = partitionPool,
-                Columns = columns,
-                SourceConnection = _job.SourceConnection,
-                TargetConnection = _job.TargetConnection,
-                Completed = completed,
-                Checkpoints = checkpoints,
-                FeedRanges = feedRanges,
-                Tracker = tracker,
-                TotalRead = 0,
-                TotalWritten = priorCopied,
-                TotalFailed = 0,
-                FatalErrorFlag = 0,
-                WorkerErrors = new ConcurrentBag<TaskResult>(),
-                Context = processorContext,
-                MigrationUnit = migrationUnit,
-                Progress = new ProgressConfig
+                Worker = new WorkerConfig
                 {
-                    ChunkIndex = chunkIndex,
-                    InitialPercent = initialPercent,
-                    ContributionFactor = contributionFactor,
-                    TotalRowCount = totalRowCount,
+                    Columns = columns,
+                    SourceConnection = _job.SourceConnection,
+                    TargetConnection = _job.TargetConnection,
+                    Context = processorContext,
                 },
-                LastCheckpointTicks = DateTime.UtcNow.Ticks,
+                Ranges = new RangeState
+                {
+                    Completed = completed,
+                    Checkpoints = checkpoints,
+                    FeedRanges = feedRanges,
+                },
+                Counters = new PipelineCounters
+                {
+                    FatalErrorFlag = 0,
+                    WorkerErrors = new ConcurrentBag<TaskResult>(),
+                },
+                Progress = new ProgressState
+                {
+                    Tracker = tracker,
+                },
             };
 
             _log.WriteLine($"Launching {workerCount} workers for {processorContext.KeyspaceName}.{processorContext.TableName} ({pendingRanges.Count} feed ranges, page size={configuredPageSize})...", LogType.Info);
@@ -148,17 +150,17 @@ namespace CassandraMigrationProcessor.Processors
             await pool.WaitForCompletionAsync();
             ctx.PartitionPool.Writer.TryComplete();
 
-            ctx.Tracker.LogFinal();
-            long finalWritten = Volatile.Read(ref ctx.TotalWritten);
-            long finalFailed = Volatile.Read(ref ctx.TotalFailed);
-            long finalRead = Volatile.Read(ref ctx.TotalRead);
+            ctx.Progress.Tracker.LogFinal();
+            long finalWritten = tracker.TotalCopied;
+            long finalFailed = tracker.TotalFailed;
+            long finalRead = tracker.TotalRead;
             long sessionWritten = finalWritten - priorCopied;
 
             var elapsed = stopwatch.Elapsed;
             double avgSpeed = elapsed.TotalSeconds > 0
                 ? sessionWritten / elapsed.TotalSeconds : 0;
             int completedCount;
-            lock (ctx.Checkpoints) { completedCount = ctx.Completed.Count; }
+            lock (ctx.Ranges.Checkpoints) { completedCount = ctx.Ranges.Completed.Count; }
             _log.WriteLine($"Pipeline complete for {processorContext.KeyspaceName}.{processorContext.TableName}: " +
                 $"session={sessionWritten:N0} written, {finalFailed:N0} failed | " +
                 $"cumulative={finalWritten:N0} | {completedCount}/{feedRanges.Count} ranges | " +
@@ -171,9 +173,9 @@ namespace CassandraMigrationProcessor.Processors
             migrationUnit.CopyRowsCopied = finalWritten;
             migrationUnit.ActualRowCount = Math.Max(migrationUnit.ActualRowCount, finalRead);
             bool allRangesComplete;
-            lock (ctx.Checkpoints)
+            lock (ctx.Ranges.Checkpoints)
             {
-                allRangesComplete = ctx.Completed.Count >= feedRanges.Count;
+                allRangesComplete = ctx.Ranges.Completed.Count >= feedRanges.Count;
             }
             if (chunk.Segments.Count == 0)
             {
@@ -191,11 +193,11 @@ namespace CassandraMigrationProcessor.Processors
             }
             MigrationJobContext.SaveMigrationUnit(migrationUnit, true);
 
-            if (Volatile.Read(ref ctx.FatalErrorFlag) != 0)
+            if (Volatile.Read(ref ctx.Counters.FatalErrorFlag) != 0)
                 return TaskResult.Abort;
-            if (ctx.WorkerErrors.Any(r => r == TaskResult.Abort))
+            if (ctx.Counters.WorkerErrors.Any(r => r == TaskResult.Abort))
                 return TaskResult.Abort;
-            if (ctx.WorkerErrors.Any(r => r == TaskResult.Canceled))
+            if (ctx.Counters.WorkerErrors.Any(r => r == TaskResult.Canceled))
                 return TaskResult.Canceled;
             if (finalFailed > 0)
                 return TaskResult.Retry;

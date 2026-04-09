@@ -1,3 +1,5 @@
+using CassandraMigrationProcessor.Context;
+using CassandraMigrationProcessor.Helpers;
 using CassandraMigrationProcessor.Models;
 using System;
 using System.Diagnostics;
@@ -6,9 +8,11 @@ using System.Threading;
 namespace CassandraMigrationProcessor.Workers
 {
     /// <summary>
-    /// Shared progress tracker for parallel feed-range
-    /// workers. Consolidates counts from all workers
-    /// and emits a single periodic MigrationLog line.
+    /// Single source of truth for all copy-pipeline progress:
+    /// row counts, speed, MigrationUnit field updates, and
+    /// periodic checkpoint saves. Workers call AddCopied /
+    /// AddFailed / AddRead and UpdateMigrationUnit; no other
+    /// class should maintain parallel counters.
     /// </summary>
     public class CopyProgressTracker
     {
@@ -18,9 +22,12 @@ namespace CassandraMigrationProcessor.Workers
         private readonly int _workerCount;
         private readonly Stopwatch _stopwatch;
 
+        // --- row counters (single source of truth) ---
         private long _totalCopied;
         private long _totalFailed;
         private long _totalSkipped;
+        private long _totalRead;
+
         private int _activeWorkers;
         private int _peakActiveWorkers;
         private int _completedRanges;
@@ -43,11 +50,20 @@ namespace CassandraMigrationProcessor.Workers
         private int _activeRanges; // feed ranges with pages in-flight
         private int _adaptivePageSize; // current adaptive page size
 
+        // --- MigrationUnit progress (moved from ProgressState / ProgressConfig) ---
+        private readonly MigrationUnit _migrationUnit;
+        private readonly int _chunkIndex;
+        private readonly double _initialPercent;
+        private readonly double _contributionFactor;
+        private readonly long _totalRowCount;
+        private long _lastCheckpointTicks;
+
         private const int LogIntervalSeconds = 5;
 
         public long TotalCopied => Volatile.Read(ref _totalCopied);
         public long TotalFailed => Volatile.Read(ref _totalFailed);
         public long TotalSkipped => Volatile.Read(ref _totalSkipped);
+        public long TotalRead => Volatile.Read(ref _totalRead);
         public int ActiveWorkers => _activeWorkers;
 
         /// <summary>
@@ -90,8 +106,10 @@ namespace CassandraMigrationProcessor.Workers
             }
         }
 
-        public CopyProgressTracker(MigrationLog MigrationLog, string keyspace, string table, int workerCount, int totalRanges = 0,
-            long initialCopied = 0)
+        public CopyProgressTracker(MigrationLog MigrationLog, string keyspace, string table, int workerCount, int totalRanges,
+            long initialCopied,
+            MigrationUnit migrationUnit, int chunkIndex,
+            double initialPercent, double contributionFactor, long totalRowCount)
         {
             _log = MigrationLog;
             _keyspace = keyspace;
@@ -100,6 +118,12 @@ namespace CassandraMigrationProcessor.Workers
             _totalRanges = totalRanges;
             _totalCopied = initialCopied;
             _windowCopied = initialCopied;
+            _migrationUnit = migrationUnit;
+            _chunkIndex = chunkIndex;
+            _initialPercent = initialPercent;
+            _contributionFactor = contributionFactor;
+            _totalRowCount = totalRowCount;
+            _lastCheckpointTicks = DateTime.UtcNow.Ticks;
             _stopwatch = Stopwatch.StartNew();
         }
 
@@ -149,6 +173,46 @@ namespace CassandraMigrationProcessor.Workers
         public void AddSkipped(long count)
         {
             Interlocked.Add(ref _totalSkipped, count);
+        }
+
+        /// <summary>Track source rows read.</summary>
+        public void AddRead(long count)
+        {
+            Interlocked.Add(ref _totalRead, count);
+        }
+
+        /// <summary>
+        /// Updates MigrationUnit fields (CopyRowsCopied, CopyPercent,
+        /// CopyRowsPerSecond, chunk stats) and saves a checkpoint
+        /// every <see cref="MigrationDefaults.CheckpointIntervalSeconds"/> seconds.
+        /// Called from each worker's finally block after every page.
+        /// </summary>
+        public void UpdateMigrationUnit()
+        {
+            long written = TotalCopied;
+            long failed = TotalFailed;
+            var chunk = _migrationUnit.MigrationChunks[_chunkIndex];
+            chunk.SourceResultRowCount = written;
+            chunk.TargetInsertedRowCount = written;
+            chunk.TargetFailedRowCount = failed;
+            _migrationUnit.CopyRowsCopied = written;
+            _migrationUnit.CopyRowsPerSecond = RecentSpeed;
+            if (_totalRowCount > 0)
+            {
+                _migrationUnit.CopyPercent = _initialPercent +
+                    (Math.Min(MigrationDefaults.ProgressCapPercent,
+                        (double)written / _totalRowCount * 100)
+                    * _contributionFactor);
+            }
+            _migrationUnit.UpdateParentJob();
+
+            long prevTicks = Volatile.Read(ref _lastCheckpointTicks);
+            long nowTicks = DateTime.UtcNow.Ticks;
+            if ((nowTicks - prevTicks) / TimeSpan.TicksPerSecond >= MigrationDefaults.CheckpointIntervalSeconds
+                && Interlocked.CompareExchange(ref _lastCheckpointTicks, nowTicks, prevTicks) == prevTicks)
+            {
+                MigrationJobContext.SaveMigrationUnit(_migrationUnit, true);
+            }
         }
 
         /// <summary>
