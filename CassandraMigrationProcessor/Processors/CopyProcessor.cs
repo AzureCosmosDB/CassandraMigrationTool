@@ -19,7 +19,6 @@ namespace CassandraMigrationProcessor.Processors
             MigrationWorker? migrationWorker = null)
             : base(MigrationLog, sourceSession, config, job, migrationWorker)
         {
-            MigrationJobContext.AddVerboseLog("CopyProcessor: Constructor called");
         }
 
         private Task<TaskResult> CopyProcess_ExceptionHandler(Exception ex, int attemptCount, string processName,
@@ -29,12 +28,10 @@ namespace CassandraMigrationProcessor.Processors
             int currentBackoff)
         {
             if (ex is OperationCanceledException) return Task.FromResult(TaskResult.Abort);
-            else
-            {
-                _log.WriteLine($"{processName} attempt {attemptCount} for {keyspace}.{table}[{chunkIndex}] failed. Details:{ex}. Retrying in {currentBackoff}s...",
-                    LogType.Error);
-                return Task.FromResult(TaskResult.Retry);
-            }
+
+            _log.WriteLine($"{processName} attempt {attemptCount} for {keyspace}.{table}[{chunkIndex}] failed. Details:{ex}. Retrying in {currentBackoff}s...",
+                LogType.Error);
+            return Task.FromResult(TaskResult.Retry);
         }
 
         /// <summary>
@@ -47,8 +44,6 @@ namespace CassandraMigrationProcessor.Processors
             double initialPercent,
             double contributionFactor)
         {
-            MigrationJobContext.AddVerboseLog($"CopyProcessor.ProcessChunkAsync: {migrationUnit.KeyspaceName}.{migrationUnit.TableName}[{chunkIndex}]");
-
             long rowCount = await CassandraHelper.GetRowCountAsync(context.SourceSession, context.KeyspaceName,
                 context.TableName);
 

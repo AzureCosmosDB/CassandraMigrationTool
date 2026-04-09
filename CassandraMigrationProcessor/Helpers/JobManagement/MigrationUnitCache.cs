@@ -2,24 +2,17 @@ using CassandraMigrationProcessor.Context;
 using System;
 using System.Collections.Concurrent;
 using CassandraMigrationProcessor.Models;
+
 namespace CassandraMigrationProcessor.Helpers.JobManagement
 {
     public class MigrationUnitCache
     {
-        private readonly ConcurrentDictionary<string, MigrationUnit> _migrationUnits;
+        private readonly ConcurrentDictionary<string, MigrationUnit> _migrationUnits = new();
 
         private static string BuildCacheKey(string migrationUnitId, string jobId) => $"{jobId}::{migrationUnitId}";
 
-        public MigrationUnitCache()
-        {
-            _migrationUnits = new ConcurrentDictionary<string, MigrationUnit>();
-        }
-
-
         public MigrationUnit GetMigrationUnit(string migrationUnitId, string JobId = null)
         {
-            MigrationJobContext.AddVerboseLog($"MigrationUnitCache.GetMigrationUnit: migrationUnitId={migrationUnitId}, cacheCount={_migrationUnits.Count}");
-
             if (string.IsNullOrEmpty(JobId))
             {
                 JobId = MigrationJobContext.CurrentlyActiveJob?.Id;
@@ -33,20 +26,16 @@ namespace CassandraMigrationProcessor.Helpers.JobManagement
                 return cachedMigrationUnit;
 
             var mu = MigrationJobContext.GetMigrationUnitFromStorage(JobId, migrationUnitId);
-
             if (mu != null)
                 _migrationUnits[cacheKey] = mu;
 
             return mu;
         }
 
-
         public bool UpdateMigrationUnit(MigrationUnit migrationUnit)
         {
             if (migrationUnit == null || string.IsNullOrEmpty(migrationUnit.Id) || string.IsNullOrEmpty(migrationUnit.JobId))
                 return false;
-
-            MigrationJobContext.AddVerboseLog($"MigrationUnitCache.UpdateMigrationUnit: migrationUnitId={migrationUnit.Id}");
 
             var cacheKey = BuildCacheKey(migrationUnit.Id, migrationUnit.JobId);
             _migrationUnits[cacheKey] = migrationUnit;
@@ -55,8 +44,6 @@ namespace CassandraMigrationProcessor.Helpers.JobManagement
 
         public void RemoveMigrationUnit(string migrationUnitId)
         {
-            MigrationJobContext.AddVerboseLog($"MigrationUnitCache.RemoveMigrationUnit: migrationUnitId={migrationUnitId}");
-
             if (string.IsNullOrEmpty(migrationUnitId))
                 return;
 

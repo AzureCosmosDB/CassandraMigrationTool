@@ -97,8 +97,6 @@ namespace CassandraMigrationProcessor.Context
         public static MigrationUnit GetFromStorage(
             string jobId, string unitId)
         {
-            MigrationJobContext.AddVerboseLog(
-                $"GetMigrationUnit: jobId={jobId}, unitId={unitId}");
             return MigrationHelper.SafeExecute(() =>
             {
                 var filePath = Path.Combine(

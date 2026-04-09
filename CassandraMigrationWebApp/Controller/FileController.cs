@@ -1,30 +1,18 @@
-using Microsoft.AspNetCore.Components.Web;
 using Microsoft.AspNetCore.Mvc;
 using CassandraMigrationProcessor;
-using CassandraMigrationProcessor.Models;
 using CassandraMigrationProcessor.Helpers;
 using CassandraMigrationProcessor.Context;
 using System.Text;
 
 [ApiController]
 [Route("api/[controller]")]
-
 public class FileController : ControllerBase
 {
-
-
     [HttpGet("download/MigrationLog/{Id}")]
     public IActionResult DownloadFile(string Id)
     {
-        string fileSharePath = $"{WorkingFolderResolver.GetWorkingFolder()}migrationlogs"; // UNC path to your file share
-        string filePath;
-
-        filePath = Path.Combine(fileSharePath, Id + ".bin");
-
         var fileBytes = new MigrationLog().DownloadLogsAsJsonBytes(Id, 0, 0);
-        var contentType = "application/octet-stream";
-        return File(fileBytes, contentType, $"{Id}.txt");
-
+        return File(fileBytes, "application/octet-stream", $"{Id}.txt");
     }
 
     [HttpGet("download/migrationunit/{jobId}/{migrationUnitId}")]
@@ -79,9 +67,8 @@ public class FileController : ControllerBase
     {
         try
         {
-            MigrationLog MigrationLog = new MigrationLog();
-            int count = MigrationLog.GetLogCount(Id);
-            return Ok(new { count = count });
+            int count = new MigrationLog().GetLogCount(Id);
+            return Ok(new { count });
         }
         catch (Exception ex)
         {

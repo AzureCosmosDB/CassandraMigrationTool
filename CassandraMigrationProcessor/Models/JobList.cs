@@ -54,8 +54,5 @@ namespace CassandraMigrationProcessor.Models
         {
             this._log = _log;
         }
-
-
-
     }
 }

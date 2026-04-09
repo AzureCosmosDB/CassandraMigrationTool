@@ -67,7 +67,6 @@ namespace CassandraMigrationProcessor.Processors
         /// </summary>
         public void AddTableToProcess(string migrationUnitId, CancellationTokenSource cts)
         {
-            MigrationJobContext.AddVerboseLog($"ChangeFeedProcessor.AddTableToProcess: mu={migrationUnitId}");
             _pendingTables.Enqueue(migrationUnitId);
             StartPendingTables(cts);
         }
@@ -77,8 +76,6 @@ namespace CassandraMigrationProcessor.Processors
         /// </summary>
         public void RunChangeFeedForAllTables(CancellationTokenSource cts)
         {
-            MigrationJobContext.AddVerboseLog("ChangeFeedProcessor.RunChangeFeedForAllTables");
-
             var job = _job;
             if (job?.Tables == null) return;
 

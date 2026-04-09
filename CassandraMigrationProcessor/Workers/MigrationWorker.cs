@@ -47,8 +47,6 @@ namespace CassandraMigrationProcessor.Workers
         public async Task<TaskResult> StartAsync(MigrationJob job, MigrationSettings config,
             CancellationToken cancellationToken)
         {
-            MigrationJobContext.AddVerboseLog($"MigrationWorker.StartAsync: job={job.Id}");
-
             try
             {
                 var units = MigrationHelper.GetMigrationUnitsToMigrate(job);
@@ -62,7 +60,7 @@ namespace CassandraMigrationProcessor.Workers
                         && MigrationHelper.IsOfflineJobCompleted(job)
                         && MigrationHelper.AnyValidTable(job))
                     {
-                        _log.WriteLine("All tables copied. Resuming " + "change feed processors.", LogType.Info);
+                        _log.WriteLine("All tables copied. Resuming change feed processors.", LogType.Info);
 
                         EnsureSourceSession(job, job.Tables!.First().KeyspaceName);
 
@@ -143,7 +141,7 @@ namespace CassandraMigrationProcessor.Workers
 
                 if (abortRequested)
                 {
-                    _log.WriteLine($"Aborting: {Volatile.Read(ref _consecutiveAuthErrors)}" + " consecutive auth failures.",
+                    _log.WriteLine($"Aborting: {Volatile.Read(ref _consecutiveAuthErrors)} consecutive auth failures.",
                         LogType.Error);
                     return TaskResult.Abort;
                 }
@@ -281,7 +279,7 @@ namespace CassandraMigrationProcessor.Workers
                     }
                     catch (Exception ex)
                     {
-                        Console.WriteLine($"[WARN] MigrationWorker GetFeedRanges failed: {ex.Message}");
+                        _log.WriteLine($"GetFeedRanges failed: {ex.Message}", LogType.Warning);
                     }
                 }
 
@@ -418,8 +416,6 @@ namespace CassandraMigrationProcessor.Workers
         /// </summary>
         public static List<MigrationUnit> DiscoverTables(MigrationLog MigrationLog, MigrationJob job)
         {
-            MigrationJobContext.AddVerboseLog("MigrationWorker.DiscoverTables");
-
             var result = new List<MigrationUnit>();
 
             using (var session = CassandraClientFactory.CreateSourceSession(MigrationLog, job, "system"))

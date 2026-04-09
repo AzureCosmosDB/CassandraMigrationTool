@@ -11,7 +11,6 @@ using CassandraMigrationProcessor.Context;
 
 namespace CassandraMigrationWebApp.Service
 {
-
     public class JobManager
     {
         private MigrationWorker? MigrationWorker { get; set; }
@@ -36,10 +35,7 @@ namespace CassandraMigrationWebApp.Service
             MigrationHelper.LogToFile("JobManager initialized");
         }
 
-
-
-
-        #region _configuration Management
+        #region Configuration Management
 
         /// <summary>
         /// Updates the WebAppBaseUrl from browser context. Called from Index.razor on first load.
@@ -92,16 +88,11 @@ namespace CassandraMigrationWebApp.Service
 
         public MigrationJob? GetMigrationJobById(string id, bool active = true)
         {
-            var job = MigrationJobContext.GetMigrationJob(id);
-            return job;
+            return MigrationJobContext.GetMigrationJob(id);
         }
-
-
-
 
         public List<string> GetMigrationIds()
         {
-
             return MigrationJobContext.JobList.MigrationJobIds;
         }
 
@@ -126,11 +117,9 @@ namespace CassandraMigrationWebApp.Service
 
         public List<LogObject> GetMonitorMessages(string id)
         {
-            //verbose messages are only there for active jobs so fetch from MigrationLog.
             if (IsProcessRunning(id))
                 return _log.GetMonitorMessages() ?? new List<LogObject>();
-            else
-                return new List<LogObject>();
+            return new List<LogObject>();
         }
 
         public bool DidMigrationJobExitRecently(string jobId)
@@ -140,7 +129,7 @@ namespace CassandraMigrationWebApp.Service
             if (System.DateTime.UtcNow.AddSeconds(-10) > _lastJobHeartBeat)
             {
                 _lastJobID = string.Empty;
-                return false; ///hear beat can be max 10 seconds old
+                return false; // heartbeat can be max 10 seconds old
             }
 
             return true;
@@ -160,7 +149,7 @@ namespace CassandraMigrationWebApp.Service
                 return bucket ?? new LogBucket { Logs = new List<LogObject>() };
             }
 
-            //If migration worker is not running, get the MigrationLog bucket from the file.Its static  
+            // If migration worker is not running, get from file
             isLiveLog = false;
             MigrationLog MigrationLog = new MigrationLog();
             return MigrationLog.ReadLogFile(id, out fileName) ?? new LogBucket { Logs = new List<LogObject>() };
@@ -196,19 +185,13 @@ namespace CassandraMigrationWebApp.Service
             }
         }
 
-
-
         /// <summary>
-        /// Checks if controlled pause is applicable for the given job type and current job state
-        /// Controlled pause is only applicable during bulk copy phase, not during change stream processing
+        /// Checks if controlled pause is applicable for the given job type and current job state.
         /// </summary>
         public bool IsControlledPauseApplicable(JobType jobType, CassandraMigrationProcessor.Models.MigrationJob? job = null)
         {
-            // Controlled pause is only applicable for CqlCopy jobs during bulk copy phase
             if (jobType != JobType.CqlCopy)
-            {
                 return false;
-            }
 
             // If job is provided, check if bulk copy (offline phase) is still ongoing
             if (job != null)
@@ -233,7 +216,6 @@ namespace CassandraMigrationWebApp.Service
 
         public Task CancelMigration(string id)
         {
-
             var migration = MigrationJobContext.GetMigrationJob(id);
             if (migration != null)
             {
@@ -253,8 +235,7 @@ namespace CassandraMigrationWebApp.Service
                 if (!string.IsNullOrEmpty(_runningJobId))
                 {
                     _log.WriteLine(
-                        $"Job {_runningJobId} already running," +
-                        $" cannot start {job.Id}",
+                        $"Job {_runningJobId} already running, cannot start {job.Id}",
                         LogType.Warning);
                     return Task.CompletedTask;
                 }
@@ -384,8 +365,7 @@ namespace CassandraMigrationWebApp.Service
                                     try
                                     {
                                         var probe = new Cassandra.SimpleStatement(
-                                            $"SELECT * FROM \"{keyspace}\".\"{tableName}\"" +
-                                            " WHERE COSMOS_CHANGEFEED_FROM_START() = true");
+                                            $"SELECT * FROM \"{keyspace}\".\"{tableName}\" WHERE COSMOS_CHANGEFEED_FROM_START() = true");
                                         probe.SetPageSize(1);
                                         probe.SetAutoPage(false);
                                         probe.SetReadTimeoutMillis(15_000);
@@ -437,11 +417,7 @@ namespace CassandraMigrationWebApp.Service
             }
         }
 
-        public string GetRunningJobId()
-        {
-            return _runningJobId;
-        }
-
+        public string GetRunningJobId() => _runningJobId;
 
         public bool IsProcessRunning(string id)
         {
@@ -449,7 +425,5 @@ namespace CassandraMigrationWebApp.Service
         }
 
         #endregion
-
     }
 }
-

@@ -81,7 +81,7 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
         public static async Task<List<string>> ListTablesAsync(ISession session, string keyspace)
         {
             var resultSet = await session.ExecuteAsync(new SimpleStatement(
-                    "SELECT table_name FROM system_schema.tables " + "WHERE keyspace_name = ?", keyspace));
+                    "SELECT table_name FROM system_schema.tables WHERE keyspace_name = ?", keyspace));
 
             return resultSet
                 .Select(r => r.GetValue<string>("table_name"))
@@ -156,9 +156,10 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
         public static async Task<List<(string Name, string Type, string Kind, string ClusteringOrder, int Position)>>
             GetTableColumnsAsync(ISession session, string keyspace, string table)
         {
-            var statement = new SimpleStatement("SELECT column_name, type, kind, " +
-                "clustering_order, position " + "FROM system_schema.columns " +
-                "WHERE keyspace_name = ? " + "AND table_name = ?", keyspace, table);
+            var statement = new SimpleStatement(
+                "SELECT column_name, type, kind, clustering_order, position " +
+                "FROM system_schema.columns WHERE keyspace_name = ? AND table_name = ?",
+                keyspace, table);
             statement.SetReadTimeoutMillis(SchemaQueryTimeoutMs);
 
             var resultSet = await ExecuteWithTimeoutRetryAsync(() => session.ExecuteAsync(statement));
@@ -204,7 +205,7 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
                 return string.Empty;
 
             var orderParts = clusteringCols
-                .Select(c => $"\"{c.Name}\" " + $"{c.ClusteringOrder.ToUpperInvariant()}")
+                .Select(c => $"\"{c.Name}\" {c.ClusteringOrder.ToUpperInvariant()}")
                 .ToList();
 
             return $" WITH CLUSTERING ORDER BY ({string.Join(", ", orderParts)})";
@@ -228,8 +229,8 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
             {
                 try
                 {
-                    var probe = new SimpleStatement($"SELECT * FROM \"{keyspace}\".\"{table}\"" +
-                        " WHERE COSMOS_CHANGEFEED_FROM_START() = true");
+                    var probe = new SimpleStatement(
+                        $"SELECT * FROM \"{keyspace}\".\"{table}\" WHERE COSMOS_CHANGEFEED_FROM_START() = true");
                     probe.SetPageSize(1);
                     probe.SetAutoPage(false);
                     probe.SetReadTimeoutMillis(ProbeTimeoutMs);
@@ -336,8 +337,8 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
 
                 if (clusteringMismatch)
                 {
-                    await targetSession.ExecuteAsync(new SimpleStatement($"DROP TABLE \"{targetKeyspace}\"" +
-                            $".\"{targetTable}\""));
+                    await targetSession.ExecuteAsync(new SimpleStatement(
+                            $"DROP TABLE \"{targetKeyspace}\".\"{targetTable}\""));
                 }
                 else
                 {
@@ -471,8 +472,8 @@ namespace CassandraMigrationProcessor.Helpers.Cassandra
             try
             {
                 var resultSet = await session.ExecuteAsync(new SimpleStatement(
-                        "SELECT range FROM system_cosmos.feedranges " + "WHERE keyspace_name=? " +
-                        "AND table_name=?", keyspace, table));
+                        "SELECT range FROM system_cosmos.feedranges WHERE keyspace_name=? AND table_name=?",
+                        keyspace, table));
                 foreach (var row in resultSet)
                 {
                     var range = row.GetValue<string>("range");

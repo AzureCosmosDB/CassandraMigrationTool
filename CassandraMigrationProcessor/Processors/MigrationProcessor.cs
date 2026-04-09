@@ -49,8 +49,6 @@ namespace CassandraMigrationProcessor.Processors
         /// </summary>
         public virtual void StopProcessing(bool updateStatus = true, bool isPause = false)
         {
-            MigrationJobContext.AddVerboseLog($"MigrationProcessor.StopProcessing: updateStatus={updateStatus}, isPause={isPause}");
-
             // Cancel first so workers see the signal
             _cancellation?.Cancel();
 
@@ -114,8 +112,6 @@ namespace CassandraMigrationProcessor.Processors
         /// </summary>
         public bool AddTableToChangeFeedQueue(MigrationUnit mu)
         {
-            MigrationJobContext.AddVerboseLog($"MigrationProcessor.AddTableToChangeFeedQueue: mu={mu.Id}");
-
             if (!MigrationHelper.IsOnline(_job)) return false;
 
             lock (_changeFeedLock)
@@ -149,8 +145,6 @@ namespace CassandraMigrationProcessor.Processors
         /// </summary>
         public bool RunChangeFeedForAllTables()
         {
-            MigrationJobContext.AddVerboseLog("MigrationProcessor.RunChangeFeedForAllTables");
-
             if (IsChangeFeedRunning) return false;
             if (!MigrationHelper.IsOnline(_job)) return false;
             if (!MigrationHelper.IsOfflineJobCompleted(_job)) return false;
@@ -218,8 +212,7 @@ namespace CassandraMigrationProcessor.Processors
         {
             IsChangeFeedRunning = false;
             _cancellation?.Dispose();
-            try { _targetSession?.Dispose(); }
-            catch (Exception ex) { Console.WriteLine($"[WARN] MigrationProcessor target session dispose failed: {ex.Message}"); }
+            MigrationHelper.SafeDispose(_targetSession, "MigrationProcessor target session");
             // _sourceSession is owned by the caller
         }
     }

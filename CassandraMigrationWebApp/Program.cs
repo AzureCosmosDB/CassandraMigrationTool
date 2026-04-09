@@ -1,9 +1,7 @@
 using Microsoft.AspNetCore.Components;
 using Microsoft.AspNetCore.Components.Web;
-using Microsoft.Extensions.DependencyInjection;
 using CassandraMigrationWebApp.Service;
 using CassandraMigrationProcessor;
-using System.Security.AccessControl;
 using Microsoft.AspNetCore.Components.Authorization;
 using CassandraMigrationProcessor.Context;
 
@@ -46,7 +44,7 @@ builder.Services.AddScoped(sp =>
 
 builder.Configuration.AddEnvironmentVariables();
 
-//Map environment variables to configuration keys
+// Map environment variables to configuration keys
 var stateStoreCSorPath = Environment.GetEnvironmentVariable("StateStoreConnectionStringOrPath");
 if (!string.IsNullOrEmpty(stateStoreCSorPath))
 {
@@ -59,7 +57,6 @@ if (!string.IsNullOrEmpty(appId))
     builder.Configuration["StateStore:AppID"] = appId;
     MigrationJobContext.AppId = appId;
 }
-
 
 var useLocalDisk = Environment.GetEnvironmentVariable("StateStoreUseLocalDisk");
 bool useLocal = false;
@@ -102,7 +99,6 @@ if (diagStream != null)
 if (!app.Environment.IsDevelopment())
 {
     app.UseExceptionHandler("/Error");
-    // The default HSTS value is 30 days. You may want to change this for production scenarios, see https://aka.ms/aspnetcore-hsts.
     app.UseHsts();
 }
 
@@ -119,7 +115,6 @@ app.MapBlazorHub();
 app.MapGet("/healthz", () => Results.Ok("ok"));
 app.MapFallbackToPage("/_Host");
 
-app.MapControllers(); // Ensure controllers are mapped
+app.MapControllers();
 
 app.Run();
-

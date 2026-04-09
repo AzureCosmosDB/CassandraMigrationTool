@@ -1,8 +1,4 @@
-﻿using System.Net.Http;
-using System.Threading.Tasks;
-
-
-namespace CassandraMigrationWebApp.Service
+﻿namespace CassandraMigrationWebApp.Service
 {
     public class FileService
     {
@@ -19,6 +15,4 @@ namespace CassandraMigrationWebApp.Service
         }
     }
 }
-
-
 

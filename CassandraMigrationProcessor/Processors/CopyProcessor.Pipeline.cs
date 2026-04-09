@@ -179,16 +179,12 @@ namespace CassandraMigrationProcessor.Processors
             var elapsed = stopwatch.Elapsed;
             double avgSpeed = elapsed.TotalSeconds > 0
                 ? sessionWritten / elapsed.TotalSeconds : 0;
-            _log.WriteLine($"Pipeline complete for {processorContext.KeyspaceName}.{processorContext.TableName}:");
-            _log.WriteLine($"  This session:  {sessionWritten:N0} read, {sessionWritten:N0} written, {finalFailed:N0} failed");
-            _log.WriteLine($"  Cumulative:    {finalWritten:N0} total rows copied");
             int completedCount;
-            lock (ctx.Checkpoints)
-            {
-                completedCount = ctx.Completed.Count;
-            }
-            _log.WriteLine($"  Ranges:        {completedCount}/{feedRanges.Count} completed");
-            _log.WriteLine($"  Duration:      {elapsed.TotalSeconds:F1}s ({avgSpeed:F0} rows/sec)");
+            lock (ctx.Checkpoints) { completedCount = ctx.Completed.Count; }
+            _log.WriteLine($"Pipeline complete for {processorContext.KeyspaceName}.{processorContext.TableName}: " +
+                $"session={sessionWritten:N0} written, {finalFailed:N0} failed | " +
+                $"cumulative={finalWritten:N0} | {completedCount}/{feedRanges.Count} ranges | " +
+                $"{elapsed.TotalSeconds:F1}s ({avgSpeed:F0} rows/sec)");
 
             var chunk = migrationUnit.MigrationChunks[chunkIndex];
             chunk.SourceResultRowCount = finalWritten;

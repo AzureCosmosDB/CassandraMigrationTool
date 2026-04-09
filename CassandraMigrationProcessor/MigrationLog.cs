@@ -5,7 +5,6 @@ using System.Collections.Generic;
 
 namespace CassandraMigrationProcessor
 {
-
     public class LogBucket
     {
         public List<LogObject>? Logs { get; set; } = new List<LogObject>();
@@ -101,13 +100,10 @@ namespace CassandraMigrationProcessor
 
                 lock (_writeLock)
                 {
-
                     if (_logBucket == null)
                     {
                         string logBackupFile = string.Empty;
-                        //_logBucket = ReadLogFile(_currentId, out logBackupFile);
                         _logBucket = ReadLogFile(_currentId, out logBackupFile);
-                        Console.WriteLine($"LogBucket was null, re-initialized from file during WriteLine.");
                     }
 
                     var logObj = new LogObject(logType, message);
@@ -133,11 +129,9 @@ namespace CassandraMigrationProcessor
                         _logBucket.Logs.RemoveAt(LogTrimIndex);
                     }
 
-                    //persits to file
+                    // Persist to file
                     MigrationJobContext.Store.PushLogEntry(_currentId, logObj);
                 }
-
-
             }
             catch (Exception ex)
             {
@@ -173,8 +167,5 @@ namespace CassandraMigrationProcessor
         {
             return MigrationJobContext.Store.DownloadLogsPaginated(id, skip, take);
         }
-
     }
-
 }
-

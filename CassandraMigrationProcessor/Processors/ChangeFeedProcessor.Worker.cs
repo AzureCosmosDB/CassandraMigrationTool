@@ -94,8 +94,7 @@ namespace CassandraMigrationProcessor.Processors
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"  CF FATAL: muId={muId}: {ex.GetType().Name}: {ex.Message}");
-                Console.WriteLine($"  CF FATAL stack: {ex.StackTrace}");
+                Console.Error.WriteLine($"[CRITICAL] CF muId={muId}: {ex.GetType().Name}: {ex.Message}");
             }
 
             _activeTasks.TryRemove(muId, out _);
@@ -173,7 +172,7 @@ namespace CassandraMigrationProcessor.Processors
                         ? mu.ChangeFeedStartToken
                         : DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffZ",
                             System.Globalization.CultureInfo.InvariantCulture);
-                string cql = $"SELECT * FROM \"{mu.KeyspaceName}\".\"{mu.TableName}\"" + $" WHERE COSMOS_CHANGEFEED_START_TIME() = '{startTime}' AND COSMOS_FEEDRANGE() = '{feedRange}'";
+                string cql = $"SELECT * FROM \"{mu.KeyspaceName}\".\"{mu.TableName}\" WHERE COSMOS_CHANGEFEED_START_TIME() = '{startTime}' AND COSMOS_FEEDRANGE() = '{feedRange}'";
 
                 var rangeLabel = feedRange.Length > 40
                     ? feedRange.Substring(0, 40) + "..."
@@ -283,7 +282,7 @@ namespace CassandraMigrationProcessor.Processors
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"  CF RANGE FATAL: {mu.KeyspaceName}.{mu.TableName}: {ex.GetType().Name}: {ex.Message}");
+                Console.Error.WriteLine($"[CRITICAL] CF range {mu.KeyspaceName}.{mu.TableName}: {ex.GetType().Name}: {ex.Message}");
             }
         }
 
@@ -311,7 +310,7 @@ namespace CassandraMigrationProcessor.Processors
                         : DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffZ",
                             System.Globalization.CultureInfo.InvariantCulture);
 
-                string cql = $"SELECT * FROM \"{mu.KeyspaceName}\".\"{mu.TableName}\"" + $" where COSMOS_CHANGEFEED_START_TIME() = '{startTime}'";
+                string cql = $"SELECT * FROM \"{mu.KeyspaceName}\".\"{mu.TableName}\" WHERE COSMOS_CHANGEFEED_START_TIME() = '{startTime}'";
 
                 var columns = CassandraHelper.GetTableColumns(_sourceSession, mu.KeyspaceName, mu.TableName);
 
@@ -442,8 +441,7 @@ namespace CassandraMigrationProcessor.Processors
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"  CF FATAL: {mu.KeyspaceName}.{mu.TableName}: {ex.GetType().Name}: {ex.Message}");
-                Console.WriteLine($"  CF FATAL stack: {ex.StackTrace}");
+                Console.Error.WriteLine($"[CRITICAL] CF {mu.KeyspaceName}.{mu.TableName}: {ex.GetType().Name}: {ex.Message}");
             }
         }
     }

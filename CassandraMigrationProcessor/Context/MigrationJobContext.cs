@@ -107,8 +107,7 @@ namespace CassandraMigrationProcessor.Context
 
         public static void InitializeLog(MigrationLog MigrationLog)
         {
-            if (_log == null) { _log = MigrationLog; }
-            AddVerboseLog("Initialized MigrationJobContext MigrationLog.");
+            _log ??= MigrationLog;
         }
 
         public static MigrationJob? CurrentlyActiveJob

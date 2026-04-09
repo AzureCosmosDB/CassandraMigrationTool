@@ -23,7 +23,6 @@ namespace CassandraMigrationProcessor.Helpers.JobManagement
             int initialDelayMs = DefaultInitialDelayMs,
             CancellationToken ct = default)
         {
-
             int attempt = 0;
             int delay = initialDelayMs;
 
