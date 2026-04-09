@@ -157,7 +157,7 @@ namespace CassandraMigrationProcessor.Processors
             };
 
             _log.WriteLine($"Launching {workerCount} workers for {processorContext.KeyspaceName}.{processorContext.TableName} ({pendingRanges.Count} feed ranges, page size={configuredPageSize})...");
-            using var pool = new WorkerPool(_log, _cancellation, workerCount);
+            using var pool = new WorkerPool(_log, workerCount, _cancellation);
             pool.Start(workerId => RunWorkerAsync(workerId, ctx));
             await pool.WaitForCompletionAsync();
             ctx.PartitionPool.Writer.TryComplete();

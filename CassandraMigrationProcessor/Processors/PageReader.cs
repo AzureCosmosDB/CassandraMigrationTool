@@ -25,8 +25,9 @@ namespace CassandraMigrationProcessor.Processors
         private const int MaxReadRetries = 3;
         private const int RetryDelayMs = 5000;
 
-        public PageReader(MigrationLog log, CancellationTokenSource cancellation,
-            ConnectionOptions sourceConnection, string keyspace, int workerId)
+        public PageReader(MigrationLog log,
+            ConnectionOptions sourceConnection, string keyspace, int workerId,
+            CancellationTokenSource cancellation)
         {
             _log = log;
             _cancellation = cancellation;

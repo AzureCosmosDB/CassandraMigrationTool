@@ -24,7 +24,7 @@ namespace CassandraMigrationProcessor.Processors
 
         private const int WriteTimeoutMs = 60_000;
 
-        public PageWriter(MigrationLog log, CancellationTokenSource cancellation, ConnectionOptions targetConnection, List<(string Name, string Type, string Kind, string ClusteringOrder, int Position)> columns, string targetKeyspace, string targetTable, int workerId)
+        public PageWriter(MigrationLog log, ConnectionOptions targetConnection, List<(string Name, string Type, string Kind, string ClusteringOrder, int Position)> columns, string targetKeyspace, string targetTable, int workerId, CancellationTokenSource cancellation)
         {
             _log = log;
             _cancellation = cancellation;

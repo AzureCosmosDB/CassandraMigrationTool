@@ -83,9 +83,9 @@ namespace CassandraMigrationProcessor.Processors
             try
             {
                 var job = ctx.Job;
-                reader = new PageReader(_log, _cancellation, job.SourceConnection, ctx.Context.KeyspaceName, workerId);
-                writer = new PageWriter(_log, _cancellation, job.TargetConnection, ctx.Columns,
-                    ctx.Context.TargetKeyspaceName, ctx.Context.TargetTableName, workerId);
+                reader = new PageReader(_log, job.SourceConnection, ctx.Context.KeyspaceName, workerId, _cancellation);
+                writer = new PageWriter(_log, job.TargetConnection, ctx.Columns,
+                    ctx.Context.TargetKeyspaceName, ctx.Context.TargetTableName, workerId, _cancellation);
 
                 while (!_cancellation.Token.IsCancellationRequested && Volatile.Read(ref ctx.FatalErrorFlag) == 0)
                 {
