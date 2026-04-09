@@ -15,6 +15,10 @@ namespace CassandraMigrationProcessor.Processors
     /// </summary>
     internal partial class CopyProcessor : MigrationProcessor
     {
+        private static string TruncRange(string r) => r.Length > 30 ? r[..15] + "..." : r;
+        private static bool IsRetriableWriteError(Exception ex) => Helpers.ExceptionClassifier.IsTransient(ex);
+        private static bool IsFatalError(Exception ex) => Helpers.ExceptionClassifier.IsFatal(ex);
+
         public CopyProcessor(MigrationLog MigrationLog, ISession sourceSession, MigrationSettings config, MigrationJob job,
             MigrationWorker? migrationWorker = null)
             : base(MigrationLog, sourceSession, config, job, migrationWorker)

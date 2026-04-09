@@ -21,14 +21,16 @@ namespace CassandraMigrationProcessor.Processors
         private readonly ISession _targetSession;
         private readonly PreparedStatement _preparedInsert;
         private readonly int _workerId;
+        private readonly int _pageSize;
 
         private const int WriteTimeoutMs = 60_000;
 
-        public PageWriter(MigrationLog log, ConnectionOptions targetConnection, List<(string Name, string Type, string Kind, string ClusteringOrder, int Position)> columns, string targetKeyspace, string targetTable, int workerId, CancellationTokenSource cancellation)
+        public PageWriter(MigrationLog log, ConnectionOptions targetConnection, List<(string Name, string Type, string Kind, string ClusteringOrder, int Position)> columns, string targetKeyspace, string targetTable, int pageSize, int workerId, CancellationTokenSource cancellation)
         {
             _log = log;
             _cancellation = cancellation;
             _workerId = workerId;
+            _pageSize = pageSize;
             _targetSession = CassandraClientFactory.CreateTargetSession(log, targetConnection, "");
             var (ps, _) = CassandraHelper.PrepareInsert(_targetSession, targetKeyspace, targetTable, columns);
             _preparedInsert = ps;
@@ -41,8 +43,8 @@ namespace CassandraMigrationProcessor.Processors
         /// parallel, tracking progress and handling errors.
         /// </summary>
         public async Task WriteAsync(List<object[]> rows,
-            CopyProcessor.WorkChunk workChunk,
-            CopyProcessor.PipelineContext ctx)
+            WorkChunk workChunk,
+            PipelineContext ctx)
         {
             if (rows.Count == 0)
             {
@@ -109,7 +111,7 @@ namespace CassandraMigrationProcessor.Processors
 
             ctx.Tracker.SetPipelineState(ctx.FeedRanges.Count
                     - ctx.Completed.Count,
-                ctx.ConfiguredPageSize);
+                _pageSize);
             await Task.WhenAll(writeTasks);
 
             // Only mark chunk completed if ALL rows succeeded.

@@ -6,6 +6,7 @@ using CassandraMigrationProcessor.Models;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Linq;
 using System.Threading;
 using System.Threading.Channels;
 using System.Threading.Tasks;
@@ -47,18 +48,19 @@ namespace CassandraMigrationProcessor.Processors
         {
             long written = Volatile.Read(ref ctx.TotalWritten);
             long failed = Volatile.Read(ref ctx.TotalFailed);
-            var chunk = ctx.MigrationUnit.MigrationChunks[ctx.ChunkIndex];
+            var progress = ctx.Progress;
+            var chunk = ctx.MigrationUnit.MigrationChunks[progress.ChunkIndex];
             chunk.SourceResultRowCount = written;
             chunk.TargetInsertedRowCount = written;
             chunk.TargetFailedRowCount = failed;
             ctx.MigrationUnit.CopyRowsCopied = written;
             ctx.MigrationUnit.CopyRowsPerSecond = ctx.Tracker.RecentSpeed;
-            if (ctx.TotalRowCount > 0)
+            if (progress.TotalRowCount > 0)
             {
-                ctx.MigrationUnit.CopyPercent = ctx.InitialPercent +
+                ctx.MigrationUnit.CopyPercent = progress.InitialPercent +
                     (Math.Min(MigrationDefaults.ProgressCapPercent,
-                        (double)written / ctx.TotalRowCount * 100)
-                    * ctx.ContributionFactor);
+                        (double)written / progress.TotalRowCount * 100)
+                    * progress.ContributionFactor);
             }
             ctx.MigrationUnit.UpdateParentJob();
 
@@ -75,17 +77,17 @@ namespace CassandraMigrationProcessor.Processors
         /// Unified worker: takes partition → reads page → recycles
         /// partition → writes rows → updates checkpoint.
         /// </summary>
-        private async Task RunWorkerAsync(int workerId, PipelineContext ctx)
+        private async Task RunWorkerAsync(int workerId, PipelineContext ctx, int configuredPageSize)
         {
             ctx.Tracker.WorkerStarted();
             PageReader? reader = null;
             PageWriter? writer = null;
             try
             {
-                var job = ctx.Job;
-                reader = new PageReader(_log, job.SourceConnection, ctx.Context.KeyspaceName, workerId, _cancellation);
-                writer = new PageWriter(_log, job.TargetConnection, ctx.Columns,
-                    ctx.Context.TargetKeyspaceName, ctx.Context.TargetTableName, workerId, _cancellation);
+                reader = new PageReader(_log, ctx.SourceConnection, ctx.Context.KeyspaceName,
+                    ctx.Columns.Select(c => c.Name).ToList(), configuredPageSize, workerId, _cancellation);
+                writer = new PageWriter(_log, ctx.TargetConnection, ctx.Columns,
+                    ctx.Context.TargetKeyspaceName, ctx.Context.TargetTableName, configuredPageSize, workerId, _cancellation);
 
                 while (!_cancellation.Token.IsCancellationRequested && Volatile.Read(ref ctx.FatalErrorFlag) == 0)
                 {

@@ -93,8 +93,6 @@ namespace CassandraMigrationProcessor.Processors
                 return TaskResult.Abort;
             }
 
-            var columnNames = columns.Select(c => c.Name).ToList();
-
             var partitionPool = Channel.CreateBounded<Partition>(new BoundedChannelOptions(
                     pendingRanges.Count + workerCount)
                 {
@@ -134,8 +132,9 @@ namespace CassandraMigrationProcessor.Processors
             var ctx = new PipelineContext
             {
                 PartitionPool = partitionPool,
-                ColumnNames = columnNames,
                 Columns = columns,
+                SourceConnection = _job.SourceConnection,
+                TargetConnection = _job.TargetConnection,
                 Completed = completed,
                 Checkpoints = checkpoints,
                 FeedRanges = feedRanges,
@@ -145,20 +144,21 @@ namespace CassandraMigrationProcessor.Processors
                 TotalFailed = 0,
                 FatalErrorFlag = 0,
                 WorkerErrors = new ConcurrentBag<TaskResult>(),
-                ConfiguredPageSize = configuredPageSize,
                 Context = processorContext,
                 MigrationUnit = migrationUnit,
-                Job = _job,
-                ChunkIndex = chunkIndex,
-                InitialPercent = initialPercent,
-                ContributionFactor = contributionFactor,
-                TotalRowCount = totalRowCount,
+                Progress = new ProgressConfig
+                {
+                    ChunkIndex = chunkIndex,
+                    InitialPercent = initialPercent,
+                    ContributionFactor = contributionFactor,
+                    TotalRowCount = totalRowCount,
+                },
                 LastCheckpointTicks = DateTime.UtcNow.Ticks,
             };
 
             _log.WriteLine($"Launching {workerCount} workers for {processorContext.KeyspaceName}.{processorContext.TableName} ({pendingRanges.Count} feed ranges, page size={configuredPageSize})...");
             using var pool = new WorkerPool(_log, workerCount, _cancellation);
-            pool.Start(workerId => RunWorkerAsync(workerId, ctx));
+            pool.Start(workerId => RunWorkerAsync(workerId, ctx, configuredPageSize));
             await pool.WaitForCompletionAsync();
             ctx.PartitionPool.Writer.TryComplete();
 

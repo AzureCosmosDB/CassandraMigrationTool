@@ -20,18 +20,24 @@ namespace CassandraMigrationProcessor.Processors
         private readonly CancellationTokenSource _cancellation;
         private readonly ISession _sourceSession;
         private readonly int _workerId;
+        private readonly List<string> _columnNames;
+        private readonly int _pageSize;
 
         private const int ReadTimeoutMs = 60_000;
         private const int MaxReadRetries = 3;
         private const int RetryDelayMs = 5000;
 
         public PageReader(MigrationLog log,
-            ConnectionOptions sourceConnection, string keyspace, int workerId,
+            ConnectionOptions sourceConnection, string keyspace,
+            List<string> columnNames, int pageSize,
+            int workerId,
             CancellationTokenSource cancellation)
         {
             _log = log;
             _cancellation = cancellation;
             _workerId = workerId;
+            _columnNames = columnNames;
+            _pageSize = pageSize;
             _sourceSession = CassandraClientFactory.CreateSourceSession(log, sourceConnection, keyspace);
         }
 
@@ -41,7 +47,7 @@ namespace CassandraMigrationProcessor.Processors
         internal class ReadResult
         {
             public List<object[]> Rows { get; init; } = new();
-            public CopyProcessor.WorkChunk? WorkChunk { get; init; }
+            public WorkChunk? WorkChunk { get; init; }
             public bool IsLastPage { get; init; }
         }
 
@@ -49,11 +55,11 @@ namespace CassandraMigrationProcessor.Processors
         /// Reads a single page, updates partition state and tracker.
         /// </summary>
         public async Task<ReadResult?>
-            ReadAsync(CopyProcessor.Partition partition, CopyProcessor.PipelineContext ctx)
+            ReadAsync(Partition partition, PipelineContext ctx)
         {
             var stopwatch = Stopwatch.StartNew();
             var stmt = new SimpleStatement(BuildSelectCql(ctx.Context, partition.FeedRange));
-            stmt.SetPageSize(ctx.ConfiguredPageSize);
+            stmt.SetPageSize(_pageSize);
             stmt.SetAutoPage(false);
             stmt.SetReadTimeoutMillis(ReadTimeoutMs);
             stmt.SetConsistencyLevel(ConsistencyLevel.One);
@@ -92,9 +98,9 @@ namespace CassandraMigrationProcessor.Processors
             {
                 if (consumed >= available) break;
                 consumed++;
-                var rowValues = new object[ctx.ColumnNames.Count];
-                for (int i = 0; i < ctx.ColumnNames.Count; i++)
-                    rowValues[i] = row[ctx.ColumnNames[i]];
+                var rowValues = new object[_columnNames.Count];
+                for (int i = 0; i < _columnNames.Count; i++)
+                    rowValues[i] = row[_columnNames[i]];
                 rows.Add(rowValues);
             }
 
