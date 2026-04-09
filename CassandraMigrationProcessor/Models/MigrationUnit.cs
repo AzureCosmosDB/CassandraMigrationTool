@@ -112,6 +112,7 @@ namespace CassandraMigrationProcessor
         internal long _changeFeedRowsInserted;
         internal long _changeFeedRowsDeleted;
         internal long _changeFeedRowsUpdated;
+        internal long _changeFeedUpdatesInLastBatch;
 
         public long ChangeFeedInsertEvents
         {
@@ -217,7 +218,7 @@ namespace CassandraMigrationProcessor
             mub.TargetKeyspaceName = this.TargetKeyspaceName;
             mub.TargetTableName = this.TargetTableName;
             mub.ChangeFeedUpdatesInLastBatch =
-                this.ChangeFeedUpdatesInLastBatch;
+                Interlocked.Exchange(ref _changeFeedUpdatesInLastBatch, 0);
             mub.ChangeFeedAvgReadLatencyInMS =
                 this.ChangeFeedAvgReadLatencyInMS;
             mub.ChangeFeedAvgWriteLatencyInMS =

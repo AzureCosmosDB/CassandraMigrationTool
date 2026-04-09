@@ -180,7 +180,7 @@ namespace CassandraMigrationProcessor.Processors
                         Interlocked.Add(ref mu._changeFeedRowsInserted, insertCount);
 
                         int batchTotal = insertCount;
-                        mu.ChangeFeedUpdatesInLastBatch = batchTotal;
+                        Interlocked.Add(ref mu._changeFeedUpdatesInLastBatch, batchTotal);
                         mu.ChangeFeedLastChecked = DateTime.UtcNow;
 
                         // Save continuation AFTER writes so crash
@@ -331,7 +331,7 @@ namespace CassandraMigrationProcessor.Processors
 
                         mu.ChangeFeedInsertEvents += insertCount;
                         mu.ChangeFeedRowsInserted += insertCount;
-                        mu.ChangeFeedUpdatesInLastBatch = insertCount;
+                        Interlocked.Add(ref mu._changeFeedUpdatesInLastBatch, insertCount);
                         mu.ChangeFeedLastChecked = DateTime.UtcNow;
 
                         int batchTotal = insertCount;
