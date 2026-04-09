@@ -19,11 +19,61 @@ namespace CassandraMigrationProcessor.Processors
             try { _cancellation.Cancel(); }
             catch (Exception ex) { Console.WriteLine($"[WARN] CopyProcessor cancel failed: {ex.Message}"); }
         }
+
+        private static void SavePartitionCheckpoint(Partition partition, PipelineContext ctx)
+        {
+            lock (ctx.Checkpoints)
+            {
+                var token = partition.GetResumeToken();
+                if (token != null)
+                    ctx.Checkpoints[partition.FeedRange] = Convert.ToBase64String(token);
+                else if (partition.LastPagingState != null)
+                    ctx.Checkpoints[partition.FeedRange] = Convert.ToBase64String(partition.LastPagingState);
+            }
+        }
+
+        private static void MarkRangeCompleted(Partition partition, PipelineContext ctx)
+        {
+            lock (ctx.Checkpoints)
+            {
+                ctx.Checkpoints.Remove(partition.FeedRange);
+                ctx.Completed.Add(partition.FeedRange);
+            }
+            ctx.Tracker.RangeCompleted(partition.FeedRange, TaskResult.Success);
+            TryCloseChannel(ctx);
+        }
+
+        private static void UpdateProgress(PipelineContext ctx)
+        {
+            long written = Volatile.Read(ref ctx.TotalWritten);
+            long failed = Volatile.Read(ref ctx.TotalFailed);
+            var chunk = ctx.MigrationUnit.MigrationChunks[ctx.ChunkIndex];
+            chunk.SourceResultRowCount = written;
+            chunk.TargetInsertedRowCount = written;
+            chunk.TargetFailedRowCount = failed;
+            ctx.MigrationUnit.CopyRowsCopied = written;
+            ctx.MigrationUnit.CopyRowsPerSecond = ctx.Tracker.RecentSpeed;
+            if (ctx.TotalRowCount > 0)
+            {
+                ctx.MigrationUnit.CopyPercent = ctx.InitialPercent +
+                    (Math.Min(MigrationDefaults.ProgressCapPercent,
+                        (double)written / ctx.TotalRowCount * 100)
+                    * ctx.ContributionFactor);
+            }
+            ctx.MigrationUnit.UpdateParentJob();
+
+            long prevTicks = Volatile.Read(ref ctx.LastCheckpointTicks);
+            long nowTicks = DateTime.UtcNow.Ticks;
+            if ((nowTicks - prevTicks) / TimeSpan.TicksPerSecond >= MigrationDefaults.CheckpointIntervalSeconds
+                && Interlocked.CompareExchange(ref ctx.LastCheckpointTicks, nowTicks, prevTicks) == prevTicks)
+            {
+                MigrationJobContext.SaveMigrationUnit(ctx.MigrationUnit, true);
+            }
+        }
+
         /// <summary>
-        /// Unified worker: reads one page from source, creates
-        /// a WorkChunk, recycles the partition back into the
-        /// pool (so another worker can read the next page),
-        /// then writes rows to target and marks the chunk done.
+        /// Unified worker: takes partition → reads page → recycles
+        /// partition → writes rows → updates checkpoint.
         /// </summary>
         private async Task RunWorkerAsync(int workerId, PipelineContext ctx)
         {
@@ -33,161 +83,69 @@ namespace CassandraMigrationProcessor.Processors
             try
             {
                 var job = ctx.Job;
-                workerTargetSession = CassandraClientFactory.CreateTargetSession(
-                    _log, job.TargetConnection, "");
-                workerSourceSession = CassandraClientFactory.CreateSourceSession(
-                    _log, job.SourceConnection, ctx.Context.KeyspaceName);
-
+                workerTargetSession = CassandraClientFactory.CreateTargetSession(_log, job.TargetConnection, "");
+                workerSourceSession = CassandraClientFactory.CreateSourceSession(_log, job.SourceConnection, ctx.Context.KeyspaceName);
                 var reader = new PageReader(_log, _cancellation);
                 var writer = new PageWriter(_log, _cancellation);
+                var (preparedInsert, _) = await CassandraHelper.PrepareInsertAsync(
+                    workerTargetSession, ctx.Context.TargetKeyspaceName, ctx.Context.TargetTableName, ctx.Columns);
 
-                var (preparedInsert, _) = await CassandraHelper.PrepareInsertAsync(workerTargetSession,
-                        ctx.Context.TargetKeyspaceName,
-                        ctx.Context.TargetTableName,
-                        ctx.Columns);
-
-                while (!_cancellation.Token.IsCancellationRequested
-                    && Volatile.Read(ref ctx.FatalErrorFlag) == 0)
+                while (!_cancellation.Token.IsCancellationRequested && Volatile.Read(ref ctx.FatalErrorFlag) == 0)
                 {
                     var partition = await TakeNextPartitionAsync(ctx);
                     if (partition == null) break;
 
-                    if (_cancellation.Token.IsCancellationRequested
-                        || Volatile.Read(ref ctx.FatalErrorFlag) != 0)
-                    {
-                        // Save checkpoint but do NOT mark the
-                        // range as completed — it still has
-                        // uncopied data. Closing the channel
-                        // lets all workers drain and exit.
-                        lock (ctx.Checkpoints)
-                        {
-                            var token = partition.GetResumeToken();
-                            if (token != null)
-                                ctx.Checkpoints[
-                                    partition.FeedRange] = Convert.ToBase64String(token);
-                            else if (partition.LastPagingState != null)
-                                ctx.Checkpoints[
-                                    partition.FeedRange] = Convert.ToBase64String(partition.LastPagingState);
-                        }
-                        ctx.PartitionPool.Writer.TryComplete();
-                        continue;
-                    }
-
                     if (partition.IsExhausted)
                     {
-                        lock (ctx.Checkpoints)
-                        {
-                            ctx.Completed.Add(partition.FeedRange);
-                        }
-                        TryCloseChannel(ctx);
+                        MarkRangeCompleted(partition, ctx);
                         continue;
                     }
 
-                    bool isLastPage = false;
                     try
                     {
-                        var (rows, nextPaging, lastPage, readTimeMs) = await reader.ReadAsync(
-                                partition, workerSourceSession!, ctx,
-                                workerId);
+                        var (rows, nextPaging, isLastPage, readTimeMs) = await reader.ReadAsync(
+                            partition, workerSourceSession!, ctx, workerId);
 
                         if (rows == null)
                         {
-                            // Read failed after all retries —
-                            // DO NOT skip this range. Mark as
-                            // error so job fails instead of
-                            // silently losing data.
-                            _log.WriteLine($"[W{workerId}] FATAL: Read failed after retries for range {TruncRange(partition.FeedRange)} — failing job to prevent data loss",
-                                LogType.Error);
+                            _log.WriteLine($"[W{workerId}] FATAL: Read failed — failing job", LogType.Error);
                             Interlocked.Exchange(ref ctx.FatalErrorFlag, 1);
                             SafeCancel();
                             break;
                         }
 
-                        isLastPage = lastPage;
                         partition.LastPagingState = nextPaging;
                         Interlocked.Add(ref ctx.TotalRead, rows.Count);
                         ctx.Tracker.AddReadTime(readTimeMs);
 
                         var workChunk = partition.AddChunkAndTrim(nextPaging);
+                        if (isLastPage) partition.IsExhausted = true;
 
-                        if (isLastPage)
-                            partition.IsExhausted = true;
-
+                        // Recycle partition for next page read
                         if (!isLastPage)
                         {
-                            try
-                            {
-                                await ctx.PartitionPool.Writer.WriteAsync(partition, _cancellation.Token);
-                            }
-                            catch (OperationCanceledException)
-                            {
-                                isLastPage = true;
-                                partition.IsExhausted = true;
-                            }
+                            try { await ctx.PartitionPool.Writer.WriteAsync(partition, _cancellation.Token); }
+                            catch (OperationCanceledException) { partition.IsExhausted = true; }
                         }
 
-                        if (rows.Count > 0)
-                        {
-                            await writer.WriteAsync(rows, preparedInsert, workerTargetSession!, workChunk, ctx, workerId);
-                        }
-                        else
-                        {
-                            workChunk.IsCompleted = true;
-                        }
+                        await writer.WriteAsync(rows, preparedInsert, workerTargetSession!, workChunk, ctx, workerId);
 
-                        lock (ctx.Checkpoints)
-                        {
-                            if (partition.IsExhausted)
-                            {
-                                ctx.Checkpoints.Remove(partition.FeedRange);
-                                ctx.Completed.Add(partition.FeedRange);
-                            }
-                            else
-                            {
-                                var token = partition.GetResumeToken();
-                                if (token != null)
-                                    ctx.Checkpoints[
-                                        partition.FeedRange] = Convert.ToBase64String(token);
-                            }
-                        }
-
-                        if (partition.IsExhausted)
-                        {
-                            ctx.Tracker.RangeCompleted(partition.FeedRange, TaskResult.Success);
-                            TryCloseChannel(ctx);
-                        }
+                        if (partition.IsExhausted) MarkRangeCompleted(partition, ctx);
+                        else SavePartitionCheckpoint(partition, ctx);
                     }
                     catch (OperationCanceledException)
                     {
                         ctx.WorkerErrors.Add(TaskResult.Canceled);
-                        if (!partition.IsExhausted)
-                        {
-                            // Save checkpoint but do NOT mark
-                            // the range as completed — resume
-                            // needs to re-process it.
-                            lock (ctx.Checkpoints)
-                            {
-                                var token = partition.GetResumeToken();
-                                if (token != null)
-                                    ctx.Checkpoints[
-                                        partition.FeedRange] = Convert.ToBase64String(token);
-                                else if (partition.LastPagingState
-                                    != null)
-                                    ctx.Checkpoints[
-                                        partition.FeedRange] = Convert.ToBase64String(partition.LastPagingState);
-                            }
-                            ctx.PartitionPool.Writer.TryComplete();
-                        }
+                        SavePartitionCheckpoint(partition, ctx);
+                        ctx.PartitionPool.Writer.TryComplete();
                     }
                     catch (Exception ex)
                     {
-                        _log.WriteLine($"[W{workerId}] Worker error: {ex.GetType().Name}: {ex.Message}",
-                            LogType.Error);
+                        _log.WriteLine($"[W{workerId}] Error: {ex.GetType().Name}: {ex.Message}", LogType.Error);
 
                         if (IsFatalError(ex))
                         {
-                            _log.WriteLine($"[W{workerId}] FATAL: {ex.GetType().Name} — failing job",
-                                LogType.Error);
+                            _log.WriteLine($"[W{workerId}] FATAL — failing job", LogType.Error);
                             Interlocked.Exchange(ref ctx.FatalErrorFlag, 1);
                             SafeCancel();
                             ctx.WorkerErrors.Add(TaskResult.Abort);
@@ -197,64 +155,20 @@ namespace CassandraMigrationProcessor.Processors
                             ctx.WorkerErrors.Add(TaskResult.Retry);
                         }
 
-                        if (!ctx.Completed.Contains(partition.FeedRange))
-                        {
-                            // Save checkpoint for the failed
-                            // range so resume can retry from
-                            // the last good position. Do NOT
-                            // mark as completed — the range
-                            // still has uncopied data.
-                            lock (ctx.Checkpoints)
-                            {
-                                var token = partition.GetResumeToken();
-                                if (token != null)
-                                    ctx.Checkpoints[
-                                        partition.FeedRange] = Convert.ToBase64String(token);
-                                else if (partition.LastPagingState
-                                    != null)
-                                    ctx.Checkpoints[
-                                        partition.FeedRange] = Convert.ToBase64String(partition.LastPagingState);
-                            }
-                            ctx.Tracker.RangeCompleted(partition.FeedRange, TaskResult.Retry);
-                            // Close channel so workers drain
-                            // and the pipeline can return the
-                            // error to the retry helper.
-                            ctx.PartitionPool.Writer.TryComplete();
-                        }
+                        SavePartitionCheckpoint(partition, ctx);
+                        ctx.Tracker.RangeCompleted(partition.FeedRange, TaskResult.Retry);
+                        ctx.PartitionPool.Writer.TryComplete();
                     }
                     finally
                     {
-                        long written = Volatile.Read(ref ctx.TotalWritten);
-                        long failed = Volatile.Read(ref ctx.TotalFailed);
-                        var chunk = ctx.MigrationUnit.MigrationChunks[ctx.ChunkIndex];
-                        chunk.SourceResultRowCount = written;
-                        chunk.TargetInsertedRowCount = written;
-                        chunk.TargetFailedRowCount = failed;
-                        ctx.MigrationUnit.CopyRowsCopied = written;
-                        ctx.MigrationUnit.CopyRowsPerSecond = ctx.Tracker.RecentSpeed;
-                        if (ctx.TotalRowCount > 0)
-                        {
-                            ctx.MigrationUnit.CopyPercent = ctx.InitialPercent +
-                                (Math.Min(MigrationDefaults.ProgressCapPercent, (double)written / ctx.TotalRowCount * 100)
-                                * ctx.ContributionFactor);
-                        }
-                        ctx.MigrationUnit.UpdateParentJob();
-
-                        // Save checkpoint every 10s
-                        long prevTicks = Volatile.Read(ref ctx.LastCheckpointTicks);
-                        long nowTicks = DateTime.UtcNow.Ticks;
-                        if ((nowTicks - prevTicks) / TimeSpan.TicksPerSecond >= MigrationDefaults.CheckpointIntervalSeconds
-                            && Interlocked.CompareExchange(ref ctx.LastCheckpointTicks, nowTicks, prevTicks) == prevTicks)
-                        {
-                            MigrationJobContext.SaveMigrationUnit(ctx.MigrationUnit, true);
-                        }
+                        UpdateProgress(ctx);
                     }
                 }
             }
             finally
             {
-                MigrationHelper.SafeDispose(workerTargetSession, "CopyProcessor worker target session");
-                MigrationHelper.SafeDispose(workerSourceSession, "CopyProcessor worker source session");
+                MigrationHelper.SafeDispose(workerTargetSession, "worker target session");
+                MigrationHelper.SafeDispose(workerSourceSession, "worker source session");
                 ctx.Tracker.WorkerExited();
             }
         }
