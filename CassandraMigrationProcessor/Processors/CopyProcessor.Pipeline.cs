@@ -63,30 +63,16 @@ namespace CassandraMigrationProcessor.Processors
 
             if (pendingRanges.Count == 0)
             {
-                _log.WriteLine($"All {feedRanges.Count} ranges already completed for {processorContext.KeyspaceName}.{processorContext.TableName}");
+                _log.WriteLine($"All {feedRanges.Count} ranges already completed for {processorContext.KeyspaceName}.{processorContext.TableName}", LogType.Info);
                 return TaskResult.Success;
             }
 
-            _log.WriteLine($"Pipeline copy: {pendingRanges.Count} ranges ({completed.Count} already done), {workerCount} workers for {processorContext.KeyspaceName}.{processorContext.TableName}");
+            _log.WriteLine($"Pipeline copy: {pendingRanges.Count} ranges ({completed.Count} already done), {workerCount} workers for {processorContext.KeyspaceName}.{processorContext.TableName}", LogType.Info);
 
-            if (!await CassandraHelper.TableExistsAsync(_targetSession!, processorContext.TargetKeyspaceName,
-                processorContext.TargetTableName))
-            {
-                await CassandraHelper.EnsureKeyspaceExistsAsync(_targetSession!, processorContext.TargetKeyspaceName);
-                await CassandraHelper.CreateTableFromSourceAsync(_sourceSession!, _targetSession!,
-                    processorContext.KeyspaceName, processorContext.TableName,
-                    processorContext.TargetKeyspaceName, processorContext.TargetTableName);
-                _log.WriteLine($"Created target table {processorContext.TargetKeyspaceName}.{processorContext.TargetTableName}");
-            }
-            else
-            {
-                await CassandraHelper.CreateTableFromSourceAsync(_sourceSession!, _targetSession!,
-                    processorContext.KeyspaceName, processorContext.TableName,
-                    processorContext.TargetKeyspaceName, processorContext.TargetTableName);
-            }
-
-            var columns = await CassandraHelper.GetTableColumnsAsync(
-                _sourceSession!, processorContext.KeyspaceName, processorContext.TableName);
+            var columns = await SchemaManager.SyncSchemaAsync(
+                _sourceSession!, _targetSession!,
+                processorContext.KeyspaceName, processorContext.TableName,
+                processorContext.TargetKeyspaceName, processorContext.TargetTableName);
             if (columns.Count == 0)
             {
                 _log.WriteLine($"No columns for {processorContext.KeyspaceName}.{processorContext.TableName}", LogType.Error);
@@ -112,7 +98,7 @@ namespace CassandraMigrationProcessor.Processors
                 await partitionPool.Writer.WriteAsync(new Partition(range, pagingState));
             }
             if (resumedCount > 0)
-                _log.WriteLine($"Resuming {resumedCount}/{pendingRanges.Count} ranges from checkpoint");
+                _log.WriteLine($"Resuming {resumedCount}/{pendingRanges.Count} ranges from checkpoint", LogType.Info);
 
             long priorCopied = migrationUnit.CopyRowsCopied;
 
@@ -156,7 +142,7 @@ namespace CassandraMigrationProcessor.Processors
                 LastCheckpointTicks = DateTime.UtcNow.Ticks,
             };
 
-            _log.WriteLine($"Launching {workerCount} workers for {processorContext.KeyspaceName}.{processorContext.TableName} ({pendingRanges.Count} feed ranges, page size={configuredPageSize})...");
+            _log.WriteLine($"Launching {workerCount} workers for {processorContext.KeyspaceName}.{processorContext.TableName} ({pendingRanges.Count} feed ranges, page size={configuredPageSize})...", LogType.Info);
             using var pool = new WorkerPool(_log, workerCount, _cancellation);
             pool.Start(workerId => RunWorkerAsync(workerId, ctx, configuredPageSize));
             await pool.WaitForCompletionAsync();
@@ -176,7 +162,7 @@ namespace CassandraMigrationProcessor.Processors
             _log.WriteLine($"Pipeline complete for {processorContext.KeyspaceName}.{processorContext.TableName}: " +
                 $"session={sessionWritten:N0} written, {finalFailed:N0} failed | " +
                 $"cumulative={finalWritten:N0} | {completedCount}/{feedRanges.Count} ranges | " +
-                $"{elapsed.TotalSeconds:F1}s ({avgSpeed:F0} rows/sec)");
+                $"{elapsed.TotalSeconds:F1}s ({avgSpeed:F0} rows/sec)", LogType.Info);
 
             var chunk = migrationUnit.MigrationChunks[chunkIndex];
             chunk.SourceResultRowCount = finalWritten;

@@ -46,7 +46,7 @@ namespace CassandraMigrationProcessor.Workers
                 }
 
                 int maxParallel = Math.Max(1, Math.Min(job.ParallelThreads, units.Count));
-                _log.WriteLine($"Migrating {units.Count} tables with max parallelism={maxParallel}");
+                _log.WriteLine($"Migrating {units.Count} tables with max parallelism={maxParallel}", LogType.Info);
 
                 var abortRequested = false;
 
@@ -78,7 +78,7 @@ namespace CassandraMigrationProcessor.Workers
             }
             catch (OperationCanceledException)
             {
-                _log.WriteLine("Migration was cancelled.");
+                _log.WriteLine("Migration was cancelled.", LogType.Info);
                 return TaskResult.Canceled;
             }
             catch (Exception ex)
@@ -138,7 +138,7 @@ namespace CassandraMigrationProcessor.Workers
         {
             if (MigrationHelper.IsOnline(job))
             {
-                _log.WriteLine("All tables copied. Change feed replaying.");
+                _log.WriteLine("All tables copied. Change feed replaying.", LogType.Info);
                 while (!cancellationToken.IsCancellationRequested && !MigrationJobContext.ControlledPauseRequested)
                     await Task.Delay(2000, cancellationToken);
             }
@@ -147,7 +147,7 @@ namespace CassandraMigrationProcessor.Workers
                 && job.Status != JobStatus.Cancelled
                 && job.Status != JobStatus.Paused)
             {
-                _log.WriteLine($"Job {job.Id} Completed");
+                _log.WriteLine($"Job {job.Id} Completed", LogType.Info);
                 job.Status = JobStatus.Completed;
                 MigrationJobContext.SaveMigrationJob(job);
             }
@@ -167,7 +167,7 @@ namespace CassandraMigrationProcessor.Workers
             {
                 localSourceSession = CassandraClientFactory.CreateSourceSession(_log, job, mu.KeyspaceName);
 
-                if (!await CassandraHelper.TableExistsAsync(localSourceSession!, mu.KeyspaceName, mu.TableName))
+                if (!await SchemaManager.TableExistsAsync(localSourceSession!, mu.KeyspaceName, mu.TableName))
                 {
                     _log.WriteLine($"Source table {mu.KeyspaceName}.{mu.TableName} not found.", LogType.Error);
                     mu.SourceStatus = TableStatus.NotFound;
@@ -209,24 +209,22 @@ namespace CassandraMigrationProcessor.Workers
         private async Task SetupTargetSchemaAsync(MigrationJob job, ISession sourceSession, MigrationUnit mu)
         {
             using var targetSession = CassandraClientFactory.CreateTargetSession(_log, job, string.Empty);
-            await CassandraHelper.EnsureKeyspaceExistsAsync(targetSession, mu.KeyspaceName);
 
             if (job.DropTargetTableBeforeStart
-                && await CassandraHelper.TableExistsAsync(targetSession, mu.KeyspaceName, mu.TableName))
+                && await SchemaManager.TableExistsAsync(targetSession, mu.KeyspaceName, mu.TableName))
             {
-                _log.WriteLine($"Dropping target table {mu.KeyspaceName}.{mu.TableName} (DropTargetTableBeforeStart)");
+                _log.WriteLine($"Dropping target table {mu.KeyspaceName}.{mu.TableName} (DropTargetTableBeforeStart)", LogType.Info);
                 await targetSession.ExecuteAsync(new SimpleStatement(
                     $"DROP TABLE \"{mu.KeyspaceName}\".\"{mu.TableName}\""));
             }
 
-            bool existed = await CassandraHelper.TableExistsAsync(targetSession, mu.KeyspaceName, mu.TableName);
+            bool existed = await SchemaManager.TableExistsAsync(targetSession, mu.KeyspaceName, mu.TableName);
 
-            // Creates table or syncs schema (adds missing columns via ALTER if table exists)
-            await CassandraHelper.CreateTableFromSourceAsync(sourceSession, targetSession,
+            await SchemaManager.SyncSchemaAsync(sourceSession, targetSession,
                 mu.KeyspaceName, mu.TableName, mu.KeyspaceName, mu.TableName);
 
             if (!existed)
-                _log.WriteLine($"Created target table {mu.KeyspaceName}.{mu.TableName}");
+                _log.WriteLine($"Created target table {mu.KeyspaceName}.{mu.TableName}", LogType.Info);
         }
 
         private async Task RunCopyForUnitAsync(MigrationJob job, MigrationSettings config,
@@ -239,9 +237,9 @@ namespace CassandraMigrationProcessor.Workers
             TaskResult result = await processor.StartProcessAsync(mu.Id);
 
             if (result == TaskResult.Success)
-                _log.WriteLine($"Copy succeeded for {mu.KeyspaceName}.{mu.TableName}");
+                _log.WriteLine($"Copy succeeded for {mu.KeyspaceName}.{mu.TableName}", LogType.Info);
             else if (result == TaskResult.Canceled)
-                _log.WriteLine($"Copy paused for {mu.KeyspaceName}.{mu.TableName}");
+                _log.WriteLine($"Copy paused for {mu.KeyspaceName}.{mu.TableName}", LogType.Info);
             else
                 _log.WriteLine($"Copy failed for {mu.KeyspaceName}.{mu.TableName}", LogType.Error);
         }
@@ -252,7 +250,7 @@ namespace CassandraMigrationProcessor.Workers
             {
                 var rangeCount = (await CassandraHelper.GetFeedRangesAsync(session,
                     mu.KeyspaceName, mu.TableName)).Count;
-                _log.WriteLine($"Feed ranges: {rangeCount} for {mu.KeyspaceName}.{mu.TableName}");
+                _log.WriteLine($"Feed ranges: {rangeCount} for {mu.KeyspaceName}.{mu.TableName}", LogType.Debug);
             }
             catch (Exception ex)
             {
@@ -323,7 +321,7 @@ namespace CassandraMigrationProcessor.Workers
             }
 
             int ksCount = result.Select(r => r.KeyspaceName).Distinct().Count();
-            migrationLog.WriteLine($"Discovered {result.Count} tables across {ksCount} keyspaces");
+            migrationLog.WriteLine($"Discovered {result.Count} tables across {ksCount} keyspaces", LogType.Info);
             return result;
         }
     }

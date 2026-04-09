@@ -24,7 +24,7 @@ namespace CassandraMigrationProcessor.Processors
                 return TaskResult.Success;
             }
 
-            _log.WriteLine($"{context.KeyspaceName}.{context.TableName} Copy started");
+            _log.WriteLine($"{context.KeyspaceName}.{context.TableName} Copy started", LogType.Info);
 
             if (!migrationUnit.CopyComplete
                 && !_cancellation.Token.IsCancellationRequested)
@@ -44,7 +44,7 @@ namespace CassandraMigrationProcessor.Processors
                 {
                     if (MigrationJobContext.ControlledPauseRequested)
                     {
-                        _log.WriteLine($"Controlled pause before chunk {chunkIndex}");
+                        _log.WriteLine($"Controlled pause before chunk {chunkIndex}", LogType.Info);
                         break;
                     }
 
@@ -68,7 +68,7 @@ namespace CassandraMigrationProcessor.Processors
 
                         if (result == TaskResult.Canceled)
                         {
-                            _log.WriteLine($"Copy paused for {context.KeyspaceName}.{context.TableName}[{chunkIndex}].");
+                            _log.WriteLine($"Copy paused for {context.KeyspaceName}.{context.TableName}[{chunkIndex}].", LogType.Info);
                             StopProcessing(isPause: true);
                             return TaskResult.Canceled;
                         }

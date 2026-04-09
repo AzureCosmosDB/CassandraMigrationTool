@@ -43,7 +43,7 @@ namespace CassandraMigrationProcessor.Processors
                 MigrationHelper.SafeDispose(_sourceSession, "CF old source session");
                 _sourceSession = newSource;
 
-                var columns = CassandraHelper.GetTableColumns(_sourceSession, mu.KeyspaceName, mu.TableName);
+                var columns = SchemaManager.GetTableColumns(_sourceSession, mu.KeyspaceName, mu.TableName);
                 var userColumns = columns
                     .Where(c => !c.Name.StartsWith("system_", StringComparison.OrdinalIgnoreCase))
                     .ToList();
@@ -76,13 +76,13 @@ namespace CassandraMigrationProcessor.Processors
                 // Discover feed ranges for parallel processing
                 var feedRanges = CassandraHelper.GetFeedRanges(_sourceSession, mu.KeyspaceName, mu.TableName);
 
-                _log.WriteLine($"Feed ranges discovered: {feedRanges.Count} for {mu.KeyspaceName}.{mu.TableName}");
+                _log.WriteLine($"Feed ranges discovered: {feedRanges.Count} for {mu.KeyspaceName}.{mu.TableName}", LogType.Debug);
 
                 if (feedRanges.Count > 1
                     && mu.FeedRangeContinuationTokens != null)
                 {
                     // PARALLEL: multiple feed ranges
-                    _log.WriteLine($"Change feed PARALLEL mode: {feedRanges.Count} ranges for {mu.KeyspaceName}.{mu.TableName}");
+                    _log.WriteLine($"Change feed PARALLEL mode: {feedRanges.Count} ranges for {mu.KeyspaceName}.{mu.TableName}", LogType.Debug);
 
                     await PollLoopParallelAsync(mu, feedRanges, ct);
                 }
@@ -109,7 +109,7 @@ namespace CassandraMigrationProcessor.Processors
         {
             mu.ChangeFeedStartedOn ??= DateTime.UtcNow;
 
-            var columns = CassandraHelper.GetTableColumns(_sourceSession, mu.KeyspaceName, mu.TableName);
+            var columns = SchemaManager.GetTableColumns(_sourceSession, mu.KeyspaceName, mu.TableName);
             var userColumns = columns
                 .Where(c => !c.Name.StartsWith("system_", StringComparison.OrdinalIgnoreCase))
                 .ToList();
@@ -136,7 +136,7 @@ namespace CassandraMigrationProcessor.Processors
 
             await Task.WhenAll(rangeTasks);
 
-            _log.WriteLine($"Change feed PARALLEL stopped for {mu.KeyspaceName}.{mu.TableName}, ranges={feedRanges.Count}");
+            _log.WriteLine($"Change feed PARALLEL stopped for {mu.KeyspaceName}.{mu.TableName}, ranges={feedRanges.Count}", LogType.Info);
         }
 
         /// <summary>
@@ -312,7 +312,7 @@ namespace CassandraMigrationProcessor.Processors
 
                 string cql = $"SELECT * FROM \"{mu.KeyspaceName}\".\"{mu.TableName}\" WHERE COSMOS_CHANGEFEED_START_TIME() = '{startTime}'";
 
-                var columns = CassandraHelper.GetTableColumns(_sourceSession, mu.KeyspaceName, mu.TableName);
+                var columns = SchemaManager.GetTableColumns(_sourceSession, mu.KeyspaceName, mu.TableName);
 
                 var userColumns = columns
                     .Where(c => !c.Name.StartsWith("system_", StringComparison.OrdinalIgnoreCase))
@@ -325,7 +325,7 @@ namespace CassandraMigrationProcessor.Processors
                 mu.ChangeFeedStartedOn ??= DateTime.UtcNow;
                 long totalApplied = 0;
 
-                _log.WriteLine($"Change feed started for {mu.KeyspaceName}.{mu.TableName} (startToken={startTime})");
+                _log.WriteLine($"Change feed started for {mu.KeyspaceName}.{mu.TableName} (startToken={startTime})", LogType.Info);
 
                 while (!ct.IsCancellationRequested
                     && !ExecutionCancelled)
@@ -397,7 +397,7 @@ namespace CassandraMigrationProcessor.Processors
                         if (batchTotal > 0 || errorCount > 0)
                         {
                             MigrationJobContext.SaveMigrationUnit(mu, true);
-                            _log.WriteLine($"CF {mu.KeyspaceName}.{mu.TableName}: ins={insertCount}, err={errorCount}, total={totalApplied}");
+                            _log.WriteLine($"CF {mu.KeyspaceName}.{mu.TableName}: ins={insertCount}, err={errorCount}, total={totalApplied}", LogType.Debug);
                         }
                         else
                         {
@@ -413,7 +413,7 @@ namespace CassandraMigrationProcessor.Processors
                     catch (Exception ex)
                     {
                         consecutiveErrors++;
-                        _log.WriteLine($"CF error {mu.KeyspaceName}.{mu.TableName}: {ex.Message}", LogType.Error);
+                        _log.WriteLine($"CF error {mu.KeyspaceName}.{mu.TableName}: {ex.Message}", LogType.Warning);
 
                         if (consecutiveErrors <= MaxReconnectAttempts
                             && ExceptionClassifier.IsTransient(ex))
@@ -437,7 +437,7 @@ namespace CassandraMigrationProcessor.Processors
                     if (!await DelayOrBreak(intervalMs, ct)) break;
                 }
 
-                _log.WriteLine($"Change feed stopped for {mu.KeyspaceName}.{mu.TableName}, total applied={totalApplied}");
+                _log.WriteLine($"Change feed stopped for {mu.KeyspaceName}.{mu.TableName}, total applied={totalApplied}", LogType.Info);
             }
             catch (Exception ex)
             {

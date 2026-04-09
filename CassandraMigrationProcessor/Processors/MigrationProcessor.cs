@@ -119,7 +119,7 @@ namespace CassandraMigrationProcessor.Processors
                 if (_targetSession == null)
                 {
                     _targetSession = CassandraClientFactory.CreateTargetSession(_log, _job, string.Empty);
-                    CassandraHelper.EnsureKeyspaceExists(_targetSession, mu.GetEffectiveTargetKeyspaceName());
+                    SchemaManager.EnsureKeyspaceExists(_targetSession, mu.GetEffectiveTargetKeyspaceName());
                 }
 
                 if (_changeFeedProcessor == null
@@ -187,7 +187,7 @@ namespace CassandraMigrationProcessor.Processors
                     && _job?.Status != JobStatus.Cancelled
                     && _job?.Status != JobStatus.Paused)
                 {
-                    _log.WriteLine($"Job {_job?.Id} Completed");
+                    _log.WriteLine($"Job {_job?.Id} Completed", LogType.Info);
                     _job!.Status = JobStatus.Completed;
                     MigrationJobContext.SaveMigrationJob(_job);
                 }

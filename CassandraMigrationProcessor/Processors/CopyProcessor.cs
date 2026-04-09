@@ -34,7 +34,7 @@ namespace CassandraMigrationProcessor.Processors
             if (ex is OperationCanceledException) return Task.FromResult(TaskResult.Abort);
 
             _log.WriteLine($"{processName} attempt {attemptCount} for {keyspace}.{table}[{chunkIndex}] failed. Details:{ex}. Retrying in {currentBackoff}s...",
-                LogType.Error);
+                LogType.Warning);
             return Task.FromResult(TaskResult.Retry);
         }
 
@@ -63,7 +63,7 @@ namespace CassandraMigrationProcessor.Processors
             if (_targetSession == null && !_job.IsSimulatedRun)
             {
                 _targetSession = CassandraClientFactory.CreateTargetSession(_log, _job, string.Empty);
-                await CassandraHelper.EnsureKeyspaceExistsAsync(_targetSession, context.TargetKeyspaceName);
+                await SchemaManager.EnsureKeyspaceExistsAsync(_targetSession, context.TargetKeyspaceName);
             }
 
             var feedRanges = await CassandraHelper.GetFeedRangesAsync(_sourceSession!, context.KeyspaceName,
@@ -71,11 +71,11 @@ namespace CassandraMigrationProcessor.Processors
 
             _log.WriteLine($"{context.KeyspaceName}.{context.TableName}: " +
                 $"{(rowCount >= 0 ? $"{rowCount:N0} rows" : "count unavailable")}, " +
-                $"{feedRanges.Count} feed range(s)");
+                $"{feedRanges.Count} feed range(s)", LogType.Info);
 
             if (_job.IsSimulatedRun)
             {
-                _log.WriteLine($"Simulated: {context.KeyspaceName}.{context.TableName}");
+                _log.WriteLine($"Simulated: {context.KeyspaceName}.{context.TableName}", LogType.Info);
                 return TaskResult.Success;
             }
 
@@ -98,7 +98,7 @@ namespace CassandraMigrationProcessor.Processors
             }
             else if (result == TaskResult.Canceled)
             {
-                _log.WriteLine($"Copy paused for {context.KeyspaceName}.{context.TableName}[{chunkIndex}].");
+                _log.WriteLine($"Copy paused for {context.KeyspaceName}.{context.TableName}[{chunkIndex}].", LogType.Info);
                 return TaskResult.Canceled;
             }
             else
