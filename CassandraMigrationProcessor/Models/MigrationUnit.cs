@@ -88,17 +88,13 @@ namespace CassandraMigrationProcessor.Models
         /// resume can skip completed ranges and continue from
         /// the last checkpoint of in-progress ranges.
         /// </summary>
-        public Dictionary<string, string?>?
-            CopyFeedRangeCheckpoints
-        { get; set; }
+        public Dictionary<string, string?> CopyFeedRangeCheckpoints { get; set; } = new();
 
         /// <summary>
         /// Set of feed ranges whose bulk copy completed fully.
         /// On resume, these ranges are skipped entirely.
         /// </summary>
-        public HashSet<string>?
-            CompletedCopyFeedRanges
-        { get; set; }
+        public HashSet<string> CompletedCopyFeedRanges { get; set; } = new();
 
         public long EstimatedRowCount { get; set; }
         public long ActualRowCount { get; set; }

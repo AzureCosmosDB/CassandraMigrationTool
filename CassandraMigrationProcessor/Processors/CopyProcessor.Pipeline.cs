@@ -38,12 +38,8 @@ namespace CassandraMigrationProcessor.Processors
             MigrationUnit migrationUnit, List<string> feedRanges,
             int workerCount, string keyspace, string table)
         {
-            var completed = migrationUnit.CompletedCopyFeedRanges
-                ?? new HashSet<string>();
-            var checkpoints = migrationUnit.CopyFeedRangeCheckpoints
-                ?? new Dictionary<string, string?>();
-            migrationUnit.CompletedCopyFeedRanges = completed;
-            migrationUnit.CopyFeedRangeCheckpoints = checkpoints;
+            var completed = migrationUnit.CompletedCopyFeedRanges;
+            var checkpoints = migrationUnit.CopyFeedRangeCheckpoints;
 
             List<string> pendingRanges;
             lock (checkpoints)
