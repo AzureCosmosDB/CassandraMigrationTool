@@ -12,10 +12,6 @@ namespace CassandraMigrationProcessor.Processors
 {
     internal partial class CopyProcessor
     {
-        private const int ReadTimeoutMs = 60_000;
-        private const int MaxReadRetries = 3;
-        private const int RetryDelayMs = 5000;
-
         private static string TruncRange(string r) => r.Length > 30 ? r[..15] + "..." : r;
 
         private static bool IsRetriableWriteError(Exception ex)
@@ -28,7 +24,7 @@ namespace CassandraMigrationProcessor.Processors
         /// Tracks a pending or completed read-write cycle.
         /// Forms a linked list per partition.
         /// </summary>
-        private class WorkChunk
+        internal class WorkChunk
         {
             public byte[]? ContinuationToken { get; set; }
             public bool IsCompleted { get; set; }
@@ -39,7 +35,7 @@ namespace CassandraMigrationProcessor.Processors
         /// Represents a feed range partition with its work
         /// chunk list. Passed through the partition pool channel.
         /// </summary>
-        private class Partition
+        internal class Partition
         {
             public string FeedRange { get; }
             public bool IsExhausted { get; set; }
@@ -147,7 +143,7 @@ namespace CassandraMigrationProcessor.Processors
         /// be accessed with <see cref="Interlocked"/> or
         /// <see cref="Volatile"/>.
         /// </summary>
-        private class PipelineContext
+        internal class PipelineContext
         {
             public Channel<Partition> PartitionPool = null!;
             public List<string> ColumnNames = null!;

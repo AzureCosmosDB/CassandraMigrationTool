@@ -33,6 +33,9 @@ namespace CassandraMigrationProcessor.Processors
                 workerSourceSession = CassandraClientFactory.CreateSourceSession(
                     _log, job.SourceConnection, ctx.Context.KeyspaceName);
 
+                var reader = new PageReader(_log, _cancellation);
+                var writer = new PageWriter(_log, _cancellation);
+
                 var (preparedInsert, _) = await CassandraHelper.PrepareInsertAsync(workerTargetSession,
                         ctx.Context.TargetKeyspaceName,
                         ctx.Context.TargetTableName,
@@ -83,7 +86,7 @@ namespace CassandraMigrationProcessor.Processors
                     bool isLastPage = false;
                     try
                     {
-                        var (rows, nextPaging, lastPage, readTimeMs) = await ReadPageAsync(
+                        var (rows, nextPaging, lastPage, readTimeMs) = await reader.ReadAsync(
                                 partition, workerSourceSession!, ctx,
                                 workerId);
 
@@ -93,7 +96,7 @@ namespace CassandraMigrationProcessor.Processors
                             // DO NOT skip this range. Mark as
                             // error so job fails instead of
                             // silently losing data.
-                            _log.WriteLine($"[W{workerId}] FATAL: Read failed after {MaxReadRetries} retries for range {TruncRange(partition.FeedRange)} — failing job to prevent data loss",
+                            _log.WriteLine($"[W{workerId}] FATAL: Read failed after retries for range {TruncRange(partition.FeedRange)} — failing job to prevent data loss",
                                 LogType.Error);
                             Interlocked.Exchange(ref ctx.FatalErrorFlag, 1);
                             try { _cancellation.Cancel(); }
@@ -129,7 +132,7 @@ namespace CassandraMigrationProcessor.Processors
 
                         if (rows.Count > 0)
                         {
-                            await WriteRowsAsync(rows, preparedInsert, workerTargetSession!, workChunk, ctx, workerId);
+                            await writer.WriteAsync(rows, preparedInsert, workerTargetSession!, workChunk, ctx, workerId);
                         }
                         else
                         {
@@ -265,177 +268,6 @@ namespace CassandraMigrationProcessor.Processors
                 ctx.Tracker.WorkerExited();
             }
         }
-
-        /// <summary>
-        /// Reads a single page of rows from the source
-        /// partition, retrying on transient timeouts.
-        /// Returns null rows when all retries are exhausted.
-        /// </summary>
-        private async Task<(List<object[]>? rows, byte[]? nextPaging, bool isLastPage,
-            long readTimeMs)> ReadPageAsync(Partition partition,
-            ISession sourceSession,
-            PipelineContext ctx,
-            int workerId)
-        {
-            var stopwatch = Stopwatch.StartNew();
-            var stmt = new SimpleStatement(BuildSelectCql(ctx.Context, partition.FeedRange));
-            stmt.SetPageSize(ctx.ConfiguredPageSize);
-            stmt.SetAutoPage(false);
-            stmt.SetReadTimeoutMillis(ReadTimeoutMs);
-            stmt.SetConsistencyLevel(ConsistencyLevel.One);
-
-            if (partition.LastPagingState != null)
-                stmt.SetPagingState(partition.LastPagingState);
-
-            RowSet resultSet = null;
-            for (int attempt = 1;
-                attempt <= MaxReadRetries; attempt++)
-            {
-                try
-                {
-                    resultSet = await sourceSession.ExecuteAsync(stmt);
-                    break;
-                }
-                catch (Exception ex) when (attempt < MaxReadRetries
-                    && Helpers.ExceptionClassifier.IsTransient(ex))
-                {
-                    _log.WriteLine($"[W{workerId}] Read timeout (attempt {attempt}/{MaxReadRetries})",
-                        LogType.Warning);
-                    await Task.Delay(attempt * RetryDelayMs, _cancellation.Token);
-                }
-            }
-
-            if (resultSet == null)
-            {
-                ctx.WorkerErrors.Add(TaskResult.Retry);
-                stopwatch.Stop();
-                return (null, null, true, stopwatch.ElapsedMilliseconds);
-            }
-
-            byte[]? nextPaging = resultSet.PagingState;
-
-            var rows = new List<object[]>();
-            int available = resultSet.GetAvailableWithoutFetching();
-            int consumed = 0;
-            foreach (var row in resultSet)
-            {
-                if (consumed >= available) break;
-                consumed++;
-                var rowValues =
-                    new object[ctx.ColumnNames.Count];
-                for (int i = 0;
-                    i < ctx.ColumnNames.Count; i++)
-                    rowValues[i] = row[ctx.ColumnNames[i]];
-                rows.Add(rowValues);
-            }
-
-            stopwatch.Stop();
-            bool isLastPage = rows.Count == 0 || nextPaging == null;
-            return (rows, nextPaging, isLastPage, stopwatch.ElapsedMilliseconds);
-        }
-
-        /// <summary>
-        /// Writes extracted rows to the target cluster in
-        /// parallel, tracking progress and handling errors.
-        /// </summary>
-        private async Task WriteRowsAsync(List<object[]> rows, PreparedStatement preparedInsert, ISession targetSession,
-            WorkChunk workChunk,
-            PipelineContext ctx,
-            int workerId)
-        {
-            var stopwatch = Stopwatch.StartNew();
-            int writeDone = 0;
-            int writeFail = 0;
-            long writeLatencySum = 0;
-            var writeTasks = new List<Task>(rows.Count);
-
-            foreach (var rowValues in rows)
-            {
-                if (_cancellation.Token.IsCancellationRequested
-                    || Volatile.Read(ref ctx.FatalErrorFlag) != 0)
-                    break;
-
-                var bound = preparedInsert.Bind(rowValues);
-                bound.SetReadTimeoutMillis(ReadTimeoutMs);
-                bound.SetConsistencyLevel(ConsistencyLevel.LocalOne);
-
-                var writeStart = Stopwatch.GetTimestamp();
-                writeTasks.Add(targetSession.ExecuteAsync(bound).ContinueWith(task =>
-                {
-                    long elapsed = (Stopwatch.GetTimestamp()
-                            - writeStart)
-                        * 1000
-                        / Stopwatch.Frequency;
-                    Interlocked.Add(ref writeLatencySum, elapsed);
-
-                    if (task.IsFaulted)
-                    {
-                        var ex = task.Exception!.InnerException!;
-                        Interlocked.Increment(ref ctx.TotalFailed);
-                        Interlocked.Increment(ref writeFail);
-                        _log.WriteLine($"[W{workerId}] INSERT failed: {ex.GetType().Name}: {ex.Message}",
-                            LogType.Error);
-
-                        if (IsFatalError(ex))
-                        {
-                            _log.WriteLine($"[W{workerId}] FATAL: {ex.GetType().Name} — failing job",
-                                LogType.Error);
-                            Interlocked.Exchange(ref ctx.FatalErrorFlag, 1);
-                            try { _cancellation.Cancel(); }
-                            catch (Exception cancelEx)
-                            {
-                                Console.WriteLine($"[WARN] CopyProcessor batch cancel failed: {cancelEx.Message}");
-                            }
-                        }
-                        else if (!IsRetriableWriteError(ex))
-                        {
-                            Interlocked.Exchange(ref ctx.FatalErrorFlag, 1);
-                        }
-                    }
-                    else
-                    {
-                        Interlocked.Increment(ref ctx.TotalWritten);
-                        Interlocked.Increment(ref writeDone);
-                    }
-                }, TaskContinuationOptions.ExecuteSynchronously));
-            }
-
-            ctx.Tracker.SetPipelineState(ctx.FeedRanges.Count
-                    - ctx.Completed.Count,
-                ctx.ConfiguredPageSize);
-            await Task.WhenAll(writeTasks);
-
-            // Only mark chunk completed if ALL rows succeeded.
-            // Failed rows mean this page must be retried on resume.
-            if (writeFail == 0) workChunk.IsCompleted = true;
-            else
-            {
-                _log.WriteLine($"[W{workerId}] {writeFail}/{rows.Count} writes failed — checkpoint NOT advanced (will retry on resume)",
-                    LogType.Warning);
-            }
-
-            stopwatch.Stop();
-            ctx.Tracker.AddWriteTime(writeLatencySum, rows.Count);
-            ctx.Tracker.AddCopied(writeDone);
-            ctx.Tracker.AddFailed(writeFail);
-
-            long pageBytes = 0;
-            foreach (var r in rows)
-                foreach (var v in r)
-                {
-                    if (v is byte[] b)
-                        pageBytes += b.Length;
-                    else if (v is string s)
-                        pageBytes += s.Length * 2;
-                    else if (v != null)
-                        pageBytes += 8;
-                }
-            ctx.Tracker.AddBytes(pageBytes);
-        }
-
-        private static string BuildSelectCql(ProcessorContext context, string range) =>
-            $"SELECT * FROM \"{context.KeyspaceName}\".\"{context.TableName}\"" +
-            $" WHERE COSMOS_CHANGEFEED_FROM_START() = true AND COSMOS_FEEDRANGE() = '{range}'";
 
         private static void TryCloseChannel(PipelineContext ctx)
         {

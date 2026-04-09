@@ -1,0 +1,128 @@
+using Cassandra;
+using CassandraMigrationProcessor.Helpers;
+using CassandraMigrationProcessor.Models;
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.Threading;
+using System.Threading.Tasks;
+
+namespace CassandraMigrationProcessor.Processors
+{
+    /// <summary>
+    /// Writes extracted rows to the target Cassandra cluster
+    /// concurrently, tracking latency and errors.
+    /// </summary>
+    internal class PageWriter
+    {
+        private readonly MigrationLog _log;
+        private readonly CancellationTokenSource _cancellation;
+
+        private const int WriteTimeoutMs = 60_000;
+
+        public PageWriter(MigrationLog log, CancellationTokenSource cancellation)
+        {
+            _log = log;
+            _cancellation = cancellation;
+        }
+
+        /// <summary>
+        /// Writes extracted rows to the target cluster in
+        /// parallel, tracking progress and handling errors.
+        /// </summary>
+        public async Task WriteAsync(List<object[]> rows, PreparedStatement preparedInsert, ISession targetSession,
+            CopyProcessor.WorkChunk workChunk,
+            CopyProcessor.PipelineContext ctx,
+            int workerId)
+        {
+            var stopwatch = Stopwatch.StartNew();
+            int writeDone = 0;
+            int writeFail = 0;
+            long writeLatencySum = 0;
+            var writeTasks = new List<Task>(rows.Count);
+
+            foreach (var rowValues in rows)
+            {
+                if (_cancellation.Token.IsCancellationRequested
+                    || Volatile.Read(ref ctx.FatalErrorFlag) != 0)
+                    break;
+
+                var bound = preparedInsert.Bind(rowValues);
+                bound.SetReadTimeoutMillis(WriteTimeoutMs);
+                bound.SetConsistencyLevel(ConsistencyLevel.LocalOne);
+
+                var writeStart = Stopwatch.GetTimestamp();
+                writeTasks.Add(targetSession.ExecuteAsync(bound).ContinueWith(task =>
+                {
+                    long elapsed = (Stopwatch.GetTimestamp()
+                            - writeStart)
+                        * 1000
+                        / Stopwatch.Frequency;
+                    Interlocked.Add(ref writeLatencySum, elapsed);
+
+                    if (task.IsFaulted)
+                    {
+                        var ex = task.Exception!.InnerException!;
+                        Interlocked.Increment(ref ctx.TotalFailed);
+                        Interlocked.Increment(ref writeFail);
+                        _log.WriteLine($"[W{workerId}] INSERT failed: {ex.GetType().Name}: {ex.Message}",
+                            LogType.Error);
+
+                        if (ExceptionClassifier.IsFatal(ex))
+                        {
+                            _log.WriteLine($"[W{workerId}] FATAL: {ex.GetType().Name} — failing job",
+                                LogType.Error);
+                            Interlocked.Exchange(ref ctx.FatalErrorFlag, 1);
+                            try { _cancellation.Cancel(); }
+                            catch (Exception cancelEx)
+                            {
+                                Console.WriteLine($"[WARN] CopyProcessor batch cancel failed: {cancelEx.Message}");
+                            }
+                        }
+                        else if (!ExceptionClassifier.IsTransient(ex))
+                        {
+                            Interlocked.Exchange(ref ctx.FatalErrorFlag, 1);
+                        }
+                    }
+                    else
+                    {
+                        Interlocked.Increment(ref ctx.TotalWritten);
+                        Interlocked.Increment(ref writeDone);
+                    }
+                }, TaskContinuationOptions.ExecuteSynchronously));
+            }
+
+            ctx.Tracker.SetPipelineState(ctx.FeedRanges.Count
+                    - ctx.Completed.Count,
+                ctx.ConfiguredPageSize);
+            await Task.WhenAll(writeTasks);
+
+            // Only mark chunk completed if ALL rows succeeded.
+            // Failed rows mean this page must be retried on resume.
+            if (writeFail == 0) workChunk.IsCompleted = true;
+            else
+            {
+                _log.WriteLine($"[W{workerId}] {writeFail}/{rows.Count} writes failed — checkpoint NOT advanced (will retry on resume)",
+                    LogType.Warning);
+            }
+
+            stopwatch.Stop();
+            ctx.Tracker.AddWriteTime(writeLatencySum, rows.Count);
+            ctx.Tracker.AddCopied(writeDone);
+            ctx.Tracker.AddFailed(writeFail);
+
+            long pageBytes = 0;
+            foreach (var r in rows)
+                foreach (var v in r)
+                {
+                    if (v is byte[] b)
+                        pageBytes += b.Length;
+                    else if (v is string s)
+                        pageBytes += s.Length * 2;
+                    else if (v != null)
+                        pageBytes += 8;
+                }
+            ctx.Tracker.AddBytes(pageBytes);
+        }
+    }
+}
