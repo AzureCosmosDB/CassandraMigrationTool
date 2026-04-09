@@ -78,115 +78,119 @@ namespace CassandraMigrationProcessor.Processors
             return new PartitionStageResult(pool, completed, checkpoints, pendingRanges.Count);
         }
 
-        private async Task<TaskResult> CopyWithFeedRangesAsync(PipelineRequest request)
+        private int ResolveWorkerCount()
         {
-            var migrationUnit = request.MigrationUnit;
-            var chunkIndex = request.ChunkIndex;
-            var initialPercent = request.InitialPercent;
-            var contributionFactor = request.ContributionFactor;
-            var totalRowCount = request.TotalRowCount;
-            var processorContext = request.Context;
-            var feedRanges = request.FeedRanges;
-
+            if (_job.MaxFeedRangeParallelism > 0)
+                return _job.MaxFeedRangeParallelism;
             int totalBudget = Environment.ProcessorCount * MigrationDefaults.WorkerMultiplier;
             int parallelTables = Math.Max(1, _job.ParallelThreads);
-            int autoWorkers = Math.Max(MigrationDefaults.MinWorkers, totalBudget / parallelTables);
-            int workerCount = _job.MaxFeedRangeParallelism > 0
-                ? _job.MaxFeedRangeParallelism
-                : autoWorkers;
+            return Math.Max(MigrationDefaults.MinWorkers, totalBudget / parallelTables);
+        }
+
+        private int ResolvePageSize()
+        {
+            int jobPageSize = _job?.PageSize ?? 0;
+            if (jobPageSize > 0) return jobPageSize;
+            if (_config.CqlCopyPageSize > 0) return _config.CqlCopyPageSize;
+            return MigrationDefaults.DefaultPageSize;
+        }
+
+        private async Task<TaskResult> CopyWithFeedRangesAsync(PipelineRequest request)
+        {
+            var mu = request.MigrationUnit;
+            var ctx0 = request.Context;
+            int workerCount = ResolveWorkerCount();
+            int pageSize = ResolvePageSize();
 
             // ── Stage 1: Partition seeding ──
             var partitions = await SeedPartitionsAsync(
-                migrationUnit, feedRanges,
-                processorContext.KeyspaceName, processorContext.TableName);
+                mu, request.FeedRanges, ctx0.KeyspaceName, ctx0.TableName);
             if (partitions == null)
                 return TaskResult.Success;
 
-            // ── Stage 2: Schema sync (uses metadata sessions, not per-worker sessions) ──
-            var targetSession = EnsureTargetSession();
+            // ── Stage 2: Schema sync ──
             var columns = await SchemaManager.SyncSchemaAsync(
-                processorContext.SourceSession, targetSession,
-                processorContext.KeyspaceName, processorContext.TableName,
-                processorContext.TargetKeyspaceName, processorContext.TargetTableName);
+                ctx0.SourceSession, EnsureTargetSession(),
+                ctx0.KeyspaceName, ctx0.TableName,
+                ctx0.TargetKeyspaceName, ctx0.TargetTableName);
             if (columns.Count == 0)
             {
-                _log.WriteLine($"No columns for {processorContext.KeyspaceName}.{processorContext.TableName}", LogType.Error);
+                _log.WriteLine($"No columns for {ctx0.KeyspaceName}.{ctx0.TableName}", LogType.Error);
                 return TaskResult.Abort;
             }
 
-            long priorCopied = migrationUnit.CopyRowsCopied;
-
-            int jobPageSize = _job?.PageSize ?? 0;
-            int configuredPageSize = jobPageSize > 0
-                ? jobPageSize
-                : _config.CqlCopyPageSize > 0
-                    ? _config.CqlCopyPageSize
-                    : MigrationDefaults.DefaultPageSize;
-
-            var tracker = new CopyProgressTracker(_log, processorContext.KeyspaceName, processorContext.TableName,
-                workerCount, partitions.PendingCount,
-                priorCopied,
-                migrationUnit, chunkIndex,
-                initialPercent, contributionFactor, totalRowCount);
+            long priorCopied = mu.CopyRowsCopied;
+            var tracker = new CopyProgressTracker(_log, ctx0.KeyspaceName, ctx0.TableName,
+                workerCount, partitions.PendingCount, priorCopied,
+                mu, request.ChunkIndex,
+                request.InitialPercent, request.ContributionFactor, request.TotalRowCount);
 
             var stopwatch = Stopwatch.StartNew();
 
             // ── Stage 3: Worker execution ──
             var ctx = new PipelineContext(
                 partitions.Pool,
-                new WorkerConfig(_job.SourceConnection, _job.TargetConnection, columns, processorContext),
-                new RangeState(partitions.Completed, partitions.Checkpoints, feedRanges),
+                new WorkerConfig(_job.SourceConnection, _job.TargetConnection, columns, ctx0),
+                new RangeState(partitions.Completed, partitions.Checkpoints, request.FeedRanges),
                 new PipelineCounters(),
                 tracker);
 
-            _log.WriteLine($"Launching {workerCount} workers for {processorContext.KeyspaceName}.{processorContext.TableName} ({partitions.PendingCount} feed ranges, page size={configuredPageSize})...", LogType.Info);
+            _log.WriteLine($"Launching {workerCount} workers for {ctx0.KeyspaceName}.{ctx0.TableName} ({partitions.PendingCount} feed ranges, page size={pageSize})...", LogType.Info);
             using var pool = new WorkerPool(_log, workerCount, _cancellation);
-            pool.Start(workerId => RunWorkerAsync(workerId, ctx, configuredPageSize));
+            pool.Start(workerId => RunWorkerAsync(workerId, ctx, pageSize));
             await pool.WaitForCompletionAsync();
             ctx.PartitionPool.Writer.TryComplete();
 
-            ctx.Tracker.LogFinal();
-            long finalWritten = tracker.TotalCopied;
-            long finalFailed = tracker.TotalFailed;
-            long finalRead = tracker.TotalRead;
-            long sessionWritten = finalWritten - priorCopied;
+            // ── Finalization ──
+            return FinalizeResults(ctx, mu, request, priorCopied, stopwatch.Elapsed);
+        }
 
-            var elapsed = stopwatch.Elapsed;
-            double avgSpeed = elapsed.TotalSeconds > 0
-                ? sessionWritten / elapsed.TotalSeconds : 0;
+        private TaskResult FinalizeResults(PipelineContext ctx, MigrationUnit mu,
+            PipelineRequest request, long priorCopied, TimeSpan elapsed)
+        {
+            var tracker = ctx.Tracker;
+            tracker.LogFinal();
+
+            long written = tracker.TotalCopied;
+            long failed = tracker.TotalFailed;
+            long read = tracker.TotalRead;
+            long sessionWritten = written - priorCopied;
+            double speed = elapsed.TotalSeconds > 0 ? sessionWritten / elapsed.TotalSeconds : 0;
+
             int completedCount;
             lock (ctx.Ranges.Checkpoints) { completedCount = ctx.Ranges.Completed.Count; }
-            _log.WriteLine($"Pipeline complete for {processorContext.KeyspaceName}.{processorContext.TableName}: " +
-                $"session={sessionWritten:N0} written, {finalFailed:N0} failed | " +
-                $"cumulative={finalWritten:N0} | {completedCount}/{feedRanges.Count} ranges | " +
-                $"{elapsed.TotalSeconds:F1}s ({avgSpeed:F0} rows/sec)", LogType.Info);
+            _log.WriteLine($"Pipeline complete for {request.Context.KeyspaceName}.{request.Context.TableName}: " +
+                $"session={sessionWritten:N0} written, {failed:N0} failed | " +
+                $"cumulative={written:N0} | {completedCount}/{request.FeedRanges.Count} ranges | " +
+                $"{elapsed.TotalSeconds:F1}s ({speed:F0} rows/sec)", LogType.Info);
 
-            var chunk = migrationUnit.MigrationChunks[chunkIndex];
-            chunk.SourceResultRowCount = finalWritten;
-            chunk.TargetInsertedRowCount = finalWritten;
-            chunk.TargetFailedRowCount = finalFailed;
-            migrationUnit.CopyRowsCopied = finalWritten;
-            migrationUnit.ActualRowCount = Math.Max(migrationUnit.ActualRowCount, finalRead);
-            bool allRangesComplete;
+            var chunk = mu.MigrationChunks[request.ChunkIndex];
+            chunk.SourceResultRowCount = written;
+            chunk.TargetInsertedRowCount = written;
+            chunk.TargetFailedRowCount = failed;
+            mu.CopyRowsCopied = written;
+            mu.ActualRowCount = Math.Max(mu.ActualRowCount, read);
+
+            bool allComplete;
             lock (ctx.Ranges.Checkpoints)
             {
-                allRangesComplete = ctx.Ranges.Completed.Count >= feedRanges.Count;
+                allComplete = ctx.Ranges.Completed.Count >= request.FeedRanges.Count;
             }
             if (chunk.Segments.Count == 0)
             {
                 chunk.Segments.Add(new Segment
                 {
                     Id = "0",
-                    IsProcessed = allRangesComplete,
-                    ResultDocCount = finalWritten
+                    IsProcessed = allComplete,
+                    ResultDocCount = written
                 });
             }
-            else if (allRangesComplete)
+            else if (allComplete)
             {
                 foreach (var seg in chunk.Segments)
                     seg.IsProcessed = true;
             }
-            MigrationJobContext.SaveMigrationUnit(migrationUnit, true);
+            MigrationJobContext.SaveMigrationUnit(mu, true);
 
             if (Volatile.Read(ref ctx.Counters.FatalErrorFlag) != 0)
                 return TaskResult.Abort;
@@ -194,9 +198,7 @@ namespace CassandraMigrationProcessor.Processors
                 return TaskResult.Abort;
             if (ctx.Counters.WorkerErrors.Any(r => r == TaskResult.Canceled))
                 return TaskResult.Canceled;
-            if (finalFailed > 0)
-                return TaskResult.Retry;
-            return TaskResult.Success;
+            return failed > 0 ? TaskResult.Retry : TaskResult.Success;
         }
     }
 }
