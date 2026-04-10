@@ -22,7 +22,7 @@ namespace CassandraMigrationProcessor.DataTransfer
         private readonly MigrationSettings _config;
         private readonly MigrationWorker _worker;
         private readonly ISession _sourceSession;
-        private ISession? _targetSession;
+        private readonly ISession? _targetSession;
         private readonly CancellationTokenSource _cancellation;
         private readonly ChangeFeedManager _changeFeed;
 
@@ -39,16 +39,10 @@ namespace CassandraMigrationProcessor.DataTransfer
             _job = job;
             _worker = worker;
             _cancellation = new CancellationTokenSource();
-            _changeFeed = new ChangeFeedManager(log, job, config, EnsureTargetSession);
-        }
-
-        // ── Session management ──
-
-        private ISession EnsureTargetSession()
-        {
-            if (_targetSession == null)
-                _targetSession = CassandraClientFactory.CreateTargetSession(_log, _job, string.Empty);
-            return _targetSession;
+            _targetSession = job.IsSimulatedRun
+                ? null
+                : CassandraClientFactory.CreateTargetSession(log, job, string.Empty);
+            _changeFeed = new ChangeFeedManager(log, job, config, () => _targetSession!);
         }
 
         // ── Lifecycle ──
@@ -210,11 +204,8 @@ namespace CassandraMigrationProcessor.DataTransfer
             migrationUnit.MigrationChunks[chunkIndex].SourceQueryRowCount = rowCount;
             context.DownloadCount += rowCount;
 
-            if (_targetSession == null && !_job.IsSimulatedRun)
-            {
-                var target = EnsureTargetSession();
-                await SchemaManager.EnsureKeyspaceExistsAsync(target, context.TargetKeyspaceName);
-            }
+            if (_targetSession != null)
+                await SchemaManager.EnsureKeyspaceExistsAsync(_targetSession, context.TargetKeyspaceName);
 
             var feedRanges = await CassandraQueries.GetFeedRangesAsync(context.SourceSession, context.KeyspaceName,
                 context.TableName);
@@ -229,7 +220,7 @@ namespace CassandraMigrationProcessor.DataTransfer
                 return TaskResult.Success;
             }
 
-            var runner = new BulkCopyRunner(_log, _job, _config, _cancellation, EnsureTargetSession);
+            var runner = new BulkCopyRunner(_log, _job, _config, _cancellation, () => _targetSession!);
             var result = await runner.RunAsync(new PipelineRequest(migrationUnit, chunkIndex, initialPercent,
                 contributionFactor, rowCount, context, feedRanges));
 
