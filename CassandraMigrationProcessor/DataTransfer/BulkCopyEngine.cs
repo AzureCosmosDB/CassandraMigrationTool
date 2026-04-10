@@ -132,7 +132,7 @@ namespace CassandraMigrationProcessor.DataTransfer
             migrationUnit.MigrationChunks[chunkIndex].SourceQueryRowCount = rowCount;
             context.DownloadCount += rowCount;
 
-            if (_targetSession == null && !_job.IsSimulatedRun)
+            if (!HasTargetSession && !_job.IsSimulatedRun)
             {
                 var target = EnsureTargetSession();
                 await SchemaManager.EnsureKeyspaceExistsAsync(target, context.TargetKeyspaceName);

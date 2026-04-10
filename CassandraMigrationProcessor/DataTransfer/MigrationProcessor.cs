@@ -18,14 +18,16 @@ namespace CassandraMigrationProcessor.DataTransfer
     public abstract class MigrationProcessor : IDisposable
     {
         protected readonly ISession _sourceSession;
-        protected ISession? _targetSession;
-        protected MigrationSettings _config;
+        private ISession? _targetSession;
+        protected readonly MigrationSettings _config;
         protected CancellationTokenSource _cancellation;
-        protected MigrationLog _log;
-        protected MigrationJob _job;
-        protected MigrationWorker? _worker;
-        protected ReplayProcessor? _changeFeedProcessor;
+        protected readonly MigrationLog _log;
+        protected readonly MigrationJob _job;
+        protected readonly MigrationWorker? _worker;
+        private ReplayProcessor? _changeFeedProcessor;
         private readonly object _changeFeedLock = new();
+
+        protected bool HasTargetSession => _targetSession != null;
 
         public volatile bool ProcessRunning;
         public volatile bool IsChangeFeedRunning;
