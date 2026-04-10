@@ -23,7 +23,7 @@ namespace CassandraMigrationProcessor.DataTransfer
         private readonly MigrationWorker _worker;
         private readonly ISession _sourceSession;
         private ISession? _targetSession;
-        private CancellationTokenSource _cancellation;
+        private readonly CancellationTokenSource _cancellation;
         private readonly ChangeFeedManager _changeFeed;
 
         public volatile bool ProcessRunning;
@@ -73,12 +73,6 @@ namespace CassandraMigrationProcessor.DataTransfer
             _job.Status = JobStatus.Paused;
             MigrationJobContext.SaveMigrationJob(_job);
             ProcessRunning = false;
-        }
-
-        public void ResetCancellationToken()
-        {
-            _cancellation?.Dispose();
-            _cancellation = new CancellationTokenSource();
         }
 
         // ── Job completion ──
