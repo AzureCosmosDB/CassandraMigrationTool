@@ -20,10 +20,10 @@ namespace CassandraMigrationProcessor.DataTransfer
     public class MigrationWorker
     {
         private readonly MigrationLog _log;
-        private MigrationProcessor? _activeProcessor;
+        private BulkCopyEngine? _activeProcessor;
         private ISession? _sourceSession;
         private int _consecutiveAuthErrors;
-        private readonly ConcurrentDictionary<string, MigrationProcessor> _activeProcessors = new();
+        private readonly ConcurrentDictionary<string, BulkCopyEngine> _activeProcessors = new();
 
         public MigrationWorker(MigrationLog migrationLog) => _log = migrationLog;
 
