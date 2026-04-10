@@ -8,7 +8,7 @@ Silent error swallowing can cause data loss. The job must fail loudly rather tha
 Review every `catch` in the pipeline and change feed paths. Any catch that swallows an error without failing the job or logging it as a retryable failure is a data consistency risk.
 
 **Key areas to audit:**
-- `ReplayProcessor.Worker.cs` — poll loops catch exceptions and continue; must track per-row failures
+- `ReplayWorker.cs` — poll loops catch exceptions and continue; must track per-row failures
 - `PageWriter.cs` — individual row write failures are counted but the page may still be marked as progressed
 - `DiskPersistence.cs` — save failures could lose checkpoint state silently
 
@@ -112,42 +112,13 @@ Currently uses regular change feed (`COSMOS_CHANGEFEED_START_TIME()`) which only
 
 ## Priority 5: Code Quality
 
-### 5.1 Split ReplayProcessor.Worker.cs (448 lines)
-Has 4 poll methods with ~60% shared logic. Extract shared read/write/reconnect logic into a helper.
-
-### 5.2 Split MigrationJobViewer.razor (1852 lines)
+### 5.1 Split MigrationJobViewer.razor (1852 lines)
 Extract sub-components: `TableListPanel`, `LogViewer`, `JobActionToolbar`, `ProgressSummary`.
 
-### 5.3 Eliminate remaining partial classes
-- `CassandraClientFactory` (3 files) → individual classes
-- `ReplayProcessor` (2 files) → individual classes
-- `DiskPersistence` (2 files) → individual classes
+### 5.2 Convert MigrationJobContext from static to DI singleton
 
-### 5.4 Remove dead fields
-- `_appId` in `DiskPersistence.cs:18` — assigned but never read
-- `_syncBackLock` in `JobManager.cs:28` — declared but never used
-
-### 5.5 Convert MigrationJobContext from static to DI singleton
-
-### 5.6 Add unit tests
+### 5.3 Add unit tests
 Priority: checkpoint correctness, ExceptionClassifier, Partition linked list, TableDiscovery.
 
-### 5.7 Extract interfaces for testability
+### 5.4 Extract interfaces for testability
 `ICassandraSessionFactory`, `ICassandraQueries` for mocking.
-
----
-
-## File Size Reference (top 10)
-
-| File | Lines | Notes |
-|------|-------|-------|
-| MigrationJobViewer.razor | 1852 | Split candidate |
-| MigrationDetails.razor | 505 | |
-| CassandraClientFactory.cs | 477 | Partial — split candidate |
-| ReplayProcessor.Worker.cs | 448 | Partial — split candidate |
-| DiskPersistence.Logs.cs | 436 | Partial — split candidate |
-| JobManager.cs | 431 | |
-| Index.razor | 420 | |
-| SchemaManager.cs | 355 | |
-| DiskPersistence.cs | 330 | Partial — split candidate |
-| MigrationWorker.cs | 328 | |
