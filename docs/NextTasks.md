@@ -1,70 +1,106 @@
 # Cassandra Migration Tool — Next Tasks
 
-## Code Quality
+## Priority 1: Data Consistency
 
-### 1. Split ReplayProcessor.Worker.cs (448 lines)
-Has 4 poll methods with ~60% shared logic:
-- `PollLoopAsync` — entry point, dispatches to parallel or single
-- `PollLoopParallelAsync` — parallel feed range polling
-- `PollRangeLoopAsync` — per-range poll loop
-- `PollLoopSingleAsync` — single-range poll loop (near-duplicate of PollRangeLoopAsync)
+Silent error swallowing can cause data loss. The job must fail loudly rather than skip rows.
 
-**Action:** Extract shared read/write/reconnect logic into a helper, or unify Single and Range loops with a strategy parameter. Split into `ReplayProcessor.cs` (core) + `ReplayWorker.cs` (poll loop).
+### 1.1 Audit all silent catch blocks
+Review every `catch` in the pipeline and change feed paths. Any catch that swallows an error without failing the job or logging it as a retryable failure is a data consistency risk.
 
-### 2. Split MigrationJobViewer.razor (1852 lines)
-Largest file in the codebase. Mixes table list, log viewer, action toolbar, progress display.
+**Key areas to audit:**
+- `ReplayProcessor.Worker.cs` — poll loops catch exceptions and continue; must track per-row failures
+- `PageWriter.cs` — individual row write failures are counted but the page may still be marked as progressed
+- `DiskPersistence.cs` — save failures could lose checkpoint state silently
 
-**Action:** Extract sub-components: `TableListPanel`, `LogViewer`, `JobActionToolbar`, `ProgressSummary`.
+### 1.2 Fail-fast on persistent errors
+Currently some transient errors are retried but persistent errors (auth failures, schema mismatches, non-existent tables) should fail the job immediately with a clear error message rather than retrying forever.
 
-### 3. Eliminate remaining partial classes
-Still 3 sets of partials:
-- `CassandraClientFactory` (3 files: main + ArmDiscovery + TokenRefresh)
-- `ReplayProcessor` (2 files: main + Worker)
-- `DiskPersistence` (2 files: main + Logs)
+### 1.3 Checkpoint integrity
+- Verify that no checkpoint advances unless ALL rows in the page are confirmed written
+- Ensure resume from checkpoint doesn't skip any rows (test: kill mid-page, resume, verify no gaps)
+- Write validation: after bulk copy completes, optionally run a row count comparison (source vs target)
 
-**Action:** Follow the same pattern used for BulkCopyEngine — extract into individual classes with constructor injection.
+### 1.4 Failed row tracking
+- Capture partition keys of persistently failed rows (currently only counted, not recorded)
+- Provide a "failed rows" report per table so users can manually fix or retry specific rows
+- Consider a dead-letter file per table with the failed row data
 
-### 4. Remove dead fields
+---
+
+## Priority 2: Optimum Resource Utilization
+
+### 2.1 Connection pool tuning
+- Profile actual connection usage per worker — are per-worker sessions over-provisioning?
+- Consider shared connection pools with semaphore throttling as an alternative to per-worker sessions
+- Expose connection pool metrics (active/idle/total) in the progress tracker
+
+### 2.2 Worker auto-scaling
+- Current formula: `CPU × 13 / parallel_tables` — validate this against actual bottlenecks
+- Add adaptive worker count: if source is throttling (429s), reduce workers; if throughput is low, increase
+- Monitor CPU/memory usage and cap workers if the host is saturated
+
+### 2.3 Memory pressure
+- Large pages (5000+ rows) with wide rows can cause GC pressure
+- Consider streaming rows instead of buffering entire pages in `List<object[]>`
+- Profile memory allocation per worker under heavy load
+
+### 2.4 Target write optimization
+- Measure whether `LocalOne` is always optimal or if `Any` would improve throughput
+- Batch small rows where total batch size < 50KB (currently all rows written individually)
+- Concurrent write limit per worker — currently unbounded `Task.WhenAll` over entire page
+
+---
+
+## Priority 3: Online Copy with FFCF (Full Fidelity Change Feed)
+
+Currently uses regular change feed (`COSMOS_CHANGEFEED_START_TIME()`) which only captures inserts and updates. Deletes are NOT replicated. FFCF provides full fidelity including deletes.
+
+### 3.1 FFCF integration
+- Add FFCF mode alongside existing regular change feed
+- Parse FFCF JSON payload to detect operation type (INSERT, UPDATE, DELETE)
+- Generate appropriate CQL: INSERT for inserts/updates, DELETE for deletes
+- Handle FFCF-specific pagination and continuation tokens
+
+### 3.2 Delete replication
+- Map FFCF delete events to `DELETE FROM target WHERE pk = ?` statements
+- Handle range deletes if supported by FFCF
+- Track delete counts separately in progress (inserts vs updates vs deletes)
+
+### 3.3 Schema change handling
+- Detect column additions/removals during online replication
+- Auto-alter target schema to match source changes
+- Pause replication and alert user if incompatible schema change detected
+
+### 3.4 Consistency validation
+- After switching to FFCF, provide a "consistency check" mode that compares row counts and checksums between source and target
+- Detect drift between bulk copy and change feed replay
+
+---
+
+## Code Quality (lower priority)
+
+### 4.1 Split ReplayProcessor.Worker.cs (448 lines)
+Has 4 poll methods with ~60% shared logic. Extract shared read/write/reconnect logic into a helper.
+
+### 4.2 Split MigrationJobViewer.razor (1852 lines)
+Extract sub-components: `TableListPanel`, `LogViewer`, `JobActionToolbar`, `ProgressSummary`.
+
+### 4.3 Eliminate remaining partial classes
+- `CassandraClientFactory` (3 files) → individual classes
+- `ReplayProcessor` (2 files) → individual classes
+- `DiskPersistence` (2 files) → individual classes
+
+### 4.4 Remove dead fields
 - `_appId` in `DiskPersistence.cs:18` — assigned but never read
 - `_syncBackLock` in `JobManager.cs:28` — declared but never used
 
-### 5. MigrationJobContext is still fully static (285 lines)
-Has 31 static members. Should evolve toward instance-based DI — `MigrationContextService` already wraps it but the underlying class is static.
+### 4.5 Convert MigrationJobContext from static to DI singleton
 
-**Action:** Convert to a singleton registered in DI. Replace `MigrationJobContext.X` calls with injected instance.
+### 4.6 Add unit tests
+Priority: checkpoint correctness, ExceptionClassifier, Partition linked list, TableDiscovery.
 
----
-
-## Architecture
-
-### 6. Add unit tests
-No tests exist. Priority test targets:
-- `BulkCopyWorker` — checkpoint correctness (WorkChunk linked list, resume token)
-- `ExceptionClassifier` — concrete type classification
-- `Partition.AddChunkAndTrim` / `GetResumeToken` — linked list edge cases
-- `TableDiscovery` — wildcard expansion, validation
-
-### 7. Add interface for CassandraClientFactory
-Currently a static class. Extract `ICassandraSessionFactory` interface for testability.
-
-### 8. Add interface for CassandraQueries
-Currently a static class. Extract `ICassandraQueries` for mocking in tests.
-
----
-
-## Features
-
-### 9. Validation improvements
-- Pre-migration connectivity check (source + target reachable before starting)
-- Schema compatibility check (column type mismatches between source and target)
-
-### 10. Observability
-- Structured logging (JSON format option for Azure Monitor / Log Analytics)
-- Metrics export (Prometheus/OpenTelemetry for worker counts, throughput, error rates)
-
-### 11. Error recovery
-- Dead letter tracking for persistently failed rows (currently only counted, not captured)
-- Per-row error log with partition key for manual retry
+### 4.7 Extract interfaces for testability
+`ICassandraSessionFactory`, `ICassandraQueries` for mocking.
 
 ---
 
