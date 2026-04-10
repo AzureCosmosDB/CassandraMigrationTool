@@ -11,5 +11,6 @@ namespace CassandraMigrationProcessor.Infrastructure
         public const int MaxTableRetries = 3;
         public const double ProgressCapPercent = 99.9;
         public const int CheckpointIntervalSeconds = 10;
+        public const int MaxReconnectAttempts = 50;
     }
 }

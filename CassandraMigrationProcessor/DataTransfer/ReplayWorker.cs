@@ -22,23 +22,20 @@ namespace CassandraMigrationProcessor.DataTransfer
         private readonly MigrationLog _log;
         private ISession _sourceSession;
         private readonly ISession? _targetSession;
-        private readonly MigrationSettings _config;
-        private readonly MigrationJob _job;
+        private readonly PipelineConfig _pipelineConfig;
         private readonly Func<bool> _isCancelled;
 
         public ReplayWorker(
             MigrationLog log,
             ISession sourceSession,
             ISession? targetSession,
-            MigrationSettings config,
-            MigrationJob job,
+            PipelineConfig pipelineConfig,
             Func<bool> isCancelled)
         {
             _log = log;
             _sourceSession = sourceSession;
             _targetSession = targetSession;
-            _config = config;
-            _job = job;
+            _pipelineConfig = pipelineConfig;
             _isCancelled = isCancelled;
         }
 
@@ -79,19 +76,9 @@ namespace CassandraMigrationProcessor.DataTransfer
         {
             mu.ChangeFeedStartedOn ??= DateTime.UtcNow;
 
-            var columns = SchemaManager.GetTableColumns(
-                _sourceSession, mu.KeyspaceName, mu.TableName);
-            var userColumns = columns
-                .Where(c => !c.Name.StartsWith("system_", StringComparison.OrdinalIgnoreCase))
-                .ToList();
+            var (ps, colNames) = PrepareReplay(mu);
 
-            var (ps, colNames) = CassandraQueries.PrepareInsert(
-                _targetSession!,
-                mu.GetEffectiveTargetKeyspaceName(),
-                mu.GetEffectiveTargetTableName(),
-                userColumns);
-
-            int maxConcurrent = Math.Max(1, _job.MaxFeedRangeParallelism);
+            int maxConcurrent = _pipelineConfig.MaxFeedRangeParallelism;
             var semaphore = new SemaphoreSlim(maxConcurrent);
 
             var rangeTasks = feedRanges.Select(async range =>
@@ -116,17 +103,7 @@ namespace CassandraMigrationProcessor.DataTransfer
         /// </summary>
         private async Task RunSingleAsync(MigrationUnit mu, CancellationToken ct)
         {
-            var columns = SchemaManager.GetTableColumns(
-                _sourceSession, mu.KeyspaceName, mu.TableName);
-            var userColumns = columns
-                .Where(c => !c.Name.StartsWith("system_", StringComparison.OrdinalIgnoreCase))
-                .ToList();
-
-            var (ps, colNames) = CassandraQueries.PrepareInsert(
-                _targetSession!,
-                mu.GetEffectiveTargetKeyspaceName(),
-                mu.GetEffectiveTargetTableName(),
-                userColumns);
+            var (ps, colNames) = PrepareReplay(mu);
 
             mu.ChangeFeedStartedOn ??= DateTime.UtcNow;
 
@@ -147,6 +124,29 @@ namespace CassandraMigrationProcessor.DataTransfer
                 LogType.Info);
         }
 
+        // ─── shared schema setup ────────────────────────────────
+
+        /// <summary>
+        /// Reads table columns from the source, filters out system
+        /// columns, and prepares the INSERT statement on the target.
+        /// </summary>
+        private (PreparedStatement Ps, List<string> ColumnNames) PrepareReplay(MigrationUnit mu)
+        {
+            var columns = SchemaManager.GetTableColumns(
+                _sourceSession, mu.KeyspaceName, mu.TableName);
+            var userColumns = columns
+                .Where(c => !c.Name.StartsWith("system_", StringComparison.OrdinalIgnoreCase))
+                .ToList();
+
+            return CassandraQueries.PrepareInsert(
+                _targetSession!,
+                mu.GetEffectiveTargetKeyspaceName(),
+                mu.GetEffectiveTargetTableName(),
+                userColumns);
+        }
+
+        // ─── poll loop ──────────────────────────────────────────
+
         /// <summary>
         /// Unified poll loop. When <paramref name="feedRange"/> is
         /// non-null the query includes a COSMOS_FEEDRANGE() clause
@@ -163,17 +163,11 @@ namespace CassandraMigrationProcessor.DataTransfer
         {
             try
             {
-                int intervalMs = _config.ChangeFeedPollIntervalMs > 0
-                    ? _config.ChangeFeedPollIntervalMs
-                    : 5000;
-
+                int intervalMs = _pipelineConfig.ChangeFeedPollIntervalMs;
                 int consecutiveErrors = 0;
-                const int MaxReconnectAttempts = 50;
 
-                // --- Continuation token ---
                 byte[]? continuationState = LoadContinuation(mu, feedRange);
 
-                // --- CQL ---
                 string startTime = !string.IsNullOrEmpty(mu.ChangeFeedStartToken)
                     ? mu.ChangeFeedStartToken
                     : DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffZ",
@@ -185,74 +179,16 @@ namespace CassandraMigrationProcessor.DataTransfer
                 {
                     try
                     {
-                        var statement = new SimpleStatement(cql);
-                        statement.SetPageSize(_config.CqlCopyPageSize > 0
-                            ? _config.CqlCopyPageSize
-                            : MigrationDefaults.DefaultPageSize);
-                        statement.SetAutoPage(false);
-
-                        if (continuationState != null)
-                            statement.SetPagingState(continuationState);
-
-                        var rs = await _sourceSession.ExecuteAsync(statement);
-                        continuationState = rs.PagingState;
+                        var (rs, newState) = await ReadPage(cql, continuationState);
+                        continuationState = newState;
 
                         var sw = Stopwatch.StartNew();
-                        int insertCount = 0;
-                        int errorCount = 0;
+                        var (insertCount, errorCount) =
+                            await ReplayRows(rs, ps, colNames, mu, ct);
+                        sw.Stop();
 
-                        int available = rs.GetAvailableWithoutFetching();
-                        int consumed = 0;
-                        foreach (var row in rs)
-                        {
-                            if (consumed >= available) break;
-                            consumed++;
-                            if (ct.IsCancellationRequested
-                                || _isCancelled()) break;
-
-                            try
-                            {
-                                var values = new object[colNames.Count];
-                                for (int i = 0; i < colNames.Count; i++)
-                                    values[i] = row[colNames[i]];
-                                await _targetSession!.ExecuteAsync(ps.Bind(values));
-                                insertCount++;
-                            }
-                            catch (Exception ex)
-                            {
-                                errorCount++;
-                                Interlocked.Increment(ref mu._changeFeedErrors);
-                                MigrationJobContext.AddVerboseLog(
-                                    $"CF apply fail: {ex.Message}");
-                            }
-                        }
-
-                        // --- Stats (Interlocked for both modes) ---
-                        Interlocked.Add(ref mu._changeFeedInsertEvents, insertCount);
-                        Interlocked.Add(ref mu._changeFeedRowsInserted, insertCount);
-                        Interlocked.Add(ref mu._changeFeedUpdatesInLastBatch, insertCount);
-                        mu.ChangeFeedLastChecked = DateTime.UtcNow;
-
-                        if (sw.ElapsedMilliseconds > 0 && insertCount > 0)
-                        {
-                            mu.ChangeFeedAvgWriteLatencyInMS =
-                                (double)sw.ElapsedMilliseconds / insertCount;
-                        }
-
-                        // --- Persist continuation AFTER writes ---
-                        SaveContinuation(mu, feedRange, continuationState);
-
-                        int batchTotal = insertCount;
-                        mu.UpdateParentJob();
-                        MigrationJobContext.SaveMigrationUnit(
-                            mu, batchTotal > 0 || errorCount > 0);
-
-                        if (feedRange == null && (batchTotal > 0 || errorCount > 0))
-                        {
-                            _log.WriteLine(
-                                $"CF {mu.KeyspaceName}.{mu.TableName}: ins={insertCount}, err={errorCount}",
-                                LogType.Debug);
-                        }
+                        UpdateStats(mu, feedRange, insertCount, errorCount,
+                            sw.ElapsedMilliseconds, continuationState);
 
                         consecutiveErrors = 0;
                     }
@@ -268,13 +204,13 @@ namespace CassandraMigrationProcessor.DataTransfer
                             LogType.Warning);
 
                         if (feedRange == null
-                            && consecutiveErrors <= MaxReconnectAttempts
+                            && consecutiveErrors <= MigrationDefaults.MaxReconnectAttempts
                             && ExceptionClassifier.IsTransient(ex))
                         {
                             TryReconnectSource(mu, ref ps, ref colNames);
                         }
 
-                        if (consecutiveErrors > MaxReconnectAttempts)
+                        if (consecutiveErrors > MigrationDefaults.MaxReconnectAttempts)
                         {
                             _log.WriteLine(
                                 $"Change feed giving up after {consecutiveErrors} errors",
@@ -298,6 +234,101 @@ namespace CassandraMigrationProcessor.DataTransfer
                     : $"{mu.KeyspaceName}.{mu.TableName}";
                 Console.Error.WriteLine(
                     $"[CRITICAL] CF {label}: {ex.GetType().Name}: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Execute a single paged query against the source session.
+        /// </summary>
+        private async Task<(RowSet Rows, byte[]? PagingState)> ReadPage(
+            string cql, byte[]? continuationState)
+        {
+            var statement = new SimpleStatement(cql);
+            statement.SetPageSize(_pipelineConfig.PageSize);
+            statement.SetAutoPage(false);
+
+            if (continuationState != null)
+                statement.SetPagingState(continuationState);
+
+            var rs = await _sourceSession.ExecuteAsync(statement);
+            return (rs, rs.PagingState);
+        }
+
+        /// <summary>
+        /// Replay each row from the page to the target cluster.
+        /// Returns (inserted, errors) counts.
+        /// </summary>
+        private async Task<(int InsertCount, int ErrorCount)> ReplayRows(
+            RowSet rs,
+            PreparedStatement ps,
+            List<string> colNames,
+            MigrationUnit mu,
+            CancellationToken ct)
+        {
+            int insertCount = 0;
+            int errorCount = 0;
+            int available = rs.GetAvailableWithoutFetching();
+            int consumed = 0;
+
+            foreach (var row in rs)
+            {
+                if (consumed >= available) break;
+                consumed++;
+                if (ct.IsCancellationRequested || _isCancelled()) break;
+
+                try
+                {
+                    var values = new object[colNames.Count];
+                    for (int i = 0; i < colNames.Count; i++)
+                        values[i] = row[colNames[i]];
+                    await _targetSession!.ExecuteAsync(ps.Bind(values));
+                    insertCount++;
+                }
+                catch (Exception ex)
+                {
+                    errorCount++;
+                    Interlocked.Increment(ref mu._changeFeedErrors);
+                    MigrationJobContext.AddVerboseLog(
+                        $"CF apply fail: {ex.Message}");
+                }
+            }
+
+            return (insertCount, errorCount);
+        }
+
+        /// <summary>
+        /// Update stats, persist continuation, and save the MU.
+        /// </summary>
+        private void UpdateStats(
+            MigrationUnit mu,
+            string? feedRange,
+            int insertCount,
+            int errorCount,
+            long elapsedMs,
+            byte[]? continuationState)
+        {
+            Interlocked.Add(ref mu._changeFeedInsertEvents, insertCount);
+            Interlocked.Add(ref mu._changeFeedRowsInserted, insertCount);
+            Interlocked.Add(ref mu._changeFeedUpdatesInLastBatch, insertCount);
+            mu.ChangeFeedLastChecked = DateTime.UtcNow;
+
+            if (elapsedMs > 0 && insertCount > 0)
+            {
+                mu.ChangeFeedAvgWriteLatencyInMS =
+                    (double)elapsedMs / insertCount;
+            }
+
+            SaveContinuation(mu, feedRange, continuationState);
+
+            mu.UpdateParentJob();
+            MigrationJobContext.SaveMigrationUnit(
+                mu, insertCount > 0 || errorCount > 0);
+
+            if (feedRange == null && (insertCount > 0 || errorCount > 0))
+            {
+                _log.WriteLine(
+                    $"CF {mu.KeyspaceName}.{mu.TableName}: ins={insertCount}, err={errorCount}",
+                    LogType.Debug);
             }
         }
 
@@ -388,19 +419,9 @@ namespace CassandraMigrationProcessor.DataTransfer
                     _sourceSession, "CF old source session");
                 _sourceSession = newSource;
 
-                var columns = SchemaManager.GetTableColumns(
-                    _sourceSession, mu.KeyspaceName, mu.TableName);
-                var userColumns = columns
-                    .Where(c => !c.Name.StartsWith(
-                        "system_", StringComparison.OrdinalIgnoreCase))
-                    .ToList();
-                var newInsert = CassandraQueries.PrepareInsert(
-                    _targetSession!,
-                    mu.GetEffectiveTargetKeyspaceName(),
-                    mu.GetEffectiveTargetTableName(),
-                    userColumns);
-                ps = newInsert.Ps;
-                colNames = newInsert.ColumnNames;
+                var (newPs, newColNames) = PrepareReplay(mu);
+                ps = newPs;
+                colNames = newColNames;
                 return true;
             }
             catch (Exception rex)

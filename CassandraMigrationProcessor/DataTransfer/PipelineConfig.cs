@@ -10,7 +10,7 @@ namespace CassandraMigrationProcessor.DataTransfer
     /// (app config) → MigrationDefaults (compile-time).
     /// Created once per pipeline run, immutable after construction.
     /// </summary>
-    internal record PipelineConfig(
+    public record PipelineConfig(
         int WorkerCount,
         int PageSize,
         int MaxFeedRangeParallelism,
