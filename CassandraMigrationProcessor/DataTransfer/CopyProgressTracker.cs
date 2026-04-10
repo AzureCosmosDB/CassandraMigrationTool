@@ -42,6 +42,7 @@ namespace CassandraMigrationProcessor.DataTransfer
         private int _adaptivePageSize;
 
         // --- MigrationUnit progress (moved from ProgressState / ProgressConfig) ---
+        // Tracker owns progress state updates on this unit (CopyRowsCopied, CopyPercent, chunk stats)
         private readonly MigrationUnit _migrationUnit;
         private readonly int _chunkIndex;
         private readonly double _initialPercent;

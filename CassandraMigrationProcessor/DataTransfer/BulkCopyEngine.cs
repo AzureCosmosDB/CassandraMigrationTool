@@ -20,26 +20,22 @@ namespace CassandraMigrationProcessor.DataTransfer
         private readonly MigrationLog _migrationLog;
         private readonly MigrationJob _migrationJob;
         private readonly PipelineConfig _pipelineConfig;
-        private readonly MigrationWorker _migrationWorker;
         private readonly ISession _source;
         private readonly ISession? _target;
         private readonly CancellationTokenSource _cts;
         private readonly ChangeFeedManager _changeFeedManager;
-        private readonly TokenRefreshManager? _tokenRefreshManager;
 
         public volatile bool ProcessRunning;
 
         public ChangeFeedManager ChangeFeed => _changeFeedManager;
 
         public BulkCopyEngine(MigrationLog log, ISession sourceSession, MigrationSettings config, MigrationJob job,
-            MigrationWorker worker, TokenRefreshManager? tokenRefreshManager = null)
+            TokenRefreshManager? tokenRefreshManager = null)
         {
             _migrationLog = log;
             _source = sourceSession;
             _pipelineConfig = PipelineConfig.Resolve(job, config);
             _migrationJob = job;
-            _migrationWorker = worker;
-            _tokenRefreshManager = tokenRefreshManager;
             _cts = new CancellationTokenSource();
             _target = job.IsSimulatedRun
                 ? null
@@ -73,7 +69,7 @@ namespace CassandraMigrationProcessor.DataTransfer
 
         // ── Job completion ──
 
-        public void StopOfflineOrInvokeChangeFeed()
+        public void StopOfflineOrInvokeChangeFeed(MigrationWorker worker)
         {
             if (!MigrationUtilities.IsOnline(_migrationJob)
                 && MigrationUtilities.IsOfflineJobCompleted(_migrationJob))
@@ -91,7 +87,7 @@ namespace CassandraMigrationProcessor.DataTransfer
             else if (!MigrationJobContext.ControlledPauseRequested)
             {
                 _migrationLog.WriteLine("Invoke RunChangeFeedForAllTables.", LogType.Debug);
-                _changeFeedManager.StartAll(_cts.Token, _migrationWorker);
+                _changeFeedManager.StartAll(_cts.Token, worker);
             }
         }
 

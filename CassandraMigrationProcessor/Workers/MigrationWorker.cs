@@ -102,7 +102,7 @@ namespace CassandraMigrationProcessor.DataTransfer
         {
             _log.WriteLine("All tables copied. Resuming change feed processors.", LogType.Info);
             EnsureSourceSession(job, job.Tables.First().KeyspaceName);
-            _activeProcessor = new BulkCopyEngine(_log, _sourceSession!, config, job, this, _tokenRefreshManager);
+            _activeProcessor = new BulkCopyEngine(_log, _sourceSession!, config, job, _tokenRefreshManager);
 
             foreach (var mub in job.Tables)
             {
@@ -235,7 +235,7 @@ namespace CassandraMigrationProcessor.DataTransfer
         private async Task RunCopyForUnitAsync(MigrationJob job, MigrationSettings config,
             ISession sourceSession, MigrationUnit mu, CancellationToken ct)
         {
-            var processor = new BulkCopyEngine(_log, sourceSession, config, job, this, _tokenRefreshManager);
+            var processor = new BulkCopyEngine(_log, sourceSession, config, job, _tokenRefreshManager);
             _activeProcessors[mu.Id] = processor;
             ct.ThrowIfCancellationRequested();
 
