@@ -18,7 +18,7 @@ namespace CassandraMigrationProcessor.DataTransfer
     internal class BulkCopyEngine : MigrationProcessor
     {
         public BulkCopyEngine(MigrationLog log, ISession sourceSession, MigrationSettings config, MigrationJob job,
-            MigrationWorker? migrationWorker = null)
+            MigrationWorker migrationWorker)
             : base(log, sourceSession, config, job, migrationWorker)
         {
         }
@@ -67,7 +67,7 @@ namespace CassandraMigrationProcessor.DataTransfer
                         if (result == TaskResult.Canceled)
                         {
                             _log.WriteLine($"Copy paused for {context.KeyspaceName}.{context.TableName}[{chunkIndex}].", LogType.Info);
-                            StopProcessing(isPause: true);
+                            PauseProcessing();
                             return TaskResult.Canceled;
                         }
 
@@ -87,7 +87,7 @@ namespace CassandraMigrationProcessor.DataTransfer
                 if (MigrationJobContext.ControlledPauseRequested)
                 {
                     _log.WriteLine("Controlled pause - exiting", LogType.Debug);
-                    StopProcessing(isPause: true);
+                    PauseProcessing();
                     return TaskResult.Success;
                 }
 

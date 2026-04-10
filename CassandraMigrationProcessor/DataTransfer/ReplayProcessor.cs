@@ -47,13 +47,11 @@ namespace CassandraMigrationProcessor.DataTransfer
             set => _executionCancelled = value;
         }
 
-        public ReplayProcessor(MigrationLog MigrationLog, ISession sourceSession, ISession targetSession, MigrationUnitCache muCache,
-            MigrationSettings config,
-            MigrationJob job,
-            bool singleTable = true,
-            MigrationWorker? migrationWorker = null)
+        public ReplayProcessor(MigrationLog log, ISession sourceSession, ISession targetSession, MigrationUnitCache muCache,
+            MigrationSettings config, MigrationJob job,
+            bool singleTable, MigrationWorker? migrationWorker)
         {
-            _log = MigrationLog;
+            _log = log;
             _sourceSession = sourceSession;
             _targetSession = targetSession;
             _muCache = muCache;

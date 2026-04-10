@@ -23,7 +23,7 @@ namespace CassandraMigrationProcessor.DataTransfer
         protected CancellationTokenSource _cancellation;
         protected readonly MigrationLog _log;
         protected readonly MigrationJob _job;
-        protected readonly MigrationWorker? _worker;
+        protected readonly MigrationWorker _worker;
         private ReplayProcessor? _changeFeedProcessor;
         private readonly object _changeFeedLock = new();
 
@@ -32,10 +32,10 @@ namespace CassandraMigrationProcessor.DataTransfer
         public volatile bool ProcessRunning;
         public volatile bool IsChangeFeedRunning;
 
-        protected MigrationProcessor(MigrationLog MigrationLog, ISession sourceSession, MigrationSettings config, MigrationJob job,
-            MigrationWorker? worker = null)
+        protected MigrationProcessor(MigrationLog log, ISession sourceSession, MigrationSettings config, MigrationJob job,
+            MigrationWorker worker)
         {
-            _log = MigrationLog;
+            _log = log;
             _sourceSession = sourceSession;
             _config = config;
             _job = job;
@@ -56,10 +56,23 @@ namespace CassandraMigrationProcessor.DataTransfer
 
         /// <summary>
         /// Gracefully stop the migration processor. Cancels the
-        /// token, updates job status, and optionally marks the
-        /// process as no longer running.
+        /// token and updates job status.
         /// </summary>
-        public virtual void StopProcessing(bool updateStatus = true, bool isPause = false)
+        public virtual void StopProcessing()
+        {
+            StopInternal(updateRunning: true, isPause: false);
+        }
+
+        /// <summary>
+        /// Pause the migration processor. Cancels the token and
+        /// marks the job as paused.
+        /// </summary>
+        public virtual void PauseProcessing()
+        {
+            StopInternal(updateRunning: true, isPause: true);
+        }
+
+        private void StopInternal(bool updateRunning, bool isPause)
         {
             // Cancel first so workers see the signal
             _cancellation?.Cancel();
@@ -80,7 +93,7 @@ namespace CassandraMigrationProcessor.DataTransfer
 
             MigrationJobContext.SaveMigrationJob(_job);
 
-            if (updateStatus)
+            if (updateRunning)
                 ProcessRunning = false;
         }
 
@@ -139,7 +152,7 @@ namespace CassandraMigrationProcessor.DataTransfer
                     var freshSourceSession = CassandraClientFactory.CreateSourceSession(_log, _job, mu.KeyspaceName);
                     _changeFeedProcessor = new ReplayProcessor(_log, freshSourceSession, _targetSession!,
                         MigrationJobContext.MigrationUnitsCache, _config,
-                        _job);
+                        _job, true, null);
                 }
             }
 
