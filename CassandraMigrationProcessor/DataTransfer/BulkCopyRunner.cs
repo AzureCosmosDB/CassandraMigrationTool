@@ -169,61 +169,60 @@ namespace CassandraMigrationProcessor.DataTransfer
 
         private TaskResult Finalize(ExecutionResult execution, PipelineRequest request)
         {
+            execution.Tracker.LogFinal();
+            UpdateMigrationStats(execution, request);
+            LogPipelineSummary(execution, request);
+            return DetermineOutcome(execution.Context, execution.Tracker.TotalFailed);
+        }
+
+        private void UpdateMigrationStats(ExecutionResult execution, PipelineRequest request)
+        {
             var tracker = execution.Tracker;
-            var ctx = execution.Context;
             var mu = request.MigrationUnit;
-            long priorCopied = mu.CopyRowsCopied;
-
-            tracker.LogFinal();
-
-            long written = tracker.TotalCopied;
-            long failed = tracker.TotalFailed;
-            long read = tracker.TotalRead;
-            long sessionWritten = written - priorCopied;
-            double speed = execution.Elapsed.TotalSeconds > 0 ? sessionWritten / execution.Elapsed.TotalSeconds : 0;
-
-            int completedCount;
-            lock (ctx.Ranges.Checkpoints) { completedCount = ctx.Ranges.Completed.Count; }
-            _log.WriteLine($"Pipeline complete for {request.Context.KeyspaceName}.{request.Context.TableName}: " +
-                $"session={sessionWritten:N0} written, {failed:N0} failed | " +
-                $"cumulative={written:N0} | {completedCount}/{request.FeedRanges.Count} ranges | " +
-                $"{execution.Elapsed.TotalSeconds:F1}s ({speed:F0} rows/sec)", LogType.Info);
-
             var chunk = mu.MigrationChunks[request.ChunkIndex];
-            chunk.SourceResultRowCount = written;
-            chunk.TargetInsertedRowCount = written;
-            chunk.TargetFailedRowCount = failed;
-            mu.CopyRowsCopied = written;
-            mu.ActualRowCount = Math.Max(mu.ActualRowCount, read);
+
+            chunk.SourceResultRowCount = tracker.TotalCopied;
+            chunk.TargetInsertedRowCount = tracker.TotalCopied;
+            chunk.TargetFailedRowCount = tracker.TotalFailed;
+            mu.CopyRowsCopied = tracker.TotalCopied;
+            mu.ActualRowCount = Math.Max(mu.ActualRowCount, tracker.TotalRead);
 
             bool allComplete;
-            lock (ctx.Ranges.Checkpoints)
+            lock (execution.Context.Ranges.Checkpoints)
             {
-                allComplete = ctx.Ranges.Completed.Count >= request.FeedRanges.Count;
+                allComplete = execution.Context.Ranges.Completed.Count >= request.FeedRanges.Count;
             }
-            if (chunk.Segments.Count == 0)
-            {
-                chunk.Segments.Add(new Segment
-                {
-                    Id = "0",
-                    IsProcessed = allComplete,
-                    ResultDocCount = written
-                });
-            }
-            else if (allComplete)
-            {
-                foreach (var seg in chunk.Segments)
-                    seg.IsProcessed = true;
-            }
-            MigrationJobContext.SaveMigrationUnit(mu, true);
 
+            if (chunk.Segments.Count == 0)
+                chunk.Segments.Add(new Segment { Id = "0", IsProcessed = allComplete, ResultDocCount = tracker.TotalCopied });
+            else if (allComplete)
+                chunk.Segments.ForEach(s => s.IsProcessed = true);
+
+            MigrationJobContext.SaveMigrationUnit(mu, true);
+        }
+
+        private void LogPipelineSummary(ExecutionResult execution, PipelineRequest request)
+        {
+            long sessionWritten = execution.Tracker.TotalCopied - request.MigrationUnit.CopyRowsCopied;
+            double speed = execution.Elapsed.TotalSeconds > 0 ? sessionWritten / execution.Elapsed.TotalSeconds : 0;
+            int completedCount;
+            lock (execution.Context.Ranges.Checkpoints) { completedCount = execution.Context.Ranges.Completed.Count; }
+
+            _log.WriteLine($"Pipeline complete for {request.Context.KeyspaceName}.{request.Context.TableName}: " +
+                $"session={sessionWritten:N0} written, {execution.Tracker.TotalFailed:N0} failed | " +
+                $"cumulative={execution.Tracker.TotalCopied:N0} | {completedCount}/{request.FeedRanges.Count} ranges | " +
+                $"{execution.Elapsed.TotalSeconds:F1}s ({speed:F0} rows/sec)", LogType.Info);
+        }
+
+        private static TaskResult DetermineOutcome(PipelineContext ctx, long failedCount)
+        {
             if (Volatile.Read(ref ctx.Counters.FatalErrorFlag) != 0)
                 return TaskResult.Abort;
             if (ctx.Counters.WorkerErrors.Any(r => r == TaskResult.Abort))
                 return TaskResult.Abort;
             if (ctx.Counters.WorkerErrors.Any(r => r == TaskResult.Canceled))
                 return TaskResult.Canceled;
-            return failed > 0 ? TaskResult.Retry : TaskResult.Success;
+            return failedCount > 0 ? TaskResult.Retry : TaskResult.Success;
         }
 
         // ── Config resolution ──
