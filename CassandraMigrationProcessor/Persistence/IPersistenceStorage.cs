@@ -19,7 +19,7 @@ namespace CassandraMigrationProcessor.Persistence
         bool TestConnection();
         bool IsInitialized { get; }
         LogBucket ReadLogs(string id, out string fileName);
-        byte[] DownloadLogsAsJsonBytes(
+        byte[] ExportLogsAsBytes(
             string id, int topEntries = 20,
             int bottomEntries = 230);
         void PushLogEntry(string jobId, LogObject logObj);

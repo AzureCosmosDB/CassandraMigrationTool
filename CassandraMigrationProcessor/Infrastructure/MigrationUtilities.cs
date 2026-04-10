@@ -80,6 +80,15 @@ namespace CassandraMigrationProcessor.Infrastructure
             }
         }
 
+        public static void SafeExecuteVoid(Action action, string operation)
+        {
+            try { action(); }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[WARN] {operation}: {ex.Message}");
+            }
+        }
+
         #endregion
 
         public static string GenerateMigrationUnitId(

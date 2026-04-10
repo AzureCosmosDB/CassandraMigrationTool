@@ -85,13 +85,7 @@ namespace CassandraMigrationProcessor.CassandraDriver
         /// </summary>
         public static string AcquireAadToken()
         {
-            var credential =
-                new Azure.Identity.DefaultAzureCredential();
-            var tokenResult = credential.GetToken(
-                new Azure.Core.TokenRequestContext(
-                    new[] { "https://cosmos.azure.com/.default" }));
-
-            return tokenResult.Token;
+            return AcquireTokenInternal().Token;
         }
 
         /// <summary>
@@ -101,15 +95,17 @@ namespace CassandraMigrationProcessor.CassandraDriver
         /// </summary>
         public string GetFreshAadToken()
         {
-            var credential =
-                new Azure.Identity.DefaultAzureCredential();
-            var tokenResult = credential.GetToken(
+            var tokenResult = AcquireTokenInternal();
+            _tokenExpiresAt = tokenResult.ExpiresOn.UtcDateTime;
+            return tokenResult.Token;
+        }
+
+        private static Azure.Core.AccessToken AcquireTokenInternal()
+        {
+            var credential = new Azure.Identity.DefaultAzureCredential();
+            return credential.GetToken(
                 new Azure.Core.TokenRequestContext(
                     new[] { "https://cosmos.azure.com/.default" }));
-
-            _tokenExpiresAt = tokenResult.ExpiresOn.UtcDateTime;
-
-            return tokenResult.Token;
         }
 
         /// <summary>

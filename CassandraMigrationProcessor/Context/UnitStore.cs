@@ -10,7 +10,7 @@ namespace CassandraMigrationProcessor.Context
         private static readonly object _writeMULock = new object();
 
         public static MigrationUnit GetUnit(
-            string key, string jobId = null)
+            string unitId, string jobId = null)
         {
             if (string.IsNullOrEmpty(jobId)
                 && MigrationJobContext.CurrentlyActiveJob != null)
@@ -19,10 +19,10 @@ namespace CassandraMigrationProcessor.Context
             }
 
             if (MigrationJobContext.MigrationUnitsCache == null)
-                return GetFromStorage(jobId, key);
+                return GetFromStorage(jobId, unitId);
             else
                 return MigrationJobContext.MigrationUnitsCache
-                    .GetMigrationUnit(key, jobId);
+                    .GetMigrationUnit(unitId, jobId);
         }
 
         public static bool SaveUnit(

@@ -68,14 +68,6 @@ namespace CassandraMigrationProcessor.CassandraDriver
         }
 
         /// <summary>
-        /// List all keyspaces (excluding system keyspaces).
-        /// </summary>
-        public static List<string> ListKeyspaces(ISession session)
-        {
-            return ListKeyspacesAsync(session).GetAwaiter().GetResult();
-        }
-
-        /// <summary>
         /// List all tables in a keyspace.
         /// </summary>
         public static async Task<List<string>> ListTablesAsync(ISession session, string keyspace)
@@ -87,14 +79,6 @@ namespace CassandraMigrationProcessor.CassandraDriver
                 .Select(r => r.GetValue<string>("table_name"))
                 .OrderBy(t => t)
                 .ToList();
-        }
-
-        /// <summary>
-        /// List all tables in a keyspace.
-        /// </summary>
-        public static List<string> ListTables(ISession session, string keyspace)
-        {
-            return ListTablesAsync(session, keyspace).GetAwaiter().GetResult();
         }
 
         /// <summary>
@@ -135,29 +119,11 @@ namespace CassandraMigrationProcessor.CassandraDriver
         }
 
         /// <summary>
-        /// Get the row count of a table. Tries system
-        /// size_estimates first (fast, approximate), then
-        /// falls back to COUNT(*) with a short timeout.
-        /// </summary>
-        public static long GetRowCount(ISession session, string keyspace, string table)
-        {
-            return GetRowCountAsync(session, keyspace, table).GetAwaiter().GetResult();
-        }
-
-        /// <summary>
         /// Truncate a table on the target.
         /// </summary>
         public static async Task TruncateTableAsync(ISession session, string keyspace, string table)
         {
             await session.ExecuteAsync(new SimpleStatement($"TRUNCATE \"{keyspace}\".\"{table}\""));
-        }
-
-        /// <summary>
-        /// Truncate a table on the target.
-        /// </summary>
-        public static void TruncateTable(ISession session, string keyspace, string table)
-        {
-            TruncateTableAsync(session, keyspace, table).GetAwaiter().GetResult();
         }
 
         /// <summary>
@@ -190,15 +156,6 @@ namespace CassandraMigrationProcessor.CassandraDriver
         }
 
         /// <summary>
-        /// Get feed ranges (physical partitions) for a table
-        /// from the system_cosmos.feedranges table.
-        /// </summary>
-        public static List<string> GetFeedRanges(ISession session, string keyspace, string table)
-        {
-            return GetFeedRangesAsync(session, keyspace, table).GetAwaiter().GetResult();
-        }
-
-        /// <summary>
         /// Build a prepared INSERT statement for a table.
         /// Returns the prepared statement and ordered column
         /// names.
@@ -224,6 +181,7 @@ namespace CassandraMigrationProcessor.CassandraDriver
         /// <summary>
         /// Build a prepared INSERT statement for a table.
         /// </summary>
+        // Sync required: called from constructor (PageWriter)
         public static (PreparedStatement Ps, List<string> ColumnNames)
             PrepareInsert(ISession session, string keyspace, string table,
                 List<(string Name, string Type, string Kind, string ClusteringOrder, int Position)> columns)

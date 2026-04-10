@@ -48,7 +48,7 @@ namespace CassandraMigrationProcessor.DataTransfer
         /// </summary>
         public async Task RunAsync(MigrationUnit mu, CancellationToken ct)
         {
-            var feedRanges = CassandraQueries.GetFeedRanges(
+            var feedRanges = await CassandraQueries.GetFeedRangesAsync(
                 _sourceSession, mu.KeyspaceName, mu.TableName);
 
             _log.WriteLine(
@@ -79,7 +79,7 @@ namespace CassandraMigrationProcessor.DataTransfer
         {
             mu.ChangeFeedStartedOn ??= DateTime.UtcNow;
 
-            var (ps, colNames) = PrepareReplay(mu);
+            var (ps, colNames) = await PrepareReplayAsync(mu);
 
             int maxConcurrent = _pipelineConfig.MaxFeedRangeParallelism;
             var semaphore = new SemaphoreSlim(maxConcurrent);
@@ -106,7 +106,7 @@ namespace CassandraMigrationProcessor.DataTransfer
         /// </summary>
         private async Task RunSingleAsync(MigrationUnit mu, CancellationToken ct)
         {
-            var (ps, colNames) = PrepareReplay(mu);
+            var (ps, colNames) = await PrepareReplayAsync(mu);
 
             mu.ChangeFeedStartedOn ??= DateTime.UtcNow;
 
@@ -133,15 +133,15 @@ namespace CassandraMigrationProcessor.DataTransfer
         /// Reads table columns from the source, filters out system
         /// columns, and prepares the INSERT statement on the target.
         /// </summary>
-        private (PreparedStatement Ps, List<string> ColumnNames) PrepareReplay(MigrationUnit mu)
+        private async Task<(PreparedStatement Ps, List<string> ColumnNames)> PrepareReplayAsync(MigrationUnit mu)
         {
-            var columns = SchemaManager.GetTableColumns(
+            var columns = await SchemaManager.GetTableColumnsAsync(
                 _sourceSession, mu.KeyspaceName, mu.TableName);
             var userColumns = columns
                 .Where(c => !c.Name.StartsWith("system_", StringComparison.OrdinalIgnoreCase))
                 .ToList();
 
-            return CassandraQueries.PrepareInsert(
+            return await CassandraQueries.PrepareInsertAsync(
                 _targetSession!,
                 mu.GetEffectiveTargetKeyspaceName(),
                 mu.GetEffectiveTargetTableName(),
@@ -210,7 +210,9 @@ namespace CassandraMigrationProcessor.DataTransfer
                             && consecutiveErrors <= MigrationDefaults.MaxReconnectAttempts
                             && ExceptionClassifier.IsTransient(ex))
                         {
-                            TryReconnectSource(mu, ref ps, ref colNames);
+                            var reconnect = await TryReconnectSourceAsync(mu, ps, colNames);
+                            ps = reconnect.Ps;
+                            colNames = reconnect.ColNames;
                         }
 
                         if (consecutiveErrors > MigrationDefaults.MaxReconnectAttempts)
@@ -396,10 +398,10 @@ namespace CassandraMigrationProcessor.DataTransfer
             catch (OperationCanceledException) { return false; }
         }
 
-        private bool TryReconnectSource(
+        private async Task<(bool Success, PreparedStatement Ps, List<string> ColNames)> TryReconnectSourceAsync(
             MigrationUnit mu,
-            ref PreparedStatement ps,
-            ref List<string> colNames)
+            PreparedStatement ps,
+            List<string> colNames)
         {
             try
             {
@@ -417,16 +419,14 @@ namespace CassandraMigrationProcessor.DataTransfer
                     _sourceSession, "CF old source session");
                 _sourceSession = newSource;
 
-                var (newPs, newColNames) = PrepareReplay(mu);
-                ps = newPs;
-                colNames = newColNames;
-                return true;
+                var (newPs, newColNames) = await PrepareReplayAsync(mu);
+                return (true, newPs, newColNames);
             }
             catch (Exception rex)
             {
                 _log.WriteLine(
                     $"CF reconnect failed: {rex.Message}", LogType.Warning);
-                return false;
+                return (false, ps, colNames);
             }
         }
     }

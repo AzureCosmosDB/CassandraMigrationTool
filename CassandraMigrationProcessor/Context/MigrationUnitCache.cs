@@ -11,21 +11,21 @@ namespace CassandraMigrationProcessor.Context
 
         private static string BuildCacheKey(string migrationUnitId, string jobId) => $"{jobId}::{migrationUnitId}";
 
-        public MigrationUnit GetMigrationUnit(string migrationUnitId, string JobId = null)
+        public MigrationUnit GetMigrationUnit(string migrationUnitId, string jobId = null)
         {
-            if (string.IsNullOrEmpty(JobId))
+            if (string.IsNullOrEmpty(jobId))
             {
-                JobId = MigrationJobContext.CurrentlyActiveJob?.Id;
-                if (string.IsNullOrEmpty(JobId))
+                jobId = MigrationJobContext.CurrentlyActiveJob?.Id;
+                if (string.IsNullOrEmpty(jobId))
                     return null;
             }
 
-            var cacheKey = BuildCacheKey(migrationUnitId, JobId);
+            var cacheKey = BuildCacheKey(migrationUnitId, jobId);
 
             if (_migrationUnits.TryGetValue(cacheKey, out MigrationUnit? cachedMigrationUnit))
                 return cachedMigrationUnit;
 
-            var mu = MigrationJobContext.GetMigrationUnitFromStorage(JobId, migrationUnitId);
+            var mu = MigrationJobContext.GetMigrationUnitFromStorage(jobId, migrationUnitId);
             if (mu != null)
                 _migrationUnits[cacheKey] = mu;
 

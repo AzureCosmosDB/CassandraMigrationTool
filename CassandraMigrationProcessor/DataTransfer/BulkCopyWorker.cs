@@ -87,7 +87,7 @@ namespace CassandraMigrationProcessor.DataTransfer
                         }
 
                         SaveCheckpoint(partition, ctx);
-                        ctx.Tracker.RangeCompleted(partition.FeedRange, TaskResult.Retry);
+                        ctx.Tracker.IncrementCompletedRanges();
                         ctx.PartitionPool.Writer.TryComplete();
                     }
                     finally
@@ -135,7 +135,7 @@ namespace CassandraMigrationProcessor.DataTransfer
                 ctx.Ranges.Checkpoints.Remove(partition.FeedRange);
                 ctx.Ranges.Completed.Add(partition.FeedRange);
             }
-            ctx.Tracker.RangeCompleted(partition.FeedRange, TaskResult.Success);
+            ctx.Tracker.IncrementCompletedRanges();
             if (ctx.Ranges.Completed.Count >= ctx.Ranges.FeedRanges.Count)
                 ctx.PartitionPool.Writer.TryComplete();
         }

@@ -110,7 +110,7 @@ namespace CassandraMigrationProcessor.DataTransfer
                     continue;
                 var mu = MigrationJobContext.GetMigrationUnit(mub.Id);
                 if (mu != null)
-                    _activeProcessor.ChangeFeed.AddTable(mu, CancellationToken.None);
+                    await _activeProcessor.ChangeFeed.AddTable(mu, CancellationToken.None);
             }
 
             while (!cancellationToken.IsCancellationRequested && !MigrationJobContext.ControlledPauseRequested)
@@ -315,14 +315,14 @@ namespace CassandraMigrationProcessor.DataTransfer
             CleanupSession();
         }
 
-        public static List<MigrationUnit> DiscoverTables(MigrationLog migrationLog, MigrationJob job)
+        public static async Task<List<MigrationUnit>> DiscoverTablesAsync(MigrationLog migrationLog, MigrationJob job)
         {
             var result = new List<MigrationUnit>();
 
             using (var session = CassandraClientFactory.CreateSourceSession(migrationLog, job, "system"))
             {
-                foreach (var ks in CassandraQueries.ListKeyspaces(session))
-                    foreach (var tbl in CassandraQueries.ListTables(session, ks))
+                foreach (var ks in await CassandraQueries.ListKeyspacesAsync(session))
+                    foreach (var tbl in await CassandraQueries.ListTablesAsync(session, ks))
                         result.Add(new MigrationUnit(job, ks, tbl, new List<MigrationChunk>()));
             }
 

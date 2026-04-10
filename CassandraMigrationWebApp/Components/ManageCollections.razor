@@ -275,7 +275,7 @@
                 return;
             }
 
-            Tuple<bool, string, string> retValue = TableDiscovery.ValidateNamespaceFormat(newCollection, MigrationJob.JobType);
+            Tuple<bool, string, string> retValue = TableDiscovery.ValidateNamespaceFormat(newCollection);
             if (!retValue.Item1)
             {
                 errorMessage = retValue.Item3; // Use Item3 for error message

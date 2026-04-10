@@ -157,7 +157,7 @@ namespace CassandraMigrationProcessor.DataTransfer
                 tracker);
 
             _log.WriteLine($"Launching {workerCount} workers for {ctx0.KeyspaceName}.{ctx0.TableName} ({seed.PendingCount} feed ranges, page size={pageSize})...", LogType.Info);
-            using var pool = new WorkerPool(_log, workerCount, _ct);
+            using var pool = new WorkerPool(_log, workerCount);
             pool.Start(workerId => new BulkCopyWorker(_log, _ct, workerId, pageSize).RunAsync(ctx));
             await pool.WaitForCompletionAsync();
             ctx.PartitionPool.Writer.TryComplete();
@@ -170,35 +170,9 @@ namespace CassandraMigrationProcessor.DataTransfer
         private TaskResult Finalize(ExecutionResult execution, PipelineRequest request)
         {
             execution.Tracker.LogFinal();
-            UpdateMigrationStats(execution, request);
+            execution.Tracker.UpdateMigrationUnit();
             LogPipelineSummary(execution, request);
-            return DetermineOutcome(execution.Context, execution.Tracker.TotalFailed);
-        }
-
-        private void UpdateMigrationStats(ExecutionResult execution, PipelineRequest request)
-        {
-            var tracker = execution.Tracker;
-            var mu = request.MigrationUnit;
-            var chunk = mu.MigrationChunks[request.ChunkIndex];
-
-            chunk.SourceResultRowCount = tracker.TotalCopied;
-            chunk.TargetInsertedRowCount = tracker.TotalCopied;
-            chunk.TargetFailedRowCount = tracker.TotalFailed;
-            mu.CopyRowsCopied = tracker.TotalCopied;
-            mu.ActualRowCount = Math.Max(mu.ActualRowCount, tracker.TotalRead);
-
-            bool allComplete;
-            lock (execution.Context.Ranges.Checkpoints)
-            {
-                allComplete = execution.Context.Ranges.Completed.Count >= request.FeedRanges.Count;
-            }
-
-            if (chunk.Segments.Count == 0)
-                chunk.Segments.Add(new Segment { Id = "0", IsProcessed = allComplete, ResultRowCount = tracker.TotalCopied });
-            else if (allComplete)
-                chunk.Segments.ForEach(s => s.IsProcessed = true);
-
-            MigrationJobContext.SaveMigrationUnit(mu, true);
+            return DetermineOutcome(execution.Context.Counters, execution.Tracker.TotalFailed);
         }
 
         private void LogPipelineSummary(ExecutionResult execution, PipelineRequest request)
@@ -214,13 +188,13 @@ namespace CassandraMigrationProcessor.DataTransfer
                 $"{execution.Elapsed.TotalSeconds:F1}s ({speed:F0} rows/sec)", LogType.Info);
         }
 
-        private static TaskResult DetermineOutcome(PipelineContext ctx, long failedCount)
+        private static TaskResult DetermineOutcome(PipelineCounters counters, long failedCount)
         {
-            if (Volatile.Read(ref ctx.Counters.FatalErrorFlag) != 0)
+            if (Volatile.Read(ref counters.FatalErrorFlag) != 0)
                 return TaskResult.Abort;
-            if (ctx.Counters.WorkerErrors.Any(r => r == TaskResult.Abort))
+            if (counters.WorkerErrors.Any(r => r == TaskResult.Abort))
                 return TaskResult.Abort;
-            if (ctx.Counters.WorkerErrors.Any(r => r == TaskResult.Canceled))
+            if (counters.WorkerErrors.Any(r => r == TaskResult.Canceled))
                 return TaskResult.Canceled;
             return failedCount > 0 ? TaskResult.Retry : TaskResult.Success;
         }

@@ -80,27 +80,6 @@ namespace CassandraMigrationProcessor.Persistence
         /// Executes an action and returns a fallback value on failure, logging the error.
         /// Consolidates the repeated try/catch-log-return pattern across persistence methods.
         /// </summary>
-        private T SafeExecute<T>(Func<T> action, T fallback, string operation)
-        {
-            try { return action(); }
-            catch (Exception ex)
-            {
-                MigrationUtilities.LogToFile($"[DiskPersistence] {operation}: {ex.Message}", "DiskPersistence.txt");
-                return fallback;
-            }
-        }
-
-        /// <summary>
-        /// Executes a void action, logging any error without re-throwing.
-        /// </summary>
-        private void SafeExecuteVoid(Action action, string operation)
-        {
-            try { action(); }
-            catch (Exception ex)
-            {
-                MigrationUtilities.LogToFile($"[DiskPersistence] {operation}: {ex.Message}", "DiskPersistence.txt");
-            }
-        }
 
         /// <summary>
         /// Gets the file path for a document id.
@@ -191,7 +170,7 @@ namespace CassandraMigrationProcessor.Persistence
             if (!id.EndsWith(FILE_EXTENSION))
                 throw new ArgumentException($"ID must end with {FILE_EXTENSION} extension", nameof(id));
 
-            return SafeExecute(() =>
+            return MigrationUtilities.SafeExecute(() =>
             {
                 var filePath = GetFilePath(id);
                 return FileSystem.WriteAllText(filePath, jsonContent);
@@ -213,7 +192,7 @@ namespace CassandraMigrationProcessor.Persistence
             if (!id.EndsWith(FILE_EXTENSION))
                 throw new ArgumentException($"ID must end with {FILE_EXTENSION} extension", nameof(id));
 
-            return SafeExecute<string?>(() =>
+            return MigrationUtilities.SafeExecute<string?>(() =>
             {
                 var filePath = GetFilePath(id);
                 return FileSystem.ReadAllText(filePath);
@@ -235,7 +214,7 @@ namespace CassandraMigrationProcessor.Persistence
             if (!id.EndsWith(FILE_EXTENSION))
                 throw new ArgumentException($"ID must end with {FILE_EXTENSION} extension", nameof(id));
 
-            return SafeExecute(() =>
+            return MigrationUtilities.SafeExecute(() =>
             {
                 var filePath = GetFilePath(id);
                 return FileSystem.Exists(filePath);
@@ -256,7 +235,7 @@ namespace CassandraMigrationProcessor.Persistence
             if (string.IsNullOrWhiteSpace(id))
                 throw new ArgumentException("ID cannot be null or empty", nameof(id));
 
-            return SafeExecute(() =>
+            return MigrationUtilities.SafeExecute(() =>
             {
                 if (id.EndsWith(FILE_EXTENSION))
                 {
@@ -285,7 +264,7 @@ namespace CassandraMigrationProcessor.Persistence
         {
             EnsureInitialized();
 
-            return SafeExecute(() =>
+            return MigrationUtilities.SafeExecute(() =>
             {
                 var ids = new List<string>();
 
@@ -322,7 +301,7 @@ namespace CassandraMigrationProcessor.Persistence
             if (!_isInitialized || string.IsNullOrEmpty(_storagePath))
                 return false;
 
-            return SafeExecute(() =>
+            return MigrationUtilities.SafeExecute(() =>
             {
                 if (FileSystem.UseBlobStorage)
                     return true;
@@ -346,8 +325,8 @@ namespace CassandraMigrationProcessor.Persistence
         public byte[] DownloadLogsPaginated(string id, int skip, int take)
             => EnsureLogPersistence().DownloadLogsPaginated(id, skip, take);
 
-        public byte[] DownloadLogsAsJsonBytes(string id, int topEntries = 20, int bottomEntries = 230)
-            => EnsureLogPersistence().DownloadLogsAsJsonBytes(id, topEntries, bottomEntries);
+        public byte[] ExportLogsAsBytes(string id, int topEntries = 20, int bottomEntries = 230)
+            => EnsureLogPersistence().ExportLogsAsBytes(id, topEntries, bottomEntries);
 
         public LogBucket ReadLogs(string id, out string fileName)
             => EnsureLogPersistence().ReadLogs(id, out fileName);

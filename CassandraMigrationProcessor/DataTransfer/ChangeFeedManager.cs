@@ -5,6 +5,7 @@ using CassandraMigrationProcessor.CassandraDriver;
 using CassandraMigrationProcessor.Models;
 using System;
 using System.Threading;
+using System.Threading.Tasks;
 
 namespace CassandraMigrationProcessor.DataTransfer
 {
@@ -21,7 +22,7 @@ namespace CassandraMigrationProcessor.DataTransfer
         private readonly ISession _targetSession;
         private readonly TokenRefreshManager? _tokenRefreshManager;
         private ReplayProcessor? _replayProcessor;
-        private readonly object _lock = new();
+        private readonly SemaphoreSlim _lock = new(1, 1);
 
         public volatile bool IsRunning;
 
@@ -44,21 +45,19 @@ namespace CassandraMigrationProcessor.DataTransfer
 
         public void Dispose() { Stop(); }
 
-        public bool AddTable(MigrationUnit mu, CancellationToken cancellationToken)
+        public async Task<bool> AddTable(MigrationUnit mu, CancellationToken cancellationToken)
         {
             if (!MigrationUtilities.IsOnline(_job)) return false;
 
-            lock (_lock)
+            await _lock.WaitAsync(cancellationToken);
+            try
             {
-                SchemaManager.EnsureKeyspaceExists(_targetSession, mu.GetEffectiveTargetKeyspaceName());
-
-                if (_replayProcessor == null)
-                {
-                    var source = CassandraClientFactory.CreateSourceSession(_log, _job, mu.KeyspaceName, _tokenRefreshManager);
-                    _replayProcessor = new ReplayProcessor(_log, source, _targetSession,
-                        MigrationJobContext.MigrationUnitsCache, _pipelineConfig,
-                        _job, true, null, _tokenRefreshManager);
-                }
+                await SchemaManager.EnsureKeyspaceExistsAsync(_targetSession, mu.GetEffectiveTargetKeyspaceName());
+                EnsureReplayProcessor(mu.KeyspaceName, null, true);
+            }
+            finally
+            {
+                _lock.Release();
             }
 
             _log.WriteLine($"Adding {mu.KeyspaceName}.{mu.TableName} to change feed queue", LogType.Debug);
@@ -76,17 +75,22 @@ namespace CassandraMigrationProcessor.DataTransfer
 
             IsRunning = true;
 
-            if (_replayProcessor == null)
-            {
-                var source = CassandraClientFactory.CreateSourceSession(_log, _job, string.Empty, _tokenRefreshManager);
-                _replayProcessor = new ReplayProcessor(_log, source, _targetSession,
-                    MigrationJobContext.MigrationUnitsCache,
-                    _pipelineConfig, _job, false, worker, _tokenRefreshManager);
-            }
+            EnsureReplayProcessor(string.Empty, worker, false);
 
             _replayProcessor?.RunChangeFeedForAllTables(cancellationToken);
 
             return true;
+        }
+
+        private void EnsureReplayProcessor(string keyspace, MigrationWorker? worker, bool singleTable)
+        {
+            if (_replayProcessor == null)
+            {
+                var source = CassandraClientFactory.CreateSourceSession(_log, _job, keyspace, _tokenRefreshManager);
+                _replayProcessor = new ReplayProcessor(_log, source, _targetSession,
+                    MigrationJobContext.MigrationUnitsCache, _pipelineConfig,
+                    _job, singleTable, worker, _tokenRefreshManager);
+            }
         }
     }
 }

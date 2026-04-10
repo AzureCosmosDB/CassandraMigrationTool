@@ -61,15 +61,6 @@ namespace CassandraMigrationProcessor.CassandraDriver
         }
 
         /// <summary>
-        /// Ensure target keyspace exists. Creates with
-        /// SimpleStrategy replication if missing.
-        /// </summary>
-        public static void EnsureKeyspaceExists(ISession session, string keyspace, int replicationFactor = 1)
-        {
-            EnsureKeyspaceExistsAsync(session, keyspace, replicationFactor).GetAwaiter().GetResult();
-        }
-
-        /// <summary>
         /// Check if a table exists and is accessible.
         /// Probes actual data (not just metadata) because
         /// Cosmos DB can return metadata for ghost tables
@@ -112,14 +103,6 @@ namespace CassandraMigrationProcessor.CassandraDriver
         }
 
         /// <summary>
-        /// Check if a table exists in the given keyspace.
-        /// </summary>
-        public static bool TableExists(ISession session, string keyspace, string table)
-        {
-            return TableExistsAsync(session, keyspace, table).GetAwaiter().GetResult();
-        }
-
-        /// <summary>
         /// Get column metadata for a table.
         /// Returns list of (columnName, cqlType, kind,
         /// clusteringOrder, position).
@@ -144,15 +127,6 @@ namespace CassandraMigrationProcessor.CassandraDriver
                 ClusteringOrder: r.GetValue<string>("clustering_order") ?? "none",
                 Position: r.GetValue<int>("position")
             )).ToList();
-        }
-
-        /// <summary>
-        /// Get column metadata for a table.
-        /// </summary>
-        public static List<(string Name, string Type, string Kind, string ClusteringOrder, int Position)>
-            GetTableColumns(ISession session, string keyspace, string table)
-        {
-            return GetTableColumnsAsync(session, keyspace, table).GetAwaiter().GetResult();
         }
 
         /// <summary>
@@ -243,18 +217,6 @@ namespace CassandraMigrationProcessor.CassandraDriver
                 clusteringOrder;
 
             await targetSession.ExecuteAsync(new SimpleStatement(cql));
-        }
-
-        /// <summary>
-        /// Create a table on the target using the source schema.
-        /// </summary>
-        public static void CreateTableFromSource(ISession sourceSession, ISession targetSession, string sourceKeyspace,
-            string sourceTable,
-            string targetKeyspace,
-            string targetTable)
-        {
-            CreateTableFromSourceAsync(sourceSession, targetSession, sourceKeyspace, sourceTable,
-                targetKeyspace, targetTable).GetAwaiter().GetResult();
         }
 
         /// <summary>

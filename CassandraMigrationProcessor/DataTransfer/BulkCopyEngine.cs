@@ -175,7 +175,7 @@ namespace CassandraMigrationProcessor.DataTransfer
                     migrationUnit.CopyComplete = true;
                     MigrationUnitMapper.UpdateParentJob(migrationUnit);
 
-                    _changeFeedManager.AddTable(migrationUnit, _cts.Token);
+                    await _changeFeedManager.AddTable(migrationUnit, _cts.Token);
                     MigrationJobContext.SaveMigrationUnit(migrationUnit, true);
 
                     if (!MigrationUtilities.IsOnline(_migrationJob))

@@ -24,31 +24,6 @@ namespace CassandraMigrationProcessor.Persistence
             _storagePath = storagePath;
         }
 
-        /// <summary>
-        /// Executes an action and returns a fallback value on failure, logging the error.
-        /// </summary>
-        private T SafeExecute<T>(Func<T> action, T fallback, string operation)
-        {
-            try { return action(); }
-            catch (Exception ex)
-            {
-                MigrationUtilities.LogToFile($"[LogPersistence] {operation}: {ex.Message}", "DiskPersistence.txt");
-                return fallback;
-            }
-        }
-
-        /// <summary>
-        /// Executes a void action, logging any error without re-throwing.
-        /// </summary>
-        private void SafeExecuteVoid(Action action, string operation)
-        {
-            try { action(); }
-            catch (Exception ex)
-            {
-                MigrationUtilities.LogToFile($"[LogPersistence] {operation}: {ex.Message}", "DiskPersistence.txt");
-            }
-        }
-
         public void PushLogEntry(string jobId, LogObject logObject)
         {
             if (string.IsNullOrWhiteSpace(jobId))
@@ -57,7 +32,7 @@ namespace CassandraMigrationProcessor.Persistence
             if (logObject == null)
                 throw new ArgumentNullException(nameof(logObject));
 
-            SafeExecuteVoid(() =>
+            MigrationUtilities.SafeExecuteVoid(() =>
             {
                 var folder = Path.Combine(_storagePath, "migrationlogs");
                 var binPath = Path.Combine(folder, $"{jobId}.bin");
@@ -83,7 +58,7 @@ namespace CassandraMigrationProcessor.Persistence
             if (!FileSystem.Exists(binPath))
                 return 0;
 
-            return SafeExecute(() =>
+            return MigrationUtilities.SafeExecute(() =>
             {
                 int count = 0;
                 using var fs = FileSystem.OpenReadShared(binPath);
@@ -128,7 +103,7 @@ namespace CassandraMigrationProcessor.Persistence
             if (!FileSystem.Exists(binPath))
                 return Array.Empty<byte>();
 
-            SafeExecuteVoid(() =>
+            MigrationUtilities.SafeExecuteVoid(() =>
             {
                 using var fs = FileSystem.OpenReadShared(binPath);
                 if (fs == null) return;
@@ -185,7 +160,7 @@ namespace CassandraMigrationProcessor.Persistence
             return Encoding.UTF8.GetBytes(sb.ToString());
         }
 
-        public byte[] DownloadLogsAsJsonBytes(string id, int topEntries = 20, int bottomEntries = 230)
+        public byte[] ExportLogsAsBytes(string id, int topEntries = 20, int bottomEntries = 230)
         {
             var folder = Path.Combine(_storagePath, "migrationlogs");
             var binPath = Path.Combine(folder, $"{id}.bin");
@@ -240,7 +215,7 @@ namespace CassandraMigrationProcessor.Persistence
             if (string.IsNullOrWhiteSpace(jobId))
                 throw new ArgumentException("Job ID cannot be null or empty", nameof(jobId));
 
-            return SafeExecute(() =>
+            return MigrationUtilities.SafeExecute(() =>
             {
                 var folder = Path.Combine(_storagePath!, "migrationlogs");
                 var binPath = Path.Combine(folder, $"{jobId}.bin");
@@ -321,7 +296,7 @@ namespace CassandraMigrationProcessor.Persistence
             if (!FileSystem.Exists(binPath))
                 return logBucket;
 
-            SafeExecuteVoid(() =>
+            MigrationUtilities.SafeExecuteVoid(() =>
             {
                 using var fs = FileSystem.OpenReadShared(binPath);
                 if (fs == null) return;
@@ -398,7 +373,7 @@ namespace CassandraMigrationProcessor.Persistence
         {
             const int MaxReasonableLength = 1_000_000;
 
-            return SafeExecute<LogObject?>(() =>
+            return MigrationUtilities.SafeExecute<LogObject?>(() =>
             {
                 if (br.BaseStream.Position + 4 > br.BaseStream.Length)
                     return null;

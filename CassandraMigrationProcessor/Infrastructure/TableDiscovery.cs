@@ -134,7 +134,7 @@ namespace CassandraMigrationProcessor.Infrastructure
         }
 
         public static Tuple<bool, string, string> ValidateNamespaceFormat(
-            string input, JobType jobType)
+            string input)
         {
             if (string.IsNullOrWhiteSpace(input))
                 return Tuple.Create(false, string.Empty,

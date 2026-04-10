@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Threading;
+using System.Threading.Tasks;
 using CassandraMigrationProcessor;
 using CassandraMigrationProcessor.Infrastructure;
 using CassandraMigrationProcessor.Models;
@@ -284,7 +285,7 @@ namespace CassandraMigrationWebApp.Service
                         || job.Tables.Any(m => m.TableName == "*"))
                     {
                         MigrationUtilities.LogToFile($"Expanding wildcards for job {job.Id}, namespaces={namespacesToMigrate}");
-                        ExpandWildcardTables(job, namespacesToMigrate);
+                        await ExpandWildcardTablesAsync(job, namespacesToMigrate);
                         MigrationUtilities.LogToFile($"After expand: {job.Tables.Count} units");
                     }
 
@@ -328,7 +329,7 @@ namespace CassandraMigrationWebApp.Service
             return Task.CompletedTask;
         }
 
-        private void ExpandWildcardTables(MigrationJob job, string namespacesToMigrate)
+        private async Task ExpandWildcardTablesAsync(MigrationJob job, string namespacesToMigrate)
         {
             if (string.IsNullOrWhiteSpace(namespacesToMigrate)) return;
 
@@ -355,8 +356,8 @@ namespace CassandraMigrationWebApp.Service
                         using (var session = CassandraMigrationProcessor.CassandraDriver.CassandraClientFactory
                             .CreateSourceSession(_log, job, keyspace))
                         {
-                            var tables = CassandraMigrationProcessor.CassandraDriver.CassandraQueries
-                                .ListTables(session, keyspace);
+                            var tables = await CassandraMigrationProcessor.CassandraDriver.CassandraQueries
+                                .ListTablesAsync(session, keyspace);
                             foreach (var tableName in tables)
                             {
                                 // Validate table is accessible with retry for 429s

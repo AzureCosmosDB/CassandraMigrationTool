@@ -153,9 +153,9 @@ namespace CassandraMigrationProcessor.Infrastructure
             return new LogBucket();
         }
 
-        public byte[] DownloadLogsAsJsonBytes(string id, int topEntries = 20, int bottomEntries = 230)
+        public byte[] ExportLogsAsBytes(string id, int topEntries = 20, int bottomEntries = 230)
         {
-            return MigrationJobContext.Store.DownloadLogsAsJsonBytes(id, topEntries, bottomEntries);
+            return MigrationJobContext.Store.ExportLogsAsBytes(id, topEntries, bottomEntries);
         }
 
         public int GetLogCount(string id)

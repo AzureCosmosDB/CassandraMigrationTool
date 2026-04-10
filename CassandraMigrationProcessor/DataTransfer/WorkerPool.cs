@@ -16,7 +16,7 @@ namespace CassandraMigrationProcessor.DataTransfer
         private readonly int _workerCount;
         private Task[]? _workers;
 
-        public WorkerPool(MigrationLog log, int workerCount, CancellationToken cancellationToken)
+        public WorkerPool(MigrationLog log, int workerCount)
         {
             _log = log;
             _workerCount = workerCount;

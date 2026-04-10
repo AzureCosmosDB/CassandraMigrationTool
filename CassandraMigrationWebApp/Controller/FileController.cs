@@ -19,7 +19,7 @@ public class FileController : ControllerBase
     [HttpGet("download/MigrationLog/{Id}")]
     public IActionResult DownloadFile(string Id)
     {
-        var fileBytes = new MigrationLog().DownloadLogsAsJsonBytes(Id, 0, 0);
+        var fileBytes = new MigrationLog().ExportLogsAsBytes(Id, 0, 0);
         return File(fileBytes, "application/octet-stream", $"{Id}.txt");
     }
 

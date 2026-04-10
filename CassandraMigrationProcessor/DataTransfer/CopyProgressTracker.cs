@@ -78,7 +78,7 @@ namespace CassandraMigrationProcessor.DataTransfer
         /// Only logs range completion — does NOT affect
         /// active worker count.
         /// </summary>
-        public void RangeCompleted(string range, TaskResult result)
+        public void IncrementCompletedRanges()
         {
             Interlocked.Increment(ref _completedRanges);
         }
