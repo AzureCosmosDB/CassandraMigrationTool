@@ -61,17 +61,23 @@ Pause and resume must guarantee zero data loss and zero duplicate rows.
 - Consider shared connection pools with semaphore throttling as an alternative to per-worker sessions
 - Expose connection pool metrics (active/idle/total) in the progress tracker
 
-### 3.2 Worker auto-scaling
-- Current formula: `CPU × 13 / parallel_tables` — validate this against actual bottlenecks
+### 3.2 Proportional worker distribution across tables
+- Currently each table gets `CPU × 13 / parallel_tables` workers equally, regardless of table size
+- A 1B-row table and a 1K-row table get the same worker count — wasteful
+- Distribute workers proportionally based on feed range count or estimated row count
+- Small tables (few feed ranges) should get fewer workers; large tables should get more
+- As tables complete, redistribute their workers to remaining tables dynamically
+
+### 3.3 Worker auto-scaling
 - Add adaptive worker count: if source is throttling (429s), reduce workers; if throughput is low, increase
 - Monitor CPU/memory usage and cap workers if the host is saturated
 
-### 3.3 Memory pressure
+### 3.4 Memory pressure
 - Large pages (5000+ rows) with wide rows can cause GC pressure
 - Consider streaming rows instead of buffering entire pages in `List<object[]>`
 - Profile memory allocation per worker under heavy load
 
-### 3.4 Target write optimization
+### 3.5 Target write optimization
 - Measure whether `LocalOne` is always optimal or if `Any` would improve throughput
 - Batch small rows where total batch size < 50KB (currently all rows written individually)
 - Concurrent write limit per worker — currently unbounded `Task.WhenAll` over entire page
