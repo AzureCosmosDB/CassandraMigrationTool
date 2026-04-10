@@ -110,10 +110,35 @@ Currently uses regular change feed (`COSMOS_CHANGEFEED_START_TIME()`) which only
 
 ---
 
-## Priority 5: Code Quality
+## Priority 5: Centralized Telemetry
 
-### 5.1 Split MigrationJobViewer.razor (1852 lines)
-Extract sub-components: `TableListPanel`, `LogViewer`, `JobActionToolbar`, `ProgressSummary`.
+### 5.1 Wrap MigrationLog with TelemetryClient
+Currently `MigrationLog.WriteLine()` writes to disk files only. Add Application Insights as a parallel sink.
+
+**Design:**
+```
+MigrationLog.WriteLine(message, logType)
+  ├── existing: write to disk (DiskPersistence)
+  └── new: TelemetryClient.TrackTrace(message, severityLevel)
+```
+
+**Implementation steps:**
+1. Add `Microsoft.ApplicationInsights` NuGet to `CassandraMigrationProcessor`
+2. Add `IMigrationTelemetry` interface with `TrackTrace`, `TrackException`, `TrackMetric`
+3. Implement `AppInsightsTelemetry : IMigrationTelemetry` wrapping `TelemetryClient`
+4. Inject `IMigrationTelemetry` into `MigrationLog` constructor
+5. In `MigrationLog.WriteLine()`, map `LogType` → `SeverityLevel`:
+   - `Error` → `SeverityLevel.Error`
+   - `Warning` → `SeverityLevel.Warning`
+   - `Info` → `SeverityLevel.Information`
+   - `Debug` → `SeverityLevel.Verbose`
+6. Add `TrackException` calls in `ExceptionClassifier` for fatal errors
+7. Add `TrackMetric` calls in `CopyProgressTracker` for:
+   - `rows_per_second`, `active_workers`, `completed_ranges`, `failed_rows`
+8. Register in `Program.cs`: `builder.Services.AddApplicationInsightsTelemetry()`
+9. Connection string from `APPLICATIONINSIGHTS_CONNECTION_STRING` env var
+
+**No changes needed to callers** — `MigrationLog.WriteLine()` API stays the same, telemetry is added internally.
 
 ### 5.2 Convert MigrationJobContext from static to DI singleton
 
