@@ -8,11 +8,12 @@ using System.Threading;
 namespace CassandraMigrationProcessor.DataTransfer
 {
     /// <summary>
-    /// Single source of truth for all copy-pipeline progress:
-    /// row counts, speed, MigrationUnit field updates, and
-    /// periodic checkpoint saves. Workers call AddCopied /
-    /// AddFailed / AddRead and UpdateMigrationUnit; no other
-    /// class should maintain parallel counters.
+    /// Orchestrator for copy-pipeline progress: delegates atomic
+    /// counting to <see cref="ProgressCounters"/> and owns speed
+    /// calculation, logging, MigrationUnit updates, and checkpoint
+    /// saves. Workers call AddCopied / AddFailed / AddRead and
+    /// UpdateMigrationUnit; no other class should maintain
+    /// parallel counters.
     /// </summary>
     public class CopyProgressTracker
     {
@@ -22,11 +23,8 @@ namespace CassandraMigrationProcessor.DataTransfer
         private readonly int _workerCount;
         private readonly Stopwatch _stopwatch;
 
-        // --- row counters (single source of truth) ---
-        private long _totalCopied;
-        private long _totalFailed;
-        private long _totalSkipped;
-        private long _totalRead;
+        // Atomic counters (delegated)
+        private readonly ProgressCounters _counters;
 
         private int _activeWorkers;
         private int _peakActiveWorkers;
@@ -39,16 +37,9 @@ namespace CassandraMigrationProcessor.DataTransfer
         private double _windowTime;
         private double _recentRowsPerSecond;
 
-        // Data volume tracking
-        private long _totalBytes;
-
-        // Pipeline diagnostics (accumulated ms)
-        private long _readTimeMs;
-        private long _writeTimeMs;
-        private long _readPages;
-        private long _writeOps;
-        private int _activeRanges; // feed ranges with pages in-flight
-        private int _adaptivePageSize; // current adaptive page size
+        // Pipeline state (set by writer)
+        private int _activeRanges;
+        private int _adaptivePageSize;
 
         // --- MigrationUnit progress (moved from ProgressState / ProgressConfig) ---
         private readonly MigrationUnit _migrationUnit;
@@ -60,10 +51,10 @@ namespace CassandraMigrationProcessor.DataTransfer
 
         private const int LogIntervalSeconds = 5;
 
-        public long TotalCopied => Volatile.Read(ref _totalCopied);
-        public long TotalFailed => Volatile.Read(ref _totalFailed);
-        public long TotalSkipped => Volatile.Read(ref _totalSkipped);
-        public long TotalRead => Volatile.Read(ref _totalRead);
+        public long TotalCopied => _counters.TotalCopied;
+        public long TotalFailed => _counters.TotalFailed;
+        public long TotalSkipped => _counters.TotalSkipped;
+        public long TotalRead => _counters.TotalRead;
         public int ActiveWorkers => _activeWorkers;
 
         /// <summary>
@@ -116,7 +107,7 @@ namespace CassandraMigrationProcessor.DataTransfer
             _table = table;
             _workerCount = workerCount;
             _totalRanges = totalRanges;
-            _totalCopied = initialCopied;
+            _counters = new ProgressCounters(initialCopied);
             _windowCopied = initialCopied;
             _migrationUnit = migrationUnit;
             _chunkIndex = chunkIndex;
@@ -134,28 +125,26 @@ namespace CassandraMigrationProcessor.DataTransfer
         /// </summary>
         public void AddCopied(long count)
         {
-            Interlocked.Add(ref _totalCopied, count);
+            _counters.AddCopied(count);
             LogIfDue();
         }
 
         /// <summary>Track data volume written.</summary>
         public void AddBytes(long bytes)
         {
-            Interlocked.Add(ref _totalBytes, bytes);
+            _counters.AddBytes(bytes);
         }
 
         /// <summary>Track a source page read duration.</summary>
         public void AddReadTime(long ms)
         {
-            Interlocked.Add(ref _readTimeMs, ms);
-            Interlocked.Increment(ref _readPages);
+            _counters.AddReadTime(ms);
         }
 
         /// <summary>Track total write batch duration.</summary>
         public void AddWriteTime(long ms, int ops)
         {
-            Interlocked.Add(ref _writeTimeMs, ms);
-            Interlocked.Add(ref _writeOps, ops);
+            _counters.AddWriteTime(ms, ops);
         }
 
         /// <summary>Set active feed range count and adaptive page size.</summary>
@@ -167,18 +156,18 @@ namespace CassandraMigrationProcessor.DataTransfer
 
         public void AddFailed(long count)
         {
-            Interlocked.Add(ref _totalFailed, count);
+            _counters.AddFailed(count);
         }
 
         public void AddSkipped(long count)
         {
-            Interlocked.Add(ref _totalSkipped, count);
+            _counters.AddSkipped(count);
         }
 
         /// <summary>Track source rows read.</summary>
         public void AddRead(long count)
         {
-            Interlocked.Add(ref _totalRead, count);
+            _counters.AddRead(count);
         }
 
         /// <summary>
@@ -204,7 +193,7 @@ namespace CassandraMigrationProcessor.DataTransfer
                         (double)written / _totalRowCount * 100)
                     * _contributionFactor);
             }
-            _migrationUnit.UpdateParentJob();
+            MigrationUnitMapper.UpdateParentJob(_migrationUnit);
 
             long prevTicks = Volatile.Read(ref _lastCheckpointTicks);
             long nowTicks = DateTime.UtcNow.Ticks;
@@ -246,10 +235,10 @@ namespace CassandraMigrationProcessor.DataTransfer
                 ? $"{_recentRowsPerSecond / 1000:F1}k/s"
                 : $"{_recentRowsPerSecond:F0}/s";
 
-            long pages = Interlocked.Read(ref _readPages);
-            long readTimeMs = Volatile.Read(ref _readTimeMs);
-            long writeTimeMs = Volatile.Read(ref _writeTimeMs);
-            long writeOps = Volatile.Read(ref _writeOps);
+            long pages = _counters.ReadPages;
+            long readTimeMs = _counters.ReadTimeMs;
+            long writeTimeMs = _counters.WriteTimeMs;
+            long writeOps = _counters.WriteOps;
             long avgReadMs = pages > 0 ? readTimeMs / pages : 0;
             long avgWriteMs = pages > 0 ? writeTimeMs / pages : 0;
             string avgRead = avgReadMs > 0
@@ -257,7 +246,7 @@ namespace CassandraMigrationProcessor.DataTransfer
             string avgWrite = avgWriteMs > 0
                 ? $"{avgWriteMs}ms" : "-";
 
-            long totalB = Volatile.Read(ref _totalBytes);
+            long totalB = _counters.TotalBytes;
             double mbps = elapsed > 0
                 ? totalB / 1024.0 / 1024.0 / elapsed : 0;
             string throughput = mbps >= 1

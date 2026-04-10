@@ -25,7 +25,7 @@ namespace CassandraMigrationProcessor.DataTransfer
     /// Each table is handled by a dedicated
     /// <see cref="ReplayWorker"/> instance.
     /// </summary>
-    public class ReplayProcessor
+    public class ReplayProcessor : IDisposable
     {
         private readonly MigrationLog _log;
         private readonly ISession _sourceSession;
@@ -35,6 +35,7 @@ namespace CassandraMigrationProcessor.DataTransfer
         private readonly MigrationJob _job;
         private readonly bool _singleTable;
         private readonly MigrationWorker? _migrationWorker;
+        private readonly TokenRefreshManager? _tokenRefreshManager;
 
         private readonly ConcurrentQueue<string> _pendingTables = new();
         private readonly ConcurrentDictionary<string, Task>
@@ -47,9 +48,15 @@ namespace CassandraMigrationProcessor.DataTransfer
             set => _executionCancelled = value;
         }
 
+        public void Dispose()
+        {
+            ExecutionCancelled = true;
+        }
+
         public ReplayProcessor(MigrationLog log, ISession sourceSession, ISession targetSession, MigrationUnitCache muCache,
             PipelineConfig pipelineConfig, MigrationJob job,
-            bool singleTable, MigrationWorker? migrationWorker)
+            bool singleTable, MigrationWorker? migrationWorker,
+            TokenRefreshManager? tokenRefreshManager = null)
         {
             _log = log;
             _sourceSession = sourceSession;
@@ -59,6 +66,7 @@ namespace CassandraMigrationProcessor.DataTransfer
             _job = job;
             _singleTable = singleTable;
             _migrationWorker = migrationWorker;
+            _tokenRefreshManager = tokenRefreshManager;
         }
 
         /// <summary>
@@ -76,7 +84,7 @@ namespace CassandraMigrationProcessor.DataTransfer
         public void RunChangeFeedForAllTables(CancellationToken ct)
         {
             var job = _job;
-            if (job?.Tables == null) return;
+            if (job == null) return;
 
             foreach (var mub in job.Tables)
             {
@@ -110,14 +118,15 @@ namespace CassandraMigrationProcessor.DataTransfer
 
                         var worker = new ReplayWorker(
                             _log, _sourceSession, _targetSession,
-                            _pipelineConfig, () => ExecutionCancelled);
+                            _pipelineConfig, () => ExecutionCancelled,
+                            _tokenRefreshManager);
 
                         await worker.RunAsync(mu, ct);
                     }
                     catch (Exception ex)
                     {
-                        Console.Error.WriteLine(
-                            $"[CRITICAL] CF muId={muId}: {ex.GetType().Name}: {ex.Message}");
+                        _log.WriteLine(
+                            $"CF muId={muId}: {ex.GetType().Name}: {ex.Message}", LogType.Error);
                     }
 
                     _activeTasks.TryRemove(muId, out _);

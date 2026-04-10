@@ -194,7 +194,7 @@ namespace CassandraMigrationProcessor.DataTransfer
             }
 
             if (chunk.Segments.Count == 0)
-                chunk.Segments.Add(new Segment { Id = "0", IsProcessed = allComplete, ResultDocCount = tracker.TotalCopied });
+                chunk.Segments.Add(new Segment { Id = "0", IsProcessed = allComplete, ResultRowCount = tracker.TotalCopied });
             else if (allComplete)
                 chunk.Segments.ForEach(s => s.IsProcessed = true);
 

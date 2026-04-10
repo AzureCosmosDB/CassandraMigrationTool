@@ -7,12 +7,6 @@ using System.Threading;
 
 namespace CassandraMigrationProcessor.Models
 {
-    public class NameValuePair
-    {
-        public string Name { get; set; } = "";
-        public string? Value { get; set; }
-    }
-
     public class MigrationUnitBasic
     {
         [JsonIgnore]
@@ -70,9 +64,9 @@ namespace CassandraMigrationProcessor.Models
         /// Value = base64-encoded paging state.
         /// Used when feed ranges > 1 for a table.
         /// </summary>
-        public Dictionary<string, string>?
+        public Dictionary<string, string>
             FeedRangeContinuationTokens
-        { get; set; }
+        { get; set; } = new();
 
         /// <summary>
         /// Change feed start time captured BEFORE bulk copy
@@ -177,62 +171,5 @@ namespace CassandraMigrationProcessor.Models
             }
         }
 
-        private static readonly object _updateParentLock = new();
-
-        public bool UpdateParentJob()
-        {
-            if (this.ParentJob == null) return false;
-
-            try
-            {
-                lock (_updateParentLock)
-                {
-                    var index = ParentJob.Tables
-                        .FindIndex(mu => mu.Id == this.Id);
-                    if (index == -1) return false;
-
-                    ToSummary(ParentJob.Tables[index]);
-                }
-                return true;
-            }
-            catch
-            {
-                return false;
-            }
-        }
-
-        public MigrationUnitBasic ToSummary(
-            MigrationUnitBasic? mub = null)
-        {
-            if (mub == null)
-                mub = new MigrationUnitBasic();
-
-            mub.Id = MigrationUtilities.GenerateMigrationUnitId(
-                this.KeyspaceName, this.TableName);
-            mub.JobId = this.JobId;
-            mub.KeyspaceName = this.KeyspaceName;
-            mub.TableName = this.TableName;
-            mub.TargetKeyspaceName = this.TargetKeyspaceName;
-            mub.TargetTableName = this.TargetTableName;
-            mub.ChangeFeedUpdatesInLastBatch =
-                Interlocked.Exchange(ref _changeFeedUpdatesInLastBatch, 0);
-            mub.ChangeFeedAvgReadLatencyInMS =
-                this.ChangeFeedAvgReadLatencyInMS;
-            mub.ChangeFeedAvgWriteLatencyInMS =
-                this.ChangeFeedAvgWriteLatencyInMS;
-            mub.CopyPercent = this.CopyPercent;
-            mub.CopyComplete = this.CopyComplete;
-            mub.CopyRowsCopied = this.CopyRowsCopied;
-            mub.CopyRowsPerSecond = this.CopyRowsPerSecond;
-            mub.TotalRowCount = Math.Max(
-                this.EstimatedRowCount, this.ActualRowCount);
-            mub.SourceStatus = this.SourceStatus;
-            mub.SkippedDueToMaxRetries =
-                this.SkippedDueToMaxRetries;
-            mub.FailedOperation = this.FailedOperation;
-            mub.ChangeFeedLastChecked =
-                this.ChangeFeedLastChecked;
-            return mub;
-        }
     }
 }

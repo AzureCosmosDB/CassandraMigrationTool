@@ -19,13 +19,13 @@ namespace CassandraMigrationProcessor.Models
         private List<MigrationJob>? _migrationJobsBackingField
         {
             get => null; // Never serialize this property - returns null so JSON.NET won't include it
-            set => MigrationJobs = value; // Allow deserialization - set the public property
+            set { if (value != null) MigrationJobs = value; } // Allow deserialization - set the public property
         }
 
         [JsonIgnore]
-        public List<MigrationJob>? MigrationJobs { get; set; }
+        public List<MigrationJob> MigrationJobs { get; set; } = new();
 
-        public List<string>? MigrationJobIds { get; set; }
+        public List<string> MigrationJobIds { get; set; } = new();
 
         private static readonly object _writeLock = new object();
         private static readonly object _loadLock = new object();

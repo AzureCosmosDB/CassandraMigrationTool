@@ -7,8 +7,8 @@ namespace CassandraMigrationProcessor.Models
         public string? Lt { get; set; }
         public string? Gte { get; set; }
         public bool? IsProcessed { get; set; }
-        public long QueryDocCount { get; set; }
-        public long ResultDocCount { get; set; }
+        public long QueryRowCount { get; set; }
+        public long ResultRowCount { get; set; }
         public string Id { get; set; } = string.Empty;
     }
 

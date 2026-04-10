@@ -235,7 +235,7 @@ namespace CassandraMigrationProcessor.Context
                             string json = Store.Read(path);
                             var obj = JsonConvert
                                 .DeserializeObject<JobRegistry>(json);
-                            if (obj?.MigrationJobIds != null)
+                            if (obj != null)
                             {
                                 JobRegistry = obj;
                                 return JobRegistry;

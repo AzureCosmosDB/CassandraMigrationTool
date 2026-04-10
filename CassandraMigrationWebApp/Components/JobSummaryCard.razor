@@ -5,7 +5,7 @@
 @if (Job != null)
 {
     var sj = Job;
-    var allUnits = sj.Tables ?? new List<MigrationUnitBasic>();
+    var allUnits = sj.Tables;
     int totalTables = allUnits.Count;
     int copyDone = allUnits.Count(u => u.CopyComplete);
     int inProgress = allUnits.Count(u => !u.CopyComplete && u.CopyPercent > 0);

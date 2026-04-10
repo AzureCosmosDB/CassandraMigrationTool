@@ -24,19 +24,22 @@ namespace CassandraMigrationProcessor.DataTransfer
         private readonly ISession? _targetSession;
         private readonly PipelineConfig _pipelineConfig;
         private readonly Func<bool> _isCancelled;
+        private readonly TokenRefreshManager? _tokenRefreshManager;
 
         public ReplayWorker(
             MigrationLog log,
             ISession sourceSession,
             ISession? targetSession,
             PipelineConfig pipelineConfig,
-            Func<bool> isCancelled)
+            Func<bool> isCancelled,
+            TokenRefreshManager? tokenRefreshManager = null)
         {
             _log = log;
             _sourceSession = sourceSession;
             _targetSession = targetSession;
             _pipelineConfig = pipelineConfig;
             _isCancelled = isCancelled;
+            _tokenRefreshManager = tokenRefreshManager;
         }
 
         /// <summary>
@@ -53,7 +56,7 @@ namespace CassandraMigrationProcessor.DataTransfer
                 LogType.Debug);
 
             if (feedRanges.Count > 1
-                && mu.FeedRangeContinuationTokens != null)
+                && mu.FeedRangeContinuationTokens.Count > 0)
             {
                 _log.WriteLine(
                     $"Change feed PARALLEL mode: {feedRanges.Count} ranges for {mu.KeyspaceName}.{mu.TableName}",
@@ -232,8 +235,8 @@ namespace CassandraMigrationProcessor.DataTransfer
                 string label = feedRange != null
                     ? $"range {mu.KeyspaceName}.{mu.TableName}"
                     : $"{mu.KeyspaceName}.{mu.TableName}";
-                Console.Error.WriteLine(
-                    $"[CRITICAL] CF {label}: {ex.GetType().Name}: {ex.Message}");
+                _log.WriteLine(
+                    $"CF {label}: {ex.GetType().Name}: {ex.Message}", LogType.Error);
             }
         }
 
@@ -320,7 +323,7 @@ namespace CassandraMigrationProcessor.DataTransfer
 
             SaveContinuation(mu, feedRange, continuationState);
 
-            mu.UpdateParentJob();
+            MigrationUnitMapper.UpdateParentJob(mu);
             MigrationJobContext.SaveMigrationUnit(
                 mu, insertCount > 0 || errorCount > 0);
 
@@ -349,16 +352,13 @@ namespace CassandraMigrationProcessor.DataTransfer
         {
             if (feedRange != null)
             {
-                if (mu.FeedRangeContinuationTokens != null)
+                lock (mu.FeedRangeContinuationTokens)
                 {
-                    lock (mu.FeedRangeContinuationTokens)
+                    if (mu.FeedRangeContinuationTokens.TryGetValue(
+                            feedRange, out var saved)
+                        && !string.IsNullOrEmpty(saved))
                     {
-                        if (mu.FeedRangeContinuationTokens.TryGetValue(
-                                feedRange, out var saved)
-                            && !string.IsNullOrEmpty(saved))
-                        {
-                            return Convert.FromBase64String(saved);
-                        }
+                        return Convert.FromBase64String(saved);
                     }
                 }
                 return null;
@@ -376,13 +376,10 @@ namespace CassandraMigrationProcessor.DataTransfer
 
             if (feedRange != null)
             {
-                if (mu.FeedRangeContinuationTokens != null)
+                lock (mu.FeedRangeContinuationTokens)
                 {
-                    lock (mu.FeedRangeContinuationTokens)
-                    {
-                        mu.FeedRangeContinuationTokens[feedRange] =
-                            Convert.ToBase64String(state);
-                    }
+                    mu.FeedRangeContinuationTokens[feedRange] =
+                        Convert.ToBase64String(state);
                 }
             }
             else
@@ -408,9 +405,10 @@ namespace CassandraMigrationProcessor.DataTransfer
             {
                 var job = MigrationJobContext.CurrentlyActiveJob;
                 ISession newSource;
-                if (TokenRefreshManager.IsLikelyAadToken(job.SourcePassword))
-                    newSource = TokenRefreshManager
-                        .ReconnectSourceWithFreshToken(_log);
+                if (_tokenRefreshManager != null
+                    && TokenRefreshManager.IsLikelyAadToken(job.SourcePassword))
+                    newSource = _tokenRefreshManager
+                        .ReconnectSourceWithFreshToken();
                 else
                     newSource = CassandraClientFactory
                         .CreateSourceSession(_log, job, string.Empty);

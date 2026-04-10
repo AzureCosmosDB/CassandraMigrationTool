@@ -78,6 +78,7 @@ namespace CassandraMigrationProcessor.Models
                 LogPageSize = MaxLogPageSize;
         }
 
+        // TODO: Extract to SettingsManager
         public void Load()
         {
             if (MigrationJobContext.Store == null) return;
@@ -106,6 +107,7 @@ namespace CassandraMigrationProcessor.Models
             ApplyDefaults();
         }
 
+        // TODO: Extract to SettingsManager
         public bool Save(out string errorMessage)
         {
             if (MigrationJobContext.Store == null)

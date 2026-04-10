@@ -27,11 +27,12 @@ namespace CassandraMigrationProcessor.CassandraDriver
             int port,
             string username,
             string password,
-            string keyspace)
+            string keyspace,
+            TokenRefreshManager? tokenRefreshManager = null)
         {
             // Cache parameters for token refresh reconnection
-            TokenRefreshManager.CacheSourceConnectionParams(
-                contactPoint, port, username, keyspace, MigrationLog);
+            tokenRefreshManager?.CacheSourceConnectionParams(
+                contactPoint, port, username, keyspace);
 
             var sslOptions = new SSLOptions(
                 SslProtocols.Tls12, true,
@@ -73,8 +74,8 @@ namespace CassandraMigrationProcessor.CassandraDriver
 
                     if (TokenRefreshManager.IsLikelyAadToken(password))
                     {
-                        TokenRefreshManager.SetManagedSourceSession(session);
-                        TokenRefreshManager.StartTokenRefreshTimer(password, MigrationLog);
+                        tokenRefreshManager?.SetManagedSourceSession(session);
+                        tokenRefreshManager?.StartTokenRefreshTimer(password);
                     }
 
                     return session;
@@ -118,8 +119,8 @@ namespace CassandraMigrationProcessor.CassandraDriver
 
             if (TokenRefreshManager.IsLikelyAadToken(password))
             {
-                TokenRefreshManager.SetManagedSourceSession(finalSession);
-                TokenRefreshManager.StartTokenRefreshTimer(password, MigrationLog);
+                tokenRefreshManager?.SetManagedSourceSession(finalSession);
+                tokenRefreshManager?.StartTokenRefreshTimer(password);
             }
 
             return finalSession;
@@ -306,7 +307,8 @@ namespace CassandraMigrationProcessor.CassandraDriver
         /// token automatically.
         /// </summary>
         public static ISession CreateSourceSession(
-            MigrationLog MigrationLog, MigrationJob job, string keyspace)
+            MigrationLog MigrationLog, MigrationJob job, string keyspace,
+            TokenRefreshManager? tokenRefreshManager = null)
         {
             string password = job.SourcePassword ?? string.Empty;
 
@@ -314,7 +316,8 @@ namespace CassandraMigrationProcessor.CassandraDriver
             // fetch a fresh token via managed identity
             if (string.IsNullOrEmpty(password) || job.SourceUseAad)
             {
-                password = TokenRefreshManager.GetFreshAadToken();
+                password = tokenRefreshManager?.GetFreshAadToken()
+                    ?? TokenRefreshManager.AcquireAadToken();
                 // Cache it in memory (not persisted)
                 job.SourcePassword = password;
                 job.SourceUseAad = true;
@@ -338,7 +341,8 @@ namespace CassandraMigrationProcessor.CassandraDriver
                 job.SourcePort,
                 username,
                 password,
-                keyspace);
+                keyspace,
+                tokenRefreshManager);
         }
 
         /// <summary>
@@ -403,7 +407,8 @@ namespace CassandraMigrationProcessor.CassandraDriver
         /// Create source session from ConnectionOptions.
         /// </summary>
         public static ISession CreateSourceSession(
-            MigrationLog log, ConnectionOptions conn, string keyspace)
+            MigrationLog log, ConnectionOptions conn, string keyspace,
+            TokenRefreshManager? tokenRefreshManager = null)
         {
             return CreateSourceSession(
                 log,
@@ -411,7 +416,8 @@ namespace CassandraMigrationProcessor.CassandraDriver
                 conn.Port,
                 conn.Username ?? string.Empty,
                 conn.Password ?? string.Empty,
-                keyspace);
+                keyspace,
+                tokenRefreshManager);
         }
 
         /// <summary>

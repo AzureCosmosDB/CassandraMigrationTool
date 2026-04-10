@@ -50,30 +50,35 @@ namespace CassandraMigrationProcessor.Models
         // Completed > Paused > Running > Pending.
 
         [JsonProperty(DefaultValueHandling = DefaultValueHandling.Ignore)]
+        [Obsolete("Use Status property directly")]
         public bool IsCompleted
         {
             get => Status == JobStatus.Completed;
             set { if (value) Status = JobStatus.Completed; }
         }
         [JsonProperty(DefaultValueHandling = DefaultValueHandling.Ignore)]
+        [Obsolete("Use Status property directly")]
         public bool IsCancelled
         {
             get => Status == JobStatus.Cancelled;
             set { if (value) Status = JobStatus.Cancelled; }
         }
         [JsonProperty(DefaultValueHandling = DefaultValueHandling.Ignore)]
+        [Obsolete("Use Status property directly")]
         public bool IsFaulted
         {
             get => Status == JobStatus.Faulted;
             set { if (value) Status = JobStatus.Faulted; }
         }
         [JsonProperty(DefaultValueHandling = DefaultValueHandling.Ignore)]
+        [Obsolete("Use Status property directly")]
         public bool IsPaused
         {
             get => Status == JobStatus.Paused;
             set { if (value) Status = JobStatus.Paused; }
         }
         [JsonProperty(DefaultValueHandling = DefaultValueHandling.Ignore)]
+        [Obsolete("Use Status property directly")]
         public bool IsStarted
         {
             get => Status == JobStatus.Running;
@@ -136,7 +141,7 @@ namespace CassandraMigrationProcessor.Models
         public DateTime? ChangeFeedStartedOn { get; set; }
 
         [JsonProperty("MigrationUnitBasics")]
-        public List<MigrationUnitBasic>? Tables { get; set; }
+        public List<MigrationUnitBasic> Tables { get; set; } = new();
 
         [JsonIgnore]
         public ConnectionOptions SourceConnection => new(

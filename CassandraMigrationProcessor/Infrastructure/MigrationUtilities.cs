@@ -127,8 +127,7 @@ namespace CassandraMigrationProcessor.Infrastructure
 
         public static bool IsOfflineJobCompleted(MigrationJob job)
         {
-            if (job?.Tables == null
-                || job.Tables.Count == 0)
+            if (job == null || job.Tables.Count == 0)
                 return false;
 
             return job.Tables
@@ -138,7 +137,7 @@ namespace CassandraMigrationProcessor.Infrastructure
 
         public static bool AnyValidTable(MigrationJob job)
         {
-            if (job?.Tables == null)
+            if (job == null)
                 return false;
             return job.Tables
                 .Any(mu => IsMigrationUnitValid(mu));
@@ -148,7 +147,7 @@ namespace CassandraMigrationProcessor.Infrastructure
             MigrationJob job)
         {
             List<MigrationUnit> units = new();
-            if (job?.Tables == null) return units;
+            if (job == null) return units;
 
             foreach (var summary in job.Tables)
             {
@@ -202,14 +201,13 @@ namespace CassandraMigrationProcessor.Infrastructure
             MigrationUnit mu, MigrationJob job)
         {
             if (job == null) return;
-            if (job.Tables == null)
-                job.Tables = new List<MigrationUnitBasic>();
+            job.Tables ??= new List<MigrationUnitBasic>();
 
             if (job.Tables.Find(m => m.Id == mu.Id) != null)
                 return;
 
             mu.ParentJob = job;
-            job.Tables.Add(mu.ToSummary());
+            job.Tables.Add(MigrationUnitMapper.ToSummary(mu));
         }
     }
 }

@@ -9,8 +9,8 @@ namespace CassandraMigrationProcessor.DataTransfer
     internal class Partition
     {
         public string FeedRange { get; }
-        public bool IsExhausted { get; set; }
-        public byte[]? LastPagingState { get; set; }
+        public bool IsExhausted { get; private set; }
+        public byte[]? LastPagingState { get; private set; }
 
         private WorkChunk? _head;
         private WorkChunk? _tail;
@@ -22,6 +22,18 @@ namespace CassandraMigrationProcessor.DataTransfer
             LastPagingState = initialPagingState;
             if (initialPagingState != null)
                 _head = _tail = new WorkChunk { ContinuationToken = initialPagingState, IsCompleted = true };
+        }
+
+        /// <summary>
+        /// Atomically updates the paging state and exhaustion flag under the lock.
+        /// </summary>
+        public void SetPageState(byte[]? pagingState, bool isExhausted)
+        {
+            lock (_lock)
+            {
+                LastPagingState = pagingState;
+                if (isExhausted) IsExhausted = true;
+            }
         }
 
         public WorkChunk AddChunkAndTrim(byte[]? continuationToken)

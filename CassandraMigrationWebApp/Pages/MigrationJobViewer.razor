@@ -361,7 +361,7 @@ else if (@_showLogBackupFile)
                 // Trigger immediate refresh
                 if (CurrentlyLoadedMigrationJob != null && (CurrentlyLoadedMigrationJob.Status == JobStatus.Running || JobManager.DidMigrationJobExitRecently(JobId)) && !_showLogBackupFile)
                 {
-                    if (_isLoadingCollections && @CurrentlyLoadedMigrationJob.Tables != null && @CurrentlyLoadedMigrationJob.Tables.Count > 0)
+                    if (_isLoadingCollections && @CurrentlyLoadedMigrationJob.Tables.Count > 0)
                     {
                         _isLoadingCollections = false;
                     }
@@ -509,7 +509,7 @@ else if (@_showLogBackupFile)
             if (CurrentlyLoadedMigrationJob != null && (CurrentlyLoadedMigrationJob.Status == JobStatus.Running || JobManager.DidMigrationJobExitRecently(JobId)) && !_showLogBackupFile)
             {
                 // Check if we should hide loading spinner
-                if (_isLoadingCollections && @CurrentlyLoadedMigrationJob.Tables != null && @CurrentlyLoadedMigrationJob.Tables.Count > 0)
+                if (_isLoadingCollections && @CurrentlyLoadedMigrationJob.Tables.Count > 0)
                 {
                     _isLoadingCollections = false;
                 }
@@ -589,7 +589,7 @@ else if (@_showLogBackupFile)
 
     private bool CheckCutoverReadiness()
     {
-        if (CurrentlyLoadedMigrationJob?.Tables == null)
+        if (CurrentlyLoadedMigrationJob == null)
             return false;
         return CurrentlyLoadedMigrationJob.Tables.All(mu =>
             mu.SourceStatus == TableStatus.NotFound || mu.CopyComplete);
@@ -602,7 +602,7 @@ else if (@_showLogBackupFile)
     /// </summary>
     private (string Display, bool IsLow) GetChangeFeedLag()
     {
-        if (CurrentlyLoadedMigrationJob?.Tables == null)
+        if (CurrentlyLoadedMigrationJob == null)
             return ("N/A", false);
 
         var mus = CurrentlyLoadedMigrationJob.Tables
@@ -730,7 +730,7 @@ else if (@_showLogBackupFile)
 
 
         // Check if we should show the loading spinner
-        if (mj.Tables == null || mj.Tables.Count == 0)
+        if (mj.Tables.Count == 0)
         {
             _isLoadingCollections = true;
             await InvokeAsync(StateHasChanged);

@@ -4,7 +4,7 @@
 @using CassandraMigrationWebApp.Helpers
 
 @* Collections Filter and Pagination Controls *@
-@if (Job != null && Job.Tables != null && Job.Tables.Count > 0 && !IsLoadingCollections)
+@if (Job != null && Job.Tables.Count > 0 && !IsLoadingCollections)
 {
     <div class="collections-filter-section">
         <div class="row">
@@ -71,7 +71,7 @@
             </tr>
         </thead>
         <tbody>
-            @if (!IsLoadingCollections && Job != null && Job.Tables != null && GetFilteredAndPagedUnits().Any())
+            @if (!IsLoadingCollections && Job != null && GetFilteredAndPagedUnits().Any())
             {
                 @foreach (var mu in GetFilteredAndPagedUnits())
                 {
@@ -149,7 +149,7 @@
                     </tr>
                 }
             }
-            else if (!IsLoadingCollections && Job != null && Job.Tables!= null && !string.IsNullOrWhiteSpace(_filterText))
+            else if (!IsLoadingCollections && Job != null && Job.Tables.Count > 0 && !string.IsNullOrWhiteSpace(_filterText))
             {
                 <tr>
                     <td colspan="10" class="empty-collections-state">
@@ -159,7 +159,7 @@
                     </td>
                 </tr>
             }
-            else if (!IsLoadingCollections && (Job == null || Job.Tables == null || !Job.Tables.Any()))
+            else if (!IsLoadingCollections && (Job == null || !Job.Tables.Any()))
             {
                 <tr>
                     <td colspan="10" class="empty-collections-state">
@@ -440,7 +440,7 @@
             return;
         }
 
-        var currentUnits = Job.Tables ?? new List<MigrationUnitBasic>();
+        var currentUnits = Job.Tables;
         currentUnits = ApplySorting(currentUnits);
 
         _paginationHelper = new PaginationHelper<MigrationUnitBasic>(

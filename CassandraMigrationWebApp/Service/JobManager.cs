@@ -74,7 +74,7 @@ namespace CassandraMigrationWebApp.Service
         public List<MigrationUnit> GetMigrationUnits(MigrationJob mj)
         {
             var units = new List<MigrationUnit>();
-            if (mj?.Tables != null)
+            if (mj != null)
             {
                 foreach (var mub in mj.Tables)
                 {
@@ -198,7 +198,7 @@ namespace CassandraMigrationWebApp.Service
             if (job != null)
             {
                 // Check if all units have completed their copy phase
-                if (job.Tables != null && job.Tables.All(mu => mu.CopyComplete))
+                if (job.Tables.All(mu => mu.CopyComplete))
                 {
                     return false;
                 }
@@ -280,12 +280,12 @@ namespace CassandraMigrationWebApp.Service
                     MigrationUtilities.LogToFile($"Task.Run started for job {job.Id}");
 
                     // Expand wildcards (e.g. "socialmedia.*") by connecting to source
-                    if (job.Tables == null || job.Tables.Count == 0
+                    if (job.Tables.Count == 0
                         || job.Tables.Any(m => m.TableName == "*"))
                     {
                         MigrationUtilities.LogToFile($"Expanding wildcards for job {job.Id}, namespaces={namespacesToMigrate}");
                         ExpandWildcardTables(job, namespacesToMigrate);
-                        MigrationUtilities.LogToFile($"After expand: {job.Tables?.Count ?? 0} units");
+                        MigrationUtilities.LogToFile($"After expand: {job.Tables.Count} units");
                     }
 
                     MigrationUtilities.LogToFile($"Calling MigrationWorker.StartAsync for job {job.Id}");

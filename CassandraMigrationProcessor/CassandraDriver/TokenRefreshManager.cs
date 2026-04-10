@@ -11,34 +11,36 @@ namespace CassandraMigrationProcessor.CassandraDriver
     /// Manages AAD token lifecycle and proactive refresh for
     /// Cosmos DB Cassandra API connections.
     /// </summary>
-    public static class TokenRefreshManager
+    public class TokenRefreshManager : IDisposable
     {
-        // Proactive token refresh timer
-        private static Timer? _tokenRefreshTimer;
-        private static readonly object _refreshLock = new();
-        private static ISession? _managedSourceSession;
-        private static MigrationLog? _lastLog;
-        private static DateTime _tokenExpiresAt = DateTime.MinValue;
+        private Timer? _tokenRefreshTimer;
+        private readonly object _refreshLock = new();
+        private ISession? _managedSourceSession;
+        private readonly MigrationLog _log;
+        private DateTime _tokenExpiresAt = DateTime.MinValue;
 
-        // Cached source connection parameters for token refresh reconnection
-        private static string? _lastSourceContactPoint;
-        private static int _lastSourcePort;
-        private static string? _lastSourceUsername;
-        private static string? _lastSourceKeyspace;
+        private string? _lastSourceContactPoint;
+        private int _lastSourcePort;
+        private string? _lastSourceUsername;
+        private string? _lastSourceKeyspace;
+
+        public TokenRefreshManager(MigrationLog log)
+        {
+            _log = log;
+        }
 
         /// <summary>
         /// Cache source connection parameters so the token refresh
         /// timer can reconnect with a fresh token.
         /// </summary>
-        internal static void CacheSourceConnectionParams(
+        internal void CacheSourceConnectionParams(
             string contactPoint, int port, string username,
-            string keyspace, MigrationLog log)
+            string keyspace)
         {
             _lastSourceContactPoint = contactPoint;
             _lastSourcePort = port;
             _lastSourceUsername = username;
             _lastSourceKeyspace = keyspace;
-            _lastLog = log;
         }
 
         /// <summary>
@@ -55,16 +57,15 @@ namespace CassandraMigrationProcessor.CassandraDriver
         /// Returns a new ISession. The caller should dispose the
         /// old session. Also restarts the token refresh timer.
         /// </summary>
-        public static ISession ReconnectSourceWithFreshToken(
-            MigrationLog MigrationLog)
+        public ISession ReconnectSourceWithFreshToken()
         {
             string freshToken = GetFreshAadToken();
 
             // Restart refresh timer with new token
-            StartTokenRefreshTimer(freshToken, MigrationLog);
+            StartTokenRefreshTimer(freshToken);
 
             var newSession = CassandraClientFactory.CreateSourceSession(
-                MigrationLog,
+                _log,
                 _lastSourceContactPoint!,
                 _lastSourcePort,
                 _lastSourceUsername ?? string.Empty,
@@ -78,11 +79,27 @@ namespace CassandraMigrationProcessor.CassandraDriver
         }
 
         /// <summary>
+        /// Acquire a fresh AAD token for Cosmos DB Cassandra
+        /// without tracking expiry state. Use for one-shot
+        /// sessions that do not need proactive refresh.
+        /// </summary>
+        public static string AcquireAadToken()
+        {
+            var credential =
+                new Azure.Identity.DefaultAzureCredential();
+            var tokenResult = credential.GetToken(
+                new Azure.Core.TokenRequestContext(
+                    new[] { "https://cosmos.azure.com/.default" }));
+
+            return tokenResult.Token;
+        }
+
+        /// <summary>
         /// Generate a fresh AAD token for Cosmos DB Cassandra.
         /// Uses DefaultAzureCredential (Managed Identity in
         /// App Service, Azure CLI locally).
         /// </summary>
-        public static string GetFreshAadToken()
+        public string GetFreshAadToken()
         {
             var credential =
                 new Azure.Identity.DefaultAzureCredential();
@@ -98,7 +115,7 @@ namespace CassandraMigrationProcessor.CassandraDriver
         /// <summary>
         /// Returns the UTC time the current AAD token expires.
         /// </summary>
-        public static DateTime TokenExpiresAtUtc => _tokenExpiresAt;
+        public DateTime TokenExpiresAtUtc => _tokenExpiresAt;
 
         /// <summary>
         /// Parse the "exp" claim from a JWT to determine when
@@ -128,12 +145,11 @@ namespace CassandraMigrationProcessor.CassandraDriver
         /// If the token can't be parsed, defaults to refreshing
         /// every 50 minutes (tokens typically live 60-75 min).
         /// </summary>
-        public static void StartTokenRefreshTimer(
-            string currentToken, MigrationLog MigrationLog)
+        public void StartTokenRefreshTimer(
+            string currentToken)
         {
             lock (_refreshLock)
             {
-                _lastLog = MigrationLog;
                 StopTokenRefreshTimer();
 
                 DateTime expiry = GetTokenExpiry(currentToken);
@@ -160,13 +176,13 @@ namespace CassandraMigrationProcessor.CassandraDriver
         /// <summary>
         /// Stop the proactive token refresh timer.
         /// </summary>
-        public static void StopTokenRefreshTimer()
+        public void StopTokenRefreshTimer()
         {
             _tokenRefreshTimer?.Dispose();
             _tokenRefreshTimer = null;
         }
 
-        private static void TokenRefreshCallback(object? state)
+        private void TokenRefreshCallback(object? state)
         {
             lock (_refreshLock)
             {
@@ -181,7 +197,7 @@ namespace CassandraMigrationProcessor.CassandraDriver
                     {
                         var oldSession = _managedSourceSession;
                         _managedSourceSession = CassandraClientFactory.CreateSourceSession(
-                            _lastLog ?? new MigrationLog(),
+                            _log,
                             _lastSourceContactPoint,
                             _lastSourcePort,
                             _lastSourceUsername ?? string.Empty,
@@ -191,14 +207,13 @@ namespace CassandraMigrationProcessor.CassandraDriver
                     }
 
                     // Schedule next refresh
-                    StartTokenRefreshTimer(freshToken,
-                        _lastLog ?? new MigrationLog());
+                    StartTokenRefreshTimer(freshToken);
                 }
                 catch (Exception ex)
                 {
                     // Retry in 2 minutes on failure
                     Console.WriteLine($"[WARN] Token refresh failed: {ex.Message}");
-                    _lastLog?.WriteLine($"Token refresh failed, retrying in 2 min: {ex.Message}", LogType.Warning);
+                    _log?.WriteLine($"Token refresh failed, retrying in 2 min: {ex.Message}", LogType.Warning);
                     StopTokenRefreshTimer();
                     _tokenRefreshTimer = new Timer(
                         TokenRefreshCallback, null,
@@ -212,16 +227,24 @@ namespace CassandraMigrationProcessor.CassandraDriver
         /// Get the managed source session (for token refresh).
         /// Returns null if no managed session exists.
         /// </summary>
-        public static ISession? ManagedSourceSession =>
+        public ISession? ManagedSourceSession =>
             _managedSourceSession;
 
         /// <summary>
         /// Set the managed source session so the token refresh
         /// timer can reconnect it proactively.
         /// </summary>
-        public static void SetManagedSourceSession(ISession session)
+        public void SetManagedSourceSession(ISession session)
         {
             _managedSourceSession = session;
+        }
+
+        public void Dispose()
+        {
+            lock (_refreshLock)
+            {
+                StopTokenRefreshTimer();
+            }
         }
     }
 }

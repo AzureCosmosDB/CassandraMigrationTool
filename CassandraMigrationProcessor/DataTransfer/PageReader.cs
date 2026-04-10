@@ -103,11 +103,10 @@ namespace CassandraMigrationProcessor.DataTransfer
             bool isLastPage = rows.Count == 0 || nextPaging == null;
 
             // Update partition and tracker — caller doesn't need to
-            partition.LastPagingState = nextPaging;
             ctx.Tracker.AddRead(rows.Count);
             ctx.Tracker.AddReadTime(stopwatch.ElapsedMilliseconds);
             var workChunk = partition.AddChunkAndTrim(nextPaging);
-            if (isLastPage) partition.IsExhausted = true;
+            partition.SetPageState(nextPaging, isLastPage);
 
             return new ReadResult(rows, workChunk, isLastPage);
         }

@@ -24,8 +24,13 @@ namespace CassandraMigrationProcessor.DataTransfer
         private ISession? _sourceSession;
         private int _consecutiveAuthErrors;
         private readonly ConcurrentDictionary<string, BulkCopyEngine> _activeProcessors = new();
+        private readonly TokenRefreshManager _tokenRefreshManager;
 
-        public MigrationWorker(MigrationLog migrationLog) => _log = migrationLog;
+        public MigrationWorker(MigrationLog migrationLog)
+        {
+            _log = migrationLog;
+            _tokenRefreshManager = new TokenRefreshManager(migrationLog);
+        }
 
         public async Task<TaskResult> StartAsync(MigrationJob job, MigrationSettings config,
             CancellationToken cancellationToken)
@@ -96,8 +101,8 @@ namespace CassandraMigrationProcessor.DataTransfer
             CancellationToken cancellationToken)
         {
             _log.WriteLine("All tables copied. Resuming change feed processors.", LogType.Info);
-            EnsureSourceSession(job, job.Tables!.First().KeyspaceName);
-            _activeProcessor = new BulkCopyEngine(_log, _sourceSession!, config, job, this);
+            EnsureSourceSession(job, job.Tables.First().KeyspaceName);
+            _activeProcessor = new BulkCopyEngine(_log, _sourceSession!, config, job, this, _tokenRefreshManager);
 
             foreach (var mub in job.Tables)
             {
@@ -165,7 +170,7 @@ namespace CassandraMigrationProcessor.DataTransfer
             ISession? localSourceSession = null;
             try
             {
-                localSourceSession = CassandraClientFactory.CreateSourceSession(_log, job, mu.KeyspaceName);
+                localSourceSession = CassandraClientFactory.CreateSourceSession(_log, job, mu.KeyspaceName, _tokenRefreshManager);
 
                 if (!await SchemaManager.TableExistsAsync(localSourceSession!, mu.KeyspaceName, mu.TableName))
                 {
@@ -230,7 +235,7 @@ namespace CassandraMigrationProcessor.DataTransfer
         private async Task RunCopyForUnitAsync(MigrationJob job, MigrationSettings config,
             ISession sourceSession, MigrationUnit mu, CancellationToken ct)
         {
-            var processor = new BulkCopyEngine(_log, sourceSession, config, job, this);
+            var processor = new BulkCopyEngine(_log, sourceSession, config, job, this, _tokenRefreshManager);
             _activeProcessors[mu.Id] = processor;
             ct.ThrowIfCancellationRequested();
 
@@ -280,11 +285,12 @@ namespace CassandraMigrationProcessor.DataTransfer
         {
             if (_sourceSession != null && !_sourceSession.IsDisposed)
                 return;
-            _sourceSession = CassandraClientFactory.CreateSourceSession(_log, job, keyspace);
+            _sourceSession = CassandraClientFactory.CreateSourceSession(_log, job, keyspace, _tokenRefreshManager);
         }
 
         private void CleanupSession()
         {
+            _tokenRefreshManager.StopTokenRefreshTimer();
             MigrationUtilities.SafeDispose(_sourceSession, "MigrationWorker source session");
             _sourceSession = null;
         }

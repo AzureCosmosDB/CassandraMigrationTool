@@ -37,7 +37,7 @@ namespace CassandraMigrationProcessor.Context
                         MigrationJobContext.CurrentlyActiveJob;
 
                 if (mu.ParentJob != null && updateParent)
-                    mu.UpdateParentJob();
+                    MigrationUnitMapper.UpdateParentJob(mu);
 
                 lock (_writeMULock)
                 {

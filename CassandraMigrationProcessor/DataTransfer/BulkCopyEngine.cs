@@ -25,24 +25,26 @@ namespace CassandraMigrationProcessor.DataTransfer
         private readonly ISession? _target;
         private readonly CancellationTokenSource _cts;
         private readonly ChangeFeedManager _changeFeedManager;
+        private readonly TokenRefreshManager? _tokenRefreshManager;
 
         public volatile bool ProcessRunning;
 
         public ChangeFeedManager ChangeFeed => _changeFeedManager;
 
         public BulkCopyEngine(MigrationLog log, ISession sourceSession, MigrationSettings config, MigrationJob job,
-            MigrationWorker worker)
+            MigrationWorker worker, TokenRefreshManager? tokenRefreshManager = null)
         {
             _migrationLog = log;
             _source = sourceSession;
             _pipelineConfig = PipelineConfig.Resolve(job, config);
             _migrationJob = job;
             _migrationWorker = worker;
+            _tokenRefreshManager = tokenRefreshManager;
             _cts = new CancellationTokenSource();
             _target = job.IsSimulatedRun
                 ? null
                 : CassandraClientFactory.CreateTargetSession(log, job, string.Empty);
-            _changeFeedManager = new ChangeFeedManager(log, job, config, _target!);
+            _changeFeedManager = new ChangeFeedManager(log, job, config, _target!, tokenRefreshManager);
         }
 
         // ── Lifecycle ──
@@ -171,7 +173,7 @@ namespace CassandraMigrationProcessor.DataTransfer
                     migrationUnit.BulkCopyEndedOn = DateTime.UtcNow;
                     migrationUnit.CopyPercent = 100;
                     migrationUnit.CopyComplete = true;
-                    migrationUnit.UpdateParentJob();
+                    MigrationUnitMapper.UpdateParentJob(migrationUnit);
 
                     _changeFeedManager.AddTable(migrationUnit, _cts.Token);
                     MigrationJobContext.SaveMigrationUnit(migrationUnit, true);
@@ -198,7 +200,7 @@ namespace CassandraMigrationProcessor.DataTransfer
             if (rowCount > 0)
             {
                 migrationUnit.EstimatedRowCount = rowCount;
-                migrationUnit.UpdateParentJob();
+                MigrationUnitMapper.UpdateParentJob(migrationUnit);
             }
 
             migrationUnit.MigrationChunks[chunkIndex].SourceQueryRowCount = rowCount;
