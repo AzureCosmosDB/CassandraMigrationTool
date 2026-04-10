@@ -29,9 +29,7 @@ namespace CassandraMigrationProcessor.DataTransfer
 
             int pageSize = job.PageSize > 0
                 ? job.PageSize
-                : settings.CqlCopyPageSize > 0
-                    ? settings.CqlCopyPageSize
-                    : MigrationDefaults.DefaultPageSize;
+                : settings.CqlCopyPageSize;
 
             int cfPollMs = settings.ChangeFeedPollIntervalMs > 0
                 ? settings.ChangeFeedPollIntervalMs
