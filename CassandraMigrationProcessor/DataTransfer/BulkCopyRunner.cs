@@ -25,16 +25,16 @@ namespace CassandraMigrationProcessor.DataTransfer
     {
         private readonly MigrationLog _log;
         private readonly MigrationJob _job;
-        private readonly MigrationSettings _config;
+        private readonly PipelineConfig _pipelineConfig;
         private readonly CancellationTokenSource _cancellation;
         private readonly ISession _targetSession;
 
-        public BulkCopyRunner(MigrationLog log, MigrationJob job, MigrationSettings config,
+        public BulkCopyRunner(MigrationLog log, MigrationJob job, PipelineConfig pipelineConfig,
             CancellationTokenSource cancellation, ISession targetSession)
         {
             _log = log;
             _job = job;
-            _config = config;
+            _pipelineConfig = pipelineConfig;
             _cancellation = cancellation;
             _targetSession = targetSession;
         }
@@ -138,8 +138,8 @@ namespace CassandraMigrationProcessor.DataTransfer
         private async Task<ExecutionResult> ExecuteAsync(PipelineRequest request, SeedResult seed, SchemaResult schema)
         {
             var ctx0 = request.Context;
-            int workerCount = ResolveWorkerCount();
-            int pageSize = ResolvePageSize();
+            int workerCount = _pipelineConfig.WorkerCount;
+            int pageSize = _pipelineConfig.PageSize;
             long priorCopied = request.MigrationUnit.CopyRowsCopied;
 
             var tracker = new CopyProgressTracker(_log, ctx0.KeyspaceName, ctx0.TableName,
@@ -225,23 +225,5 @@ namespace CassandraMigrationProcessor.DataTransfer
             return failedCount > 0 ? TaskResult.Retry : TaskResult.Success;
         }
 
-        // ── Config resolution ──
-
-        private int ResolveWorkerCount()
-        {
-            if (_job.MaxFeedRangeParallelism > 0)
-                return _job.MaxFeedRangeParallelism;
-            int totalBudget = Environment.ProcessorCount * MigrationDefaults.WorkerMultiplier;
-            int parallelTables = Math.Max(1, _job.ParallelThreads);
-            return Math.Max(MigrationDefaults.MinWorkers, totalBudget / parallelTables);
-        }
-
-        private int ResolvePageSize()
-        {
-            int jobPageSize = _job?.PageSize ?? 0;
-            if (jobPageSize > 0) return jobPageSize;
-            if (_config.CqlCopyPageSize > 0) return _config.CqlCopyPageSize;
-            return MigrationDefaults.DefaultPageSize;
-        }
     }
 }

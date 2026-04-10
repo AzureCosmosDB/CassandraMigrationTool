@@ -19,7 +19,7 @@ namespace CassandraMigrationProcessor.DataTransfer
     {
         private readonly MigrationLog _migrationLog;
         private readonly MigrationJob _migrationJob;
-        private readonly MigrationSettings _settings;
+        private readonly PipelineConfig _pipelineConfig;
         private readonly MigrationWorker _migrationWorker;
         private readonly ISession _source;
         private readonly ISession? _target;
@@ -35,7 +35,7 @@ namespace CassandraMigrationProcessor.DataTransfer
         {
             _migrationLog = log;
             _source = sourceSession;
-            _settings = config;
+            _pipelineConfig = PipelineConfig.Resolve(job, config);
             _migrationJob = job;
             _migrationWorker = worker;
             _cts = new CancellationTokenSource();
@@ -220,7 +220,7 @@ namespace CassandraMigrationProcessor.DataTransfer
                 return TaskResult.Success;
             }
 
-            var runner = new BulkCopyRunner(_migrationLog, _migrationJob, _settings, _cts, _target!);
+            var runner = new BulkCopyRunner(_migrationLog, _migrationJob, _pipelineConfig, _cts, _target!);
             var result = await runner.RunAsync(new PipelineRequest(migrationUnit, chunkIndex, initialPercent,
                 contributionFactor, rowCount, context, feedRanges));
 

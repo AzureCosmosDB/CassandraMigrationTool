@@ -17,19 +17,19 @@ namespace CassandraMigrationProcessor.DataTransfer
     {
         private readonly MigrationLog _log;
         private readonly MigrationJob _job;
-        private readonly MigrationSettings _config;
+        private readonly MigrationSettings _settings;
         private readonly ISession _targetSession;
         private ReplayProcessor? _replayProcessor;
         private readonly object _lock = new();
 
         public volatile bool IsRunning;
 
-        public ChangeFeedManager(MigrationLog log, MigrationJob job, MigrationSettings config,
+        public ChangeFeedManager(MigrationLog log, MigrationJob job, MigrationSettings settings,
             ISession targetSession)
         {
             _log = log;
             _job = job;
-            _config = config;
+            _settings = settings;
             _targetSession = targetSession;
         }
 
@@ -52,7 +52,7 @@ namespace CassandraMigrationProcessor.DataTransfer
                 {
                     var source = CassandraClientFactory.CreateSourceSession(_log, _job, mu.KeyspaceName);
                     _replayProcessor = new ReplayProcessor(_log, source, _targetSession,
-                        MigrationJobContext.MigrationUnitsCache, _config,
+                        MigrationJobContext.MigrationUnitsCache, _settings,
                         _job, true, null);
                 }
             }
@@ -77,7 +77,7 @@ namespace CassandraMigrationProcessor.DataTransfer
                 var source = CassandraClientFactory.CreateSourceSession(_log, _job, string.Empty);
                 _replayProcessor = new ReplayProcessor(_log, source, _targetSession,
                     MigrationJobContext.MigrationUnitsCache,
-                    _config, _job, false, worker);
+                    _settings, _job, false, worker);
             }
 
             _replayProcessor?.RunChangeFeedForAllTables(cancellation);
