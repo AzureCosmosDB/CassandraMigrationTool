@@ -17,7 +17,7 @@ namespace CassandraMigrationProcessor.DataTransfer
     internal class PageReader : IDisposable
     {
         private readonly MigrationLog _log;
-        private readonly CancellationTokenSource _cancellation;
+        private readonly CancellationToken _ct;
         private readonly ISession _sourceSession;
         private readonly int _workerId;
         private readonly List<string> _columnNames;
@@ -31,10 +31,10 @@ namespace CassandraMigrationProcessor.DataTransfer
             ConnectionOptions sourceConnection, string keyspace,
             List<string> columnNames, int pageSize,
             int workerId,
-            CancellationTokenSource cancellation)
+            CancellationToken cancellationToken)
         {
             _log = log;
-            _cancellation = cancellation;
+            _ct = cancellationToken;
             _workerId = workerId;
             _columnNames = columnNames;
             _pageSize = pageSize;
@@ -75,7 +75,7 @@ namespace CassandraMigrationProcessor.DataTransfer
                 {
                     _log.WriteLine($"[W{_workerId}] Read timeout (attempt {attempt}/{MaxReadRetries})",
                         LogType.Warning);
-                    await Task.Delay(attempt * RetryDelayMs, _cancellation.Token);
+                    await Task.Delay(attempt * RetryDelayMs, _ct);
                 }
             }
 

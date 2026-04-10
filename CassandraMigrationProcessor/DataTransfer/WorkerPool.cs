@@ -13,14 +13,14 @@ namespace CassandraMigrationProcessor.DataTransfer
     internal class WorkerPool : IDisposable
     {
         private readonly MigrationLog _log;
-        private readonly CancellationTokenSource _cancellation;
+        private readonly CancellationToken _ct;
         private readonly int _workerCount;
         private Task[]? _workers;
 
-        public WorkerPool(MigrationLog log, int workerCount, CancellationTokenSource cancellation)
+        public WorkerPool(MigrationLog log, int workerCount, CancellationToken cancellationToken)
         {
             _log = log;
-            _cancellation = cancellation;
+            _ct = cancellationToken;
             _workerCount = workerCount;
         }
 

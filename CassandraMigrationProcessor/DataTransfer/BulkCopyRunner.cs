@@ -26,16 +26,16 @@ namespace CassandraMigrationProcessor.DataTransfer
         private readonly MigrationLog _log;
         private readonly MigrationJob _job;
         private readonly PipelineConfig _pipelineConfig;
-        private readonly CancellationTokenSource _cancellation;
+        private readonly CancellationToken _ct;
         private readonly ISession _targetSession;
 
         public BulkCopyRunner(MigrationLog log, MigrationJob job, PipelineConfig pipelineConfig,
-            CancellationTokenSource cancellation, ISession targetSession)
+            CancellationToken cancellationToken, ISession targetSession)
         {
             _log = log;
             _job = job;
             _pipelineConfig = pipelineConfig;
-            _cancellation = cancellation;
+            _ct = cancellationToken;
             _targetSession = targetSession;
         }
 
@@ -157,8 +157,8 @@ namespace CassandraMigrationProcessor.DataTransfer
                 tracker);
 
             _log.WriteLine($"Launching {workerCount} workers for {ctx0.KeyspaceName}.{ctx0.TableName} ({seed.PendingCount} feed ranges, page size={pageSize})...", LogType.Info);
-            using var pool = new WorkerPool(_log, workerCount, _cancellation);
-            pool.Start(workerId => new BulkCopyWorker(_log, _cancellation, workerId, pageSize).RunAsync(ctx));
+            using var pool = new WorkerPool(_log, workerCount, _ct);
+            pool.Start(workerId => new BulkCopyWorker(_log, _ct, workerId, pageSize).RunAsync(ctx));
             await pool.WaitForCompletionAsync();
             ctx.PartitionPool.Writer.TryComplete();
 

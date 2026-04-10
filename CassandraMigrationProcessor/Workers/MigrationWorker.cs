@@ -105,7 +105,7 @@ namespace CassandraMigrationProcessor.DataTransfer
                     continue;
                 var mu = MigrationJobContext.GetMigrationUnit(mub.Id);
                 if (mu != null)
-                    _activeProcessor.ChangeFeed.AddTable(mu, new CancellationTokenSource());
+                    _activeProcessor.ChangeFeed.AddTable(mu, CancellationToken.None);
             }
 
             while (!cancellationToken.IsCancellationRequested && !MigrationJobContext.ControlledPauseRequested)

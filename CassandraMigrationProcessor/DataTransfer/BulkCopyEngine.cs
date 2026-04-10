@@ -89,7 +89,7 @@ namespace CassandraMigrationProcessor.DataTransfer
             else if (!MigrationJobContext.ControlledPauseRequested)
             {
                 _migrationLog.WriteLine("Invoke RunChangeFeedForAllTables.", LogType.Debug);
-                _changeFeedManager.StartAll(_cts, _migrationWorker);
+                _changeFeedManager.StartAll(_cts.Token, _migrationWorker);
             }
         }
 
@@ -173,7 +173,7 @@ namespace CassandraMigrationProcessor.DataTransfer
                     migrationUnit.CopyComplete = true;
                     migrationUnit.UpdateParentJob();
 
-                    _changeFeedManager.AddTable(migrationUnit, _cts);
+                    _changeFeedManager.AddTable(migrationUnit, _cts.Token);
                     MigrationJobContext.SaveMigrationUnit(migrationUnit, true);
 
                     if (!MigrationUtilities.IsOnline(_migrationJob))
@@ -220,7 +220,7 @@ namespace CassandraMigrationProcessor.DataTransfer
                 return TaskResult.Success;
             }
 
-            var runner = new BulkCopyRunner(_migrationLog, _migrationJob, _pipelineConfig, _cts, _target!);
+            var runner = new BulkCopyRunner(_migrationLog, _migrationJob, _pipelineConfig, _cts.Token, _target!);
             var result = await runner.RunAsync(new PipelineRequest(migrationUnit, chunkIndex, initialPercent,
                 contributionFactor, rowCount, context, feedRanges));
 

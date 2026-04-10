@@ -15,14 +15,14 @@ namespace CassandraMigrationProcessor.DataTransfer
     internal class BulkCopyWorker
     {
         private readonly MigrationLog _log;
-        private readonly CancellationTokenSource _cancellation;
+        private readonly CancellationToken _ct;
         private readonly int _workerId;
         private readonly int _pageSize;
 
-        public BulkCopyWorker(MigrationLog log, CancellationTokenSource cancellation, int workerId, int pageSize)
+        public BulkCopyWorker(MigrationLog log, CancellationToken cancellationToken, int workerId, int pageSize)
         {
             _log = log;
-            _cancellation = cancellation;
+            _ct = cancellationToken;
             _workerId = workerId;
             _pageSize = pageSize;
         }
@@ -35,11 +35,11 @@ namespace CassandraMigrationProcessor.DataTransfer
             try
             {
                 reader = new PageReader(_log, ctx.Worker.SourceConnection, ctx.Worker.Context.KeyspaceName,
-                    ctx.Worker.Columns.Select(c => c.Name).ToList(), _pageSize, _workerId, _cancellation);
+                    ctx.Worker.Columns.Select(c => c.Name).ToList(), _pageSize, _workerId, _ct);
                 writer = new PageWriter(_log, ctx.Worker.TargetConnection, ctx.Worker.Columns,
-                    ctx.Worker.Context.TargetKeyspaceName, ctx.Worker.Context.TargetTableName, _pageSize, _workerId, _cancellation);
+                    ctx.Worker.Context.TargetKeyspaceName, ctx.Worker.Context.TargetTableName, _pageSize, _workerId, _ct);
 
-                while (!_cancellation.Token.IsCancellationRequested && Volatile.Read(ref ctx.Counters.FatalErrorFlag) == 0)
+                while (!_ct.IsCancellationRequested && Volatile.Read(ref ctx.Counters.FatalErrorFlag) == 0)
                 {
                     var partition = await TakeNextPartitionAsync(ctx);
                     if (partition == null) break;
@@ -53,12 +53,11 @@ namespace CassandraMigrationProcessor.DataTransfer
                             {
                                 _log.WriteLine($"[W{_workerId}] FATAL: Read failed — failing job", LogType.Error);
                                 Interlocked.Exchange(ref ctx.Counters.FatalErrorFlag, 1);
-                                SafeCancel();
                                 break;
                             }
 
                             if (!result.IsLastPage)
-                                await ctx.PartitionPool.Writer.WriteAsync(partition, _cancellation.Token);
+                                await ctx.PartitionPool.Writer.WriteAsync(partition, _ct);
 
                             await writer.WriteAsync(result.Rows, result.WorkChunk, ctx);
                         }
@@ -80,7 +79,6 @@ namespace CassandraMigrationProcessor.DataTransfer
                         {
                             _log.WriteLine($"[W{_workerId}] FATAL — failing job", LogType.Error);
                             Interlocked.Exchange(ref ctx.Counters.FatalErrorFlag, 1);
-                            SafeCancel();
                             ctx.Counters.WorkerErrors.Add(TaskResult.Abort);
                         }
                         else
@@ -106,10 +104,16 @@ namespace CassandraMigrationProcessor.DataTransfer
             }
         }
 
-        private void SafeCancel()
+        private async Task<Partition?> TakeNextPartitionAsync(PipelineContext ctx)
         {
-            try { _cancellation.Cancel(); }
-            catch (Exception ex) { Console.Error.WriteLine($"[WARN] Worker cancel failed: {ex.Message}"); }
+            try
+            {
+                if (await ctx.PartitionPool.Reader.WaitToReadAsync(_ct))
+                    if (ctx.PartitionPool.Reader.TryRead(out var p))
+                        return p;
+            }
+            catch (OperationCanceledException) { }
+            return null;
         }
 
         private static void SaveCheckpoint(Partition partition, PipelineContext ctx)
@@ -134,18 +138,6 @@ namespace CassandraMigrationProcessor.DataTransfer
             ctx.Tracker.RangeCompleted(partition.FeedRange, TaskResult.Success);
             if (ctx.Ranges.Completed.Count >= ctx.Ranges.FeedRanges.Count)
                 ctx.PartitionPool.Writer.TryComplete();
-        }
-
-        private async Task<Partition?> TakeNextPartitionAsync(PipelineContext ctx)
-        {
-            try
-            {
-                if (await ctx.PartitionPool.Reader.WaitToReadAsync(_cancellation.Token))
-                    if (ctx.PartitionPool.Reader.TryRead(out var p))
-                        return p;
-            }
-            catch (OperationCanceledException) { }
-            return null;
         }
     }
 }

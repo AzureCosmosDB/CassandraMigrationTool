@@ -17,7 +17,7 @@ namespace CassandraMigrationProcessor.DataTransfer
     internal class PageWriter : IDisposable
     {
         private readonly MigrationLog _log;
-        private readonly CancellationTokenSource _cancellation;
+        private readonly CancellationToken _ct;
         private readonly ISession _targetSession;
         private readonly PreparedStatement _preparedInsert;
         private readonly int _workerId;
@@ -25,10 +25,10 @@ namespace CassandraMigrationProcessor.DataTransfer
 
         private const int WriteTimeoutMs = 60_000;
 
-        public PageWriter(MigrationLog log, ConnectionOptions targetConnection, List<(string Name, string Type, string Kind, string ClusteringOrder, int Position)> columns, string targetKeyspace, string targetTable, int pageSize, int workerId, CancellationTokenSource cancellation)
+        public PageWriter(MigrationLog log, ConnectionOptions targetConnection, List<(string Name, string Type, string Kind, string ClusteringOrder, int Position)> columns, string targetKeyspace, string targetTable, int pageSize, int workerId, CancellationToken cancellationToken)
         {
             _log = log;
-            _cancellation = cancellation;
+            _ct = cancellationToken;
             _workerId = workerId;
             _pageSize = pageSize;
             _targetSession = CassandraClientFactory.CreateTargetSession(log, targetConnection, "");
@@ -60,7 +60,7 @@ namespace CassandraMigrationProcessor.DataTransfer
 
             foreach (var rowValues in rows)
             {
-                if (_cancellation.Token.IsCancellationRequested
+                if (_ct.IsCancellationRequested
                     || Volatile.Read(ref ctx.Counters.FatalErrorFlag) != 0)
                     break;
 
@@ -89,11 +89,6 @@ namespace CassandraMigrationProcessor.DataTransfer
                             _log.WriteLine($"[W{_workerId}] FATAL: {ex.GetType().Name} — failing job",
                                 LogType.Error);
                             Interlocked.Exchange(ref ctx.Counters.FatalErrorFlag, 1);
-                            try { _cancellation.Cancel(); }
-                            catch (Exception cancelEx)
-                            {
-                                Console.Error.WriteLine($"[WARN] BulkCopyEngine batch cancel failed: {cancelEx.Message}");
-                            }
                         }
                         else if (!ExceptionClassifier.IsTransient(ex))
                         {

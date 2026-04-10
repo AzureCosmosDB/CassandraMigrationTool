@@ -40,7 +40,7 @@ namespace CassandraMigrationProcessor.DataTransfer
                 _replayProcessor.ExecutionCancelled = true;
         }
 
-        public bool AddTable(MigrationUnit mu, CancellationTokenSource cancellation)
+        public bool AddTable(MigrationUnit mu, CancellationToken cancellationToken)
         {
             if (!MigrationUtilities.IsOnline(_job)) return false;
 
@@ -58,12 +58,12 @@ namespace CassandraMigrationProcessor.DataTransfer
             }
 
             _log.WriteLine($"Adding {mu.KeyspaceName}.{mu.TableName} to change feed queue", LogType.Debug);
-            _replayProcessor?.AddTableToProcess(mu.Id, cancellation);
+            _replayProcessor?.AddTableToProcess(mu.Id, cancellationToken);
 
             return true;
         }
 
-        public bool StartAll(CancellationTokenSource cancellation, MigrationWorker worker)
+        public bool StartAll(CancellationToken cancellationToken, MigrationWorker worker)
         {
             if (IsRunning) return false;
             if (!MigrationUtilities.IsOnline(_job)) return false;
@@ -80,7 +80,7 @@ namespace CassandraMigrationProcessor.DataTransfer
                     _pipelineConfig, _job, false, worker);
             }
 
-            _replayProcessor?.RunChangeFeedForAllTables(cancellation);
+            _replayProcessor?.RunChangeFeedForAllTables(cancellationToken);
 
             return true;
         }

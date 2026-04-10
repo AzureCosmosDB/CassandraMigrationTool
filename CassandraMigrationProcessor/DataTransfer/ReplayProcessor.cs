@@ -64,16 +64,16 @@ namespace CassandraMigrationProcessor.DataTransfer
         /// <summary>
         /// Enqueue a single table for change-feed processing.
         /// </summary>
-        public void AddTableToProcess(string migrationUnitId, CancellationTokenSource cts)
+        public void AddTableToProcess(string migrationUnitId, CancellationToken ct)
         {
             _pendingTables.Enqueue(migrationUnitId);
-            StartPendingTables(cts);
+            StartPendingTables(ct);
         }
 
         /// <summary>
         /// Start change-feed polling for all completed tables.
         /// </summary>
-        public void RunChangeFeedForAllTables(CancellationTokenSource cts)
+        public void RunChangeFeedForAllTables(CancellationToken ct)
         {
             var job = _job;
             if (job?.Tables == null) return;
@@ -86,10 +86,10 @@ namespace CassandraMigrationProcessor.DataTransfer
                     _pendingTables.Enqueue(mub.Id);
             }
 
-            StartPendingTables(cts);
+            StartPendingTables(ct);
         }
 
-        private void StartPendingTables(CancellationTokenSource cts)
+        private void StartPendingTables(CancellationToken ct)
         {
             while (_pendingTables.TryDequeue(out var muId))
             {
@@ -112,7 +112,7 @@ namespace CassandraMigrationProcessor.DataTransfer
                             _log, _sourceSession, _targetSession,
                             _pipelineConfig, () => ExecutionCancelled);
 
-                        await worker.RunAsync(mu, cts.Token);
+                        await worker.RunAsync(mu, ct);
                     }
                     catch (Exception ex)
                     {
