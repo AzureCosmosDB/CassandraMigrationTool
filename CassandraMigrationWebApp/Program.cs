@@ -57,6 +57,7 @@ if (!string.IsNullOrEmpty(appId))
 {
     builder.Configuration["StateStore:AppID"] = appId;
     MigrationJobContext.AppId = appId;
+    DataDirectoryResolver.SetAppId(appId);
 }
 
 var useLocalDisk = Environment.GetEnvironmentVariable("StateStoreUseLocalDisk");

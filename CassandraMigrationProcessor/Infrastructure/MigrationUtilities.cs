@@ -1,4 +1,3 @@
-using CassandraMigrationProcessor.Context;
 using CassandraMigrationProcessor.Models;
 using System;
 using System.Collections.Generic;
@@ -150,73 +149,6 @@ namespace CassandraMigrationProcessor.Infrastructure
                 return false;
             return job.Tables
                 .Any(mu => IsMigrationUnitValid(mu));
-        }
-
-        public static List<MigrationUnit> GetMigrationUnitsToMigrate(
-            MigrationJob job)
-        {
-            List<MigrationUnit> units = new();
-            if (job == null) return units;
-
-            foreach (var summary in job.Tables)
-            {
-                if (!IsMigrationUnitValid(summary)) continue;
-                if (summary.CopyComplete) continue;
-                if (summary.SkippedDueToMaxRetries) continue;
-
-                var mu = MigrationJobContext.GetMigrationUnit(summary.Id);
-                if (mu != null)
-                {
-                    mu.ParentJob = job;
-                    units.Add(mu);
-                }
-            }
-            return units;
-        }
-
-        public static bool AddMigrationUnits(
-            List<MigrationUnit> unitsToAdd,
-            MigrationJob job,
-            MigrationLog MigrationLog = null)
-        {
-            var newUnits = unitsToAdd
-                .Where(mu => !job.Tables
-                    .Any(summary => summary.Id == GenerateMigrationUnitId(
-                        mu.KeyspaceName, mu.TableName)))
-                .ToList();
-
-            if (newUnits.Count > 0)
-            {
-                MigrationLog?.WriteLine(
-                    $"Adding {newUnits.Count} migration units",
-                    LogType.Debug);
-
-                foreach (var mu in newUnits)
-                {
-                    if (!MigrationJobContext.SaveMigrationUnit(mu, false))
-                    {
-                        MigrationLog?.WriteLine(
-                            $"Warning: failed to save migration unit {mu.KeyspaceName}.{mu.TableName}",
-                            LogType.Warning);
-                    }
-                    AddMigrationUnit(mu, job);
-                }
-                MigrationJobContext.SaveMigrationJob(job);
-            }
-            return true;
-        }
-
-        private static void AddMigrationUnit(
-            MigrationUnit mu, MigrationJob job)
-        {
-            if (job == null) return;
-            job.Tables ??= new List<MigrationUnitBasic>();
-
-            if (job.Tables.Find(m => m.Id == mu.Id) != null)
-                return;
-
-            mu.ParentJob = job;
-            job.Tables.Add(MigrationUnitMapper.ToSummary(mu));
         }
     }
 }

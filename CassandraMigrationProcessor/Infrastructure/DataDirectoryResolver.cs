@@ -1,4 +1,3 @@
-using CassandraMigrationProcessor.Context;
 using System;
 using System.IO;
 
@@ -7,6 +6,16 @@ namespace CassandraMigrationProcessor.Infrastructure
     public static class DataDirectoryResolver
     {
         static string _workingFolder = string.Empty;
+        private static string? _appId;
+
+        /// <summary>
+        /// Set the application ID for Linux working folder path.
+        /// Must be called before GetWorkingFolder on non-Windows.
+        /// </summary>
+        public static void SetAppId(string? appId)
+        {
+            _appId = appId;
+        }
 
         public static string GetWorkingFolder()
         {
@@ -17,7 +26,7 @@ namespace CassandraMigrationProcessor.Infrastructure
             {
                 _workingFolder =
                     $"{Environment.GetEnvironmentVariable("ResourceDrive")}/" +
-                    $"{MigrationJobContext.AppId}/";
+                    $"{_appId}/";
                 if (!Directory.Exists(_workingFolder))
                     Directory.CreateDirectory(_workingFolder);
                 MigrationUtilities.LogToFile($"WorkingFolder (Linux): {_workingFolder}");

@@ -1,12 +1,9 @@
-using CassandraMigrationProcessor.Infrastructure;
 using CassandraMigrationProcessor.Models;
-using CassandraMigrationProcessor.Infrastructure;
-using CassandraMigrationProcessor.Context;
 using System;
 using System.Threading;
 using System.Threading.Tasks;
 
-namespace CassandraMigrationProcessor.Context
+namespace CassandraMigrationProcessor.Infrastructure
 {
     public class RetryHelper
     {

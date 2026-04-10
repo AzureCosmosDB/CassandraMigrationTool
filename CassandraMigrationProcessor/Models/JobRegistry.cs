@@ -1,6 +1,5 @@
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
-using CassandraMigrationProcessor.Infrastructure;
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -29,7 +28,6 @@ namespace CassandraMigrationProcessor.Models
 
         private static readonly object _writeLock = new object();
         private static readonly object _loadLock = new object();
-        private MigrationLog _log;
 
         public class ConnectionAccessor
         {
@@ -49,11 +47,6 @@ namespace CassandraMigrationProcessor.Models
 
             // Add this property to expose dictionary keys
             public IEnumerable<string> Keys => _dict.Keys;
-        }
-
-        public void SetLog(MigrationLog _log)
-        {
-            this._log = _log;
         }
     }
 }

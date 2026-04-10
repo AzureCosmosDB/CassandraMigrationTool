@@ -49,7 +49,8 @@ namespace CassandraMigrationProcessor.DataTransfer
         public async Task RunAsync(MigrationUnit mu, CancellationToken ct)
         {
             var feedRanges = await CassandraQueries.GetFeedRangesAsync(
-                _sourceSession, mu.KeyspaceName, mu.TableName);
+                _sourceSession, mu.KeyspaceName, mu.TableName,
+                msg => MigrationJobContext.AddVerboseLog(msg));
 
             _log.WriteLine(
                 $"Feed ranges discovered: {feedRanges.Count} for {mu.KeyspaceName}.{mu.TableName}",

@@ -105,6 +105,30 @@ namespace CassandraMigrationProcessor.Context
         public static void InitializeLog(MigrationLog MigrationLog)
         {
             _log ??= MigrationLog;
+            if (Store != null)
+            {
+                _log?.SetStorage(CreateLogStorageCallbacks(Store));
+            }
+        }
+
+        public static LogStorageCallbacks CreateLogStorageCallbacks(
+            Persistence.IPersistenceStorage store)
+        {
+            return new LogStorageCallbacks
+            {
+                ReadLogs = id =>
+                {
+                    var bucket = store.ReadLogs(id, out var backupFile);
+                    return (bucket, backupFile);
+                },
+                PushLogEntry = (jobId, logObj) =>
+                    store.PushLogEntry(jobId, logObj),
+                ExportLogsAsBytes = (id, top, bottom) =>
+                    store.ExportLogsAsBytes(id, top, bottom),
+                GetLogCount = id => store.GetLogCount(id),
+                DownloadLogsPaginated = (id, skip, take) =>
+                    store.DownloadLogsPaginated(id, skip, take),
+            };
         }
 
         public static MigrationJob? CurrentlyActiveJob
@@ -152,6 +176,7 @@ namespace CassandraMigrationProcessor.Context
                     configuration["StateStore:ConnectionStringOrPath"];
                 appId = configuration["StateStore:AppID"];
                 AppId = appId;
+                DataDirectoryResolver.SetAppId(appId);
             }
             catch (Exception ex)
             {

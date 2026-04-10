@@ -206,7 +206,7 @@ namespace CassandraMigrationProcessor.DataTransfer
                 await SchemaManager.EnsureKeyspaceExistsAsync(_target, context.TargetKeyspaceName);
 
             var feedRanges = await CassandraQueries.GetFeedRangesAsync(context.SourceSession, context.KeyspaceName,
-                context.TableName);
+                context.TableName, msg => MigrationJobContext.AddVerboseLog(msg));
 
             _migrationLog.WriteLine($"{context.KeyspaceName}.{context.TableName}: " +
                 $"{(rowCount >= 0 ? $"{rowCount:N0} rows" : "count unavailable")}, " +

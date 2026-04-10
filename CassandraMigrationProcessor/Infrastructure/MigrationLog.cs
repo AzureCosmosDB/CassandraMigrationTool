@@ -1,4 +1,3 @@
-using CassandraMigrationProcessor.Context;
 using CassandraMigrationProcessor.Models;
 using System;
 using System.Collections.Generic;
@@ -8,6 +7,19 @@ namespace CassandraMigrationProcessor.Infrastructure
     public class LogBucket
     {
         public List<LogObject>? Logs { get; set; } = new List<LogObject>();
+    }
+
+    /// <summary>
+    /// Delegate contracts for log persistence operations, so
+    /// MigrationLog does not need to reference the Persistence layer.
+    /// </summary>
+    public class LogStorageCallbacks
+    {
+        public Func<string, (LogBucket bucket, string backupFile)>? ReadLogs { get; set; }
+        public Action<string, LogObject>? PushLogEntry { get; set; }
+        public Func<string, int, int, byte[]>? ExportLogsAsBytes { get; set; }
+        public Func<string, int>? GetLogCount { get; set; }
+        public Func<string, int, int, byte[]>? DownloadLogsPaginated { get; set; }
     }
 
     public class MigrationLog : IDisposable
@@ -20,12 +32,21 @@ namespace CassandraMigrationProcessor.Infrastructure
         private List<LogObject> _verboseMessages = new List<LogObject>();
         private string _currentId = string.Empty;
         private MigrationJob? CurrentlyActiveJob;
+        private LogStorageCallbacks? _storage;
 
         private readonly object _verboseLock = new object();
         private readonly object _writeLock = new object();
         private readonly object _initLock = new object();
 
         public bool IsInitialized { get; set; } = false;
+
+        /// <summary>
+        /// Set the persistence callbacks for log I/O.
+        /// </summary>
+        public void SetStorage(LogStorageCallbacks? storage)
+        {
+            _storage = storage;
+        }
 
         /// <summary>
         /// Set the migration job reference for MigrationLog level filtering
@@ -84,7 +105,10 @@ namespace CassandraMigrationProcessor.Infrastructure
 
         public LogBucket ReadLogFile(string id, out string logBackupFile)
         {
-            return MigrationJobContext.Store.ReadLogs(id, out logBackupFile);
+            var result = _storage?.ReadLogs?.Invoke(id)
+                ?? (new LogBucket(), string.Empty);
+            logBackupFile = result.backupFile;
+            return result.bucket;
         }
 
         public void WriteLine(string message, LogType logType = LogType.Info)
@@ -130,7 +154,7 @@ namespace CassandraMigrationProcessor.Infrastructure
                     }
 
                     // Persist to file
-                    MigrationJobContext.Store.PushLogEntry(_currentId, logObj);
+                    _storage?.PushLogEntry?.Invoke(_currentId, logObj);
                 }
             }
             catch (Exception ex)
@@ -155,17 +179,19 @@ namespace CassandraMigrationProcessor.Infrastructure
 
         public byte[] ExportLogsAsBytes(string id, int topEntries = 20, int bottomEntries = 230)
         {
-            return MigrationJobContext.Store.ExportLogsAsBytes(id, topEntries, bottomEntries);
+            return _storage?.ExportLogsAsBytes?.Invoke(id, topEntries, bottomEntries)
+                ?? Array.Empty<byte>();
         }
 
         public int GetLogCount(string id)
         {
-            return MigrationJobContext.Store.GetLogCount(id);
+            return _storage?.GetLogCount?.Invoke(id) ?? 0;
         }
 
         public byte[] DownloadLogsPaginated(string id, int skip, int take)
         {
-            return MigrationJobContext.Store.DownloadLogsPaginated(id, skip, take);
+            return _storage?.DownloadLogsPaginated?.Invoke(id, skip, take)
+                ?? Array.Empty<byte>();
         }
     }
 }

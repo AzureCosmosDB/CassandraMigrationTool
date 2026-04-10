@@ -37,7 +37,7 @@ namespace CassandraMigrationProcessor.DataTransfer
         {
             try
             {
-                var units = MigrationUtilities.GetMigrationUnitsToMigrate(job);
+                var units = UnitStore.GetMigrationUnitsToMigrate(job);
 
                 if (units == null || units.Count == 0)
                 {
@@ -254,7 +254,8 @@ namespace CassandraMigrationProcessor.DataTransfer
             try
             {
                 var rangeCount = (await CassandraQueries.GetFeedRangesAsync(session,
-                    mu.KeyspaceName, mu.TableName)).Count;
+                    mu.KeyspaceName, mu.TableName,
+                    msg => MigrationJobContext.AddVerboseLog(msg))).Count;
                 _log.WriteLine($"Feed ranges: {rangeCount} for {mu.KeyspaceName}.{mu.TableName}", LogType.Debug);
             }
             catch (Exception ex)

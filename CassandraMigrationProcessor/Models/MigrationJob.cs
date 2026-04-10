@@ -1,5 +1,4 @@
 using Newtonsoft.Json;
-using CassandraMigrationProcessor.Infrastructure;
 using System;
 using System.Collections.Generic;
 
@@ -12,7 +11,7 @@ namespace CassandraMigrationProcessor.Models
 
         // Source: Cosmos DB Cassandra API
         public string? SourceContactPoint { get; set; }
-        public int SourcePort { get; set; } = MigrationDefaults.CosmosDbCassandraPort;
+        public int SourcePort { get; set; } = 10350;
         public string? SourceUsername { get; set; }
         /// <summary>
         /// Never persisted to disk. On resume the token is
@@ -24,7 +23,7 @@ namespace CassandraMigrationProcessor.Models
 
         // Target: OSS Cassandra
         public string? TargetContactPoint { get; set; }
-        public int TargetPort { get; set; } = MigrationDefaults.DefaultCassandraPort;
+        public int TargetPort { get; set; } = 9042;
         public string? TargetUsername { get; set; }
         /// <summary>
         /// Never persisted to disk. On resume the password is

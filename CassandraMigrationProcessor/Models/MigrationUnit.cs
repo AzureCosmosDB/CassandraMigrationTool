@@ -1,8 +1,8 @@
 using Newtonsoft.Json;
-using CassandraMigrationProcessor.Context;
-using CassandraMigrationProcessor.Infrastructure;
 using System;
 using System.Collections.Generic;
+using System.Security.Cryptography;
+using System.Text;
 using System.Threading;
 
 namespace CassandraMigrationProcessor.Models
@@ -157,7 +157,7 @@ namespace CassandraMigrationProcessor.Models
             string tableName,
             List<MigrationChunk> migrationChunks)
         {
-            this.Id = MigrationUtilities.GenerateMigrationUnitId(
+            this.Id = GenerateMigrationUnitId(
                 keyspaceName, tableName);
             this.KeyspaceName = keyspaceName;
             this.TableName = tableName;
@@ -168,6 +168,19 @@ namespace CassandraMigrationProcessor.Models
             {
                 this.JobId = job.Id;
                 this.ParentJob = job;
+            }
+        }
+
+        internal static string GenerateMigrationUnitId(
+            string keyspaceName, string tableName)
+        {
+            using (var sha = SHA256.Create())
+            {
+                byte[] hashBytes = sha.ComputeHash(
+                    Encoding.UTF8.GetBytes(
+                        $"{keyspaceName}.{tableName}"));
+                return BitConverter.ToString(hashBytes)
+                    .Replace("-", "").Substring(0, 16).ToLower();
             }
         }
 

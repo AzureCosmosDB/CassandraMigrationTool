@@ -4,6 +4,7 @@
 @using CassandraMigrationProcessor
 @using CassandraMigrationProcessor.Infrastructure
 @using CassandraMigrationProcessor.Models
+@using CassandraMigrationProcessor.Context
 @using System.Linq
 
 @inject Service.JobManager JobManager
@@ -436,7 +437,7 @@ else if (@_showLogBackupFile)
 
         // Load config to get LogPageSize threshold
         _config ??= new CassandraMigrationProcessor.Models.MigrationSettings();
-        _config.Load();
+        CassandraMigrationProcessor.Context.SettingsManager.Load(_config);
         int logThreshold = _config.LogPageSize;
 
         if (_logEntryCount > logThreshold)
@@ -919,7 +920,7 @@ else if (@_showLogBackupFile)
             //         Helper.AddMigrationUnit(mu, CurrentlyLoadedMigrationJob);
             //     }
             // }
-            if (!MigrationUtilities.AddMigrationUnits(migrationUnits, CurrentlyLoadedMigrationJob))
+            if (!UnitStore.AddMigrationUnits(migrationUnits, CurrentlyLoadedMigrationJob))
             {
                 _errorMessage = "Target namespace clash detected. Multiple source collections cannot map to the same target collection.";
                 return;

@@ -1,5 +1,4 @@
 using Newtonsoft.Json;
-using CassandraMigrationProcessor.Context;
 using System;
 
 namespace CassandraMigrationProcessor.Models
@@ -7,19 +6,19 @@ namespace CassandraMigrationProcessor.Models
     public class MigrationSettings : ICloneable
     {
         // Default values
-        private const int DefaultCqlCopyPageSize = 500;
-        private const int DefaultChangeFeedMaxRows = 10000;
-        private const int DefaultChangeFeedBatchDuration = 120;
-        private const int DefaultChangeFeedBatchDurationMin = 30;
-        private const int DefaultChangeFeedMaxTables = 5;
-        private const int DefaultChangeFeedPollIntervalMs = 5000;
-        private const int DefaultLogPageSize = 5000;
+        internal const int DefaultCqlCopyPageSize = 500;
+        internal const int DefaultChangeFeedMaxRows = 10000;
+        internal const int DefaultChangeFeedBatchDuration = 120;
+        internal const int DefaultChangeFeedBatchDurationMin = 30;
+        internal const int DefaultChangeFeedMaxTables = 5;
+        internal const int DefaultChangeFeedPollIntervalMs = 5000;
+        internal const int DefaultLogPageSize = 5000;
 
         // Clamping bounds
-        private const int MaxChangeFeedMaxRows = 10000;
-        private const int MinChangeFeedBatchDuration = 20;
-        private const int MinLogPageSize = 1000;
-        private const int MaxLogPageSize = 100000;
+        internal const int MaxChangeFeedMaxRows = 10000;
+        internal const int MinChangeFeedBatchDuration = 20;
+        internal const int MinLogPageSize = 1000;
+        internal const int MaxLogPageSize = 100000;
 
         public int LogPageSize { get; set; }
         public int CqlCopyPageSize { get; set; }
@@ -30,15 +29,8 @@ namespace CassandraMigrationProcessor.Models
         public int ChangeFeedPollIntervalMs { get; set; }
         public int MaxFeedRangeParallelism { get; set; }
 
-        // Load and Save live on the model for simplicity: the
-        // settings file is a single global config.json and there
-        // is no separate service boundary that warrants extraction.
-
-        private string _filePath = string.Empty;
-
         public MigrationSettings()
         {
-            _filePath = $"{JobStore.JobsFolder}\\config.json";
         }
 
         public object Clone()
@@ -51,10 +43,10 @@ namespace CassandraMigrationProcessor.Models
         private static int DefaultOrValue(int loaded, int defaultVal)
             => loaded == 0 ? defaultVal : loaded;
 
-        private static int DefaultParallelism()
+        internal static int DefaultParallelism()
             => Math.Max(4, Environment.ProcessorCount * 2);
 
-        private void ApplyDefaults()
+        internal void ApplyDefaults()
         {
             CqlCopyPageSize = DefaultCqlCopyPageSize;
             ChangeFeedMaxRowsInBatch = DefaultChangeFeedMaxRows;
@@ -66,7 +58,7 @@ namespace CassandraMigrationProcessor.Models
             LogPageSize = DefaultLogPageSize;
         }
 
-        private void ClampValues()
+        internal void ClampValues()
         {
             if (ChangeFeedMaxRowsInBatch > MaxChangeFeedMaxRows)
                 ChangeFeedMaxRowsInBatch = MaxChangeFeedMaxRows;
@@ -78,56 +70,17 @@ namespace CassandraMigrationProcessor.Models
                 LogPageSize = MaxLogPageSize;
         }
 
-        // TODO: Extract to SettingsManager
-        public void Load()
+        internal void ApplyLoaded(MigrationSettings loaded)
         {
-            if (MigrationJobContext.Store == null) return;
-
-            if (MigrationJobContext.Store.Exists(_filePath))
-            {
-                string json = MigrationJobContext.Store.Read(_filePath);
-                var loaded =
-                    JsonConvert.DeserializeObject<MigrationSettings>(json);
-                if (loaded != null)
-                {
-                    CqlCopyPageSize = DefaultOrValue(loaded.CqlCopyPageSize, DefaultCqlCopyPageSize);
-                    ChangeFeedMaxRowsInBatch = DefaultOrValue(loaded.ChangeFeedMaxRowsInBatch, DefaultChangeFeedMaxRows);
-                    ChangeFeedBatchDuration = DefaultOrValue(loaded.ChangeFeedBatchDuration, DefaultChangeFeedBatchDuration);
-                    ChangeFeedBatchDurationMin = DefaultOrValue(loaded.ChangeFeedBatchDurationMin, DefaultChangeFeedBatchDurationMin);
-                    ChangeFeedMaxTablesInBatch = DefaultOrValue(loaded.ChangeFeedMaxTablesInBatch, DefaultChangeFeedMaxTables);
-                    LogPageSize = DefaultOrValue(loaded.LogPageSize, DefaultLogPageSize);
-                    ChangeFeedPollIntervalMs = DefaultOrValue(loaded.ChangeFeedPollIntervalMs, DefaultChangeFeedPollIntervalMs);
-                    MaxFeedRangeParallelism = DefaultOrValue(loaded.MaxFeedRangeParallelism, DefaultParallelism());
-
-                    ClampValues();
-                    return;
-                }
-            }
-
-            ApplyDefaults();
-        }
-
-        // TODO: Extract to SettingsManager
-        public bool Save(out string errorMessage)
-        {
-            if (MigrationJobContext.Store == null)
-            {
-                errorMessage = "Store not initialized";
-                return false;
-            }
-
-            try
-            {
-                string json = JsonConvert.SerializeObject(this);
-                MigrationJobContext.Store.Write(_filePath, json);
-                errorMessage = string.Empty;
-                return true;
-            }
-            catch (Exception ex)
-            {
-                errorMessage = $"Error saving data: {ex}";
-                return false;
-            }
+            CqlCopyPageSize = DefaultOrValue(loaded.CqlCopyPageSize, DefaultCqlCopyPageSize);
+            ChangeFeedMaxRowsInBatch = DefaultOrValue(loaded.ChangeFeedMaxRowsInBatch, DefaultChangeFeedMaxRows);
+            ChangeFeedBatchDuration = DefaultOrValue(loaded.ChangeFeedBatchDuration, DefaultChangeFeedBatchDuration);
+            ChangeFeedBatchDurationMin = DefaultOrValue(loaded.ChangeFeedBatchDurationMin, DefaultChangeFeedBatchDurationMin);
+            ChangeFeedMaxTablesInBatch = DefaultOrValue(loaded.ChangeFeedMaxTablesInBatch, DefaultChangeFeedMaxTables);
+            LogPageSize = DefaultOrValue(loaded.LogPageSize, DefaultLogPageSize);
+            ChangeFeedPollIntervalMs = DefaultOrValue(loaded.ChangeFeedPollIntervalMs, DefaultChangeFeedPollIntervalMs);
+            MaxFeedRangeParallelism = DefaultOrValue(loaded.MaxFeedRangeParallelism, DefaultParallelism());
+            ClampValues();
         }
     }
 }

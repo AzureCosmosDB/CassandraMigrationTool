@@ -1,6 +1,5 @@
 using Cassandra;
 using CassandraMigrationProcessor.Infrastructure;
-using CassandraMigrationProcessor.Context;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -133,7 +132,8 @@ namespace CassandraMigrationProcessor.CassandraDriver
         /// physical partition. Returns empty list if the
         /// system table is not available.
         /// </summary>
-        public static async Task<List<string>> GetFeedRangesAsync(ISession session, string keyspace, string table)
+        public static async Task<List<string>> GetFeedRangesAsync(ISession session, string keyspace, string table,
+            Action<string> verboseLog = null)
         {
             var ranges = new List<string>();
             try
@@ -150,7 +150,7 @@ namespace CassandraMigrationProcessor.CassandraDriver
             }
             catch (Exception ex)
             {
-                MigrationJobContext.AddVerboseLog($"GetFeedRanges error: {ex.Message}");
+                verboseLog?.Invoke($"GetFeedRanges error: {ex.Message}");
             }
             return ranges;
         }

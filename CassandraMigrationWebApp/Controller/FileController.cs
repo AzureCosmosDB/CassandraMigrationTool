@@ -19,7 +19,9 @@ public class FileController : ControllerBase
     [HttpGet("download/MigrationLog/{Id}")]
     public IActionResult DownloadFile(string Id)
     {
-        var fileBytes = new MigrationLog().ExportLogsAsBytes(Id, 0, 0);
+        var log = new MigrationLog();
+        log.SetStorage(MigrationJobContext.CreateLogStorageCallbacks(_ctx.Store));
+        var fileBytes = log.ExportLogsAsBytes(Id, 0, 0);
         return File(fileBytes, "application/octet-stream", $"{Id}.txt");
     }
 
@@ -72,7 +74,9 @@ public class FileController : ControllerBase
     {
         try
         {
-            int count = new MigrationLog().GetLogCount(Id);
+            var countLog = new MigrationLog();
+            countLog.SetStorage(MigrationJobContext.CreateLogStorageCallbacks(_ctx.Store));
+            int count = countLog.GetLogCount(Id);
             return Ok(new { count });
         }
         catch (Exception ex)
@@ -89,7 +93,9 @@ public class FileController : ControllerBase
             // Calculate skip/take for pagination
             int skip = (pageNumber - 1) * pageSize;
 
-            var fileBytes = new MigrationLog().DownloadLogsPaginated(Id, skip, pageSize);
+            var pageLog = new MigrationLog();
+            pageLog.SetStorage(MigrationJobContext.CreateLogStorageCallbacks(_ctx.Store));
+            var fileBytes = pageLog.DownloadLogsPaginated(Id, skip, pageSize);
             var contentType = "application/octet-stream";
             return File(fileBytes, contentType, $"{Id}_page_{pageNumber}.txt");
         }

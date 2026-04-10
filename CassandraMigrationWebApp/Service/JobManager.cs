@@ -15,7 +15,7 @@ namespace CassandraMigrationWebApp.Service
     public class JobManager
     {
         private MigrationWorker? MigrationWorker { get; set; }
-        private MigrationLog _log = new MigrationLog();
+        private MigrationLog _log;
         private CancellationTokenSource? _migrationCts;
         private string _runningJobId = string.Empty;
         private readonly object _stateLock = new();
@@ -31,10 +31,19 @@ namespace CassandraMigrationWebApp.Service
         {
             _configuration = configuration;
             _ctx = ctx;
+            _log = CreateLog();
 
             MigrationJobContext.Initialize(_configuration);
 
             MigrationUtilities.LogToFile("JobManager initialized");
+        }
+
+        private MigrationLog CreateLog()
+        {
+            var log = new MigrationLog();
+            if (_ctx.Store != null)
+                log.SetStorage(MigrationJobContext.CreateLogStorageCallbacks(_ctx.Store));
+            return log;
         }
 
         #region Configuration Management
@@ -59,13 +68,13 @@ namespace CassandraMigrationWebApp.Service
                 return false;
             }
             // Save the updated config
-            return updated_config.Save(out errorMessage);
+            return SettingsManager.Save(updated_config, out errorMessage);
         }
 
         public CassandraMigrationProcessor.Models.MigrationSettings GetConfig()
         {
             MigrationSettings config = new MigrationSettings();
-            config.Load();
+            SettingsManager.Load(config);
             return config;
         }
 
@@ -153,13 +162,13 @@ namespace CassandraMigrationWebApp.Service
 
             // If migration worker is not running, get from file
             isLiveLog = false;
-            MigrationLog MigrationLog = new MigrationLog();
+            MigrationLog MigrationLog = CreateLog();
             return MigrationLog.ReadLogFile(id, out fileName) ?? new LogBucket { Logs = new List<LogObject>() };
         }
 
         public int GetLogCount(string jobId)
         {
-            MigrationLog MigrationLog = new MigrationLog();
+            MigrationLog MigrationLog = CreateLog();
             return MigrationLog.GetLogCount(jobId);
         }
 
@@ -169,7 +178,7 @@ namespace CassandraMigrationWebApp.Service
                 return Array.Empty<byte>();
 
             int skip = (pageNumber - 1) * pageSize;
-            MigrationLog MigrationLog = new MigrationLog();
+            MigrationLog MigrationLog = CreateLog();
             return MigrationLog.DownloadLogsPaginated(jobId, skip, pageSize);
         }
 
@@ -242,7 +251,7 @@ namespace CassandraMigrationWebApp.Service
                     return Task.CompletedTask;
                 }
 
-                _log = new MigrationLog();
+                _log = CreateLog();
                 _log.Init(job.Id);
                 _log.SetJob(job);
                 MigrationWorker = new MigrationWorker(_log);
@@ -270,7 +279,7 @@ namespace CassandraMigrationWebApp.Service
             job.Status = JobStatus.Running;
 
             var config = new MigrationSettings();
-            config.Load();
+            SettingsManager.Load(config);
 
             // Background migration: stored so exceptions are observable and
             // the task can be awaited during shutdown if needed.
@@ -415,7 +424,7 @@ namespace CassandraMigrationWebApp.Service
             {
                 // Clear any wildcard entries
                 job.Tables?.RemoveAll(m => m.TableName == "*");
-                MigrationUtilities.AddMigrationUnits(expandedUnits, job, _log);
+                UnitStore.AddMigrationUnits(expandedUnits, job, _log);
             }
         }
 
