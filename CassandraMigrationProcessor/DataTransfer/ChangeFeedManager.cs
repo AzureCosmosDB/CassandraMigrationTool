@@ -18,19 +18,19 @@ namespace CassandraMigrationProcessor.DataTransfer
         private readonly MigrationLog _log;
         private readonly MigrationJob _job;
         private readonly MigrationSettings _config;
-        private readonly Func<ISession> _ensureTargetSession;
+        private readonly ISession _targetSession;
         private ReplayProcessor? _replayProcessor;
         private readonly object _lock = new();
 
         public volatile bool IsRunning;
 
         public ChangeFeedManager(MigrationLog log, MigrationJob job, MigrationSettings config,
-            Func<ISession> ensureTargetSession)
+            ISession targetSession)
         {
             _log = log;
             _job = job;
             _config = config;
-            _ensureTargetSession = ensureTargetSession;
+            _targetSession = targetSession;
         }
 
         public void Stop()
@@ -46,13 +46,12 @@ namespace CassandraMigrationProcessor.DataTransfer
 
             lock (_lock)
             {
-                var target = _ensureTargetSession();
-                SchemaManager.EnsureKeyspaceExists(target, mu.GetEffectiveTargetKeyspaceName());
+                SchemaManager.EnsureKeyspaceExists(_targetSession, mu.GetEffectiveTargetKeyspaceName());
 
                 if (_replayProcessor == null)
                 {
                     var source = CassandraClientFactory.CreateSourceSession(_log, _job, mu.KeyspaceName);
-                    _replayProcessor = new ReplayProcessor(_log, source, target,
+                    _replayProcessor = new ReplayProcessor(_log, source, _targetSession,
                         MigrationJobContext.MigrationUnitsCache, _config,
                         _job, true, null);
                 }
@@ -73,14 +72,10 @@ namespace CassandraMigrationProcessor.DataTransfer
 
             IsRunning = true;
 
-            if (!_job.IsSimulatedRun)
-                _ensureTargetSession();
-
             if (_replayProcessor == null)
             {
-                var target = _ensureTargetSession();
                 var source = CassandraClientFactory.CreateSourceSession(_log, _job, string.Empty);
-                _replayProcessor = new ReplayProcessor(_log, source, target,
+                _replayProcessor = new ReplayProcessor(_log, source, _targetSession,
                     MigrationJobContext.MigrationUnitsCache,
                     _config, _job, false, worker);
             }

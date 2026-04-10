@@ -42,7 +42,7 @@ namespace CassandraMigrationProcessor.DataTransfer
             _target = job.IsSimulatedRun
                 ? null
                 : CassandraClientFactory.CreateTargetSession(log, job, string.Empty);
-            _changeFeedManager = new ChangeFeedManager(log, job, config, () => _target!);
+            _changeFeedManager = new ChangeFeedManager(log, job, config, _target!);
         }
 
         // ── Lifecycle ──
@@ -220,7 +220,7 @@ namespace CassandraMigrationProcessor.DataTransfer
                 return TaskResult.Success;
             }
 
-            var runner = new BulkCopyRunner(_migrationLog, _migrationJob, _settings, _cts, () => _target!);
+            var runner = new BulkCopyRunner(_migrationLog, _migrationJob, _settings, _cts, _target!);
             var result = await runner.RunAsync(new PipelineRequest(migrationUnit, chunkIndex, initialPercent,
                 contributionFactor, rowCount, context, feedRanges));
 

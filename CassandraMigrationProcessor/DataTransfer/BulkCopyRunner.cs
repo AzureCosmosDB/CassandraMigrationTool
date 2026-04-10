@@ -23,16 +23,16 @@ namespace CassandraMigrationProcessor.DataTransfer
         private readonly MigrationJob _job;
         private readonly MigrationSettings _config;
         private readonly CancellationTokenSource _cancellation;
-        private readonly Func<ISession> _ensureTargetSession;
+        private readonly ISession _targetSession;
 
         public BulkCopyRunner(MigrationLog log, MigrationJob job, MigrationSettings config,
-            CancellationTokenSource cancellation, Func<ISession> ensureTargetSession)
+            CancellationTokenSource cancellation, ISession targetSession)
         {
             _log = log;
             _job = job;
             _config = config;
             _cancellation = cancellation;
-            _ensureTargetSession = ensureTargetSession;
+            _targetSession = targetSession;
         }
 
         public async Task<TaskResult> RunAsync(PipelineRequest request)
@@ -49,7 +49,7 @@ namespace CassandraMigrationProcessor.DataTransfer
 
             // Stage 2: Schema sync
             var columns = await SchemaManager.SyncSchemaAsync(
-                ctx0.SourceSession, _ensureTargetSession(),
+                ctx0.SourceSession, _targetSession,
                 ctx0.KeyspaceName, ctx0.TableName,
                 ctx0.TargetKeyspaceName, ctx0.TargetTableName);
             if (columns.Count == 0)
