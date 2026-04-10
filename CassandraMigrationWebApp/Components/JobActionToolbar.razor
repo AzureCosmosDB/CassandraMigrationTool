@@ -1,0 +1,119 @@
+@using CassandraMigrationProcessor
+@using CassandraMigrationProcessor.Models
+@using CassandraMigrationProcessor.Infrastructure
+
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <h3>
+        <button class="btn btn-light" @onclick="OnGoBack" title="Back to Job List" style="border: none; background: transparent;">
+            <i class="bi bi-arrow-left"></i>
+        </button>
+        @Job?.Name - Job Status
+    </h3>
+    <div class="d-flex align-items-center mb-3">
+
+        @if (IsResumeEnabled && !IsLoadingCollections)
+        {
+            <div class="btn-group mx-2">
+                <button class="btn btn-primary dropdown-toggle" type="button" id="resumeJobDropdown" data-bs-toggle="dropdown" aria-expanded="false">
+                    Resume Job
+                </button>
+                <ul class="dropdown-menu" aria-labelledby="resumeJobDropdown">
+                    <li><a class="dropdown-item" @onclick="OnResumeWithNewConnectionString">With Updated Connection Strings</a></li>
+                    @if (HasExistingConnectionStrings)
+                    {
+                        <li><a class="dropdown-item" @onclick="OnResumeWithExistingConnectionString">With Existing Connection Strings</a></li>
+                    }
+                </ul>
+            </div>
+        }
+
+        @if (IsPauseEnabled && !IsLoadingCollections)
+        {
+            @if (IsControlledPauseApplicable)
+            {
+                <div class="btn-group mx-2">
+                    <button class="btn btn-primary dropdown-toggle" type="button" id="pauseJobDropdown" data-bs-toggle="dropdown" aria-expanded="false" title="Choose pause method">
+                        Pause Job
+                    </button>
+                    <ul class="dropdown-menu" aria-labelledby="pauseJobDropdown">
+                        <li><a class="dropdown-item" @onclick="OnPauseControlled" title="Stops accepting new chunks but allows active chunks to complete"><i class="bi bi-pause-circle"></i> Controlled Pause (Graceful)</a></li>
+                        <li><a class="dropdown-item" @onclick="OnPauseImmediate" title="Immediately cancels all operations"><i class="bi bi-stop-circle"></i> Immediate Stop</a></li>
+                    </ul>
+                </div>
+            }
+            else
+            {
+                <button class="btn btn-primary mx-2" title="Pause Job" @onclick="OnPauseImmediate">Pause Job</button>
+            }
+            
+            @if (IsControlledPauseRequested && IsRunning)
+            {
+                <span class="badge bg-warning text-dark mx-2" title="Controlled pause in progress - waiting for active chunks to complete">
+                    <i class="bi bi-hourglass-split"></i> Pausing...
+                </span>
+            }
+            
+            @if (Job != null && MigrationUtilities.IsOnline(Job))
+            {
+                var lagInfo = ChangeFeedLag;
+                <span class="badge @(lagInfo.IsLow ? "bg-success" : "bg-warning text-dark") me-1"
+                      title="Time since last change feed event across all tables">
+                    <i class="bi bi-clock-history"></i> Lag: @lagInfo.Display
+                </span>
+                <button class="btn btn-warning" title="Perform Cut Over — stops change feed and completes migration" disabled="@(!CutoverReady)" @onclick="OnComplete">
+                    <i class="bi bi-check2-circle"></i> Cut Over
+                </button>
+            }
+
+            <button class="btn btn-danger mx-1" title="Cancel this migration permanently" @onclick="OnCancel">
+                <i class="bi bi-x-circle"></i> Cancel
+            </button>
+
+            <button class="btn btn-toolbar" title="Refresh" @onclick="OnRefresh">
+                <i class="bi bi-arrow-repeat"></i>
+            </button>
+
+            <button class="btn btn-sm @((Job?.AutoRefreshEnabled ?? true) ? "btn-outline-success" : "btn-outline-secondary") ms-2" 
+                    @onclick="OnToggleAutoRefresh" 
+                    title="@((Job?.AutoRefreshEnabled ?? true) ? "Auto-refresh is ON - Click to pause UI updates" : "Auto-refresh is OFF - Click to resume UI updates")"
+                    style="border: 1px solid;">
+                <i class="bi @((Job?.AutoRefreshEnabled ?? true) ? "bi-play-fill" : "bi-pause-fill")"></i>
+            </button>
+        }
+
+    </div>
+</div>
+
+
+@if (!string.IsNullOrEmpty(ErrorMessage))
+{
+    <div class="alert alert-danger mt-2">
+        @ErrorMessage
+        <button type="button" class="btn-close btn-close-sm" aria-label="Close" @onclick="OnDismissError"></button>
+    </div>
+}
+
+@code {
+    [Parameter] public MigrationJob? Job { get; set; }
+    [Parameter] public bool IsResumeEnabled { get; set; }
+    [Parameter] public bool IsPauseEnabled { get; set; }
+    [Parameter] public bool IsRunning { get; set; }
+    [Parameter] public bool IsLoadingCollections { get; set; }
+    [Parameter] public bool HasExistingConnectionStrings { get; set; }
+    [Parameter] public bool IsControlledPauseApplicable { get; set; }
+    [Parameter] public bool IsControlledPauseRequested { get; set; }
+    [Parameter] public bool CutoverReady { get; set; }
+    [Parameter] public (string Display, bool IsLow) ChangeFeedLag { get; set; }
+    [Parameter] public string ErrorMessage { get; set; } = string.Empty;
+
+    [Parameter] public EventCallback OnResumeWithNewConnectionString { get; set; }
+    [Parameter] public EventCallback OnResumeWithExistingConnectionString { get; set; }
+    [Parameter] public EventCallback OnPauseImmediate { get; set; }
+    [Parameter] public EventCallback OnPauseControlled { get; set; }
+    [Parameter] public EventCallback OnCancel { get; set; }
+    [Parameter] public EventCallback OnComplete { get; set; }
+    [Parameter] public EventCallback OnRefresh { get; set; }
+    [Parameter] public EventCallback OnToggleAutoRefresh { get; set; }
+    [Parameter] public EventCallback OnGoBack { get; set; }
+    [Parameter] public EventCallback OnDismissError { get; set; }
+}
