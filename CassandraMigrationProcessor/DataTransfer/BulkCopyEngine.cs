@@ -17,55 +17,55 @@ namespace CassandraMigrationProcessor.DataTransfer
     /// </summary>
     public class BulkCopyEngine : IDisposable
     {
-        private readonly MigrationLog _log;
-        private readonly MigrationJob _job;
-        private readonly MigrationSettings _config;
-        private readonly MigrationWorker _worker;
-        private readonly ISession _sourceSession;
-        private readonly ISession? _targetSession;
-        private readonly CancellationTokenSource _cancellation;
-        private readonly ChangeFeedManager _changeFeed;
+        private readonly MigrationLog _migrationLog;
+        private readonly MigrationJob _migrationJob;
+        private readonly MigrationSettings _settings;
+        private readonly MigrationWorker _migrationWorker;
+        private readonly ISession _source;
+        private readonly ISession? _target;
+        private readonly CancellationTokenSource _cts;
+        private readonly ChangeFeedManager _changeFeedManager;
 
         public volatile bool ProcessRunning;
 
-        public ChangeFeedManager ChangeFeed => _changeFeed;
+        public ChangeFeedManager ChangeFeed => _changeFeedManager;
 
         public BulkCopyEngine(MigrationLog log, ISession sourceSession, MigrationSettings config, MigrationJob job,
             MigrationWorker worker)
         {
-            _log = log;
-            _sourceSession = sourceSession;
-            _config = config;
-            _job = job;
-            _worker = worker;
-            _cancellation = new CancellationTokenSource();
-            _targetSession = job.IsSimulatedRun
+            _migrationLog = log;
+            _source = sourceSession;
+            _settings = config;
+            _migrationJob = job;
+            _migrationWorker = worker;
+            _cts = new CancellationTokenSource();
+            _target = job.IsSimulatedRun
                 ? null
                 : CassandraClientFactory.CreateTargetSession(log, job, string.Empty);
-            _changeFeed = new ChangeFeedManager(log, job, config, () => _targetSession!);
+            _changeFeedManager = new ChangeFeedManager(log, job, config, () => _target!);
         }
 
         // ── Lifecycle ──
 
         public void StopProcessing()
         {
-            _cancellation?.Cancel();
-            _changeFeed.Stop();
+            _cts?.Cancel();
+            _changeFeedManager.Stop();
 
-            if (_job.Status == JobStatus.Running)
-                _job.Status = JobStatus.Pending;
+            if (_migrationJob.Status == JobStatus.Running)
+                _migrationJob.Status = JobStatus.Pending;
 
-            MigrationJobContext.SaveMigrationJob(_job);
+            MigrationJobContext.SaveMigrationJob(_migrationJob);
             ProcessRunning = false;
         }
 
         public void PauseProcessing()
         {
-            _cancellation?.Cancel();
-            _changeFeed.Stop();
+            _cts?.Cancel();
+            _changeFeedManager.Stop();
 
-            _job.Status = JobStatus.Paused;
-            MigrationJobContext.SaveMigrationJob(_job);
+            _migrationJob.Status = JobStatus.Paused;
+            MigrationJobContext.SaveMigrationJob(_migrationJob);
             ProcessRunning = false;
         }
 
@@ -73,23 +73,23 @@ namespace CassandraMigrationProcessor.DataTransfer
 
         public void StopOfflineOrInvokeChangeFeed()
         {
-            if (!MigrationUtilities.IsOnline(_job)
-                && MigrationUtilities.IsOfflineJobCompleted(_job))
+            if (!MigrationUtilities.IsOnline(_migrationJob)
+                && MigrationUtilities.IsOfflineJobCompleted(_migrationJob))
             {
                 if (!MigrationJobContext.ControlledPauseRequested
-                    && _job.Status != JobStatus.Cancelled
-                    && _job.Status != JobStatus.Paused)
+                    && _migrationJob.Status != JobStatus.Cancelled
+                    && _migrationJob.Status != JobStatus.Paused)
                 {
-                    _log.WriteLine($"Job {_job.Id} Completed", LogType.Info);
-                    _job.Status = JobStatus.Completed;
-                    MigrationJobContext.SaveMigrationJob(_job);
+                    _migrationLog.WriteLine($"Job {_migrationJob.Id} Completed", LogType.Info);
+                    _migrationJob.Status = JobStatus.Completed;
+                    MigrationJobContext.SaveMigrationJob(_migrationJob);
                 }
                 StopProcessing();
             }
             else if (!MigrationJobContext.ControlledPauseRequested)
             {
-                _log.WriteLine("Invoke RunChangeFeedForAllTables.", LogType.Debug);
-                _changeFeed.StartAll(_cancellation, _worker);
+                _migrationLog.WriteLine("Invoke RunChangeFeedForAllTables.", LogType.Debug);
+                _changeFeedManager.StartAll(_cts, _migrationWorker);
             }
         }
 
@@ -98,20 +98,20 @@ namespace CassandraMigrationProcessor.DataTransfer
         public async Task<TaskResult> StartProcessAsync(string migrationUnitId)
         {
             var migrationUnit = MigrationJobContext.GetMigrationUnit(migrationUnitId);
-            migrationUnit.ParentJob = _job;
+            migrationUnit.ParentJob = _migrationJob;
             ProcessRunning = true;
 
             var context = CreateTableContext(migrationUnit);
 
             if (migrationUnit.CopyComplete)
             {
-                _log.WriteLine($"Copy for {context.KeyspaceName}.{context.TableName} already completed.", LogType.Debug);
+                _migrationLog.WriteLine($"Copy for {context.KeyspaceName}.{context.TableName} already completed.", LogType.Debug);
                 return TaskResult.Success;
             }
 
-            _log.WriteLine($"{context.KeyspaceName}.{context.TableName} Copy started", LogType.Info);
+            _migrationLog.WriteLine($"{context.KeyspaceName}.{context.TableName} Copy started", LogType.Info);
 
-            if (!migrationUnit.CopyComplete && !_cancellation.Token.IsCancellationRequested)
+            if (!migrationUnit.CopyComplete && !_cts.Token.IsCancellationRequested)
             {
                 if (migrationUnit.MigrationChunks == null || migrationUnit.MigrationChunks.Count == 0)
                     migrationUnit.MigrationChunks = new List<MigrationChunk> { new MigrationChunk() };
@@ -120,11 +120,11 @@ namespace CassandraMigrationProcessor.DataTransfer
                 {
                     if (MigrationJobContext.ControlledPauseRequested)
                     {
-                        _log.WriteLine($"Controlled pause before chunk {chunkIndex}", LogType.Info);
+                        _migrationLog.WriteLine($"Controlled pause before chunk {chunkIndex}", LogType.Info);
                         break;
                     }
 
-                    _cancellation.Token.ThrowIfCancellationRequested();
+                    _cts.Token.ThrowIfCancellationRequested();
 
                     double initialPercent = ((double)100 / migrationUnit.MigrationChunks.Count) * chunkIndex;
                     double contributionFactor = 1.0 / migrationUnit.MigrationChunks.Count;
@@ -134,18 +134,18 @@ namespace CassandraMigrationProcessor.DataTransfer
                         TaskResult result = await new RetryHelper().ExecuteTask(
                                 () => ProcessChunkAsync(migrationUnit, chunkIndex, context, initialPercent, contributionFactor),
                                 (ex, _, _) => HandleChunkException(ex),
-                                _log, ct: _cancellation.Token);
+                                _migrationLog, ct: _cts.Token);
 
                         if (result == TaskResult.Canceled)
                         {
-                            _log.WriteLine($"Copy paused for {context.KeyspaceName}.{context.TableName}[{chunkIndex}].", LogType.Info);
+                            _migrationLog.WriteLine($"Copy paused for {context.KeyspaceName}.{context.TableName}[{chunkIndex}].", LogType.Info);
                             PauseProcessing();
                             return TaskResult.Canceled;
                         }
 
                         if (result == TaskResult.Abort || result == TaskResult.FailedAfterRetries)
                         {
-                            _log.WriteLine($"Copy failed for {context.KeyspaceName}.{context.TableName}[{chunkIndex}] after retries.", LogType.Error);
+                            _migrationLog.WriteLine($"Copy failed for {context.KeyspaceName}.{context.TableName}[{chunkIndex}] after retries.", LogType.Error);
                             StopProcessing();
                             return result;
                         }
@@ -158,7 +158,7 @@ namespace CassandraMigrationProcessor.DataTransfer
 
                 if (MigrationJobContext.ControlledPauseRequested)
                 {
-                    _log.WriteLine("Controlled pause - exiting", LogType.Debug);
+                    _migrationLog.WriteLine("Controlled pause - exiting", LogType.Debug);
                     PauseProcessing();
                     return TaskResult.Success;
                 }
@@ -173,15 +173,15 @@ namespace CassandraMigrationProcessor.DataTransfer
                     migrationUnit.CopyComplete = true;
                     migrationUnit.UpdateParentJob();
 
-                    _changeFeed.AddTable(migrationUnit, _cancellation);
+                    _changeFeedManager.AddTable(migrationUnit, _cts);
                     MigrationJobContext.SaveMigrationUnit(migrationUnit, true);
 
-                    if (!MigrationUtilities.IsOnline(_job))
+                    if (!MigrationUtilities.IsOnline(_migrationJob))
                         MigrationJobContext.MigrationUnitsCache.RemoveMigrationUnit(migrationUnit.Id);
                 }
                 else
                 {
-                    _log.WriteLine($"Copy for {context.KeyspaceName}.{context.TableName} had failures.", LogType.Error);
+                    _migrationLog.WriteLine($"Copy for {context.KeyspaceName}.{context.TableName} had failures.", LogType.Error);
                     return TaskResult.Retry;
                 }
             }
@@ -204,29 +204,29 @@ namespace CassandraMigrationProcessor.DataTransfer
             migrationUnit.MigrationChunks[chunkIndex].SourceQueryRowCount = rowCount;
             context.DownloadCount += rowCount;
 
-            if (_targetSession != null)
-                await SchemaManager.EnsureKeyspaceExistsAsync(_targetSession, context.TargetKeyspaceName);
+            if (_target != null)
+                await SchemaManager.EnsureKeyspaceExistsAsync(_target, context.TargetKeyspaceName);
 
             var feedRanges = await CassandraQueries.GetFeedRangesAsync(context.SourceSession, context.KeyspaceName,
                 context.TableName);
 
-            _log.WriteLine($"{context.KeyspaceName}.{context.TableName}: " +
+            _migrationLog.WriteLine($"{context.KeyspaceName}.{context.TableName}: " +
                 $"{(rowCount >= 0 ? $"{rowCount:N0} rows" : "count unavailable")}, " +
                 $"{feedRanges.Count} feed range(s)", LogType.Info);
 
-            if (_job.IsSimulatedRun)
+            if (_migrationJob.IsSimulatedRun)
             {
-                _log.WriteLine($"Simulated: {context.KeyspaceName}.{context.TableName}", LogType.Info);
+                _migrationLog.WriteLine($"Simulated: {context.KeyspaceName}.{context.TableName}", LogType.Info);
                 return TaskResult.Success;
             }
 
-            var runner = new BulkCopyRunner(_log, _job, _config, _cancellation, () => _targetSession!);
+            var runner = new BulkCopyRunner(_migrationLog, _migrationJob, _settings, _cts, () => _target!);
             var result = await runner.RunAsync(new PipelineRequest(migrationUnit, chunkIndex, initialPercent,
                 contributionFactor, rowCount, context, feedRanges));
 
             if (result == TaskResult.Success)
             {
-                if (!_cancellation.Token.IsCancellationRequested
+                if (!_cts.Token.IsCancellationRequested
                     && !MigrationJobContext.ControlledPauseRequested
                     && migrationUnit.MigrationChunks[chunkIndex].Segments.All(seg => seg.IsProcessed == true))
                 {
@@ -237,11 +237,11 @@ namespace CassandraMigrationProcessor.DataTransfer
             }
             else if (result == TaskResult.Canceled)
             {
-                _log.WriteLine($"Copy paused for {context.KeyspaceName}.{context.TableName}[{chunkIndex}].", LogType.Info);
+                _migrationLog.WriteLine($"Copy paused for {context.KeyspaceName}.{context.TableName}[{chunkIndex}].", LogType.Info);
             }
             else
             {
-                _log.WriteLine($"Copy failed for {context.KeyspaceName}.{context.TableName}[{chunkIndex}].", LogType.Error);
+                _migrationLog.WriteLine($"Copy failed for {context.KeyspaceName}.{context.TableName}[{chunkIndex}].", LogType.Error);
             }
             return result;
         }
@@ -251,12 +251,12 @@ namespace CassandraMigrationProcessor.DataTransfer
             return new TableContext
             {
                 MigrationUnitId = mu.Id,
-                JobId = _job.Id,
+                JobId = _migrationJob.Id,
                 KeyspaceName = mu.KeyspaceName,
                 TableName = mu.TableName,
                 TargetKeyspaceName = mu.GetEffectiveTargetKeyspaceName(),
                 TargetTableName = mu.GetEffectiveTargetTableName(),
-                SourceSession = _sourceSession,
+                SourceSession = _source,
             };
         }
 
@@ -267,9 +267,9 @@ namespace CassandraMigrationProcessor.DataTransfer
 
         public void Dispose()
         {
-            _changeFeed.Stop();
-            _cancellation?.Dispose();
-            MigrationUtilities.SafeDispose(_targetSession, "BulkCopyEngine target session");
+            _changeFeedManager.Stop();
+            _cts?.Dispose();
+            MigrationUtilities.SafeDispose(_target, "BulkCopyEngine target session");
         }
     }
 }
