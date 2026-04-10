@@ -9,52 +9,11 @@ namespace CassandraMigrationProcessor.CassandraDriver
     /// <summary>
     /// Creates Cassandra ISession instances for source (Cosmos DB)
     /// and target (OSS Cassandra) clusters.
-    /// Manages proactive AAD token refresh before expiry.
+    /// Delegates AAD token management to TokenRefreshManager and
+    /// ARM credential discovery to ArmCredentialDiscovery.
     /// </summary>
-    public static partial class CassandraClientFactory
+    public static class CassandraClientFactory
     {
-        // Cache last-used connection parameters for token refresh
-        private static string? _lastSourceContactPoint;
-        private static int _lastSourcePort;
-        private static string? _lastSourceUsername;
-        private static string? _lastSourceKeyspace;
-
-        /// <summary>
-        /// Detect if a password looks like an AAD/JWT token
-        /// (very long base64-ish string).
-        /// </summary>
-        public static bool IsLikelyAadToken(string? password)
-        {
-            return password != null && password.Length > 200;
-        }
-
-        /// <summary>
-        /// Reconnect the source session with a fresh AAD token.
-        /// Returns a new ISession. The caller should dispose the
-        /// old session. Also restarts the token refresh timer.
-        /// </summary>
-        public static ISession ReconnectSourceWithFreshToken(
-            MigrationLog MigrationLog)
-        {
-            string freshToken = GetFreshAadToken();
-
-            // Restart refresh timer with new token
-            StartTokenRefreshTimer(freshToken, MigrationLog);
-
-            var newSession = CreateSourceSession(
-                MigrationLog,
-                _lastSourceContactPoint!,
-                _lastSourcePort,
-                _lastSourceUsername ?? string.Empty,
-                freshToken,
-                _lastSourceKeyspace ?? string.Empty);
-
-            // Update managed session reference
-            _managedSourceSession = newSession;
-
-            return newSession;
-        }
-
         /// <summary>
         /// Create a session to a Cosmos DB Cassandra API account.
         /// Uses SSL on port 10350 with PlainTextAuthProvider.
@@ -70,12 +29,9 @@ namespace CassandraMigrationProcessor.CassandraDriver
             string password,
             string keyspace)
         {
-            // Cache parameters for token refresh
-            _lastSourceContactPoint = contactPoint;
-            _lastSourcePort = port;
-            _lastSourceUsername = username;
-            _lastSourceKeyspace = keyspace;
-            _lastLog = MigrationLog;
+            // Cache parameters for token refresh reconnection
+            TokenRefreshManager.CacheSourceConnectionParams(
+                contactPoint, port, username, keyspace, MigrationLog);
 
             var sslOptions = new SSLOptions(
                 SslProtocols.Tls12, true,
@@ -115,10 +71,10 @@ namespace CassandraMigrationProcessor.CassandraDriver
                             ? cluster.Connect()
                             : cluster.Connect(keyspace);
 
-                    if (IsLikelyAadToken(password))
+                    if (TokenRefreshManager.IsLikelyAadToken(password))
                     {
-                        _managedSourceSession = session;
-                        StartTokenRefreshTimer(password, MigrationLog);
+                        TokenRefreshManager.SetManagedSourceSession(session);
+                        TokenRefreshManager.StartTokenRefreshTimer(password, MigrationLog);
                     }
 
                     return session;
@@ -160,10 +116,10 @@ namespace CassandraMigrationProcessor.CassandraDriver
                     ? finalCluster.Connect()
                     : finalCluster.Connect(keyspace);
 
-            if (IsLikelyAadToken(password))
+            if (TokenRefreshManager.IsLikelyAadToken(password))
             {
-                _managedSourceSession = finalSession;
-                StartTokenRefreshTimer(password, MigrationLog);
+                TokenRefreshManager.SetManagedSourceSession(finalSession);
+                TokenRefreshManager.StartTokenRefreshTimer(password, MigrationLog);
             }
 
             return finalSession;
@@ -358,7 +314,7 @@ namespace CassandraMigrationProcessor.CassandraDriver
             // fetch a fresh token via managed identity
             if (string.IsNullOrEmpty(password) || job.SourceUseAad)
             {
-                password = GetFreshAadToken();
+                password = TokenRefreshManager.GetFreshAadToken();
                 // Cache it in memory (not persisted)
                 job.SourcePassword = password;
                 job.SourceUseAad = true;
@@ -403,9 +359,10 @@ namespace CassandraMigrationProcessor.CassandraDriver
             {
                 try
                 {
-                    var armResult = DiscoverTargetCredentialsViaArm(
-                        job.TargetContactPoint!,
-                        job.TargetPort).GetAwaiter().GetResult();
+                    var armResult = ArmCredentialDiscovery
+                        .DiscoverTargetCredentialsViaArm(
+                            job.TargetContactPoint!,
+                            job.TargetPort).GetAwaiter().GetResult();
 
                     if (armResult.AuthMethod == "None")
                     {

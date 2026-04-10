@@ -12,12 +12,12 @@ namespace CassandraMigrationProcessor.Persistence
     /// Disk-based implementation of PersistenceStorage.
     /// Stores documents as JSON files on the local file system.
     /// </summary>
-    public partial class DiskPersistence : IPersistenceStorage
+    public class DiskPersistence : IPersistenceStorage
     {
         private static string? _storagePath;
-        private static string? _appId;
         private static bool _isInitialized = false;
         private static readonly object _initLock = new object();
+        private static LogPersistence? _logPersistence;
 
         private const string FILE_EXTENSION = ".json";
 
@@ -45,10 +45,10 @@ namespace CassandraMigrationProcessor.Persistence
                 try
                 {
                     _storagePath = connectionStringOrPath;
-                    _appId = appId;
                     // Create directory if it doesn't exist (no-op for blob storage)
                     FileSystem.EnsureDirectoryExists(_storagePath);
 
+                    _logPersistence = new LogPersistence(_storagePath);
                     _isInitialized = true;
                 }
                 catch (Exception ex)
@@ -56,6 +56,15 @@ namespace CassandraMigrationProcessor.Persistence
                     throw new InvalidOperationException($"Failed to initialize DiskPersistence. Details: {ex}", ex);
                 }
             }
+        }
+
+        /// <summary>
+        /// Ensures the log persistence layer is available.
+        /// </summary>
+        private static LogPersistence EnsureLogPersistence()
+        {
+            EnsureInitialized();
+            return _logPersistence ?? throw new InvalidOperationException("LogPersistence is not initialized.");
         }
 
         /// <summary>
@@ -325,6 +334,26 @@ namespace CassandraMigrationProcessor.Persistence
         /// Checks if the storage is initialized
         /// </summary>
         public bool IsInitialized => _isInitialized;
+
+        // --- Log operations delegated to LogPersistence ---
+
+        public void PushLogEntry(string jobId, LogObject logObj)
+            => EnsureLogPersistence().PushLogEntry(jobId, logObj);
+
+        public int GetLogCount(string id)
+            => EnsureLogPersistence().GetLogCount(id);
+
+        public byte[] DownloadLogsPaginated(string id, int skip, int take)
+            => EnsureLogPersistence().DownloadLogsPaginated(id, skip, take);
+
+        public byte[] DownloadLogsAsJsonBytes(string id, int topEntries = 20, int bottomEntries = 230)
+            => EnsureLogPersistence().DownloadLogsAsJsonBytes(id, topEntries, bottomEntries);
+
+        public LogBucket ReadLogs(string id, out string fileName)
+            => EnsureLogPersistence().ReadLogs(id, out fileName);
+
+        public long DeleteLogs(string jobId)
+            => EnsureLogPersistence().DeleteLogs(jobId);
 
     }
 }

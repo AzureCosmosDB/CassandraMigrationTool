@@ -12,14 +12,45 @@ namespace CassandraMigrationProcessor.Persistence
     /// Binary log storage operations: push, read, paginate,
     /// export, and delete migration log entries.
     /// </summary>
-    public partial class DiskPersistence
+    public class LogPersistence
     {
+        private readonly string _storagePath;
         private static readonly object _readLock = new object();
+
+        public LogPersistence(string storagePath)
+        {
+            if (string.IsNullOrWhiteSpace(storagePath))
+                throw new ArgumentException("Storage path cannot be null or empty", nameof(storagePath));
+            _storagePath = storagePath;
+        }
+
+        /// <summary>
+        /// Executes an action and returns a fallback value on failure, logging the error.
+        /// </summary>
+        private T SafeExecute<T>(Func<T> action, T fallback, string operation)
+        {
+            try { return action(); }
+            catch (Exception ex)
+            {
+                MigrationUtilities.LogToFile($"[LogPersistence] {operation}: {ex.Message}", "DiskPersistence.txt");
+                return fallback;
+            }
+        }
+
+        /// <summary>
+        /// Executes a void action, logging any error without re-throwing.
+        /// </summary>
+        private void SafeExecuteVoid(Action action, string operation)
+        {
+            try { action(); }
+            catch (Exception ex)
+            {
+                MigrationUtilities.LogToFile($"[LogPersistence] {operation}: {ex.Message}", "DiskPersistence.txt");
+            }
+        }
 
         public void PushLogEntry(string jobId, LogObject logObject)
         {
-            EnsureInitialized();
-
             if (string.IsNullOrWhiteSpace(jobId))
                 throw new ArgumentException("ID cannot be null or empty", nameof(jobId));
 
@@ -206,8 +237,6 @@ namespace CassandraMigrationProcessor.Persistence
         /// </summary>
         public long DeleteLogs(string jobId)
         {
-            EnsureInitialized();
-
             if (string.IsNullOrWhiteSpace(jobId))
                 throw new ArgumentException("Job ID cannot be null or empty", nameof(jobId));
 

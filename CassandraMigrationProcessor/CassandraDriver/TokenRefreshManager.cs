@@ -11,7 +11,7 @@ namespace CassandraMigrationProcessor.CassandraDriver
     /// Manages AAD token lifecycle and proactive refresh for
     /// Cosmos DB Cassandra API connections.
     /// </summary>
-    public static partial class CassandraClientFactory
+    public static class TokenRefreshManager
     {
         // Proactive token refresh timer
         private static Timer? _tokenRefreshTimer;
@@ -19,6 +19,63 @@ namespace CassandraMigrationProcessor.CassandraDriver
         private static ISession? _managedSourceSession;
         private static MigrationLog? _lastLog;
         private static DateTime _tokenExpiresAt = DateTime.MinValue;
+
+        // Cached source connection parameters for token refresh reconnection
+        private static string? _lastSourceContactPoint;
+        private static int _lastSourcePort;
+        private static string? _lastSourceUsername;
+        private static string? _lastSourceKeyspace;
+
+        /// <summary>
+        /// Cache source connection parameters so the token refresh
+        /// timer can reconnect with a fresh token.
+        /// </summary>
+        internal static void CacheSourceConnectionParams(
+            string contactPoint, int port, string username,
+            string keyspace, MigrationLog log)
+        {
+            _lastSourceContactPoint = contactPoint;
+            _lastSourcePort = port;
+            _lastSourceUsername = username;
+            _lastSourceKeyspace = keyspace;
+            _lastLog = log;
+        }
+
+        /// <summary>
+        /// Detect if a password looks like an AAD/JWT token
+        /// (very long base64-ish string).
+        /// </summary>
+        public static bool IsLikelyAadToken(string? password)
+        {
+            return password != null && password.Length > 200;
+        }
+
+        /// <summary>
+        /// Reconnect the source session with a fresh AAD token.
+        /// Returns a new ISession. The caller should dispose the
+        /// old session. Also restarts the token refresh timer.
+        /// </summary>
+        public static ISession ReconnectSourceWithFreshToken(
+            MigrationLog MigrationLog)
+        {
+            string freshToken = GetFreshAadToken();
+
+            // Restart refresh timer with new token
+            StartTokenRefreshTimer(freshToken, MigrationLog);
+
+            var newSession = CassandraClientFactory.CreateSourceSession(
+                MigrationLog,
+                _lastSourceContactPoint!,
+                _lastSourcePort,
+                _lastSourceUsername ?? string.Empty,
+                freshToken,
+                _lastSourceKeyspace ?? string.Empty);
+
+            // Update managed session reference
+            _managedSourceSession = newSession;
+
+            return newSession;
+        }
 
         /// <summary>
         /// Generate a fresh AAD token for Cosmos DB Cassandra.
@@ -123,7 +180,7 @@ namespace CassandraMigrationProcessor.CassandraDriver
                         && _lastSourceContactPoint != null)
                     {
                         var oldSession = _managedSourceSession;
-                        _managedSourceSession = CreateSourceSession(
+                        _managedSourceSession = CassandraClientFactory.CreateSourceSession(
                             _lastLog ?? new MigrationLog(),
                             _lastSourceContactPoint,
                             _lastSourcePort,

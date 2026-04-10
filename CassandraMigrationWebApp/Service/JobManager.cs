@@ -25,7 +25,6 @@ namespace CassandraMigrationWebApp.Service
         private readonly IConfiguration _configuration;
         private readonly MigrationContextService _ctx;
         private string? _webAppBaseUrl = null;
-        private readonly SemaphoreSlim _syncBackLock = new SemaphoreSlim(1, 1);
 
         public JobManager(IConfiguration configuration, MigrationContextService ctx)
         {

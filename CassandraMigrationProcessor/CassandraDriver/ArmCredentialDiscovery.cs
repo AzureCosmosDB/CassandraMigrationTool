@@ -10,12 +10,12 @@ namespace CassandraMigrationProcessor.CassandraDriver
     /// ARM-based credential discovery for target Cassandra clusters.
     /// Discovers MI cluster auth methods and Cosmos DB account keys.
     /// </summary>
-    public static partial class CassandraClientFactory
+    public static class ArmCredentialDiscovery
     {
         /// <summary>
         /// Result of ARM-based credential discovery.
         /// </summary>
-        private class ArmCredentialResult
+        internal class ArmCredentialResult
         {
             public string? AuthMethod { get; set; }
             public string? Username { get; set; }
@@ -29,7 +29,7 @@ namespace CassandraMigrationProcessor.CassandraDriver
         /// Searches for Cassandra MI clusters and Cosmos DB accounts
         /// whose seed/contact points match the target IP/hostname.
         /// </summary>
-        private static async Task<ArmCredentialResult> DiscoverTargetCredentialsViaArm(
+        internal static async Task<ArmCredentialResult> DiscoverTargetCredentialsViaArm(
             string targetContactPoint, int targetPort)
         {
             var credential = new Azure.Identity.DefaultAzureCredential();

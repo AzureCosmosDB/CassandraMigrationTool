@@ -1,10 +1,8 @@
 using Cassandra;
 using CassandraMigrationProcessor.Context;
 using CassandraMigrationProcessor.CassandraDriver;
-using CassandraMigrationProcessor.Context;
 using CassandraMigrationProcessor.Models;
 using CassandraMigrationProcessor.Infrastructure;
-using CassandraMigrationProcessor.DataTransfer;
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
@@ -23,12 +21,15 @@ namespace CassandraMigrationProcessor.DataTransfer
     /// the target. SetAutoPage(false) is critical to avoid
     /// long-poll hang. PagingState acts as the continuation
     /// token.
+    ///
+    /// Each table is handled by a dedicated
+    /// <see cref="ReplayWorker"/> instance.
     /// </summary>
-    public partial class ReplayProcessor
+    public class ReplayProcessor
     {
         private readonly MigrationLog _log;
-        private ISession _sourceSession;
-        private ISession? _targetSession;
+        private readonly ISession _sourceSession;
+        private readonly ISession? _targetSession;
         private readonly MigrationUnitCache _muCache;
         private readonly MigrationSettings _config;
         private readonly MigrationJob _job;
@@ -97,7 +98,33 @@ namespace CassandraMigrationProcessor.DataTransfer
                 if (_activeTasks.ContainsKey(muId)) continue;
                 if (ExecutionCancelled) break;
 
-                var task = Task.Run(() => PollLoopAsync(muId, cts.Token));
+                var task = Task.Run(async () =>
+                {
+                    try
+                    {
+                        var mu = _muCache.GetMigrationUnit(muId, _job?.Id);
+                        if (mu == null)
+                        {
+                            _log.WriteLine(
+                                $"ChangeFeed: MU {muId} not found", LogType.Error);
+                            return;
+                        }
+
+                        var worker = new ReplayWorker(
+                            _log, _sourceSession, _targetSession,
+                            _config, _job, () => ExecutionCancelled);
+
+                        await worker.RunAsync(mu, cts.Token);
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.Error.WriteLine(
+                            $"[CRITICAL] CF muId={muId}: {ex.GetType().Name}: {ex.Message}");
+                    }
+
+                    _activeTasks.TryRemove(muId, out _);
+                });
+
                 _activeTasks[muId] = task;
             }
         }
