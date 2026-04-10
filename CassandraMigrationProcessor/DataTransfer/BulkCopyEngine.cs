@@ -69,7 +69,7 @@ namespace CassandraMigrationProcessor.DataTransfer
 
         // ── Job completion ──
 
-        public void StopOfflineOrInvokeChangeFeed(MigrationWorker worker)
+        public void StopOfflineOrInvokeChangeFeed()
         {
             if (!MigrationUtilities.IsOnline(_migrationJob)
                 && MigrationUtilities.IsOfflineJobCompleted(_migrationJob))
@@ -87,7 +87,7 @@ namespace CassandraMigrationProcessor.DataTransfer
             else if (!MigrationJobContext.ControlledPauseRequested)
             {
                 _migrationLog.WriteLine("Invoke RunChangeFeedForAllTables.", LogType.Debug);
-                _changeFeedManager.StartAll(_cts.Token, worker);
+                _changeFeedManager.StartAll(_cts.Token);
             }
         }
 

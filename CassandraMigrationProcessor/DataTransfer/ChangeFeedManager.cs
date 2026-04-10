@@ -53,7 +53,7 @@ namespace CassandraMigrationProcessor.DataTransfer
             try
             {
                 await SchemaManager.EnsureKeyspaceExistsAsync(_targetSession, mu.GetEffectiveTargetKeyspaceName());
-                EnsureReplayProcessor(mu.KeyspaceName, null);
+                EnsureReplayProcessor(mu.KeyspaceName);
             }
             finally
             {
@@ -66,7 +66,7 @@ namespace CassandraMigrationProcessor.DataTransfer
             return true;
         }
 
-        public bool StartAll(CancellationToken cancellationToken, MigrationWorker worker)
+        public bool StartAll(CancellationToken cancellationToken)
         {
             if (IsRunning) return false;
             if (!MigrationUtilities.IsOnline(_job)) return false;
@@ -75,21 +75,21 @@ namespace CassandraMigrationProcessor.DataTransfer
 
             IsRunning = true;
 
-            EnsureReplayProcessor(string.Empty, worker);
+            EnsureReplayProcessor(string.Empty);
 
             _replayProcessor?.RunChangeFeedForAllTables(cancellationToken);
 
             return true;
         }
 
-        private void EnsureReplayProcessor(string keyspace, MigrationWorker? worker)
+        private void EnsureReplayProcessor(string keyspace)
         {
             if (_replayProcessor == null)
             {
                 var source = CassandraClientFactory.CreateSourceSession(_log, _job, keyspace, _tokenRefreshManager);
                 _replayProcessor = new ReplayProcessor(_log, source, _targetSession,
                     MigrationJobContext.MigrationUnitsCache, _pipelineConfig,
-                    _job, worker, _tokenRefreshManager);
+                    _job, _tokenRefreshManager);
             }
         }
     }

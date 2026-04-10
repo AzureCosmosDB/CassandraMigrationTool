@@ -33,7 +33,6 @@ namespace CassandraMigrationProcessor.DataTransfer
         private readonly MigrationUnitCache _muCache;
         private readonly PipelineConfig _pipelineConfig;
         private readonly MigrationJob _job;
-        private readonly MigrationWorker? _migrationWorker;
         private readonly TokenRefreshManager? _tokenRefreshManager;
 
         private readonly ConcurrentQueue<string> _pendingTables = new();
@@ -54,7 +53,6 @@ namespace CassandraMigrationProcessor.DataTransfer
 
         public ReplayProcessor(MigrationLog log, ISession sourceSession, ISession targetSession, MigrationUnitCache muCache,
             PipelineConfig pipelineConfig, MigrationJob job,
-            MigrationWorker? migrationWorker,
             TokenRefreshManager? tokenRefreshManager = null)
         {
             _log = log;
@@ -63,7 +61,6 @@ namespace CassandraMigrationProcessor.DataTransfer
             _muCache = muCache;
             _pipelineConfig = pipelineConfig;
             _job = job;
-            _migrationWorker = migrationWorker;
             _tokenRefreshManager = tokenRefreshManager;
         }
 
