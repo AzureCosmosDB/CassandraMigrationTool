@@ -86,10 +86,6 @@ namespace CassandraMigrationProcessor.Models
         /// </summary>
         public int PageSize { get; set; } = 0;
 
-        // Change feed state (Cosmos DB Cassandra change feed)
-        public string? ChangeFeedContinuationToken { get; set; }
-        public DateTime? ChangeFeedStartedOn { get; set; }
-
         [JsonProperty("MigrationUnitBasics")]
         public List<MigrationUnitBasic> Tables { get; set; } = new();
 
