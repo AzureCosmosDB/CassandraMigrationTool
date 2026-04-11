@@ -56,20 +56,10 @@ namespace CassandraMigrationProcessor.Models
         }
     }
 
-    public class LogObject
+    public record LogObject(
+        [property: JsonConverter(typeof(LogTypeConverter))] LogType Type,
+        string Message)
     {
-        public LogObject(LogType type, string message)
-        {
-            Message = message;
-            Type = type;
-            Datetime = DateTime.UtcNow;
-        }
-
-        public string Message { get; set; }
-
-        [JsonConverter(typeof(LogTypeConverter))]
-        public LogType Type { get; set; }
-
-        public DateTime Datetime { get; set; }
+        public DateTime Datetime { get; init; } = DateTime.UtcNow;
     }
 }

@@ -243,14 +243,12 @@ namespace CassandraMigrationProcessor.DataTransfer
 
         private TableContext CreateTableContext(MigrationUnit mu)
         {
-            return new TableContext
-            {
-                KeyspaceName = mu.KeyspaceName,
-                TableName = mu.TableName,
-                TargetKeyspaceName = mu.GetEffectiveTargetKeyspaceName(),
-                TargetTableName = mu.GetEffectiveTargetTableName(),
-                SourceSession = _source,
-            };
+            return new TableContext(
+                mu.KeyspaceName,
+                mu.TableName,
+                mu.GetEffectiveTargetKeyspaceName(),
+                mu.GetEffectiveTargetTableName(),
+                _source);
         }
 
         private static Task<TaskResult> HandleChunkException(Exception ex)

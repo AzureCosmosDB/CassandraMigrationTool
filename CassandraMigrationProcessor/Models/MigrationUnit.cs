@@ -53,8 +53,6 @@ namespace CassandraMigrationProcessor.Models
     {
         public DateTime? BulkCopyStartedOn { get; set; }
         public DateTime? BulkCopyEndedOn { get; set; }
-        public bool TargetCreated { get; set; }
-
         public DateTime? ChangeFeedStartedOn { get; set; }
         public string? ChangeFeedContinuationToken { get; set; }
 
@@ -97,11 +95,15 @@ namespace CassandraMigrationProcessor.Models
         // Backing fields for Interlocked access in parallel
         // change feed. Properties delegate to these fields.
         internal long _changeFeedInsertEvents;
+        // Reserved for FFCF: currently always 0 (insert-only pipeline)
         internal long _changeFeedDeleteEvents;
+        // Reserved for FFCF: currently always 0 (insert-only pipeline)
         internal long _changeFeedUpdateEvents;
         internal long _changeFeedErrors;
         internal long _changeFeedRowsInserted;
+        // Reserved for FFCF: currently always 0 (insert-only pipeline)
         internal long _changeFeedRowsDeleted;
+        // Reserved for FFCF: currently always 0 (insert-only pipeline)
         internal long _changeFeedRowsUpdated;
         internal long _changeFeedUpdatesInLastBatch;
 
@@ -111,12 +113,14 @@ namespace CassandraMigrationProcessor.Models
             set => Interlocked.Exchange(
                 ref _changeFeedInsertEvents, value);
         }
+        // Reserved for FFCF: currently always 0 (insert-only pipeline)
         public long ChangeFeedDeleteEvents
         {
             get => Interlocked.Read(ref _changeFeedDeleteEvents);
             set => Interlocked.Exchange(
                 ref _changeFeedDeleteEvents, value);
         }
+        // Reserved for FFCF: currently always 0 (insert-only pipeline)
         public long ChangeFeedUpdateEvents
         {
             get => Interlocked.Read(ref _changeFeedUpdateEvents);
@@ -136,12 +140,14 @@ namespace CassandraMigrationProcessor.Models
             set => Interlocked.Exchange(
                 ref _changeFeedRowsInserted, value);
         }
+        // Reserved for FFCF: currently always 0 (insert-only pipeline)
         public long ChangeFeedRowsDeleted
         {
             get => Interlocked.Read(ref _changeFeedRowsDeleted);
             set => Interlocked.Exchange(
                 ref _changeFeedRowsDeleted, value);
         }
+        // Reserved for FFCF: currently always 0 (insert-only pipeline)
         public long ChangeFeedRowsUpdated
         {
             get => Interlocked.Read(ref _changeFeedRowsUpdated);
