@@ -150,10 +150,6 @@ namespace CassandraMigrationProcessor.DataTransfer
                             return result;
                         }
                     }
-                    else
-                    {
-                        context.DownloadCount += migrationUnit.MigrationChunks[chunkIndex].SourceQueryRowCount;
-                    }
                 }
 
                 if (MigrationJobContext.ControlledPauseRequested)
@@ -202,7 +198,6 @@ namespace CassandraMigrationProcessor.DataTransfer
             }
 
             migrationUnit.MigrationChunks[chunkIndex].SourceQueryRowCount = rowCount;
-            context.DownloadCount += rowCount;
 
             if (_target != null)
                 await SchemaManager.EnsureKeyspaceExistsAsync(_target, context.TargetKeyspaceName);
@@ -250,8 +245,6 @@ namespace CassandraMigrationProcessor.DataTransfer
         {
             return new TableContext
             {
-                MigrationUnitId = mu.Id,
-                JobId = _migrationJob.Id,
                 KeyspaceName = mu.KeyspaceName,
                 TableName = mu.TableName,
                 TargetKeyspaceName = mu.GetEffectiveTargetKeyspaceName(),

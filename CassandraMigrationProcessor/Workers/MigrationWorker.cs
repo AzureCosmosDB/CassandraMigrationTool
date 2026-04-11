@@ -316,20 +316,5 @@ namespace CassandraMigrationProcessor.DataTransfer
             CleanupSession();
         }
 
-        public static async Task<List<MigrationUnit>> DiscoverTablesAsync(MigrationLog migrationLog, MigrationJob job)
-        {
-            var result = new List<MigrationUnit>();
-
-            using (var session = CassandraClientFactory.CreateSourceSession(migrationLog, job, "system"))
-            {
-                foreach (var ks in await CassandraQueries.ListKeyspacesAsync(session))
-                    foreach (var tbl in await CassandraQueries.ListTablesAsync(session, ks))
-                        result.Add(new MigrationUnit(job, ks, tbl, new List<MigrationChunk>()));
-            }
-
-            int ksCount = result.Select(r => r.KeyspaceName).Distinct().Count();
-            migrationLog.WriteLine($"Discovered {result.Count} tables across {ksCount} keyspaces", LogType.Info);
-            return result;
-        }
     }
 }

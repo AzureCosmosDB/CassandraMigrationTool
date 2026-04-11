@@ -34,10 +34,5 @@ namespace CassandraMigrationWebApp.Service
             var user = new ClaimsPrincipal(identity);
             return new AuthenticationState(user);
         }
-
-        public void NotifyAuthenticationStateChanged()
-        {
-            NotifyAuthenticationStateChanged(GetAuthenticationStateAsync());
-        }
     }
 }

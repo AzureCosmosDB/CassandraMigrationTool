@@ -38,8 +38,6 @@ namespace CassandraMigrationProcessor.Infrastructure
         private readonly object _writeLock = new object();
         private readonly object _initLock = new object();
 
-        public bool IsInitialized { get; set; } = false;
-
         /// <summary>
         /// Set the persistence callbacks for log I/O.
         /// </summary>
@@ -98,7 +96,6 @@ namespace CassandraMigrationProcessor.Infrastructure
                 _logBucket = ReadLogFile(_currentId, out logBackupFile);
                 _verboseMessages.Clear();
 
-                IsInitialized = true;
                 return logBackupFile;
             }
         }

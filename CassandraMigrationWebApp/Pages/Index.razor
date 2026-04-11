@@ -2,7 +2,6 @@
 @inject Service.JobManager JobManager
 @inject Service.MigrationContextService MigrationContext
 @inject NavigationManager NavigationManager
-@inject IJSRuntime JS
 
 @using CassandraMigrationWebApp.Components
 @using CassandraMigrationProcessor
@@ -380,18 +379,6 @@
         }
         await InvokeAsync(StateHasChanged);
         return true;
-    }
-
-    private async Task DownloadJob(MigrationJob job)
-    {
-        if (string.IsNullOrEmpty(job?.Id))
-        {
-            return;
-        }
-
-        var encodedJobId = Uri.EscapeDataString(job.Id);
-        var url = $"/api/File/download/job/{encodedJobId}";
-        await JS.InvokeVoidAsync("open", url, "_blank");
     }
 
     private string GetJobStatusLabel(MigrationJob job)

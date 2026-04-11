@@ -1,6 +1,4 @@
 using System.Collections.Concurrent;
-using CassandraMigrationProcessor;
-using CassandraMigrationProcessor.Context;
 using CassandraMigrationProcessor.Context;
 using CassandraMigrationProcessor.Models;
 using CassandraMigrationProcessor.Persistence;
@@ -28,19 +26,10 @@ namespace CassandraMigrationWebApp.Service
         public List<MigrationJob> PopulateJobs(List<string> ids)
             => MigrationJobContext.PopulateMigrationJobs(ids);
 
-        public void ClearActiveJobCache()
-            => MigrationJobContext.ClearCurrentlyActiveJobCache();
-
         // -- Unit operations --
 
         public MigrationUnit? GetUnit(string key, string? jobId = null)
             => MigrationJobContext.GetMigrationUnit(key, jobId);
-
-        public bool SaveUnit(MigrationUnit mu, bool updateParent)
-            => MigrationJobContext.SaveMigrationUnit(mu, updateParent);
-
-        public MigrationUnit? GetUnitFromStorage(string jobId, string unitId)
-            => MigrationJobContext.GetMigrationUnitFromStorage(jobId, unitId);
 
         public bool RemoveUnit(MigrationUnitBasic mub)
             => UnitStore.RemoveUnit(mub);

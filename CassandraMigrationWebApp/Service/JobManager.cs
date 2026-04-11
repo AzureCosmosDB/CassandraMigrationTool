@@ -172,16 +172,6 @@ namespace CassandraMigrationWebApp.Service
             return MigrationLog.GetLogCount(jobId);
         }
 
-        public byte[] DownloadLogPage(string jobId, int pageNumber, int pageSize)
-        {
-            if (string.IsNullOrWhiteSpace(jobId) || pageNumber < 1 || pageSize < 1)
-                return Array.Empty<byte>();
-
-            int skip = (pageNumber - 1) * pageSize;
-            MigrationLog MigrationLog = CreateLog();
-            return MigrationLog.DownloadLogsPaginated(jobId, skip, pageSize);
-        }
-
         #endregion
 
         #region Migration Worker Management
@@ -223,20 +213,6 @@ namespace CassandraMigrationWebApp.Service
         public bool IsControlledPauseRequested()
         {
             return _ctx.ControlledPauseRequested;
-        }
-
-        public Task CancelMigration(string id)
-        {
-            var migration = _ctx.GetJob(id);
-            if (migration != null)
-            {
-                migration.Status = JobStatus.Cancelled;
-                _ctx.SaveJob(migration);
-            }
-            // Also stop the running pipeline so it doesn't
-            // finish and mark the job as completed
-            StopMigration();
-            return Task.CompletedTask;
         }
 
         public Task StartMigration(MigrationJob job, string sourceConnectionString, string targetConnectionString, string namespacesToMigrate, CassandraMigrationProcessor.Models.JobType jobType, bool trackChangeStreams)

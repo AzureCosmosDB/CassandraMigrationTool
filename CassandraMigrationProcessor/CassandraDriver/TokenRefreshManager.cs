@@ -109,11 +109,6 @@ namespace CassandraMigrationProcessor.CassandraDriver
         }
 
         /// <summary>
-        /// Returns the UTC time the current AAD token expires.
-        /// </summary>
-        public DateTime TokenExpiresAtUtc => _tokenExpiresAt;
-
-        /// <summary>
         /// Parse the "exp" claim from a JWT to determine when
         /// it expires. Returns DateTime.MaxValue if parsing fails.
         /// </summary>
@@ -218,13 +213,6 @@ namespace CassandraMigrationProcessor.CassandraDriver
                 }
             }
         }
-
-        /// <summary>
-        /// Get the managed source session (for token refresh).
-        /// Returns null if no managed session exists.
-        /// </summary>
-        public ISession? ManagedSourceSession =>
-            _managedSourceSession;
 
         /// <summary>
         /// Set the managed source session so the token refresh

@@ -217,17 +217,6 @@
             .ToList();
     }
 
-    private void RefreshPaginationHelper()
-    {
-        _paginationHelper = new PaginationHelper<MigrationUnit>(
-            GetAllMigrationUnits(),
-            (mu, filterText) =>
-                $"{mu.KeyspaceName}.{mu.TableName}".Contains(filterText, StringComparison.OrdinalIgnoreCase) ||
-                mu.KeyspaceName.Contains(filterText, StringComparison.OrdinalIgnoreCase) ||
-                mu.TableName.Contains(filterText, StringComparison.OrdinalIgnoreCase)
-        );
-    }
-
     private void OnCollectionToggleChanged(ChangeEventArgs e, MigrationUnit mu)
     {
         bool isChecked = e.Value is bool b && b;

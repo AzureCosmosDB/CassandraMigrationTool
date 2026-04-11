@@ -9,7 +9,6 @@ namespace CassandraMigrationProcessor.Models
     [JsonConverter(typeof(StringEnumConverter))]
     public enum TableStatus
     {
-        Unknown,
         OK,
         NotFound,
         Failed,

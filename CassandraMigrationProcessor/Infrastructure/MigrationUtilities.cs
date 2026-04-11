@@ -103,11 +103,6 @@ namespace CassandraMigrationProcessor.Infrastructure
             }
         }
 
-        public static long GetMigrationUnitRowCount(MigrationUnit mu)
-        {
-            return Math.Max(mu.ActualRowCount, mu.EstimatedRowCount);
-        }
-
         public static (long Total, long Inserted, long Skipped, long Failed)
             GetProcessedTotals(MigrationUnit mu)
         {

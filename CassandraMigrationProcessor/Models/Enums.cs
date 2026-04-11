@@ -25,8 +25,7 @@ namespace CassandraMigrationProcessor.Models
         Retry,
         Abort,
         FailedAfterRetries,
-        Canceled,
-        HasMore
+        Canceled
     }
 
     public enum JobType

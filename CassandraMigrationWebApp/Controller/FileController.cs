@@ -1,6 +1,4 @@
 using Microsoft.AspNetCore.Mvc;
-using CassandraMigrationProcessor;
-using CassandraMigrationProcessor.Infrastructure;
 using CassandraMigrationProcessor.Context;
 using CassandraMigrationWebApp.Service;
 using System.Text;
@@ -14,15 +12,6 @@ public class FileController : ControllerBase
     public FileController(MigrationContextService ctx)
     {
         _ctx = ctx;
-    }
-
-    [HttpGet("download/MigrationLog/{Id}")]
-    public IActionResult DownloadFile(string Id)
-    {
-        var log = new MigrationLog();
-        log.SetStorage(MigrationJobContext.CreateLogStorageCallbacks(_ctx.Store));
-        var fileBytes = log.ExportLogsAsBytes(Id, 0, 0);
-        return File(fileBytes, "application/octet-stream", $"{Id}.txt");
     }
 
     [HttpGet("download/migrationunit/{jobId}/{migrationUnitId}")]
@@ -67,41 +56,5 @@ public class FileController : ControllerBase
         var contentType = "application/json";
 
         return File(fileBytes, contentType, $"{jobId}.json");
-    }
-
-    [HttpGet("download/MigrationLog/{Id}/count")]
-    public IActionResult GetLogCount(string Id)
-    {
-        try
-        {
-            var countLog = new MigrationLog();
-            countLog.SetStorage(MigrationJobContext.CreateLogStorageCallbacks(_ctx.Store));
-            int count = countLog.GetLogCount(Id);
-            return Ok(new { count });
-        }
-        catch (Exception ex)
-        {
-            return StatusCode(500, new { error = ex.Message });
-        }
-    }
-
-    [HttpGet("download/MigrationLog/{Id}/page/{pageNumber}/{pageSize}")]
-    public IActionResult DownloadLogPage(string Id, int pageNumber, int pageSize)
-    {
-        try
-        {
-            // Calculate skip/take for pagination
-            int skip = (pageNumber - 1) * pageSize;
-
-            var pageLog = new MigrationLog();
-            pageLog.SetStorage(MigrationJobContext.CreateLogStorageCallbacks(_ctx.Store));
-            var fileBytes = pageLog.DownloadLogsPaginated(Id, skip, pageSize);
-            var contentType = "application/octet-stream";
-            return File(fileBytes, contentType, $"{Id}_page_{pageNumber}.txt");
-        }
-        catch (Exception ex)
-        {
-            return StatusCode(500, new { error = ex.Message });
-        }
     }
 }

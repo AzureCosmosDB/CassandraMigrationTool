@@ -73,7 +73,6 @@ builder.Services.AddServerSideBlazor();
 builder.Services.AddSingleton(builder.Configuration);
 builder.Services.AddSingleton<MigrationContextService>();
 builder.Services.AddSingleton<JobManager>();
-builder.Services.AddScoped<FileService>();
 
 // Background service: keeps migration alive across
 // IIS app pool recycles and auto-resumes jobs.

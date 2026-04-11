@@ -16,7 +16,6 @@ namespace CassandraMigrationProcessor.Persistence
         bool Exists(string id);
         bool Delete(string id);
         List<string> ListIds();
-        bool IsInitialized { get; }
         LogBucket ReadLogs(string id, out string fileName);
         byte[] ExportLogsAsBytes(
             string id, int topEntries = 20,

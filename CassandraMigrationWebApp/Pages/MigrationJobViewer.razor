@@ -11,8 +11,6 @@
 @inject Service.MigrationContextService MigrationContext
 @inject NavigationManager NavigationManager
 @inject IJSRuntime JS
-@inject Service.FileService FileService
-@inject HttpClient HttpClient
 @implements IDisposable
 
 <JobActionToolbar Job="CurrentlyLoadedMigrationJob"
@@ -403,13 +401,6 @@ else if (@_showLogBackupFile)
     {
         _selectedMigrationUnit = mu;
         _collectionDetailsDialogOpen = true;
-    }
-
-    private List<MigrationJob> GetMigrations()
-    {
-        var ids = JobManager.GetMigrationIds();
-        var list = MigrationContext.PopulateJobs(ids);
-        return list;
     }
 
     private async Task DownloadLogBackupFile()

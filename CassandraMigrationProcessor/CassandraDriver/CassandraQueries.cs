@@ -118,14 +118,6 @@ namespace CassandraMigrationProcessor.CassandraDriver
         }
 
         /// <summary>
-        /// Truncate a table on the target.
-        /// </summary>
-        public static async Task TruncateTableAsync(ISession session, string keyspace, string table)
-        {
-            await session.ExecuteAsync(new SimpleStatement($"TRUNCATE \"{keyspace}\".\"{table}\""));
-        }
-
-        /// <summary>
         /// Get feed ranges (physical partitions) for a table
         /// from the system_cosmos.feedranges table.
         /// Returns a list of range JSON strings, one per

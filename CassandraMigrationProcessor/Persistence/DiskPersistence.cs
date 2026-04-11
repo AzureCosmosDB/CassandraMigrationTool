@@ -292,11 +292,6 @@ namespace CassandraMigrationProcessor.Persistence
         }
 
 
-        /// <summary>
-        /// Checks if the storage is initialized
-        /// </summary>
-        public bool IsInitialized => _isInitialized;
-
         // --- Log operations delegated to LogPersistence ---
 
         public void PushLogEntry(string jobId, LogObject logObj)

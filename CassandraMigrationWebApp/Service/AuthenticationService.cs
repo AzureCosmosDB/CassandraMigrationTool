@@ -66,19 +66,5 @@ namespace CassandraMigrationWebApp.Service
             await _sessionStorage.DeleteAsync(AuthTokenKey);
             await _sessionStorage.DeleteAsync(AuthExpiryKey);
         }
-
-        public async Task<DateTime?> GetExpiryTimeAsync()
-        {
-            try
-            {
-                var expiryResult = await _sessionStorage.GetAsync<DateTime>(AuthExpiryKey);
-                return expiryResult.Success ? expiryResult.Value : null;
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[WARN] AuthenticationService.GetExpiryTimeAsync failed: {ex.Message}");
-                return null;
-            }
-        }
     }
 }

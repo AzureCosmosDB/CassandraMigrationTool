@@ -8,7 +8,6 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
 using System.Threading.Tasks;
-using static CassandraMigrationProcessor.Models.JobRegistry;
 using CassandraMigrationProcessor.Models;
 
 namespace CassandraMigrationProcessor.Context
