@@ -1,4 +1,4 @@
-namespace CassandraMigrationProcessor.DataTransfer
+namespace CassandraMigrationProcessor.DataTransfer.BulkCopy
 {
     /// <summary>
     /// Tracks a pending or completed read-write cycle.

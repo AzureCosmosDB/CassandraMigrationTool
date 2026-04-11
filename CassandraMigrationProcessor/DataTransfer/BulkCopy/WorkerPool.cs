@@ -4,7 +4,7 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 
-namespace CassandraMigrationProcessor.DataTransfer
+namespace CassandraMigrationProcessor.DataTransfer.BulkCopy
 {
     /// <summary>
     /// Manages a pool of copy workers that process partitions

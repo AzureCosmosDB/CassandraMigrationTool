@@ -1,6 +1,6 @@
 using System.Threading;
 
-namespace CassandraMigrationProcessor.DataTransfer
+namespace CassandraMigrationProcessor.DataTransfer.BulkCopy
 {
     /// <summary>
     /// Represents a feed range partition with its work

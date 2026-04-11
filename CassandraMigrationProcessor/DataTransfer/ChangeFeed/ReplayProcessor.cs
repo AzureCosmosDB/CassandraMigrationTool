@@ -3,13 +3,14 @@ using CassandraMigrationProcessor.Context;
 using CassandraMigrationProcessor.CassandraDriver;
 using CassandraMigrationProcessor.Models;
 using CassandraMigrationProcessor.Infrastructure;
+using CassandraMigrationProcessor.DataTransfer;
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 
-namespace CassandraMigrationProcessor.DataTransfer
+namespace CassandraMigrationProcessor.DataTransfer.ChangeFeed
 {
     /// <summary>
     /// Tails the Cosmos DB Cassandra change feed for one or

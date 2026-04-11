@@ -1,10 +1,9 @@
 using CassandraMigrationProcessor.Models;
-using CassandraMigrationProcessor.DataTransfer;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Threading.Channels;
 
-namespace CassandraMigrationProcessor.DataTransfer
+namespace CassandraMigrationProcessor.DataTransfer.BulkCopy
 {
     internal record WorkerConfig(
         ConnectionOptions SourceConnection,

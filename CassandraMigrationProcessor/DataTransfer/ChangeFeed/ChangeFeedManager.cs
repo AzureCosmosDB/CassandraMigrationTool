@@ -3,11 +3,12 @@ using CassandraMigrationProcessor.Context;
 using CassandraMigrationProcessor.Infrastructure;
 using CassandraMigrationProcessor.CassandraDriver;
 using CassandraMigrationProcessor.Models;
+using CassandraMigrationProcessor.DataTransfer;
 using System;
 using System.Threading;
 using System.Threading.Tasks;
 
-namespace CassandraMigrationProcessor.DataTransfer
+namespace CassandraMigrationProcessor.DataTransfer.ChangeFeed
 {
     /// <summary>
     /// Manages change feed (replay) lifecycle: creates the
