@@ -14,12 +14,12 @@ namespace CassandraMigrationProcessor.Context
 
         private static readonly object _writeJobLock = new object();
 
-        private static ConcurrentDictionary<string, MigrationJob>
+        private static ConcurrentDictionary<string, Job>
             _jobs = new();
 
-        private static MigrationJob? _cachedActiveJob = null;
+        private static Job? _cachedActiveJob = null;
 
-        internal static MigrationJob? CachedActiveJob
+        internal static Job? CachedActiveJob
         {
             get => _cachedActiveJob;
             set => _cachedActiveJob = value;
@@ -34,7 +34,7 @@ namespace CassandraMigrationProcessor.Context
         /// <summary>
         /// Serialize a job and persist it to storage (caller must hold _writeJobLock).
         /// </summary>
-        private static void SerializeAndPersist(MigrationJob job)
+        private static void SerializeAndPersist(Job job)
         {
             var filePath = GetJobDefinitionPath(job.Id);
             string json = JsonConvert.SerializeObject(
@@ -42,7 +42,7 @@ namespace CassandraMigrationProcessor.Context
             MigrationJobContext.Store.Write(filePath, json);
         }
 
-        internal static MigrationJob? LoadJob(string jobId)
+        internal static Job? LoadJob(string jobId)
         {
             if (_jobs.TryGetValue(jobId, out var cached))
                 return cached;
@@ -53,15 +53,15 @@ namespace CassandraMigrationProcessor.Context
                 var json = MigrationJobContext.Store.Read(
                     filePath);
                 var loadedObject =
-                    JsonConvert.DeserializeObject<MigrationJob>(json);
+                    JsonConvert.DeserializeObject<Job>(json);
                 if (loadedObject == null)
                     return null;
                 _jobs[jobId] = loadedObject;
                 return loadedObject;
-            }, (MigrationJob?)null, $"LoadJob({jobId})");
+            }, (Job?)null, $"LoadJob({jobId})");
         }
 
-        public static MigrationJob? GetJob(string jobId)
+        public static Job? GetJob(string jobId)
         {
             if (jobId == MigrationJobContext.ActiveMigrationJobId
                 && MigrationJobContext.CurrentlyActiveJob != null)
@@ -70,9 +70,9 @@ namespace CassandraMigrationProcessor.Context
             return LoadJob(jobId);
         }
 
-        public static List<MigrationJob> GetAllJobs(List<string> ids)
+        public static List<Job> GetAllJobs(List<string> ids)
         {
-            List<MigrationJob> jobs = new();
+            List<Job> jobs = new();
             foreach (var id in ids)
             {
                 var job = GetJob(id);
@@ -81,7 +81,7 @@ namespace CassandraMigrationProcessor.Context
             return jobs;
         }
 
-        public static bool SaveJob(MigrationJob job)
+        public static bool SaveJob(Job job)
         {
             return MigrationUtilities.SafeExecute(() =>
             {

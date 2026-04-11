@@ -7,10 +7,10 @@ using System.Threading;
 
 namespace CassandraMigrationProcessor.Models
 {
-    public class MigrationUnitBasic
+    public class TableMigrationSummary
     {
         [JsonIgnore]
-        public MigrationJob? ParentJob;
+        public Job? ParentJob;
 
         public string Id { get; set; } = string.Empty;
         public string JobId { get; set; } = string.Empty;
@@ -49,7 +49,7 @@ namespace CassandraMigrationProcessor.Models
         }
     }
 
-    public class MigrationUnit : MigrationUnitBasic
+    public class TableMigration : TableMigrationSummary
     {
         public DateTime? BulkCopyStartedOn { get; set; }
         public DateTime? BulkCopyEndedOn { get; set; }
@@ -155,13 +155,13 @@ namespace CassandraMigrationProcessor.Models
                 ref _changeFeedRowsUpdated, value);
         }
 
-        public List<MigrationChunk> MigrationChunks { get; set; } = new();
+        public List<CopyChunk> CopyChunks { get; set; } = new();
 
-        public MigrationUnit(
-            MigrationJob job,
+        public TableMigration(
+            Job job,
             string keyspaceName,
             string tableName,
-            List<MigrationChunk> migrationChunks)
+            List<CopyChunk> CopyChunks)
         {
             this.Id = GenerateMigrationUnitId(
                 keyspaceName, tableName);
@@ -169,7 +169,7 @@ namespace CassandraMigrationProcessor.Models
             this.TableName = tableName;
             this.TargetKeyspaceName = keyspaceName;
             this.TargetTableName = tableName;
-            this.MigrationChunks = migrationChunks;
+            this.CopyChunks = CopyChunks;
             if (job != null)
             {
                 this.JobId = job.Id;

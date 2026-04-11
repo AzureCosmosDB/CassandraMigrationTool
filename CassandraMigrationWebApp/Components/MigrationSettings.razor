@@ -26,7 +26,7 @@
                 <div class="@(activeTab == "OfflineDataMovement" ? "" : "d-none")">
                     <div class="mb-3">
                         <label for="cql-copy-page-size" class="form-label">CQL Copy page size</label>
-                        <input type="number" id="cql-copy-page-size" class="form-control" @bind="(_configurationBackup ??= new CassandraMigrationProcessor.Models.MigrationSettings()).CqlCopyPageSize" />
+                        <input type="number" id="cql-copy-page-size" class="form-control" @bind="(_configurationBackup ??= new CassandraMigrationProcessor.Models.AppSettings()).CqlCopyPageSize" />
                     </div>
                 </div>
 
@@ -38,7 +38,7 @@
                 <div class="@(activeTab == "Other" ? "" : "d-none")">
                     <div class="mb-3">
                         <label for="log-page-size" class="form-label">Log page size</label>
-                        <input type="text" id="log-page-size" class="form-control" @bind="(_configurationBackup ??= new CassandraMigrationProcessor.Models.MigrationSettings()).LogPageSize" />
+                        <input type="text" id="log-page-size" class="form-control" @bind="(_configurationBackup ??= new CassandraMigrationProcessor.Models.AppSettings()).LogPageSize" />
                     </div>
                 </div>
 
@@ -61,10 +61,10 @@
 @code
 {
     [Parameter]
-    public CassandraMigrationProcessor.Models.MigrationSettings? _configuration { get; set; }
+    public CassandraMigrationProcessor.Models.AppSettings? _configuration { get; set; }
 
     [Parameter]
-    public EventCallback<CassandraMigrationProcessor.Models.MigrationSettings?> On_configurationSaved { get; set; }
+    public EventCallback<CassandraMigrationProcessor.Models.AppSettings?> On_configurationSaved { get; set; }
 
     private string errorMessage = string.Empty;
     private string activeTab = "OfflineDataMovement";
@@ -84,11 +84,11 @@
         activeTab = "Other";
     }
 
-    CassandraMigrationProcessor.Models.MigrationSettings? _configurationBackup;
+    CassandraMigrationProcessor.Models.AppSettings? _configurationBackup;
 
     protected override void OnInitialized()
     {
-        _configurationBackup = (CassandraMigrationProcessor.Models.MigrationSettings?)(_configuration?.Clone()) ?? new CassandraMigrationProcessor.Models.MigrationSettings();
+        _configurationBackup = (CassandraMigrationProcessor.Models.AppSettings?)(_configuration?.Clone()) ?? new CassandraMigrationProcessor.Models.AppSettings();
     }
 
     private async Task HandleSubmit()
@@ -105,8 +105,8 @@
             return;
         }
 
-        _configurationBackup ??= new CassandraMigrationProcessor.Models.MigrationSettings();
-        _configuration = (CassandraMigrationProcessor.Models.MigrationSettings)_configurationBackup.Clone();
+        _configurationBackup ??= new CassandraMigrationProcessor.Models.AppSettings();
+        _configuration = (CassandraMigrationProcessor.Models.AppSettings)_configurationBackup.Clone();
 
         if (On_configurationSaved.HasDelegate)
         {

@@ -4,11 +4,11 @@ using System.Threading;
 
 namespace CassandraMigrationProcessor.Infrastructure
 {
-    public static class MigrationUnitMapper
+    public static class TableMigrationMapper
     {
         private static readonly object _updateParentLock = new();
 
-        public static bool UpdateParentJob(MigrationUnit unit)
+        public static bool UpdateParentJob(TableMigration unit)
         {
             if (unit.ParentJob == null) return false;
 
@@ -30,11 +30,11 @@ namespace CassandraMigrationProcessor.Infrastructure
             }
         }
 
-        public static MigrationUnitBasic ToSummary(
-            MigrationUnit unit, MigrationUnitBasic? target = null)
+        public static TableMigrationSummary ToSummary(
+            TableMigration unit, TableMigrationSummary? target = null)
         {
             if (target == null)
-                target = new MigrationUnitBasic();
+                target = new TableMigrationSummary();
 
             target.Id = MigrationUtilities.GenerateMigrationUnitId(
                 unit.KeyspaceName, unit.TableName);

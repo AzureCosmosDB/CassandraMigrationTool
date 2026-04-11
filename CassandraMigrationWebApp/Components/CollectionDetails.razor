@@ -8,7 +8,7 @@
                 <button type="button" class="btn-close" aria-label="Close" @onclick="@Cancel"></button>
             </div>
             <div class="modal-body">
-                @if (MigrationUnit is not null)
+                @if (TableMigration is not null)
                 {
                     <style>
                         .cd-table { table-layout: fixed; width: 100%; font-size: .9rem; }
@@ -28,27 +28,27 @@
                             <tr>
                                 <td class="cd-col-label">General</td>
                                 <td class="group">
-                                    <div><span class="lbl">Keyspace:</span> @MigrationUnit.KeyspaceName</div>
-                                    <div><span class="lbl">Table:</span> @MigrationUnit.TableName</div>
-                                    @if (HasTargetNamespaceMapping(MigrationUnit))
+                                    <div><span class="lbl">Keyspace:</span> @TableMigration.KeyspaceName</div>
+                                    <div><span class="lbl">Table:</span> @TableMigration.TableName</div>
+                                    @if (HasTargetNamespaceMapping(TableMigration))
                                     {
-                                        <div><span class="lbl">Target Namespace:</span> @GetTargetNamespace(MigrationUnit)</div>
+                                        <div><span class="lbl">Target Namespace:</span> @GetTargetNamespace(TableMigration)</div>
                                     }
-                                    <div><span class="lbl">Source Status:</span> @MigrationUnit.SourceStatus</div>
-                                    <div><span class="lbl">Initial Estimate:</span> @FormatLong(MigrationUnit.EstimatedRowCount)</div>
-                                    <div><span class="lbl">Before Copying:</span> @FormatLong(MigrationUnit.ActualRowCount)</div>
-                                    <div><span class="lbl">While Processing:</span> @FormatLong(MigrationUnit.SourceCountDuringCopy)</div>
+                                    <div><span class="lbl">Source Status:</span> @TableMigration.SourceStatus</div>
+                                    <div><span class="lbl">Initial Estimate:</span> @FormatLong(TableMigration.EstimatedRowCount)</div>
+                                    <div><span class="lbl">Before Copying:</span> @FormatLong(TableMigration.ActualRowCount)</div>
+                                    <div><span class="lbl">While Processing:</span> @FormatLong(TableMigration.SourceCountDuringCopy)</div>
                                 </td>
                             </tr>
 
                             <tr>
                                 <td class="cd-col-label">Offline Copy</td>
                                 <td class="group">
-                                    <div><span class="lbl">Started On (UTC):</span> @(MigrationUnit.BulkCopyStartedOn?.ToString() ?? "N/A")</div>
-                                    <div><span class="lbl">Ended On (UTC):</span> @(MigrationUnit.BulkCopyEndedOn?.ToString() ?? "N/A")</div>
-                                    <div><span class="lbl">Duration:</span> @GetDuration(MigrationUnit.BulkCopyStartedOn, MigrationUnit.BulkCopyEndedOn)</div>
+                                    <div><span class="lbl">Started On (UTC):</span> @(TableMigration.BulkCopyStartedOn?.ToString() ?? "N/A")</div>
+                                    <div><span class="lbl">Ended On (UTC):</span> @(TableMigration.BulkCopyEndedOn?.ToString() ?? "N/A")</div>
+                                    <div><span class="lbl">Duration:</span> @GetDuration(TableMigration.BulkCopyStartedOn, TableMigration.BulkCopyEndedOn)</div>
                                     @{
-                                        var totals = MigrationUtilities.GetProcessedTotals(MigrationUnit);
+                                        var totals = MigrationUtilities.GetProcessedTotals(TableMigration);
                                     }
                                     <div><span class="lbl">Processed Total:</span> @FormatLong(totals.Total)</div>
                                     <div><span class="lbl">Insert:</span> @FormatLong(totals.Inserted)</div>
@@ -60,16 +60,16 @@
                             <tr>
                                 <td class="cd-col-label">Change Feed</td>
                                 <td class="group">
-                                    @if (MigrationJob != null && MigrationUtilities.IsOnline(MigrationJob))
+                                    @if (Job != null && MigrationUtilities.IsOnline(Job))
                                     {
-                                        <div><span class="lbl">Started On (UTC):</span> @(MigrationUnit.ChangeFeedStartedOn?.ToString() ?? "N/A")</div>
-                                        <div><span class="lbl">Continuation Token:</span> @(MigrationUnit.ChangeFeedContinuationToken ?? "N/A")</div>
-                                        <div><span class="lbl">Inserted:</span> @FormatLong(MigrationUnit.ChangeFeedRowsInserted) (from @FormatLong(MigrationUnit.ChangeFeedInsertEvents) events)</div>
-                                        <div><span class="lbl">Deleted:</span> @FormatLong(MigrationUnit.ChangeFeedRowsDeleted) (from @FormatLong(MigrationUnit.ChangeFeedDeleteEvents) events)</div>
-                                        <div><span class="lbl">Updated:</span> @FormatLong(MigrationUnit.ChangeFeedRowsUpdated) (from @FormatLong(MigrationUnit.ChangeFeedUpdateEvents) events)</div>
-                                        <div><span class="lbl">Failed (with retries):</span> @FormatLong(MigrationUnit.ChangeFeedErrors)</div>
-                                        <div><span class="lbl">Avg Read Latency (ms):</span> @MigrationUnit.ChangeFeedAvgReadLatencyInMS.ToString("F2")</div>
-                                        <div><span class="lbl">Avg Write Latency (ms):</span> @MigrationUnit.ChangeFeedAvgWriteLatencyInMS.ToString("F2")</div>
+                                        <div><span class="lbl">Started On (UTC):</span> @(TableMigration.ChangeFeedStartedOn?.ToString() ?? "N/A")</div>
+                                        <div><span class="lbl">Continuation Token:</span> @(TableMigration.ChangeFeedContinuationToken ?? "N/A")</div>
+                                        <div><span class="lbl">Inserted:</span> @FormatLong(TableMigration.ChangeFeedRowsInserted) (from @FormatLong(TableMigration.ChangeFeedInsertEvents) events)</div>
+                                        <div><span class="lbl">Deleted:</span> @FormatLong(TableMigration.ChangeFeedRowsDeleted) (from @FormatLong(TableMigration.ChangeFeedDeleteEvents) events)</div>
+                                        <div><span class="lbl">Updated:</span> @FormatLong(TableMigration.ChangeFeedRowsUpdated) (from @FormatLong(TableMigration.ChangeFeedUpdateEvents) events)</div>
+                                        <div><span class="lbl">Failed (with retries):</span> @FormatLong(TableMigration.ChangeFeedErrors)</div>
+                                        <div><span class="lbl">Avg Read Latency (ms):</span> @TableMigration.ChangeFeedAvgReadLatencyInMS.ToString("F2")</div>
+                                        <div><span class="lbl">Avg Write Latency (ms):</span> @TableMigration.ChangeFeedAvgWriteLatencyInMS.ToString("F2")</div>
                                     }
                                     else
                                     {
@@ -97,10 +97,10 @@
 @code
 {
     [Parameter]
-    public MigrationUnit? MigrationUnit { get; set; }
+    public TableMigration? TableMigration { get; set; }
 
     [Parameter]
-    public MigrationJob? MigrationJob { get; set; }
+    public Job? Job { get; set; }
 
 
     [Parameter]
@@ -116,15 +116,15 @@
         return $"{(int)d.TotalHours}h {d.Minutes}m {d.Seconds}s";
     }
 
-    private static bool HasTargetNamespaceMapping(MigrationUnit migrationUnit)
+    private static bool HasTargetNamespaceMapping(TableMigration TableMigration)
     {
-        return !string.Equals(migrationUnit.KeyspaceName, migrationUnit.GetEffectiveTargetKeyspaceName(), StringComparison.OrdinalIgnoreCase)
-            || !string.Equals(migrationUnit.TableName, migrationUnit.GetEffectiveTargetTableName(), StringComparison.OrdinalIgnoreCase);
+        return !string.Equals(TableMigration.KeyspaceName, TableMigration.GetEffectiveTargetKeyspaceName(), StringComparison.OrdinalIgnoreCase)
+            || !string.Equals(TableMigration.TableName, TableMigration.GetEffectiveTargetTableName(), StringComparison.OrdinalIgnoreCase);
     }
 
-    private static string GetTargetNamespace(MigrationUnit migrationUnit)
+    private static string GetTargetNamespace(TableMigration TableMigration)
     {
-        return $"{migrationUnit.GetEffectiveTargetKeyspaceName()}.{migrationUnit.GetEffectiveTargetTableName()}";
+        return $"{TableMigration.GetEffectiveTargetKeyspaceName()}.{TableMigration.GetEffectiveTargetTableName()}";
     }
 
     private static string FormatLong(long value) => string.Format(System.Globalization.CultureInfo.InvariantCulture, "{0:N0}", value);

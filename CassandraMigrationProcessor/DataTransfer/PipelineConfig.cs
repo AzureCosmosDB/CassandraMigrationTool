@@ -6,7 +6,7 @@ namespace CassandraMigrationProcessor.DataTransfer
 {
     /// <summary>
     /// Resolved pipeline configuration. Merges values from
-    /// MigrationJob (per-job overrides) → MigrationSettings
+    /// Job (per-job overrides) → AppSettings
     /// (app config) → MigrationDefaults (compile-time).
     /// Created once per pipeline run, immutable after construction.
     /// </summary>
@@ -21,7 +21,7 @@ namespace CassandraMigrationProcessor.DataTransfer
         /// Resolves configuration from job overrides, app settings, and defaults.
         /// Priority: Job > Settings > Defaults.
         /// </summary>
-        public static PipelineConfig Resolve(MigrationJob job, MigrationSettings settings)
+        public static PipelineConfig Resolve(Job job, AppSettings settings)
         {
             int workerCount = job.MaxFeedRangeParallelism > 0
                 ? job.MaxFeedRangeParallelism

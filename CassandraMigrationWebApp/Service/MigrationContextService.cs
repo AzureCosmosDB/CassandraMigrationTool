@@ -17,33 +17,33 @@ namespace CassandraMigrationWebApp.Service
     {
         // -- Job operations --
 
-        public MigrationJob? GetJob(string jobId)
+        public Job? GetJob(string jobId)
             => MigrationJobContext.GetMigrationJob(jobId);
 
-        public bool SaveJob(MigrationJob job)
+        public bool SaveJob(Job job)
             => MigrationJobContext.SaveMigrationJob(job);
 
-        public List<MigrationJob> PopulateJobs(List<string> ids)
+        public List<Job> PopulateJobs(List<string> ids)
             => MigrationJobContext.PopulateMigrationJobs(ids);
 
         // -- Unit operations --
 
-        public MigrationUnit? GetUnit(string key, string? jobId = null)
+        public TableMigration? GetUnit(string key, string? jobId = null)
             => MigrationJobContext.GetMigrationUnit(key, jobId);
 
-        public bool RemoveUnit(MigrationUnitBasic mub)
+        public bool RemoveUnit(TableMigrationSummary mub)
             => UnitStore.RemoveUnit(mub);
 
         // -- Job list --
 
-        public JobRegistry JobRegistry => MigrationJobContext.JobRegistry;
+        public JobIndex JobIndex => MigrationJobContext.JobIndex;
 
         public bool SaveJobList()
             => MigrationJobContext.SaveJobList();
 
         // -- Active job --
 
-        public MigrationJob? CurrentlyActiveJob
+        public Job? CurrentlyActiveJob
             => MigrationJobContext.CurrentlyActiveJob;
 
         public string? ActiveMigrationJobId
@@ -83,7 +83,7 @@ namespace CassandraMigrationWebApp.Service
 
         // -- Logging --
 
-        public void UpdateLogLevel(LogType level, MigrationJob job)
+        public void UpdateLogLevel(LogType level, Job job)
             => MigrationJobContext.UpdateLogLevel(level, job);
 
         public void AddVerboseLog(string message)
@@ -91,7 +91,7 @@ namespace CassandraMigrationWebApp.Service
 
         // -- Cache --
 
-        public MigrationUnitCache? MigrationUnitsCache
+        public TableMigrationCache? MigrationUnitsCache
             => MigrationJobContext.MigrationUnitsCache;
     }
 }

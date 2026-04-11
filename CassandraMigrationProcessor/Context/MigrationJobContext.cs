@@ -17,7 +17,7 @@ namespace CassandraMigrationProcessor.Context
         private static readonly object _writeJobListLock = new object();
         private static MigrationLog _log;
 
-        public static MigrationUnitCache MigrationUnitsCache
+        public static TableMigrationCache MigrationUnitsCache
         { get; set; }
 
         /// <summary>
@@ -50,7 +50,7 @@ namespace CassandraMigrationProcessor.Context
         public static bool ControlledPauseRequested
             => _controlledPauseRequested;
 
-        public static JobRegistry JobRegistry { get; private set; }
+        public static JobIndex JobIndex { get; private set; }
 
         public static void ResetControlledPause()
         {
@@ -69,7 +69,7 @@ namespace CassandraMigrationProcessor.Context
         }
 
         public static void UpdateLogLevel(
-            LogType level, MigrationJob job)
+            LogType level, Job job)
         {
             if (CurrentlyActiveJob == null
                 || CurrentlyActiveJob.Status == JobStatus.Cancelled
@@ -116,7 +116,7 @@ namespace CassandraMigrationProcessor.Context
             };
         }
 
-        public static MigrationJob? CurrentlyActiveJob
+        public static Job? CurrentlyActiveJob
         {
             get
             {
@@ -134,7 +134,7 @@ namespace CassandraMigrationProcessor.Context
                         JobStore.LoadJob(ActiveMigrationJobId);
                     if (MigrationUnitsCache == null)
                         MigrationUnitsCache =
-                            new MigrationUnitCache();
+                            new TableMigrationCache();
                     return JobStore.CachedActiveJob;
                 }
 
@@ -171,14 +171,14 @@ namespace CassandraMigrationProcessor.Context
                 : stateStoreCSorPath;
             Store.Initialize(localPath);
 
-            JobRegistry = LoadJobList(
+            JobIndex = LoadJobList(
                 out bool notFound, out string errorMessage);
-            if (notFound && JobRegistry == null)
+            if (notFound && JobIndex == null)
             {
-                JobRegistry = new JobRegistry();
-                JobRegistry.MigrationJobIds = new List<string>();
+                JobIndex = new JobIndex();
+                JobIndex.MigrationJobIds = new List<string>();
             }
-            else if (JobRegistry == null
+            else if (JobIndex == null
                 && !string.IsNullOrEmpty(errorMessage))
             {
                 throw new InvalidOperationException(
@@ -189,16 +189,16 @@ namespace CassandraMigrationProcessor.Context
 
         // Facade: delegates to JobStore
 
-        public static MigrationJob? GetMigrationJob(string jobId)
+        public static Job? GetMigrationJob(string jobId)
             => JobStore.GetJob(jobId);
 
         // Facade: delegates to JobStore
-        public static List<MigrationJob> PopulateMigrationJobs(
+        public static List<Job> PopulateMigrationJobs(
             List<string> ids)
             => JobStore.GetAllJobs(ids);
 
         // Facade: delegates to JobStore
-        public static bool SaveMigrationJob(MigrationJob job)
+        public static bool SaveMigrationJob(Job job)
             => JobStore.SaveJob(job);
 
         // Facade: delegates to JobStore
@@ -207,22 +207,22 @@ namespace CassandraMigrationProcessor.Context
 
         // Facade: delegates to UnitStore
         public static bool SaveMigrationUnit(
-            MigrationUnit mu, bool updateParent)
+            TableMigration mu, bool updateParent)
             => UnitStore.SaveUnit(mu, updateParent);
 
         // Facade: delegates to UnitStore
-        public static MigrationUnit GetMigrationUnit(
+        public static TableMigration GetMigrationUnit(
             string key, string jobId = null)
             => UnitStore.GetUnit(key, jobId);
 
         // Facade: delegates to UnitStore
-        public static MigrationUnit GetMigrationUnitFromStorage(
+        public static TableMigration GetMigrationUnitFromStorage(
             string jobId, string unitId)
             => UnitStore.GetFromStorage(jobId, unitId);
 
-        // -- JobRegistry (stays here: global state) --
+        // -- JobIndex (stays here: global state) --
 
-        private static JobRegistry LoadJobList(
+        private static JobIndex LoadJobList(
             out bool notFound, out string errorMessage)
         {
             errorMessage = string.Empty;
@@ -244,11 +244,11 @@ namespace CassandraMigrationProcessor.Context
                         {
                             string json = Store.Read(path);
                             var obj = JsonConvert
-                                .DeserializeObject<JobRegistry>(json);
+                                .DeserializeObject<JobIndex>(json);
                             if (obj != null)
                             {
-                                JobRegistry = obj;
-                                return JobRegistry;
+                                JobIndex = obj;
+                                return JobIndex;
                             }
                         }
                     }
@@ -276,7 +276,7 @@ namespace CassandraMigrationProcessor.Context
         {
             return MigrationUtilities.SafeExecute(() =>
             {
-                if (JobRegistry != null)
+                if (JobIndex != null)
                 {
                     lock (_writeJobListLock)
                     {
@@ -284,7 +284,7 @@ namespace CassandraMigrationProcessor.Context
                             JobStore.JobsFolder, "JobRegistry.json");
                         string json =
                             JsonConvert.SerializeObject(
-                                JobRegistry, Formatting.Indented);
+                                JobIndex, Formatting.Indented);
                         Store.Write(filePath, json);
                     }
                 }

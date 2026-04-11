@@ -183,22 +183,22 @@
 @code
 {
     [Parameter]
-    public List<MigrationUnit>? MigrationUnits { get; set; }
+    public List<TableMigration>? MigrationUnits { get; set; }
 
     [Parameter]
-    public EventCallback<List<MigrationUnit>> OnCollectionsUpdated { get; set; }
+    public EventCallback<List<TableMigration>> OnCollectionsUpdated { get; set; }
 
-    private List<MigrationUnit> updatedMigrationUnits = new List<MigrationUnit>();
+    private List<TableMigration> updatedMigrationUnits = new List<TableMigration>();
     
     // Pagination helper
-    private PaginationHelper<MigrationUnit> _paginationHelper = null!;
+    private PaginationHelper<TableMigration> _paginationHelper = null!;
 
     protected override void OnParametersSet()
     {
-        updatedMigrationUnits = new List<MigrationUnit>();
+        updatedMigrationUnits = new List<TableMigration>();
         
         // Initialize pagination helper with filter predicate
-        _paginationHelper = new PaginationHelper<MigrationUnit>(
+        _paginationHelper = new PaginationHelper<TableMigration>(
             GetAllMigrationUnits(),
             (mu, filterText) =>
                 $"{mu.KeyspaceName}.{mu.TableName}".Contains(filterText, StringComparison.OrdinalIgnoreCase) ||
@@ -207,17 +207,17 @@
         );
     }
 
-    private List<MigrationUnit> GetAllMigrationUnits()
+    private List<TableMigration> GetAllMigrationUnits()
     {
         if (MigrationUnits == null)
-            return new List<MigrationUnit>();
+            return new List<TableMigration>();
 
         return MigrationUnits
             .Where(mu => !string.IsNullOrEmpty(mu.ChangeFeedContinuationToken))
             .ToList();
     }
 
-    private void OnCollectionToggleChanged(ChangeEventArgs e, MigrationUnit mu)
+    private void OnCollectionToggleChanged(ChangeEventArgs e, TableMigration mu)
     {
         bool isChecked = e.Value is bool b && b;
         if (!isChecked)
@@ -234,7 +234,7 @@
         StateHasChanged(); // Refresh the UI to update selection summary
     }   
 
-    private bool IsUnitToggled(MigrationUnit mu)
+    private bool IsUnitToggled(TableMigration mu)
     {
         return updatedMigrationUnits.Contains(mu);
     }

@@ -47,7 +47,7 @@ namespace CassandraMigrationProcessor.DataTransfer.ChangeFeed
         /// Entry point: discovers feed ranges and dispatches to
         /// parallel or single-range processing.
         /// </summary>
-        public async Task RunAsync(MigrationUnit mu, CancellationToken ct)
+        public async Task RunAsync(TableMigration mu, CancellationToken ct)
         {
             var feedRanges = await CassandraQueries.GetFeedRangesAsync(
                 _sourceSession, mu.KeyspaceName, mu.TableName,
@@ -77,7 +77,7 @@ namespace CassandraMigrationProcessor.DataTransfer.ChangeFeed
         /// Each range reader has its own paging state and poll loop.
         /// </summary>
         private async Task RunParallelAsync(
-            MigrationUnit mu, List<string> feedRanges, CancellationToken ct)
+            TableMigration mu, List<string> feedRanges, CancellationToken ct)
         {
             mu.ChangeFeedStartedOn ??= DateTime.UtcNow;
 
@@ -106,7 +106,7 @@ namespace CassandraMigrationProcessor.DataTransfer.ChangeFeed
         /// <summary>
         /// Prepare insert statement and run the single-range poll loop.
         /// </summary>
-        private async Task RunSingleAsync(MigrationUnit mu, CancellationToken ct)
+        private async Task RunSingleAsync(TableMigration mu, CancellationToken ct)
         {
             var (ps, colNames) = await PrepareReplayAsync(mu);
 
@@ -135,7 +135,7 @@ namespace CassandraMigrationProcessor.DataTransfer.ChangeFeed
         /// Reads table columns from the source, filters out system
         /// columns, and prepares the INSERT statement on the target.
         /// </summary>
-        private async Task<(PreparedStatement Ps, List<string> ColumnNames)> PrepareReplayAsync(MigrationUnit mu)
+        private async Task<(PreparedStatement Ps, List<string> ColumnNames)> PrepareReplayAsync(TableMigration mu)
         {
             var columns = await SchemaManager.GetTableColumnsAsync(
                 _sourceSession, mu.KeyspaceName, mu.TableName);
@@ -160,7 +160,7 @@ namespace CassandraMigrationProcessor.DataTransfer.ChangeFeed
         /// All stats use Interlocked for thread safety in both modes.
         /// </summary>
         private async Task PollLoopAsync(
-            MigrationUnit mu,
+            TableMigration mu,
             string? feedRange,
             PreparedStatement ps,
             List<string> colNames,
@@ -269,7 +269,7 @@ namespace CassandraMigrationProcessor.DataTransfer.ChangeFeed
             RowSet rs,
             PreparedStatement ps,
             List<string> colNames,
-            MigrationUnit mu,
+            TableMigration mu,
             CancellationToken ct)
         {
             int insertCount = 0;
@@ -307,7 +307,7 @@ namespace CassandraMigrationProcessor.DataTransfer.ChangeFeed
         /// Update stats, persist continuation, and save the MU.
         /// </summary>
         private void UpdateStats(
-            MigrationUnit mu,
+            TableMigration mu,
             string? feedRange,
             int insertCount,
             int errorCount,
@@ -327,7 +327,7 @@ namespace CassandraMigrationProcessor.DataTransfer.ChangeFeed
 
             SaveContinuation(mu, feedRange, continuationState);
 
-            MigrationUnitMapper.UpdateParentJob(mu);
+            TableMigrationMapper.UpdateParentJob(mu);
             MigrationJobContext.SaveMigrationUnit(
                 mu, insertCount > 0 || errorCount > 0);
 
@@ -342,7 +342,7 @@ namespace CassandraMigrationProcessor.DataTransfer.ChangeFeed
         // ─── helpers ────────────────────────────────────────────
 
         private static string BuildCql(
-            MigrationUnit mu, string startTime, string? feedRange)
+            TableMigration mu, string startTime, string? feedRange)
         {
             string cql =
                 $"SELECT * FROM \"{mu.KeyspaceName}\".\"{mu.TableName}\" WHERE COSMOS_CHANGEFEED_START_TIME() = '{startTime}'";
@@ -352,7 +352,7 @@ namespace CassandraMigrationProcessor.DataTransfer.ChangeFeed
         }
 
         private static byte[]? LoadContinuation(
-            MigrationUnit mu, string? feedRange)
+            TableMigration mu, string? feedRange)
         {
             if (feedRange != null)
             {
@@ -374,7 +374,7 @@ namespace CassandraMigrationProcessor.DataTransfer.ChangeFeed
         }
 
         private static void SaveContinuation(
-            MigrationUnit mu, string? feedRange, byte[]? state)
+            TableMigration mu, string? feedRange, byte[]? state)
         {
             if (state == null) return;
 
@@ -401,7 +401,7 @@ namespace CassandraMigrationProcessor.DataTransfer.ChangeFeed
         }
 
         private async Task<(bool Success, PreparedStatement Ps, List<string> ColNames)> TryReconnectSourceAsync(
-            MigrationUnit mu,
+            TableMigration mu,
             PreparedStatement ps,
             List<string> colNames)
         {

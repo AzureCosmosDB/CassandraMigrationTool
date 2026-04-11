@@ -9,7 +9,7 @@ namespace CassandraMigrationProcessor.Context
         private static string GetFilePath()
             => $"{JobStore.JobsFolder}\\config.json";
 
-        public static void Load(MigrationSettings settings)
+        public static void Load(AppSettings settings)
         {
             if (MigrationJobContext.Store == null) return;
 
@@ -18,7 +18,7 @@ namespace CassandraMigrationProcessor.Context
             {
                 string json = MigrationJobContext.Store.Read(filePath);
                 var loaded =
-                    JsonConvert.DeserializeObject<MigrationSettings>(json);
+                    JsonConvert.DeserializeObject<AppSettings>(json);
                 if (loaded != null)
                 {
                     settings.ApplyLoaded(loaded);
@@ -30,7 +30,7 @@ namespace CassandraMigrationProcessor.Context
         }
 
         public static bool Save(
-            MigrationSettings settings, out string errorMessage)
+            AppSettings settings, out string errorMessage)
         {
             if (MigrationJobContext.Store == null)
             {

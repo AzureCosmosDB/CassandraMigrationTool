@@ -3,7 +3,7 @@ using System.Collections.Generic;
 
 namespace CassandraMigrationProcessor.Models
 {
-    public class MigrationJob
+    public class Job
     {
         public string Id { get; set; } = string.Empty;
         public string? Name { get; set; }
@@ -87,7 +87,7 @@ namespace CassandraMigrationProcessor.Models
         public int PageSize { get; set; } = 0;
 
         [JsonProperty("MigrationUnitBasics")]
-        public List<MigrationUnitBasic> Tables { get; set; } = new();
+        public List<TableMigrationSummary> Tables { get; set; } = new();
 
         [JsonIgnore]
         public ConnectionOptions SourceConnection => new(

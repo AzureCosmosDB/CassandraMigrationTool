@@ -32,7 +32,7 @@ namespace CassandraMigrationProcessor.DataTransfer
             _tokenRefreshManager = new TokenRefreshManager(migrationLog);
         }
 
-        public async Task<TaskResult> StartAsync(MigrationJob job, MigrationSettings config,
+        public async Task<TaskResult> StartAsync(Job job, AppSettings config,
             CancellationToken cancellationToken)
         {
             try
@@ -97,7 +97,7 @@ namespace CassandraMigrationProcessor.DataTransfer
             }
         }
 
-        private async Task<TaskResult> ResumeChangeFeedAsync(MigrationJob job, MigrationSettings config,
+        private async Task<TaskResult> ResumeChangeFeedAsync(Job job, AppSettings config,
             CancellationToken cancellationToken)
         {
             _log.WriteLine("All tables copied. Resuming change feed processors.", LogType.Info);
@@ -119,8 +119,8 @@ namespace CassandraMigrationProcessor.DataTransfer
             return cancellationToken.IsCancellationRequested ? TaskResult.Canceled : TaskResult.Success;
         }
 
-        private async Task ProcessWithRetryAsync(MigrationJob job, MigrationSettings config,
-            MigrationUnit mu, CancellationToken token)
+        private async Task ProcessWithRetryAsync(Job job, AppSettings config,
+            TableMigration mu, CancellationToken token)
         {
             for (int attempt = 1; attempt <= MigrationDefaults.MaxTableRetries; attempt++)
             {
@@ -139,7 +139,7 @@ namespace CassandraMigrationProcessor.DataTransfer
             }
         }
 
-        private async Task HandleCompletionAsync(MigrationJob job, CancellationToken cancellationToken)
+        private async Task HandleCompletionAsync(Job job, CancellationToken cancellationToken)
         {
             if (MigrationUtilities.IsOnline(job))
             {
@@ -158,8 +158,8 @@ namespace CassandraMigrationProcessor.DataTransfer
             }
         }
 
-        private async Task ProcessMigrationUnitAsync(MigrationJob job, MigrationSettings config,
-            MigrationUnit mu, CancellationToken cancellationToken)
+        private async Task ProcessMigrationUnitAsync(Job job, AppSettings config,
+            TableMigration mu, CancellationToken cancellationToken)
         {
             if (mu.SourceStatus == TableStatus.Failed)
             {
@@ -211,7 +211,7 @@ namespace CassandraMigrationProcessor.DataTransfer
             }
         }
 
-        private async Task SetupTargetSchemaAsync(MigrationJob job, ISession sourceSession, MigrationUnit mu)
+        private async Task SetupTargetSchemaAsync(Job job, ISession sourceSession, TableMigration mu)
         {
             using var targetSession = CassandraClientFactory.CreateTargetSession(_log, job, string.Empty);
 
@@ -232,8 +232,8 @@ namespace CassandraMigrationProcessor.DataTransfer
                 _log.WriteLine($"Created target table {mu.KeyspaceName}.{mu.TableName}", LogType.Info);
         }
 
-        private async Task RunCopyForUnitAsync(MigrationJob job, MigrationSettings config,
-            ISession sourceSession, MigrationUnit mu, CancellationToken ct)
+        private async Task RunCopyForUnitAsync(Job job, AppSettings config,
+            ISession sourceSession, TableMigration mu, CancellationToken ct)
         {
             var processor = new BulkCopyEngine(_log, sourceSession, config, job, _tokenRefreshManager);
             _activeProcessors[mu.Id] = processor;
@@ -249,7 +249,7 @@ namespace CassandraMigrationProcessor.DataTransfer
                 _log.WriteLine($"Copy failed for {mu.KeyspaceName}.{mu.TableName}", LogType.Error);
         }
 
-        private async Task LogFeedRangesAsync(ISession session, MigrationUnit mu)
+        private async Task LogFeedRangesAsync(ISession session, TableMigration mu)
         {
             try
             {
@@ -264,7 +264,7 @@ namespace CassandraMigrationProcessor.DataTransfer
             }
         }
 
-        private void HandleMigrationUnitError(MigrationUnit mu, Exception ex)
+        private void HandleMigrationUnitError(TableMigration mu, Exception ex)
         {
             _log.WriteLine($"Error processing {mu.KeyspaceName}.{mu.TableName}: {ex}", LogType.Error);
             mu.SourceStatus = TableStatus.Failed;
@@ -282,7 +282,7 @@ namespace CassandraMigrationProcessor.DataTransfer
             MigrationJobContext.SaveMigrationUnit(mu, true);
         }
 
-        private void EnsureSourceSession(MigrationJob job, string keyspace)
+        private void EnsureSourceSession(Job job, string keyspace)
         {
             if (_sourceSession != null && !_sourceSession.IsDisposed)
                 return;

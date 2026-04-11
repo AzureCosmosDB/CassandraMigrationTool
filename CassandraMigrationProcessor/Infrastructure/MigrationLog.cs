@@ -31,7 +31,7 @@ namespace CassandraMigrationProcessor.Infrastructure
         private LogBucket _logBucket = new LogBucket();
         private List<LogObject> _verboseMessages = new List<LogObject>();
         private string _currentId = string.Empty;
-        private MigrationJob? CurrentlyActiveJob;
+        private Job? CurrentlyActiveJob;
         private LogStorageCallbacks? _storage;
 
         private readonly object _verboseLock = new object();
@@ -49,7 +49,7 @@ namespace CassandraMigrationProcessor.Infrastructure
         /// <summary>
         /// Set the migration job reference for MigrationLog level filtering
         /// </summary>
-        public void SetJob(MigrationJob? job)
+        public void SetJob(Job? job)
         {
             CurrentlyActiveJob = job;
         }

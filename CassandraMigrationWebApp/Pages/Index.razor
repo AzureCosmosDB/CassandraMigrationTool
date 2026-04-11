@@ -187,15 +187,15 @@
     private bool _editSettingsOpen;
 
     private string _message = string.Empty;
-    private MigrationJob? _selectedMigrationJob;
-    private List<MigrationJob>? migrationJobs;
+    private Job? _selectedMigrationJob;
+    private List<Job>? migrationJobs;
     private bool _loadingComplete;
 
-    private string GetTootTip(MigrationJob migrationJob)
+    private string GetTootTip(Job Job)
     {
 
         return string.Join(",",
-            migrationJob.Tables?
+            Job.Tables?
                 .Select(mu => $"{mu.KeyspaceName}.{mu.TableName}") ?? Enumerable.Empty<string>());
     }
 
@@ -240,12 +240,12 @@
 #pragma warning restore CS1998
 #pragma warning disable CS8602
 
-    private List<MigrationJob> GetMigrations()
+    private List<Job> GetMigrations()
     {
         return GetMigrationsFromManager(true);
     }
 
-    private List<MigrationJob> GetMigrationsFromManager(bool silent)
+    private List<Job> GetMigrationsFromManager(bool silent)
     {
         var ids = JobManager.GetMigrationIds();
         var result = MigrationContext.PopulateJobs(ids);
@@ -305,7 +305,7 @@
         }
     }
 
-    private CassandraMigrationProcessor.Models.MigrationSettings GetConfig()
+    private CassandraMigrationProcessor.Models.AppSettings GetConfig()
     {
         return JobManager.GetConfig();
     }
@@ -317,7 +317,7 @@
         _editSettingsOpen = true;
     }
 
-    private void HandleConfigurationSaved(CassandraMigrationProcessor.Models.MigrationSettings updatedConfig)
+    private void HandleConfigurationSaved(CassandraMigrationProcessor.Models.AppSettings updatedConfig)
     {
         _editSettingsOpen = false;
 
@@ -334,7 +334,7 @@
     private void ViewMigration(string? id)
     {
 
-        NavigationManager.NavigateTo($"/migrationjobviewer/{id}");
+        NavigationManager.NavigateTo($"/MigrationJobViewer/{id}");
     }
 
     private void ViewJobReport(string? id)
@@ -350,11 +350,11 @@
 
     private Task<bool> CheckIfNameExistsAsync(string name)
     {
-        var migrationJob = GetMigrations().Find(m => m.Name == name);
-        return Task.FromResult(migrationJob != null);
+        var Job = GetMigrations().Find(m => m.Name == name);
+        return Task.FromResult(Job != null);
     }
 
-    private async Task<bool> OnMigrationDetailsPopUpSubmit(MigrationJob job, string sourceConnectionString, string targetConnectionString)
+    private async Task<bool> OnMigrationDetailsPopUpSubmit(Job job, string sourceConnectionString, string targetConnectionString)
     {
         _migrationDetailsPopUpOpen = false;
         if (job != null)
@@ -368,7 +368,7 @@
                 if (!string.IsNullOrEmpty(targetConnectionString))
                     MigrationContext.TargetConnectionString[job.Id] = targetConnectionString;
 
-                MigrationContext.JobRegistry.MigrationJobIds.Add(job.Id);
+                MigrationContext.JobIndex.MigrationJobIds.Add(job.Id);
 
                 MigrationContext.PendingAutoStartJobIds.TryAdd(job.Id, 0);
                 MigrationContext.SaveJob(job);
@@ -381,7 +381,7 @@
         return true;
     }
 
-    private string GetJobStatusLabel(MigrationJob job)
+    private string GetJobStatusLabel(Job job)
     {
         if (job.Status == JobStatus.Completed) return "Completed";
         if (job.Status == JobStatus.Cancelled) return "Cancelled";
@@ -393,7 +393,7 @@
         return "Not Started";
     }
 
-    private string GetJobStatusBadge(MigrationJob job)
+    private string GetJobStatusBadge(Job job)
     {
         if (job.Status == JobStatus.Completed) return "bg-success";
         if (job.Status == JobStatus.Cancelled) return "bg-secondary";

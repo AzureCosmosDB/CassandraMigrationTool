@@ -2,7 +2,7 @@ using System.Collections.Generic;
 
 namespace CassandraMigrationProcessor.Models
 {
-    public class Segment
+    public class ChunkSegment
     {
         public bool? IsProcessed { get; set; }
         public long QueryRowCount { get; set; }
@@ -10,7 +10,7 @@ namespace CassandraMigrationProcessor.Models
         public string Id { get; set; } = string.Empty;
     }
 
-    public class MigrationChunk
+    public class CopyChunk
     {
         public bool? IsDownloaded { get; set; }
         public bool? IsUploaded { get; set; }
@@ -19,7 +19,7 @@ namespace CassandraMigrationProcessor.Models
         public long TargetInsertedRowCount { get; set; }
         public long TargetFailedRowCount { get; set; }
         public long SkippedAsDuplicateCount { get; set; }
-        public List<Segment> Segments { get; set; } = new();
+        public List<ChunkSegment> Segments { get; set; } = new();
         public string Id { get; set; } = string.Empty;
         public int Attempt { get; set; }
     }

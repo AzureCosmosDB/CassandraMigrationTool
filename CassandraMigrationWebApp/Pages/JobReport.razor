@@ -9,7 +9,7 @@
         <button class="btn btn-light me-2" title="Back to Job List" @onclick="GoBack" style="border: none; background: transparent;">
             <i class="bi bi-arrow-left"></i>
         </button>
-        @MigrationJob?.Name - Job Report</h3>
+        @Job?.Name - Job Report</h3>
     <div class="d-flex align-items-center mb-3">
        
         <button class="btn btn-primary" title="Print" onclick="window.print()">
@@ -18,7 +18,7 @@
     </div>
 </div>
 
-@if (MigrationJob is null)
+@if (Job is null)
 {
     <div class="alert alert-warning">Job not found.</div>
 }
@@ -64,14 +64,14 @@ else
                 </tr>
             </thead>
             <tbody>
-                <tr><td class="nowrap">Job Name</td><td class="wrap">@MigrationJob.Name</td></tr>
-                <tr><td class="nowrap">Job Type</td><td>@GetToolName(MigrationJob.JobType)</td></tr>
-                <tr><td class="nowrap">Started On (UTC)</td><td>@(MigrationJob.StartedOn?.ToString() ?? "N/A")</td></tr>
-                <tr><td class="nowrap">Is Online</td><td>@(MigrationUtilities.IsOnline(MigrationJob) ? "Yes" : "No")</td></tr>
-                <tr><td class="nowrap">Is Completed</td><td>@(MigrationJob.Status == JobStatus.Completed ? "Yes" : "No")</td></tr>
-                <tr><td class="nowrap">Source Contact Point</td><td class="wrap">@MigrationJob.SourceContactPoint</td></tr>
-                <tr><td class="nowrap">Target Contact Point</td><td class="wrap">@MigrationJob.TargetContactPoint</td></tr>
-                <tr><td class="nowrap">Collection Count</td><td>@(@JobManager.GetMigrationUnits(MigrationJob)?.Count ?? 0)</td></tr>
+                <tr><td class="nowrap">Job Name</td><td class="wrap">@Job.Name</td></tr>
+                <tr><td class="nowrap">Job Type</td><td>@GetToolName(Job.JobType)</td></tr>
+                <tr><td class="nowrap">Started On (UTC)</td><td>@(Job.StartedOn?.ToString() ?? "N/A")</td></tr>
+                <tr><td class="nowrap">Is Online</td><td>@(MigrationUtilities.IsOnline(Job) ? "Yes" : "No")</td></tr>
+                <tr><td class="nowrap">Is Completed</td><td>@(Job.Status == JobStatus.Completed ? "Yes" : "No")</td></tr>
+                <tr><td class="nowrap">Source Contact Point</td><td class="wrap">@Job.SourceContactPoint</td></tr>
+                <tr><td class="nowrap">Target Contact Point</td><td class="wrap">@Job.TargetContactPoint</td></tr>
+                <tr><td class="nowrap">Collection Count</td><td>@(@JobManager.GetMigrationUnits(Job)?.Count ?? 0)</td></tr>
             </tbody>
         </table>
     </div>
@@ -86,7 +86,7 @@ else
             </tr>
         </thead>
         <tbody>
-        @foreach (var mu in (@JobManager.GetMigrationUnits(MigrationJob) ?? new List<MigrationUnit>()))
+        @foreach (var mu in (@JobManager.GetMigrationUnits(Job) ?? new List<TableMigration>()))
         {
             var duration = GetDuration(mu.BulkCopyStartedOn, mu.BulkCopyEndedOn);
             <tr>
@@ -132,12 +132,12 @@ else
     [Parameter]
     public string JobId { get; set; } = string.Empty;
 
-    private MigrationJob? MigrationJob { get; set; }
+    private Job? Job { get; set; }
 
     protected override void OnParametersSet()
     {
 
-        MigrationJob = JobManager.GetMigrationJobById(JobId);
+        Job = JobManager.GetMigrationJobById(JobId);
     }
 
     private void GoBack()
@@ -162,13 +162,13 @@ else
         return $"{(int)d.TotalHours}h {d.Minutes}m {d.Seconds}s";
     }
 
-    private static bool HasTargetNamespaceMapping(MigrationUnit mu)
+    private static bool HasTargetNamespaceMapping(TableMigration mu)
     {
         return !string.Equals(mu.KeyspaceName, mu.GetEffectiveTargetKeyspaceName(), StringComparison.OrdinalIgnoreCase)
             || !string.Equals(mu.TableName, mu.GetEffectiveTargetTableName(), StringComparison.OrdinalIgnoreCase);
     }
 
-    private static string GetTargetNamespace(MigrationUnit mu)
+    private static string GetTargetNamespace(TableMigration mu)
     {
         return $"{mu.GetEffectiveTargetKeyspaceName()}.{mu.GetEffectiveTargetTableName()}";
     }

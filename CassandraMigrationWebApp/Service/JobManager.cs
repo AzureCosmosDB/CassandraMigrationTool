@@ -60,7 +60,7 @@ namespace CassandraMigrationWebApp.Service
             MigrationUtilities.LogToFile($"WebAppBaseUrl updated from browser: {_webAppBaseUrl}");
         }
 
-        public bool UpdateConfig(CassandraMigrationProcessor.Models.MigrationSettings updated_config, out string errorMessage)
+        public bool UpdateConfig(CassandraMigrationProcessor.Models.AppSettings updated_config, out string errorMessage)
         {
             if (updated_config == null)
             {
@@ -71,9 +71,9 @@ namespace CassandraMigrationWebApp.Service
             return SettingsManager.Save(updated_config, out errorMessage);
         }
 
-        public CassandraMigrationProcessor.Models.MigrationSettings GetConfig()
+        public CassandraMigrationProcessor.Models.AppSettings GetConfig()
         {
-            MigrationSettings config = new MigrationSettings();
+            AppSettings config = new AppSettings();
             SettingsManager.Load(config);
             return config;
         }
@@ -81,9 +81,9 @@ namespace CassandraMigrationWebApp.Service
         #endregion 
         #region Job Management
 
-        public List<MigrationUnit> GetMigrationUnits(MigrationJob mj)
+        public List<TableMigration> GetMigrationUnits(Job mj)
         {
-            var units = new List<MigrationUnit>();
+            var units = new List<TableMigration>();
             if (mj != null)
             {
                 foreach (var mub in mj.Tables)
@@ -97,19 +97,19 @@ namespace CassandraMigrationWebApp.Service
         }
 
 
-        public MigrationJob? GetMigrationJobById(string id, bool active = true)
+        public Job? GetMigrationJobById(string id, bool active = true)
         {
             return _ctx.GetJob(id);
         }
 
         public List<string> GetMigrationIds()
         {
-            return _ctx.JobRegistry.MigrationJobIds;
+            return _ctx.JobIndex.MigrationJobIds;
         }
 
         public void ClearJobFiles(string jobId)
         {
-            _ctx.JobRegistry.MigrationJobIds?.Remove(jobId);
+            _ctx.JobIndex.MigrationJobIds?.Remove(jobId);
             _ctx.SaveJobList();
 
             Task.Run(() =>
@@ -189,7 +189,7 @@ namespace CassandraMigrationWebApp.Service
         /// <summary>
         /// Checks if controlled pause is applicable for the given job type and current job state.
         /// </summary>
-        public bool IsControlledPauseApplicable(JobType jobType, CassandraMigrationProcessor.Models.MigrationJob? job = null)
+        public bool IsControlledPauseApplicable(JobType jobType, CassandraMigrationProcessor.Models.Job? job = null)
         {
             if (jobType != JobType.CqlCopy)
                 return false;
@@ -215,7 +215,7 @@ namespace CassandraMigrationWebApp.Service
             return _ctx.ControlledPauseRequested;
         }
 
-        public Task StartMigration(MigrationJob job, string sourceConnectionString, string targetConnectionString, string namespacesToMigrate, CassandraMigrationProcessor.Models.JobType jobType, bool trackChangeStreams)
+        public Task StartMigration(Job job, string sourceConnectionString, string targetConnectionString, string namespacesToMigrate, CassandraMigrationProcessor.Models.JobType jobType, bool trackChangeStreams)
         {
             lock (_stateLock)
             {
@@ -254,7 +254,7 @@ namespace CassandraMigrationWebApp.Service
             _ctx.ActiveMigrationJobId = job.Id;
             job.Status = JobStatus.Running;
 
-            var config = new MigrationSettings();
+            var config = new AppSettings();
             SettingsManager.Load(config);
 
             // Background migration: stored so exceptions are observable and
@@ -314,7 +314,7 @@ namespace CassandraMigrationWebApp.Service
             return Task.CompletedTask;
         }
 
-        private async Task ExpandWildcardTablesAsync(MigrationJob job, string namespacesToMigrate)
+        private async Task ExpandWildcardTablesAsync(Job job, string namespacesToMigrate)
         {
             if (string.IsNullOrWhiteSpace(namespacesToMigrate)) return;
 
@@ -323,7 +323,7 @@ namespace CassandraMigrationWebApp.Service
                 .Select(s => s.Trim())
                 .Where(s => !string.IsNullOrEmpty(s));
 
-            List<MigrationUnit> expandedUnits = new List<MigrationUnit>();
+            List<TableMigration> expandedUnits = new List<TableMigration>();
 
             foreach (var fullName in entries)
             {
@@ -373,9 +373,9 @@ namespace CassandraMigrationWebApp.Service
                                 }
                                 if (!accessible) continue;
 
-                                var mu = new MigrationUnit(
+                                var mu = new TableMigration(
                                     job, keyspace, tableName,
-                                    new List<MigrationChunk>());
+                                    new List<CopyChunk>());
                                 mu.SourceStatus = TableStatus.OK;
                                 expandedUnits.Add(mu);
                             }
@@ -388,9 +388,9 @@ namespace CassandraMigrationWebApp.Service
                 }
                 else
                 {
-                    var mu = new MigrationUnit(
+                    var mu = new TableMigration(
                         job, keyspace, table,
-                        new List<MigrationChunk>());
+                        new List<CopyChunk>());
                     mu.SourceStatus = TableStatus.OK;
                     expandedUnits.Add(mu);
                 }

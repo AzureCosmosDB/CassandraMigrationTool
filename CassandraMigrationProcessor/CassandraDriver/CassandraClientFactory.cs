@@ -305,13 +305,13 @@ namespace CassandraMigrationProcessor.CassandraDriver
         }
 
         /// <summary>
-        /// Create source session from a MigrationJob's properties.
+        /// Create source session from a Job's properties.
         /// If SourceUseAad is true or password is missing (e.g.
         /// on resume after [JsonIgnore]), fetches a fresh AAD
         /// token automatically.
         /// </summary>
         public static ISession CreateSourceSession(
-            MigrationLog MigrationLog, MigrationJob job, string keyspace,
+            MigrationLog MigrationLog, Job job, string keyspace,
             TokenRefreshManager? tokenRefreshManager = null)
         {
             string password = job.SourcePassword ?? string.Empty;
@@ -350,14 +350,14 @@ namespace CassandraMigrationProcessor.CassandraDriver
         }
 
         /// <summary>
-        /// Create target session from a MigrationJob's properties.
+        /// Create target session from a Job's properties.
         /// If target password is empty, tries ARM auto-discovery:
         /// 1. For MI clusters with authenticationMethod=None → no credentials needed
         /// 2. For Cosmos DB Cassandra accounts → fetch keys via listKeys ARM API
         /// Falls back to no-auth connection if ARM discovery fails.
         /// </summary>
         public static ISession CreateTargetSession(
-            MigrationLog MigrationLog, MigrationJob job, string keyspace)
+            MigrationLog MigrationLog, Job job, string keyspace)
         {
             string password = job.TargetPassword ?? string.Empty;
             string username = job.TargetUsername ?? string.Empty;

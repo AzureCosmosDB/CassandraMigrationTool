@@ -11,7 +11,7 @@ namespace CassandraMigrationProcessor.Context
     {
         private static readonly object _writeMULock = new object();
 
-        public static MigrationUnit GetUnit(
+        public static TableMigration GetUnit(
             string unitId, string jobId = null)
         {
             if (string.IsNullOrEmpty(jobId)
@@ -28,7 +28,7 @@ namespace CassandraMigrationProcessor.Context
         }
 
         public static bool SaveUnit(
-            MigrationUnit mu, bool updateParent)
+            TableMigration mu, bool updateParent)
         {
             return MigrationUtilities.SafeExecute(() =>
             {
@@ -39,7 +39,7 @@ namespace CassandraMigrationProcessor.Context
                         MigrationJobContext.CurrentlyActiveJob;
 
                 if (mu.ParentJob != null && updateParent)
-                    MigrationUnitMapper.UpdateParentJob(mu);
+                    TableMigrationMapper.UpdateParentJob(mu);
 
                 lock (_writeMULock)
                 {
@@ -67,7 +67,7 @@ namespace CassandraMigrationProcessor.Context
             }, false, "SaveUnit");
         }
 
-        public static bool RemoveUnit(MigrationUnitBasic unit)
+        public static bool RemoveUnit(TableMigrationSummary unit)
         {
             if (unit == null || unit.ParentJob == null)
                 return false;
@@ -93,7 +93,7 @@ namespace CassandraMigrationProcessor.Context
             }, false, "RemoveUnit");
         }
 
-        public static MigrationUnit GetFromStorage(
+        public static TableMigration GetFromStorage(
             string jobId, string unitId)
         {
             return MigrationUtilities.SafeExecute(() =>
@@ -103,14 +103,14 @@ namespace CassandraMigrationProcessor.Context
                 string json = MigrationJobContext.Store
                     .Read(filePath);
                 return JsonConvert
-                    .DeserializeObject<MigrationUnit>(json);
-            }, (MigrationUnit)null, $"GetFromStorage({jobId}, {unitId})");
+                    .DeserializeObject<TableMigration>(json);
+            }, (TableMigration)null, $"GetFromStorage({jobId}, {unitId})");
         }
 
-        public static List<MigrationUnit> GetMigrationUnitsToMigrate(
-            MigrationJob job)
+        public static List<TableMigration> GetMigrationUnitsToMigrate(
+            Job job)
         {
-            List<MigrationUnit> units = new();
+            List<TableMigration> units = new();
             if (job == null) return units;
 
             foreach (var summary in job.Tables)
@@ -130,8 +130,8 @@ namespace CassandraMigrationProcessor.Context
         }
 
         public static bool AddMigrationUnits(
-            List<MigrationUnit> unitsToAdd,
-            MigrationJob job,
+            List<TableMigration> unitsToAdd,
+            Job job,
             MigrationLog log = null)
         {
             var newUnits = unitsToAdd
@@ -162,16 +162,16 @@ namespace CassandraMigrationProcessor.Context
         }
 
         private static void AddMigrationUnit(
-            MigrationUnit mu, MigrationJob job)
+            TableMigration mu, Job job)
         {
             if (job == null) return;
-            job.Tables ??= new List<MigrationUnitBasic>();
+            job.Tables ??= new List<TableMigrationSummary>();
 
             if (job.Tables.Find(m => m.Id == mu.Id) != null)
                 return;
 
             mu.ParentJob = job;
-            job.Tables.Add(MigrationUnitMapper.ToSummary(mu));
+            job.Tables.Add(TableMigrationMapper.ToSummary(mu));
         }
     }
 }

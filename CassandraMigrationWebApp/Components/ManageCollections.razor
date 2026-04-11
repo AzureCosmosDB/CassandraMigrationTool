@@ -189,30 +189,30 @@
 @code
 {
     [Parameter]
-    public MigrationJob? MigrationJob { get; set; }
+    public Job? Job { get; set; }
 
     [Parameter]
-    public List<MigrationUnit>? MigrationUnits { get; set; }
+    public List<TableMigration>? MigrationUnits { get; set; }
 
     [Parameter]
     public string? SourceConnectionString { get; set; }
 
     [Parameter]
-    public EventCallback<List<MigrationUnit>?> OnCollectionsUpdated { get; set; }
+    public EventCallback<List<TableMigration>?> OnCollectionsUpdated { get; set; }
 
     private string errorMessage = string.Empty;
     private string newCollection = string.Empty;
-    private List<MigrationUnit> updatedMigrationUnits = new List<MigrationUnit>();
+    private List<TableMigration> updatedMigrationUnits = new List<TableMigration>();
     private bool collectionRemoved = false;
     private bool isAddingCollections = false;
     
     // Pagination helper
-    private PaginationHelper<MigrationUnit> _paginationHelper = null!;
+    private PaginationHelper<TableMigration> _paginationHelper = null!;
 
     protected override void OnInitialized()
     {
         // Initialize pagination helper with filter predicate
-        _paginationHelper = new PaginationHelper<MigrationUnit>(
+        _paginationHelper = new PaginationHelper<TableMigration>(
             LoadUpdatedMigrationUnits(),
             (mu, filterText) =>
                 $"{mu.KeyspaceName}.{mu.TableName}".Contains(filterText, StringComparison.OrdinalIgnoreCase) ||
@@ -221,11 +221,11 @@
         );
     }
 
-    private List<MigrationUnit> LoadUpdatedMigrationUnits()
+    private List<TableMigration> LoadUpdatedMigrationUnits()
     {
         if (updatedMigrationUnits == null || updatedMigrationUnits.Count == 0)
         {
-            updatedMigrationUnits = (MigrationUnits ?? new List<MigrationUnit>()).ToList();
+            updatedMigrationUnits = (MigrationUnits ?? new List<TableMigration>()).ToList();
         }
 
         return updatedMigrationUnits;
@@ -233,7 +233,7 @@
 
     private void RefreshPaginationHelper()
     {
-        _paginationHelper = new PaginationHelper<MigrationUnit>(
+        _paginationHelper = new PaginationHelper<TableMigration>(
             LoadUpdatedMigrationUnits(),
             (mu, filterText) =>
                 $"{mu.KeyspaceName}.{mu.TableName}".Contains(filterText, StringComparison.OrdinalIgnoreCase) ||
@@ -269,9 +269,9 @@
         errorMessage = string.Empty;
         if (!string.IsNullOrWhiteSpace(newCollection))
         {
-            if (MigrationJob == null)
+            if (Job == null)
             {
-                errorMessage = "MigrationJob is not set.";
+                errorMessage = "Job is not set.";
                 return;
             }
 
@@ -288,7 +288,7 @@
                 StateHasChanged(); // Update UI to show spinner
 
                 // Use the async method with SourceConnectionString parameter
-                var newunits = await TableDiscovery.PopulateJobTablesAsync(MigrationJob, newCollection);
+                var newunits = await TableDiscovery.PopulateJobTablesAsync(Job, newCollection);
                 
                 foreach (var mu in newunits)
                 {
@@ -329,7 +329,7 @@
         }
     }
 
-    private void RemoveCollection(MigrationUnit mu)
+    private void RemoveCollection(TableMigration mu)
     {
         errorMessage = string.Empty;
         if (updatedMigrationUnits.Count == 1)

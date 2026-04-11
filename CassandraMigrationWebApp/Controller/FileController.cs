@@ -14,7 +14,7 @@ public class FileController : ControllerBase
         _ctx = ctx;
     }
 
-    [HttpGet("download/migrationunit/{jobId}/{migrationUnitId}")]
+    [HttpGet("download/TableMigration/{jobId}/{migrationUnitId}")]
     public IActionResult DownloadMigrationUnit(string jobId, string migrationUnitId)
     {
         var filePath = Path.Combine(JobStore.JobsFolder, jobId, $"{migrationUnitId}.json");

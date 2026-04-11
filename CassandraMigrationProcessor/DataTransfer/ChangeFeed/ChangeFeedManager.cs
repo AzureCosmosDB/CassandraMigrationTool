@@ -18,7 +18,7 @@ namespace CassandraMigrationProcessor.DataTransfer.ChangeFeed
     public class ChangeFeedManager : IDisposable
     {
         private readonly MigrationLog _log;
-        private readonly MigrationJob _job;
+        private readonly Job _job;
         private readonly PipelineConfig _pipelineConfig;
         private readonly ISession _targetSession;
         private readonly TokenRefreshManager? _tokenRefreshManager;
@@ -27,7 +27,7 @@ namespace CassandraMigrationProcessor.DataTransfer.ChangeFeed
 
         public volatile bool IsRunning;
 
-        public ChangeFeedManager(MigrationLog log, MigrationJob job, MigrationSettings settings,
+        public ChangeFeedManager(MigrationLog log, Job job, AppSettings settings,
             ISession targetSession, TokenRefreshManager? tokenRefreshManager = null)
         {
             _log = log;
@@ -46,7 +46,7 @@ namespace CassandraMigrationProcessor.DataTransfer.ChangeFeed
 
         public void Dispose() { Stop(); }
 
-        public async Task<bool> AddTable(MigrationUnit mu, CancellationToken cancellationToken)
+        public async Task<bool> AddTable(TableMigration mu, CancellationToken cancellationToken)
         {
             if (!MigrationUtilities.IsOnline(_job)) return false;
 

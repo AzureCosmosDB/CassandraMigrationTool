@@ -3,7 +3,7 @@ using System;
 
 namespace CassandraMigrationProcessor.Models
 {
-    public class MigrationSettings : ICloneable
+    public class AppSettings : ICloneable
     {
         // Default values
         internal const int DefaultCqlCopyPageSize = 500;
@@ -19,15 +19,15 @@ namespace CassandraMigrationProcessor.Models
         public int ChangeFeedPollIntervalMs { get; set; }
         public int MaxFeedRangeParallelism { get; set; }
 
-        public MigrationSettings()
+        public AppSettings()
         {
         }
 
         public object Clone()
         {
             var json = JsonConvert.SerializeObject(this);
-            return JsonConvert.DeserializeObject<MigrationSettings>(json)
-                ?? new MigrationSettings();
+            return JsonConvert.DeserializeObject<AppSettings>(json)
+                ?? new AppSettings();
         }
 
         private static int DefaultOrValue(int loaded, int defaultVal)
@@ -52,7 +52,7 @@ namespace CassandraMigrationProcessor.Models
                 LogPageSize = MaxLogPageSize;
         }
 
-        internal void ApplyLoaded(MigrationSettings loaded)
+        internal void ApplyLoaded(AppSettings loaded)
         {
             CqlCopyPageSize = DefaultOrValue(loaded.CqlCopyPageSize, DefaultCqlCopyPageSize);
             LogPageSize = DefaultOrValue(loaded.LogPageSize, DefaultLogPageSize);

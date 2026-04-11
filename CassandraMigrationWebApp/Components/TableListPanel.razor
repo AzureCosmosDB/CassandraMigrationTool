@@ -221,10 +221,10 @@
 }
 
 @code {
-    [Parameter] public MigrationJob? Job { get; set; }
+    [Parameter] public Job? Job { get; set; }
     [Parameter] public bool IsLoadingCollections { get; set; }
-    [Parameter] public EventCallback<MigrationUnitBasic> OnTableSelected { get; set; }
-    [Parameter] public EventCallback<MigrationUnitBasic> OnDownload { get; set; }
+    [Parameter] public EventCallback<TableMigrationSummary> OnTableSelected { get; set; }
+    [Parameter] public EventCallback<TableMigrationSummary> OnDownload { get; set; }
 
     // Pagination and filtering state
     private string _filterText = string.Empty;
@@ -236,13 +236,13 @@
     private bool _sortAscending = true;
 
     // Pagination helper
-    private PaginationHelper<MigrationUnitBasic> _paginationHelper = new PaginationHelper<MigrationUnitBasic>(
-        new List<MigrationUnitBasic>(),
+    private PaginationHelper<TableMigrationSummary> _paginationHelper = new PaginationHelper<TableMigrationSummary>(
+        new List<TableMigrationSummary>(),
         (mu, filterText) => true
     );
 
     // Cache to prevent re-sorting/filtering on every render
-    private List<MigrationUnitBasic>? _cachedFilteredAndPagedUnits = null;
+    private List<TableMigrationSummary>? _cachedFilteredAndPagedUnits = null;
     private int _cachedFilteredItemsCount = 0;
     private string _cachedDisplayedItemsInfo = string.Empty;
     private int _cachedTotalPages = 0;
@@ -265,7 +265,7 @@
         _cachedTotalPages = 0;
     }
 
-    private Func<MigrationUnitBasic, string, bool> GetFilterPredicate()
+    private Func<TableMigrationSummary, string, bool> GetFilterPredicate()
     {
         return (mu, filterText) =>
         {
@@ -356,10 +356,10 @@
         return _sortColumn == columnName ? "sorted-column" : "";
     }
 
-    private List<MigrationUnitBasic> ApplySorting(List<MigrationUnitBasic> units)
+    private List<TableMigrationSummary> ApplySorting(List<TableMigrationSummary> units)
     {
         if (units == null || !units.Any())
-            return units ?? new List<MigrationUnitBasic>();
+            return units ?? new List<TableMigrationSummary>();
 
         return _sortColumn switch
         {
@@ -395,7 +395,7 @@
         };
     }
 
-    private object GetSortValueForStatus(MigrationUnitBasic mu)
+    private object GetSortValueForStatus(TableMigrationSummary mu)
     {
         if (mu.SourceStatus == TableStatus.NotFound)
             return "0_Skipped (404)";
@@ -408,12 +408,12 @@
         return $"1_{mu.CopyPercent:000.0}%";
     }
 
-    private DateTime GetSortValueForTimestamp(MigrationUnitBasic mu)
+    private DateTime GetSortValueForTimestamp(TableMigrationSummary mu)
     {
         return mu.ChangeFeedLastChecked ?? DateTime.MinValue;
     }
 
-    private DateTime GetSortValueForLastBatch(MigrationUnitBasic mu)
+    private DateTime GetSortValueForLastBatch(TableMigrationSummary mu)
     {
         return mu.ChangeFeedLastChecked ?? DateTime.MinValue;
     }
@@ -443,7 +443,7 @@
         var currentUnits = Job.Tables;
         currentUnits = ApplySorting(currentUnits);
 
-        _paginationHelper = new PaginationHelper<MigrationUnitBasic>(
+        _paginationHelper = new PaginationHelper<TableMigrationSummary>(
             currentUnits,
             GetFilterPredicate()
         );
@@ -471,10 +471,10 @@
         _lastCurrentPage = _currentPage;
     }
 
-    private List<MigrationUnitBasic> GetFilteredAndPagedUnits()
+    private List<TableMigrationSummary> GetFilteredAndPagedUnits()
     {
         UpdatePaginationHelper();
-        return _cachedFilteredAndPagedUnits ?? new List<MigrationUnitBasic>();
+        return _cachedFilteredAndPagedUnits ?? new List<TableMigrationSummary>();
     }
 
     private int GetFilteredItemsCount()
@@ -550,12 +550,12 @@
             : $"{sourceName} ({targetName})";
     }
 
-    private static string GetDatabaseDisplayName(MigrationUnitBasic mu)
+    private static string GetDatabaseDisplayName(TableMigrationSummary mu)
     {
         return FormatNameWithTarget(mu.KeyspaceName, mu.TargetKeyspaceName);
     }
 
-    private static string GetCollectionDisplayName(MigrationUnitBasic mu)
+    private static string GetCollectionDisplayName(TableMigrationSummary mu)
     {
         return FormatNameWithTarget(mu.TableName, mu.TargetTableName);
     }

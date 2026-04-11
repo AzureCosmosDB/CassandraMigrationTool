@@ -14,13 +14,13 @@ namespace CassandraMigrationProcessor.Infrastructure
 {
     public static class MigrationUtilities
     {
-        public static bool IsOnline(MigrationJob job)
+        public static bool IsOnline(Job job)
         {
             if (job == null) return false;
             return job.CDCMode != CDCMode.Offline;
         }
 
-        public static bool IsMigrationUnitValid(MigrationUnitBasic mu)
+        public static bool IsMigrationUnitValid(TableMigrationSummary mu)
         {
             // Allow both OK and Failed status — Failed tables
             // are retried on resume (e.g. after token expiry).
@@ -104,13 +104,13 @@ namespace CassandraMigrationProcessor.Infrastructure
         }
 
         public static (long Total, long Inserted, long Skipped, long Failed)
-            GetProcessedTotals(MigrationUnit mu)
+            GetProcessedTotals(TableMigration mu)
         {
-            long skipped = mu.MigrationChunks?
+            long skipped = mu.CopyChunks?
                 .Sum(c => c.SkippedAsDuplicateCount) ?? 0;
-            long inserted = (mu.MigrationChunks?
+            long inserted = (mu.CopyChunks?
                 .Sum(c => c.TargetInsertedRowCount) ?? 0) - skipped;
-            long failed = mu.MigrationChunks?
+            long failed = mu.CopyChunks?
                 .Sum(c => c.TargetFailedRowCount) ?? 0;
             long total = inserted + skipped + failed;
             return (total, inserted, skipped, failed);
@@ -128,7 +128,7 @@ namespace CassandraMigrationProcessor.Infrastructure
                 return $"{(int)lag.TotalHours}h {(int)lag.Minutes}m";
         }
 
-        public static bool IsOfflineJobCompleted(MigrationJob job)
+        public static bool IsOfflineJobCompleted(Job job)
         {
             if (job == null || job.Tables.Count == 0)
                 return false;
@@ -138,7 +138,7 @@ namespace CassandraMigrationProcessor.Infrastructure
                 .All(mu => mu.CopyComplete);
         }
 
-        public static bool AnyValidTable(MigrationJob job)
+        public static bool AnyValidTable(Job job)
         {
             if (job == null)
                 return false;

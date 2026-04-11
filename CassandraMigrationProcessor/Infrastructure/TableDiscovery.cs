@@ -61,12 +61,12 @@ namespace CassandraMigrationProcessor.Infrastructure
             return result;
         }
 
-        public static async Task<List<MigrationUnit>>
+        public static async Task<List<TableMigration>>
             PopulateJobTablesAsync(
-                MigrationJob job,
+                Job job,
                 string namespacesToMigrate)
         {
-            List<MigrationUnit> unitsToAdd = new();
+            List<TableMigration> unitsToAdd = new();
             if (string.IsNullOrWhiteSpace(namespacesToMigrate))
                 return unitsToAdd;
 
@@ -91,9 +91,9 @@ namespace CassandraMigrationProcessor.Infrastructure
                         x.KeyspaceName == srcKs
                         && x.TableName == srcTbl))
                     {
-                        var mu = new MigrationUnit(
+                        var mu = new TableMigration(
                             job, srcKs, srcTbl,
-                            new List<MigrationChunk>());
+                            new List<CopyChunk>());
                         mu.TargetKeyspaceName = tgtKs;
                         mu.TargetTableName = tgtTbl;
                         mu.SourceStatus = TableStatus.OK;
@@ -121,9 +121,9 @@ namespace CassandraMigrationProcessor.Infrastructure
                     if (!unitsToAdd.Any(x =>
                         x.KeyspaceName == keyspace && x.TableName == table))
                     {
-                        var mu = new MigrationUnit(
+                        var mu = new TableMigration(
                             job, keyspace, table,
-                            new List<MigrationChunk>());
+                            new List<CopyChunk>());
                         mu.SourceStatus = TableStatus.OK;
                         unitsToAdd.Add(mu);
                     }

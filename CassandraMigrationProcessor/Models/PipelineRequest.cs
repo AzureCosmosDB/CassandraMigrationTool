@@ -3,7 +3,7 @@ using System.Collections.Generic;
 namespace CassandraMigrationProcessor.Models
 {
     public record PipelineRequest(
-        MigrationUnit MigrationUnit,
+        TableMigration TableMigration,
         int ChunkIndex,
         double InitialPercent,
         double ContributionFactor,

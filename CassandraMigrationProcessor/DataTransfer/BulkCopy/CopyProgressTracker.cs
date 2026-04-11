@@ -10,7 +10,7 @@ namespace CassandraMigrationProcessor.DataTransfer.BulkCopy
     /// <summary>
     /// Orchestrator for copy-pipeline progress: delegates atomic
     /// counting to <see cref="ProgressCounters"/> and owns speed
-    /// calculation, logging, MigrationUnit updates, and checkpoint
+    /// calculation, logging, TableMigration updates, and checkpoint
     /// saves. Workers call AddCopied / AddFailed / AddRead and
     /// UpdateMigrationUnit; no other class should maintain
     /// parallel counters.
@@ -41,9 +41,9 @@ namespace CassandraMigrationProcessor.DataTransfer.BulkCopy
         private int _activeRanges;
         private int _adaptivePageSize;
 
-        // --- MigrationUnit progress (moved from ProgressState / ProgressConfig) ---
+        // --- TableMigration progress (moved from ProgressState / ProgressConfig) ---
         // Tracker owns progress state updates on this unit (CopyRowsCopied, CopyPercent, chunk stats)
-        private readonly MigrationUnit _migrationUnit;
+        private readonly TableMigration _migrationUnit;
         private readonly int _chunkIndex;
         private readonly double _initialPercent;
         private readonly double _contributionFactor;
@@ -100,7 +100,7 @@ namespace CassandraMigrationProcessor.DataTransfer.BulkCopy
 
         public CopyProgressTracker(MigrationLog MigrationLog, string keyspace, string table, int workerCount, int totalRanges,
             long initialCopied,
-            MigrationUnit migrationUnit, int chunkIndex,
+            TableMigration TableMigration, int chunkIndex,
             double initialPercent, double contributionFactor, long totalRowCount)
         {
             _log = MigrationLog;
@@ -110,7 +110,7 @@ namespace CassandraMigrationProcessor.DataTransfer.BulkCopy
             _totalRanges = totalRanges;
             _counters = new ProgressCounters(initialCopied);
             _windowCopied = initialCopied;
-            _migrationUnit = migrationUnit;
+            _migrationUnit = TableMigration;
             _chunkIndex = chunkIndex;
             _initialPercent = initialPercent;
             _contributionFactor = contributionFactor;
@@ -172,7 +172,7 @@ namespace CassandraMigrationProcessor.DataTransfer.BulkCopy
         }
 
         /// <summary>
-        /// Updates MigrationUnit fields (CopyRowsCopied, CopyPercent,
+        /// Updates TableMigration fields (CopyRowsCopied, CopyPercent,
         /// CopyRowsPerSecond, chunk stats) and saves a checkpoint
         /// every <see cref="MigrationDefaults.CheckpointIntervalSeconds"/> seconds.
         /// Called from each worker's finally block after every page.
@@ -181,7 +181,7 @@ namespace CassandraMigrationProcessor.DataTransfer.BulkCopy
         {
             long written = TotalCopied;
             long failed = TotalFailed;
-            var chunk = _migrationUnit.MigrationChunks[_chunkIndex];
+            var chunk = _migrationUnit.CopyChunks[_chunkIndex];
             chunk.SourceResultRowCount = written;
             chunk.TargetInsertedRowCount = written;
             chunk.TargetFailedRowCount = failed;
@@ -194,7 +194,7 @@ namespace CassandraMigrationProcessor.DataTransfer.BulkCopy
                         (double)written / _totalRowCount * 100)
                     * _contributionFactor);
             }
-            MigrationUnitMapper.UpdateParentJob(_migrationUnit);
+            TableMigrationMapper.UpdateParentJob(_migrationUnit);
 
             long prevTicks = Volatile.Read(ref _lastCheckpointTicks);
             long nowTicks = DateTime.UtcNow.Ticks;

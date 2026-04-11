@@ -25,12 +25,12 @@ namespace CassandraMigrationProcessor.DataTransfer.BulkCopy
     internal class BulkCopyRunner
     {
         private readonly MigrationLog _log;
-        private readonly MigrationJob _job;
+        private readonly Job _job;
         private readonly PipelineConfig _pipelineConfig;
         private readonly CancellationToken _ct;
         private readonly ISession _targetSession;
 
-        public BulkCopyRunner(MigrationLog log, MigrationJob job, PipelineConfig pipelineConfig,
+        public BulkCopyRunner(MigrationLog log, Job job, PipelineConfig pipelineConfig,
             CancellationToken cancellationToken, ISession targetSession)
         {
             _log = log;
@@ -77,7 +77,7 @@ namespace CassandraMigrationProcessor.DataTransfer.BulkCopy
 
         private async Task<SeedResult?> SeedAsync(PipelineRequest request)
         {
-            var mu = request.MigrationUnit;
+            var mu = request.TableMigration;
             var ctx0 = request.Context;
             var completed = mu.CompletedCopyFeedRanges;
             var checkpoints = mu.CopyFeedRangeCheckpoints;
@@ -141,11 +141,11 @@ namespace CassandraMigrationProcessor.DataTransfer.BulkCopy
             var ctx0 = request.Context;
             int workerCount = _pipelineConfig.WorkerCount;
             int pageSize = _pipelineConfig.PageSize;
-            long priorCopied = request.MigrationUnit.CopyRowsCopied;
+            long priorCopied = request.TableMigration.CopyRowsCopied;
 
             var tracker = new CopyProgressTracker(_log, ctx0.KeyspaceName, ctx0.TableName,
                 workerCount, seed.PendingCount, priorCopied,
-                request.MigrationUnit, request.ChunkIndex,
+                request.TableMigration, request.ChunkIndex,
                 request.InitialPercent, request.ContributionFactor, request.TotalRowCount);
 
             var stopwatch = Stopwatch.StartNew();
@@ -178,7 +178,7 @@ namespace CassandraMigrationProcessor.DataTransfer.BulkCopy
 
         private void LogPipelineSummary(ExecutionResult execution, PipelineRequest request)
         {
-            long sessionWritten = execution.Tracker.TotalCopied - request.MigrationUnit.CopyRowsCopied;
+            long sessionWritten = execution.Tracker.TotalCopied - request.TableMigration.CopyRowsCopied;
             double speed = execution.Elapsed.TotalSeconds > 0 ? sessionWritten / execution.Elapsed.TotalSeconds : 0;
             int completedCount;
             lock (execution.Context.Ranges.Checkpoints) { completedCount = execution.Context.Ranges.Completed.Count; }

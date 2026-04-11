@@ -5,13 +5,13 @@ using CassandraMigrationProcessor.Models;
 
 namespace CassandraMigrationProcessor.Context
 {
-    public class MigrationUnitCache
+    public class TableMigrationCache
     {
-        private readonly ConcurrentDictionary<string, MigrationUnit> _migrationUnits = new();
+        private readonly ConcurrentDictionary<string, TableMigration> _migrationUnits = new();
 
         private static string BuildCacheKey(string migrationUnitId, string jobId) => $"{jobId}::{migrationUnitId}";
 
-        public MigrationUnit GetMigrationUnit(string migrationUnitId, string jobId = null)
+        public TableMigration GetMigrationUnit(string migrationUnitId, string jobId = null)
         {
             if (string.IsNullOrEmpty(jobId))
             {
@@ -22,7 +22,7 @@ namespace CassandraMigrationProcessor.Context
 
             var cacheKey = BuildCacheKey(migrationUnitId, jobId);
 
-            if (_migrationUnits.TryGetValue(cacheKey, out MigrationUnit? cachedMigrationUnit))
+            if (_migrationUnits.TryGetValue(cacheKey, out TableMigration? cachedMigrationUnit))
                 return cachedMigrationUnit;
 
             var mu = MigrationJobContext.GetMigrationUnitFromStorage(jobId, migrationUnitId);
@@ -32,13 +32,13 @@ namespace CassandraMigrationProcessor.Context
             return mu;
         }
 
-        public bool UpdateMigrationUnit(MigrationUnit migrationUnit)
+        public bool UpdateMigrationUnit(TableMigration TableMigration)
         {
-            if (migrationUnit == null || string.IsNullOrEmpty(migrationUnit.Id) || string.IsNullOrEmpty(migrationUnit.JobId))
+            if (TableMigration == null || string.IsNullOrEmpty(TableMigration.Id) || string.IsNullOrEmpty(TableMigration.JobId))
                 return false;
 
-            var cacheKey = BuildCacheKey(migrationUnit.Id, migrationUnit.JobId);
-            _migrationUnits[cacheKey] = migrationUnit;
+            var cacheKey = BuildCacheKey(TableMigration.Id, TableMigration.JobId);
+            _migrationUnits[cacheKey] = TableMigration;
             return true;
         }
 
