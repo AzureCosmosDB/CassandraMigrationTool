@@ -97,15 +97,6 @@ namespace CassandraMigrationProcessor.Context
             _log?.WriteLine(message, LogType.Verbose);
         }
 
-        public static void InitializeLog(MigrationLog MigrationLog)
-        {
-            _log ??= MigrationLog;
-            if (Store != null)
-            {
-                _log?.SetStorage(CreateLogStorageCallbacks(Store));
-            }
-        }
-
         public static LogStorageCallbacks CreateLogStorageCallbacks(
             Persistence.IPersistenceStorage store)
         {
@@ -159,14 +150,10 @@ namespace CassandraMigrationProcessor.Context
         {
             MigrationUtilities.LogToFile("MigrationJobContext.Initialize started");
 
-            bool isLocal = true;
             var stateStoreCSorPath = string.Empty;
             var appId = string.Empty;
             try
             {
-                bool.TryParse(
-                    configuration["StateStore:UseLocalDisk"],
-                    out isLocal);
                 stateStoreCSorPath =
                     configuration["StateStore:ConnectionStringOrPath"];
                 appId = configuration["StateStore:AppID"];
@@ -183,7 +170,7 @@ namespace CassandraMigrationProcessor.Context
                 string.IsNullOrEmpty(stateStoreCSorPath)
                 ? DataDirectoryResolver.GetWorkingFolder()
                 : stateStoreCSorPath;
-            Store.Initialize(localPath, appId ?? string.Empty);
+            Store.Initialize(localPath);
 
             JobRegistry = LoadJobList(
                 out bool notFound, out string errorMessage);
@@ -201,31 +188,35 @@ namespace CassandraMigrationProcessor.Context
             SaveJobList();
         }
 
-        // -- Facade: delegates to JobStore --
+        // Facade: delegates to JobStore
 
         public static MigrationJob? GetMigrationJob(string jobId)
             => JobStore.GetJob(jobId);
 
+        // Facade: delegates to JobStore
         public static List<MigrationJob> PopulateMigrationJobs(
             List<string> ids)
             => JobStore.GetAllJobs(ids);
 
+        // Facade: delegates to JobStore
         public static bool SaveMigrationJob(MigrationJob job)
             => JobStore.SaveJob(job);
 
+        // Facade: delegates to JobStore
         public static void ClearCurrentlyActiveJobCache()
             => JobStore.ClearCache();
 
-        // -- Facade: delegates to UnitStore --
-
+        // Facade: delegates to UnitStore
         public static bool SaveMigrationUnit(
             MigrationUnit mu, bool updateParent)
             => UnitStore.SaveUnit(mu, updateParent);
 
+        // Facade: delegates to UnitStore
         public static MigrationUnit GetMigrationUnit(
             string key, string jobId = null)
             => UnitStore.GetUnit(key, jobId);
 
+        // Facade: delegates to UnitStore
         public static MigrationUnit GetMigrationUnitFromStorage(
             string jobId, string unitId)
             => UnitStore.GetFromStorage(jobId, unitId);

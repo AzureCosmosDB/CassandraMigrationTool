@@ -83,8 +83,6 @@ namespace CassandraMigrationProcessor.Context
 
         public static bool SaveJob(MigrationJob job)
         {
-            if (job == null) return false;
-
             return MigrationUtilities.SafeExecute(() =>
             {
                 lock (_writeJobLock)

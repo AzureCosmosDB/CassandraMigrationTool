@@ -14,6 +14,11 @@ namespace CassandraMigrationProcessor.CassandraDriver
     /// </summary>
     public static class CassandraClientFactory
     {
+        private const int ReadTimeoutMs = 120000;
+        private const int ConnectTimeoutMs = 30000;
+        private const int ReconnectBaseDelayMs = 2000;
+        private const int ReconnectMaxDelayMs = 60000;
+
         /// <summary>
         /// Create a session to a Cosmos DB Cassandra API account.
         /// Uses SSL on port 10350 with PlainTextAuthProvider.
@@ -57,14 +62,14 @@ namespace CassandraMigrationProcessor.CassandraDriver
                                 username, password))
                         .WithSSL(sslOptions)
                         .WithSocketOptions(new SocketOptions()
-                            .SetReadTimeoutMillis(120000)
-                            .SetConnectTimeoutMillis(30000))
+                            .SetReadTimeoutMillis(ReadTimeoutMs)
+                            .SetConnectTimeoutMillis(ConnectTimeoutMs))
                         .WithQueryOptions(new QueryOptions()
                             .SetConsistencyLevel(
                                 ConsistencyLevel.LocalQuorum))
                         .WithReconnectionPolicy(
                             new ExponentialReconnectionPolicy(
-                                2000, 60000))
+                                ReconnectBaseDelayMs, ReconnectMaxDelayMs))
                         .Build();
 
                     var session =
@@ -102,14 +107,14 @@ namespace CassandraMigrationProcessor.CassandraDriver
                     new PlainTextAuthProvider(username, password))
                 .WithSSL(sslOptions)
                 .WithSocketOptions(new SocketOptions()
-                    .SetReadTimeoutMillis(120000)
-                    .SetConnectTimeoutMillis(30000))
+                    .SetReadTimeoutMillis(ReadTimeoutMs)
+                    .SetConnectTimeoutMillis(ConnectTimeoutMs))
                 .WithQueryOptions(new QueryOptions()
                     .SetConsistencyLevel(
                         ConsistencyLevel.LocalQuorum))
                 .WithReconnectionPolicy(
                     new ExponentialReconnectionPolicy(
-                        2000, 60000))
+                        ReconnectBaseDelayMs, ReconnectMaxDelayMs))
                 .Build();
 
             var finalSession =
@@ -249,8 +254,8 @@ namespace CassandraMigrationProcessor.CassandraDriver
                 .AddContactPoint(contactPoint)
                 .WithPort(port)
                 .WithSocketOptions(new SocketOptions()
-                    .SetReadTimeoutMillis(120000)
-                    .SetConnectTimeoutMillis(30000))
+                    .SetReadTimeoutMillis(ReadTimeoutMs)
+                    .SetConnectTimeoutMillis(ConnectTimeoutMs))
                 .WithPoolingOptions(new PoolingOptions()
                     .SetMaxConnectionsPerHost(
                         HostDistance.Local, localMax)
@@ -264,10 +269,9 @@ namespace CassandraMigrationProcessor.CassandraDriver
                     .SetConsistencyLevel(
                         ConsistencyLevel.LocalQuorum))
                 .WithReconnectionPolicy(
-                    new ExponentialReconnectionPolicy(2000, 60000));
+                    new ExponentialReconnectionPolicy(ReconnectBaseDelayMs, ReconnectMaxDelayMs));
 
-            if (!string.IsNullOrWhiteSpace(username)
-                && password != null)
+            if (!string.IsNullOrWhiteSpace(username))
             {
                 builder = builder.WithAuthProvider(
                     new PlainTextAuthProvider(username, password));

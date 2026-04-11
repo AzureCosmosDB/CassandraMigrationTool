@@ -14,6 +14,7 @@ namespace CassandraMigrationProcessor.Persistence
     /// </summary>
     public class LogPersistence
     {
+        private const int MaxLogFileSize = 1_000_000;
         private readonly string _storagePath;
         private static readonly object _readLock = new object();
 
@@ -73,7 +74,7 @@ namespace CassandraMigrationProcessor.Persistence
                             break;
 
                         int msgLen = br.ReadInt32();
-                        if (msgLen < 0 || msgLen > 1_000_000)
+                        if (msgLen < 0 || msgLen > MaxLogFileSize)
                             break;
 
                         long bytesToSkip = msgLen + 1 + 8;
@@ -119,7 +120,7 @@ namespace CassandraMigrationProcessor.Persistence
                             break;
 
                         int msgLen = br.ReadInt32();
-                        if (msgLen < 0 || msgLen > 1_000_000)
+                        if (msgLen < 0 || msgLen > MaxLogFileSize)
                             break;
 
                         long bytesToSkip = msgLen + 1 + 8;
@@ -217,7 +218,7 @@ namespace CassandraMigrationProcessor.Persistence
 
             return MigrationUtilities.SafeExecute(() =>
             {
-                var folder = Path.Combine(_storagePath!, "migrationlogs");
+                var folder = Path.Combine(_storagePath, "migrationlogs");
                 var binPath = Path.Combine(folder, $"{jobId}.bin");
 
                 if (FileSystem.Exists(binPath))
@@ -314,7 +315,7 @@ namespace CassandraMigrationProcessor.Persistence
 
                         int msgLen = br.ReadInt32();
 
-                        if (msgLen < 0 || msgLen > 1_000_000)
+                        if (msgLen < 0 || msgLen > MaxLogFileSize)
                             break;
 
                         long bytesToSkip = msgLen + 1 + 8;
@@ -371,8 +372,6 @@ namespace CassandraMigrationProcessor.Persistence
 
         private LogObject? TryReadLogEntry(BinaryReader br)
         {
-            const int MaxReasonableLength = 1_000_000;
-
             return MigrationUtilities.SafeExecute<LogObject?>(() =>
             {
                 if (br.BaseStream.Position + 4 > br.BaseStream.Length)
@@ -380,7 +379,7 @@ namespace CassandraMigrationProcessor.Persistence
 
                 int len = br.ReadInt32();
 
-                if (len < 0 || len > MaxReasonableLength)
+                if (len < 0 || len > MaxLogFileSize)
                     return null;
 
                 long requiredBytes = len + 1 + 8;

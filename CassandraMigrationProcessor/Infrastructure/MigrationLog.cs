@@ -124,12 +124,6 @@ namespace CassandraMigrationProcessor.Infrastructure
 
                 lock (_writeLock)
                 {
-                    if (_logBucket == null)
-                    {
-                        string logBackupFile = string.Empty;
-                        _logBucket = ReadLogFile(_currentId, out logBackupFile);
-                    }
-
                     var logObj = new LogObject(logType, message);
 
                     // Populate verbose monitor messages
@@ -170,7 +164,7 @@ namespace CassandraMigrationProcessor.Infrastructure
 
         public LogBucket GetCurrentLogBucket(string id)
         {
-            if (_currentId == id && _logBucket != null)
+            if (_currentId == id)
             {
                 return _logBucket;
             }

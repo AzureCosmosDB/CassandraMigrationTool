@@ -28,7 +28,7 @@ namespace CassandraMigrationProcessor.Persistence
         /// <param name="connectionStringOrPath">Directory path where files will be stored</param>
         /// <exception cref="ArgumentException">Thrown when path is null or empty</exception>
         /// <exception cref="InvalidOperationException">Thrown when initialization fails</exception>
-        public void Initialize(string connectionStringOrPath, string appId)
+        public void Initialize(string connectionStringOrPath)
         {
 
             if (_isInitialized)
@@ -291,23 +291,6 @@ namespace CassandraMigrationProcessor.Persistence
             }, new List<string>(), "ListIds");
         }
 
-
-        /// <summary>
-        /// Tests the connection to the storage
-        /// </summary>
-        /// <returns>True if connection is successful, false otherwise</returns>
-        public bool TestConnection()
-        {
-            if (!_isInitialized || string.IsNullOrEmpty(_storagePath))
-                return false;
-
-            return MigrationUtilities.SafeExecute(() =>
-            {
-                if (FileSystem.UseBlobStorage)
-                    return true;
-                return Directory.Exists(_storagePath);
-            }, false, "TestConnection");
-        }
 
         /// <summary>
         /// Checks if the storage is initialized
