@@ -32,22 +32,6 @@
 
                 <!-- Change Stream Tab Content -->
                 <div class="@(activeTab == "ChangeStream" ? "" : "d-none")">
-                    <div class="mb-3">
-                        <label for="max-rows-per-batch" class="form-label">Max rows per change feed batch</label>
-                        <input type="number" id="max-rows-per-batch" class="form-control" @bind="(_configurationBackup ??= new CassandraMigrationProcessor.Models.MigrationSettings()).ChangeFeedMaxRowsInBatch" />
-                    </div>
-                    <div class="mb-3">
-                        <label for="csbatchdurationmax" class="form-label">Max duration (in seconds) for change feed batch</label>
-                        <input type="number" id="csbatchdurationmax" class="form-control" @bind="(_configurationBackup ??= new CassandraMigrationProcessor.Models.MigrationSettings()).ChangeFeedBatchDuration" />
-                    </div>
-                    <div class="mb-3">
-                        <label for="csbatchdurationmin" class="form-label">Min duration (in seconds) for change feed batch</label>
-                        <input type="number" id="csbatchdurationmin" class="form-control" @bind="(_configurationBackup ??= new CassandraMigrationProcessor.Models.MigrationSettings()).ChangeFeedBatchDurationMin" />
-                    </div>
-                    <div class="mb-3">
-                        <label for="cs-tables-inbatch" class="form-label">Max tables per change feed batch</label>
-                        <input type="number" id="cs-tables-inbatch" class="form-control" @bind="(_configurationBackup ??= new CassandraMigrationProcessor.Models.MigrationSettings()).ChangeFeedMaxTablesInBatch" />
-                    </div>
                 </div>
 
                 <!-- Other Tab Content -->
@@ -115,39 +99,9 @@
             return;
         }
 
-        if ((_configurationBackup?.ChangeFeedBatchDurationMin ?? 0) < 10 || (_configurationBackup?.ChangeFeedBatchDurationMin ?? 0) > 600)
-        {
-            errorMessage = "Minimum batch duration should be between 10 and 600 seconds.";
-            return;
-        }
-
-        if ((_configurationBackup?.ChangeFeedBatchDuration ?? 0) < 20 || (_configurationBackup?.ChangeFeedBatchDuration ?? 0) > 3600)
-        {
-            errorMessage = "Maximum batch duration should be between 20 and 3600 seconds.";
-            return;
-        }
-
-        if ((_configurationBackup?.ChangeFeedBatchDurationMin ?? 0) >= (_configurationBackup?.ChangeFeedBatchDuration ?? 0))
-        {
-            errorMessage = "Minimum batch duration should be less than maximum batch duration.";
-            return;
-        }
-
-        if ((_configurationBackup?.ChangeFeedMaxTablesInBatch ?? 0) < 1 || (_configurationBackup?.ChangeFeedMaxTablesInBatch ?? 0) > 30)
-        {
-            errorMessage = "Maximum tables per batch should be between 1 and 30.";
-            return;
-        }
-
         if ((_configurationBackup?.CqlCopyPageSize ?? 0) < 50 || (_configurationBackup?.CqlCopyPageSize ?? 0) > 40000)
         {
             errorMessage = "Page size should be between 50 and 40000.";
-            return;
-        }
-
-        if ((_configurationBackup?.ChangeFeedMaxRowsInBatch ?? 0) < 100 || (_configurationBackup?.ChangeFeedMaxRowsInBatch ?? 0) > 10000)
-        {
-            errorMessage = "Maximum rows per batch should be between 100 and 10000.";
             return;
         }
 
