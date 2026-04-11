@@ -103,17 +103,15 @@ namespace CassandraMigrationProcessor.Infrastructure
             }
         }
 
-        public static (long Total, long Inserted, long Skipped, long Failed)
+        public static (long Total, long Inserted, long Failed)
             GetProcessedTotals(TableMigration mu)
         {
-            long skipped = mu.CopyChunks?
-                .Sum(c => c.SkippedAsDuplicateCount) ?? 0;
-            long inserted = (mu.CopyChunks?
-                .Sum(c => c.TargetInsertedRowCount) ?? 0) - skipped;
+            long inserted = mu.CopyChunks?
+                .Sum(c => c.TargetInsertedRowCount) ?? 0;
             long failed = mu.CopyChunks?
                 .Sum(c => c.TargetFailedRowCount) ?? 0;
-            long total = inserted + skipped + failed;
-            return (total, inserted, skipped, failed);
+            long total = inserted + failed;
+            return (total, inserted, failed);
         }
 
         public static string GetTimestampDiff(DateTime timestamp)

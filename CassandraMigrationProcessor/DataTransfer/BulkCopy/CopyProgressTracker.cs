@@ -182,7 +182,6 @@ namespace CassandraMigrationProcessor.DataTransfer.BulkCopy
             long written = TotalCopied;
             long failed = TotalFailed;
             var chunk = _migrationUnit.CopyChunks[_chunkIndex];
-            chunk.SourceResultRowCount = written;
             chunk.TargetInsertedRowCount = written;
             chunk.TargetFailedRowCount = failed;
             _migrationUnit.CopyRowsCopied = written;

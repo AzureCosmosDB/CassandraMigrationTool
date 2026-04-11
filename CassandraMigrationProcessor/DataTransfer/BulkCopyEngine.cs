@@ -226,7 +226,6 @@ namespace CassandraMigrationProcessor.DataTransfer
                     && TableMigration.CopyChunks[chunkIndex].Segments.All(seg => seg.IsProcessed == true))
                 {
                     TableMigration.CopyChunks[chunkIndex].IsDownloaded = true;
-                    TableMigration.CopyChunks[chunkIndex].IsUploaded = true;
                 }
                 MigrationJobContext.SaveMigrationUnit(TableMigration, false);
             }
