@@ -50,6 +50,7 @@ namespace CassandraMigrationProcessor.DataTransfer.ChangeFeed
         public void Dispose()
         {
             ExecutionCancelled = true;
+            MigrationUtilities.SafeDispose(_sourceSession, "ReplayProcessor source session");
         }
 
         public ReplayProcessor(MigrationLog log, ISession sourceSession, ISession targetSession, TableMigrationCache muCache,

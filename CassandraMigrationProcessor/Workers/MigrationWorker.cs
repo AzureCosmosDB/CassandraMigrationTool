@@ -213,7 +213,7 @@ namespace CassandraMigrationProcessor.DataTransfer
 
         private async Task SetupTargetSchemaAsync(Job job, ISession sourceSession, TableMigration mu)
         {
-            using var targetSession = CassandraClientFactory.CreateTargetSession(_log, job, string.Empty);
+            using var targetSession = await CassandraClientFactory.CreateTargetSessionAsync(_log, job, string.Empty);
 
             if (job.DropTargetTableBeforeStart
                 && await SchemaManager.TableExistsAsync(targetSession, mu.KeyspaceName, mu.TableName))

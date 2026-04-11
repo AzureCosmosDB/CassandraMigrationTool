@@ -273,8 +273,9 @@ namespace CassandraMigrationProcessor.Persistence
                         bw.Write((byte)MigrationLog.Type);
                         bw.Write(MigrationLog.Datetime.ToBinary());
                     }
-                    catch (Exception)
+                    catch (Exception ex)
                     {
+                        Console.Error.WriteLine($"LogPersistence error: {ex.Message}");
                         // Continue writing other logs
                     }
                 }

@@ -84,7 +84,7 @@ namespace CassandraMigrationProcessor.DataTransfer.ChangeFeed
             var (ps, colNames) = await PrepareReplayAsync(mu);
 
             int maxConcurrent = _pipelineConfig.MaxFeedRangeParallelism;
-            var semaphore = new SemaphoreSlim(maxConcurrent);
+            using var semaphore = new SemaphoreSlim(maxConcurrent);
 
             var rangeTasks = feedRanges.Select(async range =>
             {
@@ -344,10 +344,15 @@ namespace CassandraMigrationProcessor.DataTransfer.ChangeFeed
         private static string BuildCql(
             TableMigration mu, string startTime, string? feedRange)
         {
+            MigrationUtilities.ValidateCqlIdentifier(mu.KeyspaceName);
+            MigrationUtilities.ValidateCqlIdentifier(mu.TableName);
             string cql =
                 $"SELECT * FROM \"{mu.KeyspaceName}\".\"{mu.TableName}\" WHERE COSMOS_CHANGEFEED_START_TIME() = '{startTime}'";
             if (feedRange != null)
+            {
+                MigrationUtilities.ValidateCqlIdentifier(feedRange);
                 cql += $" AND COSMOS_FEEDRANGE() = '{feedRange}'";
+            }
             return cql;
         }
 

@@ -52,6 +52,7 @@ namespace CassandraMigrationProcessor.CassandraDriver
         /// </summary>
         public static async Task EnsureKeyspaceExistsAsync(ISession session, string keyspace, int replicationFactor = 1)
         {
+            MigrationUtilities.ValidateCqlIdentifier(keyspace);
             if (!await KeyspaceExistsAsync(session, keyspace))
             {
                 await session.ExecuteAsync(new SimpleStatement(
@@ -68,6 +69,8 @@ namespace CassandraMigrationProcessor.CassandraDriver
         /// </summary>
         public static async Task<bool> TableExistsAsync(ISession session, string keyspace, string table)
         {
+            MigrationUtilities.ValidateCqlIdentifier(keyspace);
+            MigrationUtilities.ValidateCqlIdentifier(table);
             var tables = await CassandraQueries.ListTablesAsync(session, keyspace);
             if (!tables.Contains(table, StringComparer.OrdinalIgnoreCase))
                 return false;
@@ -138,6 +141,10 @@ namespace CassandraMigrationProcessor.CassandraDriver
             string targetKeyspace,
             string targetTable)
         {
+            MigrationUtilities.ValidateCqlIdentifier(sourceKeyspace);
+            MigrationUtilities.ValidateCqlIdentifier(sourceTable);
+            MigrationUtilities.ValidateCqlIdentifier(targetKeyspace);
+            MigrationUtilities.ValidateCqlIdentifier(targetTable);
             var columns = await GetTableColumnsAsync(sourceSession, sourceKeyspace, sourceTable);
             if (columns.Count == 0)
                 throw new InvalidOperationException($"Source table {sourceKeyspace}.{sourceTable} has no columns or does not exist.");
@@ -230,6 +237,8 @@ namespace CassandraMigrationProcessor.CassandraDriver
             List<(string Name, string Type, string Kind, string ClusteringOrder, int Position)> sourceColumns,
             List<(string Name, string Type, string Kind, string ClusteringOrder, int Position)> targetColumns)
         {
+            MigrationUtilities.ValidateCqlIdentifier(targetKeyspace);
+            MigrationUtilities.ValidateCqlIdentifier(targetTable);
             var targetColNames = new HashSet<string>(targetColumns.Select(c => c.Name),
                 StringComparer.OrdinalIgnoreCase);
 

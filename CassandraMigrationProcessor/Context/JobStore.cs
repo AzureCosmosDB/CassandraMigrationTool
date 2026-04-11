@@ -13,6 +13,7 @@ namespace CassandraMigrationProcessor.Context
         private const string JobDefinitionFile = "jobdefinition.json";
 
         private static readonly object _writeJobLock = new object();
+        private static readonly object _cacheLock = new();
 
         private static ConcurrentDictionary<string, Job>
             _jobs = new();
@@ -21,8 +22,8 @@ namespace CassandraMigrationProcessor.Context
 
         internal static Job? CachedActiveJob
         {
-            get => _cachedActiveJob;
-            set => _cachedActiveJob = value;
+            get { lock (_cacheLock) { return _cachedActiveJob; } }
+            set { lock (_cacheLock) { _cachedActiveJob = value; } }
         }
 
         /// <summary>
@@ -96,7 +97,10 @@ namespace CassandraMigrationProcessor.Context
                             == MigrationJobContext
                                 .ActiveMigrationJobId)
                     {
-                        _cachedActiveJob = job;
+                        lock (_cacheLock)
+                        {
+                            _cachedActiveJob = job;
+                        }
                     }
                 }
                 return true;
@@ -117,7 +121,10 @@ namespace CassandraMigrationProcessor.Context
 
         public static void ClearCache()
         {
-            _cachedActiveJob = null;
+            lock (_cacheLock)
+            {
+                _cachedActiveJob = null;
+            }
         }
     }
 }

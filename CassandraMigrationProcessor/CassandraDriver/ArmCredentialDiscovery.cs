@@ -178,10 +178,10 @@ namespace CassandraMigrationProcessor.CassandraDriver
                     $"{subscriptionId}/providers/Microsoft.DocumentDB/" +
                     $"databaseAccounts?api-version=2024-05-15";
 
-                var listReq = new HttpRequestMessage(HttpMethod.Get, listUrl);
+                using var listReq = new HttpRequestMessage(HttpMethod.Get, listUrl);
                 listReq.Headers.Authorization =
                     new AuthenticationHeaderValue("Bearer", armToken);
-                var listResp = await _armHttpClient.SendAsync(listReq);
+                using var listResp = await _armHttpClient.SendAsync(listReq);
                 if (!listResp.IsSuccessStatusCode) return null;
 
                 var listJson = await listResp.Content.ReadAsStringAsync();
@@ -201,11 +201,11 @@ namespace CassandraMigrationProcessor.CassandraDriver
                     var keysUrl = $"https://management.azure.com" +
                         $"{resourceId}/listKeys" +
                         $"?api-version=2024-05-15";
-                    var keysReq = new HttpRequestMessage(
+                    using var keysReq = new HttpRequestMessage(
                         HttpMethod.Post, keysUrl);
                     keysReq.Headers.Authorization =
                         new AuthenticationHeaderValue("Bearer", armToken);
-                    var keysResp = await _armHttpClient.SendAsync(keysReq);
+                    using var keysResp = await _armHttpClient.SendAsync(keysReq);
 
                     if (keysResp.IsSuccessStatusCode)
                     {

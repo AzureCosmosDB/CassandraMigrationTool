@@ -5,6 +5,7 @@ using System.IO;
 using System.Linq;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.RegularExpressions;
 
 #pragma warning disable CS8600
 #pragma warning disable CS8602
@@ -142,6 +143,20 @@ namespace CassandraMigrationProcessor.Infrastructure
                 return false;
             return job.Tables
                 .Any(mu => IsMigrationUnitValid(mu));
+        }
+
+        /// <summary>
+        /// Validates that a string is a safe CQL identifier
+        /// (alphanumeric, underscore, or hyphen only).
+        /// Throws ArgumentException if invalid.
+        /// </summary>
+        public static string ValidateCqlIdentifier(string identifier)
+        {
+            if (string.IsNullOrWhiteSpace(identifier))
+                throw new ArgumentException("CQL identifier cannot be empty");
+            if (!Regex.IsMatch(identifier, @"^[a-zA-Z0-9_\-]+$"))
+                throw new ArgumentException($"Invalid CQL identifier: {identifier}");
+            return identifier;
         }
     }
 }

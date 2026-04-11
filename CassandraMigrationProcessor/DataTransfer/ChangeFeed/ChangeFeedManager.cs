@@ -44,7 +44,12 @@ namespace CassandraMigrationProcessor.DataTransfer.ChangeFeed
                 _replayProcessor.ExecutionCancelled = true;
         }
 
-        public void Dispose() { Stop(); }
+        public void Dispose()
+        {
+            Stop();
+            (_replayProcessor as IDisposable)?.Dispose();
+            _lock?.Dispose();
+        }
 
         public async Task<bool> AddTable(TableMigration mu, CancellationToken cancellationToken)
         {

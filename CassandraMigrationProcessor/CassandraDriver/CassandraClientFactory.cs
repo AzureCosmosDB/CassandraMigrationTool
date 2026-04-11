@@ -2,6 +2,7 @@ using Cassandra;
 using System;
 using System.Security.Authentication;
 using System.Threading;
+using System.Threading.Tasks;
 using CassandraMigrationProcessor.Infrastructure;
 using CassandraMigrationProcessor.Models;
 namespace CassandraMigrationProcessor.CassandraDriver
@@ -350,13 +351,10 @@ namespace CassandraMigrationProcessor.CassandraDriver
         }
 
         /// <summary>
-        /// Create target session from a Job's properties.
-        /// If target password is empty, tries ARM auto-discovery:
-        /// 1. For MI clusters with authenticationMethod=None → no credentials needed
-        /// 2. For Cosmos DB Cassandra accounts → fetch keys via listKeys ARM API
-        /// Falls back to no-auth connection if ARM discovery fails.
+        /// Async version — Create target session from a Job's properties.
+        /// Prefer this over the sync overload to avoid blocking on ARM discovery.
         /// </summary>
-        public static ISession CreateTargetSession(
+        public static async Task<ISession> CreateTargetSessionAsync(
             MigrationLog MigrationLog, Job job, string keyspace)
         {
             string password = job.TargetPassword ?? string.Empty;
@@ -367,10 +365,10 @@ namespace CassandraMigrationProcessor.CassandraDriver
             {
                 try
                 {
-                    var armResult = ArmCredentialDiscovery
+                    var armResult = await ArmCredentialDiscovery
                         .DiscoverTargetCredentialsViaArm(
                             job.TargetContactPoint!,
-                            job.TargetPort).GetAwaiter().GetResult();
+                            job.TargetPort);
 
                     if (armResult.AuthMethod == "None")
                     {
@@ -384,9 +382,6 @@ namespace CassandraMigrationProcessor.CassandraDriver
                     }
                     else
                     {
-                        // Auth required but password not available.
-                        // Connect without credentials — MI may
-                        // accept unauthenticated connections.
                         username = string.Empty;
                         password = string.Empty;
                     }
@@ -405,6 +400,21 @@ namespace CassandraMigrationProcessor.CassandraDriver
                 password,
                 keyspace,
                 maxConnectionsPerHost: job.MaxConnectionsPerHost);
+        }
+
+        /// <summary>
+        /// Create target session from a Job's properties (sync).
+        /// If target password is empty, tries ARM auto-discovery:
+        /// 1. For MI clusters with authenticationMethod=None → no credentials needed
+        /// 2. For Cosmos DB Cassandra accounts → fetch keys via listKeys ARM API
+        /// Falls back to no-auth connection if ARM discovery fails.
+        /// </summary>
+        public static ISession CreateTargetSession(
+            MigrationLog MigrationLog, Job job, string keyspace)
+        {
+            // Sync required: constructor context (BulkCopyEngine)
+            return CreateTargetSessionAsync(MigrationLog, job, keyspace)
+                .GetAwaiter().GetResult();
         }
 
         /// <summary>

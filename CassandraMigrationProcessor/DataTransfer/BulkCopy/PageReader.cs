@@ -111,9 +111,15 @@ namespace CassandraMigrationProcessor.DataTransfer.BulkCopy
             return new ReadResult(rows, workChunk, isLastPage);
         }
 
-        internal static string BuildSelectCql(TableContext context, string range) =>
-            $"SELECT * FROM \"{context.KeyspaceName}\".\"{context.TableName}\"" +
-            $" WHERE COSMOS_CHANGEFEED_FROM_START() = true AND COSMOS_FEEDRANGE() = '{range}'";
+        internal static string BuildSelectCql(TableContext context, string range)
+        {
+            MigrationUtilities.ValidateCqlIdentifier(context.KeyspaceName);
+            MigrationUtilities.ValidateCqlIdentifier(context.TableName);
+            MigrationUtilities.ValidateCqlIdentifier(range);
+            return
+                $"SELECT * FROM \"{context.KeyspaceName}\".\"{context.TableName}\"" +
+                $" WHERE COSMOS_CHANGEFEED_FROM_START() = true AND COSMOS_FEEDRANGE() = '{range}'";
+        }
     }
 }
 

@@ -7,6 +7,7 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
+using System.Threading;
 using System.Threading.Tasks;
 using CassandraMigrationProcessor.Models;
 
@@ -44,7 +45,12 @@ namespace CassandraMigrationProcessor.Context
         public static ConcurrentDictionary<string, byte> PendingAutoStartJobIds
         { get; set; } = new();
 
-        public static string ActiveMigrationJobId{ get; set; }
+        private static volatile string _activeMigrationJobId;
+        public static string ActiveMigrationJobId
+        {
+            get => _activeMigrationJobId;
+            set => _activeMigrationJobId = value;
+        }
 
         private static volatile bool _controlledPauseRequested;
         public static bool ControlledPauseRequested
@@ -259,7 +265,7 @@ namespace CassandraMigrationProcessor.Context
                     }
                     finally
                     {
-                        Task.Delay(200).Wait();
+                        Thread.Sleep(200);
                     }
                 }
                 errorMessage = "Error loading migration jobs.";

@@ -8,133 +8,133 @@ using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
 
-namespace CassandraMigrationProcessor.DataTransfer.BulkCopy
+namespace CassandraMigrationProcessor.DataTransfer.BulkCopy;
+
+/// <summary>
+/// Writes extracted rows to the target Cassandra cluster
+/// concurrently, tracking latency and errors.
+/// </summary>
+internal class PageWriter : IDisposable
 {
-    /// <summary>
-    /// Writes extracted rows to the target Cassandra cluster
-    /// concurrently, tracking latency and errors.
-    /// </summary>
-    internal class PageWriter : IDisposable
+    private readonly MigrationLog _log;
+    private readonly CancellationToken _ct;
+    private readonly ISession _targetSession;
+    private readonly PreparedStatement _preparedInsert;
+    private readonly int _workerId;
+    private readonly int _pageSize;
+
+    private const int WriteTimeoutMs = 60_000;
+
+    public PageWriter(MigrationLog log, ConnectionOptions targetConnection, List<(string Name, string Type, string Kind, string ClusteringOrder, int Position)> columns, string targetKeyspace, string targetTable, int pageSize, int workerId, CancellationToken cancellationToken)
     {
-        private readonly MigrationLog _log;
-        private readonly CancellationToken _ct;
-        private readonly ISession _targetSession;
-        private readonly PreparedStatement _preparedInsert;
-        private readonly int _workerId;
-        private readonly int _pageSize;
+        _log = log;
+        _ct = cancellationToken;
+        _workerId = workerId;
+        _pageSize = pageSize;
+        _targetSession = CassandraClientFactory.CreateTargetSession(log, targetConnection, "");
+        var (ps, _) = CassandraQueries.PrepareInsert(_targetSession, targetKeyspace, targetTable, columns);
+        _preparedInsert = ps;
+    }
 
-        private const int WriteTimeoutMs = 60_000;
+    public void Dispose() => MigrationUtilities.SafeDispose(_targetSession, "PageWriter target session");
 
-        public PageWriter(MigrationLog log, ConnectionOptions targetConnection, List<(string Name, string Type, string Kind, string ClusteringOrder, int Position)> columns, string targetKeyspace, string targetTable, int pageSize, int workerId, CancellationToken cancellationToken)
+    private class WriteCounters
+    {
+        public int Done;
+        public int Failed;
+        public long LatencySum;
+    }
+
+    private async Task WriteRowAsync(BoundStatement bound, PipelineContext ctx, WriteCounters counters)
+    {
+        var writeStart = Stopwatch.GetTimestamp();
+        try
         {
-            _log = log;
-            _ct = cancellationToken;
-            _workerId = workerId;
-            _pageSize = pageSize;
-            _targetSession = CassandraClientFactory.CreateTargetSession(log, targetConnection, "");
-            var (ps, _) = CassandraQueries.PrepareInsert(_targetSession, targetKeyspace, targetTable, columns);
-            _preparedInsert = ps;
+            await _targetSession.ExecuteAsync(bound);
+            long elapsed = (Stopwatch.GetTimestamp() - writeStart) * 1000 / Stopwatch.Frequency;
+            Interlocked.Add(ref counters.LatencySum, elapsed);
+            Interlocked.Increment(ref counters.Done);
         }
-
-        public void Dispose() => MigrationUtilities.SafeDispose(_targetSession, "PageWriter target session");
-
-        /// <summary>
-        /// Writes extracted rows to the target cluster in
-        /// parallel, tracking progress and handling errors.
-        /// </summary>
-        public async Task WriteAsync(List<object[]> rows,
-            WorkChunk workChunk,
-            PipelineContext ctx)
+        catch (Exception ex)
         {
-            if (rows.Count == 0)
+            Interlocked.Increment(ref counters.Failed);
+            _log.WriteLine($"[W{_workerId}] INSERT failed: {ex.GetType().Name}: {ex.Message}",
+                LogType.Error);
+
+            if (ExceptionClassifier.IsFatal(ex))
             {
-                workChunk.IsCompleted = true;
-                return;
+                _log.WriteLine($"[W{_workerId}] FATAL: {ex.GetType().Name} — failing job",
+                    LogType.Error);
+                Interlocked.Exchange(ref ctx.Counters.FatalErrorFlag, 1);
             }
-
-            var stopwatch = Stopwatch.StartNew();
-            int writeDone = 0;
-            int writeFail = 0;
-            long writeLatencySum = 0;
-            var writeTasks = new List<Task>(rows.Count);
-
-            foreach (var rowValues in rows)
+            else if (!ExceptionClassifier.IsTransient(ex))
             {
-                if (_ct.IsCancellationRequested
-                    || Volatile.Read(ref ctx.Counters.FatalErrorFlag) != 0)
-                    break;
-
-                var bound = _preparedInsert.Bind(rowValues);
-                bound.SetReadTimeoutMillis(WriteTimeoutMs);
-                bound.SetConsistencyLevel(ConsistencyLevel.LocalOne);
-
-                var writeStart = Stopwatch.GetTimestamp();
-                writeTasks.Add(_targetSession.ExecuteAsync(bound).ContinueWith(task =>
-                {
-                    long elapsed = (Stopwatch.GetTimestamp()
-                            - writeStart)
-                        * 1000
-                        / Stopwatch.Frequency;
-                    Interlocked.Add(ref writeLatencySum, elapsed);
-
-                    if (task.IsFaulted)
-                    {
-                        var ex = task.Exception!.InnerException!;
-                        Interlocked.Increment(ref writeFail);
-                        _log.WriteLine($"[W{_workerId}] INSERT failed: {ex.GetType().Name}: {ex.Message}",
-                            LogType.Error);
-
-                        if (ExceptionClassifier.IsFatal(ex))
-                        {
-                            _log.WriteLine($"[W{_workerId}] FATAL: {ex.GetType().Name} — failing job",
-                                LogType.Error);
-                            Interlocked.Exchange(ref ctx.Counters.FatalErrorFlag, 1);
-                        }
-                        else if (!ExceptionClassifier.IsTransient(ex))
-                        {
-                            Interlocked.Exchange(ref ctx.Counters.FatalErrorFlag, 1);
-                        }
-                    }
-                    else
-                    {
-                        Interlocked.Increment(ref writeDone);
-                    }
-                }, TaskContinuationOptions.ExecuteSynchronously));
+                Interlocked.Exchange(ref ctx.Counters.FatalErrorFlag, 1);
             }
-
-            ctx.Tracker.SetPipelineState(ctx.Ranges.FeedRanges.Count
-                    - ctx.Ranges.Completed.Count,
-                _pageSize);
-            await Task.WhenAll(writeTasks);
-
-            // Only mark chunk completed if ALL rows succeeded.
-            // Failed rows mean this page must be retried on resume.
-            if (writeFail == 0) workChunk.IsCompleted = true;
-            else
-            {
-                _log.WriteLine($"[W{_workerId}] {writeFail}/{rows.Count} writes failed — checkpoint NOT advanced (will retry on resume)",
-                    LogType.Warning);
-            }
-
-            stopwatch.Stop();
-            ctx.Tracker.AddWriteTime(writeLatencySum, rows.Count);
-            ctx.Tracker.AddCopied(writeDone);
-            ctx.Tracker.AddFailed(writeFail);
-
-            long pageBytes = 0;
-            foreach (var r in rows)
-                foreach (var v in r)
-                {
-                    if (v is byte[] b)
-                        pageBytes += b.Length;
-                    else if (v is string s)
-                        pageBytes += s.Length * 2;
-                    else if (v != null)
-                        pageBytes += 8;
-                }
-            ctx.Tracker.AddBytes(pageBytes);
         }
     }
+
+    /// <summary>
+    /// Writes extracted rows to the target cluster in
+    /// parallel, tracking progress and handling errors.
+    /// </summary>
+    public async Task WriteAsync(List<object[]> rows,
+        WorkChunk workChunk,
+        PipelineContext ctx)
+    {
+        if (rows.Count == 0)
+        {
+            workChunk.IsCompleted = true;
+            return;
+        }
+
+        var stopwatch = Stopwatch.StartNew();
+        var counters = new WriteCounters();
+        var writeTasks = new List<Task>(rows.Count);
+
+        foreach (var rowValues in rows)
+        {
+            if (_ct.IsCancellationRequested
+                || Volatile.Read(ref ctx.Counters.FatalErrorFlag) != 0)
+                break;
+
+            var bound = _preparedInsert.Bind(rowValues);
+            bound.SetReadTimeoutMillis(WriteTimeoutMs);
+            bound.SetConsistencyLevel(ConsistencyLevel.LocalOne);
+
+            writeTasks.Add(WriteRowAsync(bound, ctx, counters));
+        }
+
+        ctx.Tracker.SetPipelineState(ctx.Ranges.FeedRanges.Count
+                - ctx.Ranges.Completed.Count,
+            _pageSize);
+        await Task.WhenAll(writeTasks);
+
+        // Only mark chunk completed if ALL rows succeeded.
+        // Failed rows mean this page must be retried on resume.
+        if (counters.Failed == 0) workChunk.IsCompleted = true;
+        else
+        {
+            _log.WriteLine($"[W{_workerId}] {counters.Failed}/{rows.Count} writes failed — checkpoint NOT advanced (will retry on resume)",
+                LogType.Warning);
+        }
+
+        stopwatch.Stop();
+        ctx.Tracker.AddWriteTime(counters.LatencySum, rows.Count);
+        ctx.Tracker.AddCopied(counters.Done);
+        ctx.Tracker.AddFailed(counters.Failed);
+
+        long pageBytes = 0;
+        foreach (var r in rows)
+            foreach (var v in r)
+            {
+                if (v is byte[] b)
+                    pageBytes += b.Length;
+                else if (v is string s)
+                    pageBytes += s.Length * 2;
+                else if (v != null)
+                    pageBytes += 8;
+            }
+        ctx.Tracker.AddBytes(pageBytes);
+    }
 }
-
-

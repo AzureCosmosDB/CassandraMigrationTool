@@ -257,7 +257,7 @@ namespace CassandraMigrationProcessor.DataTransfer
 
         public void Dispose()
         {
-            _changeFeedManager.Stop();
+            _changeFeedManager?.Dispose();
             _cts?.Dispose();
             MigrationUtilities.SafeDispose(_target, "BulkCopyEngine target session");
         }
