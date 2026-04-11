@@ -1,14 +1,15 @@
+using CassandraMigrationProcessor.Infrastructure;
 using Newtonsoft.Json;
 using System;
 using System.Collections.Generic;
-using System.Security.Cryptography;
-using System.Text;
 using System.Threading;
 
 namespace CassandraMigrationProcessor.Models
 {
     public class TableMigrationSummary
     {
+        // ── Identity ──
+
         [JsonIgnore]
         public Job? ParentJob;
 
@@ -19,10 +20,14 @@ namespace CassandraMigrationProcessor.Models
         public string? TargetKeyspaceName { get; set; }
         public string? TargetTableName { get; set; }
 
+        // ── Change Feed Summary ──
+
         public long ChangeFeedUpdatesInLastBatch { get; set; }
         public double ChangeFeedAvgReadLatencyInMS { get; set; }
         public double ChangeFeedAvgWriteLatencyInMS { get; set; }
         public DateTime? ChangeFeedLastChecked { get; set; }
+
+        // ── Bulk Copy Summary ──
 
         public double CopyPercent { get; set; }
         public bool CopyComplete { get; set; }
@@ -51,8 +56,34 @@ namespace CassandraMigrationProcessor.Models
 
     public class TableMigration : TableMigrationSummary
     {
+        // ── Bulk Copy State ──
+
         public DateTime? BulkCopyStartedOn { get; set; }
         public DateTime? BulkCopyEndedOn { get; set; }
+
+        public List<CopyChunk> CopyChunks { get; set; } = new();
+
+        public long EstimatedRowCount { get; set; }
+        public long ActualRowCount { get; set; }
+        public long SourceCountDuringCopy { get; set; }
+
+        /// <summary>
+        /// Per-feed-range copy checkpoint. Key = feed range JSON,
+        /// Value = base64-encoded paging state. null value means
+        /// the range is fully copied. Persisted periodically so
+        /// resume can skip completed ranges and continue from
+        /// the last checkpoint of in-progress ranges.
+        /// </summary>
+        public Dictionary<string, string?> CopyFeedRangeCheckpoints { get; set; } = new();
+
+        /// <summary>
+        /// Set of feed ranges whose bulk copy completed fully.
+        /// On resume, these ranges are skipped entirely.
+        /// </summary>
+        public HashSet<string> CompletedCopyFeedRanges { get; set; } = new();
+
+        // ── Change Feed State ──
+
         public DateTime? ChangeFeedStartedOn { get; set; }
         public string? ChangeFeedContinuationToken { get; set; }
 
@@ -73,27 +104,8 @@ namespace CassandraMigrationProcessor.Models
         /// </summary>
         public string? ChangeFeedStartToken { get; set; }
 
-        /// <summary>
-        /// Per-feed-range copy checkpoint. Key = feed range JSON,
-        /// Value = base64-encoded paging state. null value means
-        /// the range is fully copied. Persisted periodically so
-        /// resume can skip completed ranges and continue from
-        /// the last checkpoint of in-progress ranges.
-        /// </summary>
-        public Dictionary<string, string?> CopyFeedRangeCheckpoints { get; set; } = new();
+        // ── Change Feed Counters (Interlocked for thread safety) ──
 
-        /// <summary>
-        /// Set of feed ranges whose bulk copy completed fully.
-        /// On resume, these ranges are skipped entirely.
-        /// </summary>
-        public HashSet<string> CompletedCopyFeedRanges { get; set; } = new();
-
-        public long EstimatedRowCount { get; set; }
-        public long ActualRowCount { get; set; }
-        public long SourceCountDuringCopy { get; set; }
-
-        // Backing fields for Interlocked access in parallel
-        // change feed. Properties delegate to these fields.
         internal long _changeFeedInsertEvents;
         // Reserved for FFCF: currently always 0 (insert-only pipeline)
         internal long _changeFeedDeleteEvents;
@@ -155,7 +167,7 @@ namespace CassandraMigrationProcessor.Models
                 ref _changeFeedRowsUpdated, value);
         }
 
-        public List<CopyChunk> CopyChunks { get; set; } = new();
+        // ── Constructor ──
 
         public TableMigration(
             Job job,
@@ -163,7 +175,7 @@ namespace CassandraMigrationProcessor.Models
             string tableName,
             List<CopyChunk> CopyChunks)
         {
-            this.Id = GenerateMigrationUnitId(
+            this.Id = MigrationUtilities.GenerateMigrationUnitId(
                 keyspaceName, tableName);
             this.KeyspaceName = keyspaceName;
             this.TableName = tableName;
@@ -176,19 +188,5 @@ namespace CassandraMigrationProcessor.Models
                 this.ParentJob = job;
             }
         }
-
-        internal static string GenerateMigrationUnitId(
-            string keyspaceName, string tableName)
-        {
-            using (var sha = SHA256.Create())
-            {
-                byte[] hashBytes = sha.ComputeHash(
-                    Encoding.UTF8.GetBytes(
-                        $"{keyspaceName}.{tableName}"));
-                return BitConverter.ToString(hashBytes)
-                    .Replace("-", "").Substring(0, 16).ToLower();
-            }
-        }
-
     }
 }

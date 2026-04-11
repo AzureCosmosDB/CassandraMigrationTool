@@ -5,10 +5,13 @@ namespace CassandraMigrationProcessor.Models
 {
     public class Job
     {
+        // ── Identity ──
+
         public string Id { get; set; } = string.Empty;
         public string? Name { get; set; }
 
-        // Source: Cosmos DB Cassandra API
+        // ── Source Connection ──
+
         public string? SourceContactPoint { get; set; }
         public int SourcePort { get; set; } = 10350;
         public string? SourceUsername { get; set; }
@@ -20,7 +23,8 @@ namespace CassandraMigrationProcessor.Models
         public string? SourcePassword { get; set; }
         public bool SourceUseAad { get; set; }
 
-        // Target: OSS Cassandra
+        // ── Target Connection ──
+
         public string? TargetContactPoint { get; set; }
         public int TargetPort { get; set; } = 9042;
         public string? TargetUsername { get; set; }
@@ -31,36 +35,7 @@ namespace CassandraMigrationProcessor.Models
         [JsonIgnore]
         public string? TargetPassword { get; set; }
 
-        public string? Namespaces { get; set; }
-
-        public DateTime? StartedOn { get; set; }
-
-        /// <summary>
-        /// Single source of truth for job lifecycle state.
-        /// </summary>
-        public JobStatus Status { get; set; } = JobStatus.Pending;
-
-        public JobType JobType{ get; set; } = JobType.CqlCopy;
-
-        public CDCMode CDCMode { get; set; } = CDCMode.Offline;
-
-        public bool IsSimulatedRun { get; set; }
-        public bool AppendMode { get; set; }
-
-        /// <summary>
-        /// When true, drop target tables before starting the
-        /// job so they are recreated fresh from source schema.
-        /// Default is false.
-        /// </summary>
-        public bool DropTargetTableBeforeStart { get; set; }
-
-        /// <summary>
-        /// Minimum log level. Default is Info.
-        /// </summary>
-        public LogType LogLevel { get; set; } = LogType.Info;
-
-        [JsonIgnore]
-        public bool AutoRefreshEnabled { get; set; } = true;
+        // ── Pipeline Config ──
 
         /// <summary>
         /// Number of parallel threads for row copy operations.
@@ -86,8 +61,45 @@ namespace CassandraMigrationProcessor.Models
         /// </summary>
         public int PageSize { get; set; } = 0;
 
+        // ── Job Settings ──
+
+        public CDCMode CDCMode { get; set; } = CDCMode.Offline;
+
+        public JobType JobType{ get; set; } = JobType.CqlCopy;
+
+        public bool IsSimulatedRun { get; set; }
+        public bool AppendMode { get; set; }
+
+        /// <summary>
+        /// When true, drop target tables before starting the
+        /// job so they are recreated fresh from source schema.
+        /// Default is false.
+        /// </summary>
+        public bool DropTargetTableBeforeStart { get; set; }
+
+        /// <summary>
+        /// Minimum log level. Default is Info.
+        /// </summary>
+        public LogType LogLevel { get; set; } = LogType.Info;
+
+        // ── Runtime State ──
+
+        /// <summary>
+        /// Single source of truth for job lifecycle state.
+        /// </summary>
+        public JobStatus Status { get; set; } = JobStatus.Pending;
+
+        public DateTime? StartedOn { get; set; }
+
         [JsonProperty("MigrationUnitBasics")]
         public List<TableMigrationSummary> Tables { get; set; } = new();
+
+        [JsonIgnore]
+        public bool AutoRefreshEnabled { get; set; } = true;
+
+        public string? Namespaces { get; set; }
+
+        // ── Computed ──
 
         [JsonIgnore]
         public ConnectionOptions SourceConnection => new(
@@ -99,6 +111,5 @@ namespace CassandraMigrationProcessor.Models
             TargetContactPoint ?? "", TargetPort,
             TargetUsername, TargetPassword, true,
             MaxConnectionsPerHost);
-
     }
 }
