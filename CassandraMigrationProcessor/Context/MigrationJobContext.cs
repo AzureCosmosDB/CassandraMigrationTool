@@ -45,12 +45,7 @@ namespace CassandraMigrationProcessor.Context
         public static ConcurrentDictionary<string, byte> PendingAutoStartJobIds
         { get; set; } = new();
 
-        /// <summary>
-        /// Always false for Cassandra migration (no legacy driver concept).
-        /// </summary>
-        public static bool IsLegacyDriver => false;
-
-        public static string ActiveMigrationJobId { get; set; }
+        public static string ActiveMigrationJobId{ get; set; }
 
         private static volatile bool _controlledPauseRequested;
         public static bool ControlledPauseRequested

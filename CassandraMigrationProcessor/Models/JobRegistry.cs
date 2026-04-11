@@ -6,21 +6,10 @@ using System.IO;
 using System.Linq;
 using System.Threading;
 
-#pragma warning disable CS8618 // Non-nullable field must contain a non-null value when exiting constructor. Consider adding the 'required' modifier or declaring as nullable.
-
 namespace CassandraMigrationProcessor.Models
 {
     public class JobRegistry
     {
-        // Legacy property for backward compatibility - will be removed in future versions
-        // This will only be deserialized if present in JSON, but never serialized
-        [JsonProperty("MigrationJobs")]
-        private List<MigrationJob>? _migrationJobsBackingField
-        {
-            get => null; // Never serialize this property - returns null so JSON.NET won't include it
-            set { if (value != null) MigrationJobs = value; } // Allow deserialization - set the public property
-        }
-
         [JsonIgnore]
         public List<MigrationJob> MigrationJobs { get; set; } = new();
 

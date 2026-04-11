@@ -262,7 +262,7 @@ namespace CassandraMigrationWebApp.Service
             _ctx.SourceConnectionString[job.Id] = sourceConnectionString;
             _ctx.TargetConnectionString[job.Id] = targetConnectionString;
 
-            // Clear IsStarted on all other jobs so stale flags don't
+            // Clear Running status on all other jobs so stale flags don't
             // cause unwanted auto-resume after an app recycle.
             foreach (var otherId in GetMigrationIds())
             {

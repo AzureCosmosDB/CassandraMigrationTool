@@ -325,18 +325,15 @@ else if (@_showLogBackupFile)
     private MarkupString GetLogIcon(LogType logType)
     {
         // Return Bootstrap icon based on LogType
-        #pragma warning disable CS0618 // Type or member is obsolete
         return logType switch
         {
             LogType.Error => new MarkupString("<i class='bi bi-x-circle-fill'></i>"),
             LogType.Warning => new MarkupString("<i class='bi bi-exclamation-triangle-fill'></i>"),
-            LogType.Message => new MarkupString("<i class='bi bi-info-circle-fill'></i>"),  // Deprecated, treat as Info
             LogType.Info => new MarkupString("<i class='bi bi-info-circle-fill'></i>"),
             LogType.Debug => new MarkupString("<i class='bi bi-bug-fill'></i>"),
             LogType.Verbose => new MarkupString("<i class='bi bi-chat-dots-fill'></i>"),
             _ => new MarkupString("")
         };
-        #pragma warning restore CS0618
     }
 
     private void GoBack()

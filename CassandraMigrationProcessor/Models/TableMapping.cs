@@ -1,9 +1,5 @@
-using Newtonsoft.Json;
-using System;
-
 namespace CassandraMigrationProcessor.Models
 {
-    [JsonObject("CollectionInfo")]
     public class TableMapping
     {
         public required string TableName { get; set; }

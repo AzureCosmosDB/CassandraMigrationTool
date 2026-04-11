@@ -12,13 +12,6 @@ namespace CassandraMigrationProcessor.Models
         /// <summary>Error messages only</summary>
         Error = 0,
 
-        /// <summary>
-        /// [DEPRECATED] Use Info instead. Kept for backward compatibility with old log files.
-        /// Will be removed in a future version.
-        /// </summary>
-        [Obsolete("Use Info instead. This value is kept only for backward compatibility with old log files.")]
-        Message = 1,
-
         /// <summary>Warning messages</summary>
         Warning = 2,
 
@@ -33,8 +26,7 @@ namespace CassandraMigrationProcessor.Models
     }
 
     /// <summary>
-    /// Custom JSON converter for LogType enum that handles backward compatibility.
-    /// Message enum value is deprecated but kept for old log files.
+    /// Custom JSON converter for LogType enum.
     /// </summary>
     public class LogTypeConverter : JsonConverter<LogType>
     {
@@ -43,33 +35,15 @@ namespace CassandraMigrationProcessor.Models
             if (reader.TokenType == JsonTokenType.String)
             {
                 string? value = reader.GetString();
-
-                // Try to parse as enum (handles both old "Message" and new values)
                 if (Enum.TryParse<LogType>(value, true, out var result))
-                {
-                    // If it's the deprecated Message, treat as Info for filtering purposes
-#pragma warning disable CS0618 // Type or member is obsolete
-                    return result == LogType.Message ? LogType.Info : result;
-#pragma warning restore CS0618
-                }
-
-                // Default to Info if parsing fails
+                    return result;
                 return LogType.Info;
             }
             else if (reader.TokenType == JsonTokenType.Number)
             {
                 int numValue = reader.GetInt32();
-
                 if (Enum.IsDefined(typeof(LogType), numValue))
-                {
-                    var result = (LogType)numValue;
-
-                    // If it's the deprecated Message, treat as Info for filtering purposes
-#pragma warning disable CS0618 // Type or member is obsolete
-                    return result == LogType.Message ? LogType.Info : result;
-#pragma warning restore CS0618
-                }
-
+                    return (LogType)numValue;
                 return LogType.Info;
             }
 
@@ -78,13 +52,7 @@ namespace CassandraMigrationProcessor.Models
 
         public override void Write(Utf8JsonWriter writer, LogType value, JsonSerializerOptions options)
         {
-            // Convert deprecated Message to Info when writing new logs
-#pragma warning disable CS0618 // Type or member is obsolete
-            var writeValue = value == LogType.Message ? LogType.Info : value;
-#pragma warning restore CS0618
-
-            // Always write as string for readability
-            writer.WriteStringValue(writeValue.ToString());
+            writer.WriteStringValue(value.ToString());
         }
     }
 

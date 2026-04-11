@@ -424,17 +424,14 @@ namespace CassandraMigrationProcessor.Persistence
             return newFileName;
         }
 
-#pragma warning disable CS0618 // LogType.Message is obsolete
         private static char FormatLogTypeChar(LogType type) => type switch
         {
             LogType.Error => 'E',
             LogType.Warning => 'W',
             LogType.Info => 'I',
-            LogType.Message => 'L',
             LogType.Debug => 'D',
             LogType.Verbose => 'V',
             _ => '?'
         };
-#pragma warning restore CS0618
     }
 }

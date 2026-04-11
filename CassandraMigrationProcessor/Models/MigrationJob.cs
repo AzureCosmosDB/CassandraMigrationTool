@@ -1,5 +1,4 @@
 using Newtonsoft.Json;
-using System;
 using System.Collections.Generic;
 
 namespace CassandraMigrationProcessor.Models
@@ -32,7 +31,6 @@ namespace CassandraMigrationProcessor.Models
         [JsonIgnore]
         public string? TargetPassword { get; set; }
 
-        [JsonProperty("NameSpaces")]
         public string? Namespaces { get; set; }
 
         public DateTime? StartedOn { get; set; }
@@ -42,54 +40,7 @@ namespace CassandraMigrationProcessor.Models
         /// </summary>
         public JobStatus Status { get; set; } = JobStatus.Pending;
 
-        // ── Backward-compat boolean properties ──────────
-        // Deserialized from old job files to migrate Status.
-        // On new saves, Status is the source of truth.
-        // Priority order for migration: Cancelled > Faulted >
-        // Completed > Paused > Running > Pending.
-
-        [JsonProperty(DefaultValueHandling = DefaultValueHandling.Ignore)]
-        [Obsolete("Use Status property directly")]
-        public bool IsCompleted
-        {
-            get => Status == JobStatus.Completed;
-            set { if (value) Status = JobStatus.Completed; }
-        }
-        [JsonProperty(DefaultValueHandling = DefaultValueHandling.Ignore)]
-        [Obsolete("Use Status property directly")]
-        public bool IsCancelled
-        {
-            get => Status == JobStatus.Cancelled;
-            set { if (value) Status = JobStatus.Cancelled; }
-        }
-        [JsonProperty(DefaultValueHandling = DefaultValueHandling.Ignore)]
-        [Obsolete("Use Status property directly")]
-        public bool IsFaulted
-        {
-            get => Status == JobStatus.Faulted;
-            set { if (value) Status = JobStatus.Faulted; }
-        }
-        [JsonProperty(DefaultValueHandling = DefaultValueHandling.Ignore)]
-        [Obsolete("Use Status property directly")]
-        public bool IsPaused
-        {
-            get => Status == JobStatus.Paused;
-            set { if (value) Status = JobStatus.Paused; }
-        }
-        [JsonProperty(DefaultValueHandling = DefaultValueHandling.Ignore)]
-        [Obsolete("Use Status property directly")]
-        public bool IsStarted
-        {
-            get => Status == JobStatus.Running;
-            set
-            {
-                if (value) Status = JobStatus.Running;
-                else if (Status == JobStatus.Running)
-                    Status = JobStatus.Pending;
-            }
-        }
-
-        public JobType JobType { get; set; } = JobType.CqlCopy;
+        public JobType JobType{ get; set; } = JobType.CqlCopy;
 
         public CDCMode CDCMode { get; set; } = CDCMode.Offline;
 
