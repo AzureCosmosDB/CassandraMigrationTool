@@ -42,7 +42,9 @@ namespace CassandraMigrationProcessor.DataTransfer
             _target = job.IsSimulatedRun
                 ? null
                 : CassandraClientFactory.CreateTargetSession(log, job, string.Empty);
-            _changeFeedManager = new ChangeFeedManager(log, job, config, _target!, tokenRefreshManager);
+            var targetForChangeFeed = _target ?? throw new InvalidOperationException(
+                "Target session is required for ChangeFeedManager but was not created");
+            _changeFeedManager = new ChangeFeedManager(log, job, config, targetForChangeFeed, tokenRefreshManager);
         }
 
         // ── Lifecycle ──
@@ -215,7 +217,9 @@ namespace CassandraMigrationProcessor.DataTransfer
                 return TaskResult.Success;
             }
 
-            var runner = new BulkCopyRunner(_migrationLog, _migrationJob, _pipelineConfig, _cts.Token, _target!);
+            var target = _target ?? throw new InvalidOperationException(
+                "Target session not initialized for non-simulated run");
+            var runner = new BulkCopyRunner(_migrationLog, _migrationJob, _pipelineConfig, _cts.Token, target);
             var result = await runner.RunAsync(new PipelineRequest(TableMigration, chunkIndex, initialPercent,
                 contributionFactor, rowCount, context, feedRanges));
 

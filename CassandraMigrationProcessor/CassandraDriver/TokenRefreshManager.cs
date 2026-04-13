@@ -59,6 +59,10 @@ namespace CassandraMigrationProcessor.CassandraDriver
         /// </summary>
         public ISession ReconnectSourceWithFreshToken()
         {
+            if (string.IsNullOrEmpty(_lastSourceContactPoint))
+                throw new InvalidOperationException(
+                    "Cannot reconnect: source connection parameters have not been cached. Call CacheSourceConnectionParams first.");
+
             string freshToken = GetFreshAadToken();
 
             // Restart refresh timer with new token
@@ -66,7 +70,7 @@ namespace CassandraMigrationProcessor.CassandraDriver
 
             var newSession = CassandraClientFactory.CreateSourceSession(
                 _log,
-                _lastSourceContactPoint!,
+                _lastSourceContactPoint,
                 _lastSourcePort,
                 _lastSourceUsername ?? string.Empty,
                 freshToken,

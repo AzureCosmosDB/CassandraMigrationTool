@@ -145,7 +145,7 @@ namespace CassandraMigrationProcessor.Persistence
                     fs.Position = offset;
                     var MigrationLog = TryReadLogEntry(br);
                     if (MigrationLog != null)
-                        logBucket.Logs!.Add(MigrationLog);
+                        logBucket.Logs.Add(MigrationLog);
                 }
             }, $"DownloadLogsPaginated({id})");
 
@@ -364,7 +364,7 @@ namespace CassandraMigrationProcessor.Persistence
                     fs.Position = offset;
                     var MigrationLog = TryReadLogEntry(br);
                     if (MigrationLog != null)
-                        logBucket.Logs!.Add(MigrationLog);
+                        logBucket.Logs.Add(MigrationLog);
                 }
             }, "ParseLogBinFile");
 

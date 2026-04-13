@@ -102,7 +102,9 @@ namespace CassandraMigrationProcessor.DataTransfer
         {
             _log.WriteLine("All tables copied. Resuming change feed processors.", LogType.Info);
             EnsureSourceSession(job, job.Tables.First().KeyspaceName);
-            _activeProcessor = new BulkCopyEngine(_log, _sourceSession!, config, job, _tokenRefreshManager);
+            var sourceSession = _sourceSession ?? throw new InvalidOperationException(
+                "Source session not initialized after EnsureSourceSession");
+            _activeProcessor = new BulkCopyEngine(_log, sourceSession, config, job, _tokenRefreshManager);
 
             foreach (var mub in job.Tables)
             {
@@ -171,8 +173,10 @@ namespace CassandraMigrationProcessor.DataTransfer
             try
             {
                 localSourceSession = CassandraClientFactory.CreateSourceSession(_log, job, mu.KeyspaceName, _tokenRefreshManager);
+                var session = localSourceSession ?? throw new InvalidOperationException(
+                    "CreateSourceSession returned null");
 
-                if (!await SchemaManager.TableExistsAsync(localSourceSession!, mu.KeyspaceName, mu.TableName))
+                if (!await SchemaManager.TableExistsAsync(session, mu.KeyspaceName, mu.TableName))
                 {
                     _log.WriteLine($"Source table {mu.KeyspaceName}.{mu.TableName} not found.", LogType.Error);
                     mu.SourceStatus = TableStatus.NotFound;
@@ -181,12 +185,12 @@ namespace CassandraMigrationProcessor.DataTransfer
                 }
 
                 if (!job.IsSimulatedRun)
-                    await SetupTargetSchemaAsync(job, localSourceSession!, mu);
+                    await SetupTargetSchemaAsync(job, session, mu);
 
                 mu.BulkCopyStartedOn ??= DateTime.UtcNow;
 
                 if (!job.IsSimulatedRun)
-                    await LogFeedRangesAsync(localSourceSession!, mu);
+                    await LogFeedRangesAsync(session, mu);
 
                 if (MigrationUtilities.IsOnline(job))
                 {
@@ -195,7 +199,7 @@ namespace CassandraMigrationProcessor.DataTransfer
                 }
 
                 MigrationJobContext.SaveMigrationUnit(mu, true);
-                await RunCopyForUnitAsync(job, config, localSourceSession!, mu, cancellationToken);
+                await RunCopyForUnitAsync(job, config, session, mu, cancellationToken);
                 MigrationJobContext.SaveMigrationUnit(mu, true);
             }
             catch (OperationCanceledException) { throw; }

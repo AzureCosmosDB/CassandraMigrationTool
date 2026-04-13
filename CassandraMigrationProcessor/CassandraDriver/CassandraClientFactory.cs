@@ -315,6 +315,9 @@ namespace CassandraMigrationProcessor.CassandraDriver
             MigrationLog MigrationLog, Job job, string keyspace,
             TokenRefreshManager? tokenRefreshManager = null)
         {
+            if (string.IsNullOrEmpty(job.SourceContactPoint))
+                throw new ArgumentException("Source contact point is required", nameof(job));
+
             string password = job.SourcePassword ?? string.Empty;
 
             // If password is empty (resume) or AAD is enabled,
@@ -342,7 +345,7 @@ namespace CassandraMigrationProcessor.CassandraDriver
 
             return CreateSourceSession(
                 MigrationLog,
-                job.SourceContactPoint!,
+                job.SourceContactPoint,
                 job.SourcePort,
                 username,
                 password,
@@ -357,6 +360,9 @@ namespace CassandraMigrationProcessor.CassandraDriver
         public static async Task<ISession> CreateTargetSessionAsync(
             MigrationLog MigrationLog, Job job, string keyspace)
         {
+            if (string.IsNullOrEmpty(job.TargetContactPoint))
+                throw new ArgumentException("Target contact point is required", nameof(job));
+
             string password = job.TargetPassword ?? string.Empty;
             string username = job.TargetUsername ?? string.Empty;
 
@@ -367,7 +373,7 @@ namespace CassandraMigrationProcessor.CassandraDriver
                 {
                     var armResult = await ArmCredentialDiscovery
                         .DiscoverTargetCredentialsViaArm(
-                            job.TargetContactPoint!,
+                            job.TargetContactPoint,
                             job.TargetPort);
 
                     if (armResult.AuthMethod == "None")
@@ -394,7 +400,7 @@ namespace CassandraMigrationProcessor.CassandraDriver
 
             return CreateTargetSession(
                 MigrationLog,
-                job.TargetContactPoint!,
+                job.TargetContactPoint,
                 job.TargetPort,
                 username,
                 password,

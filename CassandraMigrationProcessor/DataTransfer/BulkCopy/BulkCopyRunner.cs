@@ -62,13 +62,16 @@ namespace CassandraMigrationProcessor.DataTransfer.BulkCopy
         {
             var ctx0 = request.Context;
 
-            var (seed, allComplete) = await SeedAsync(request);
+            var (seedResult, allComplete) = await SeedAsync(request);
             if (allComplete) return TaskResult.Success;
+
+            var seed = seedResult ?? throw new InvalidOperationException(
+                "SeedAsync returned null result when ranges are still pending");
 
             var schema = await SyncSchemaAsync(ctx0);
             if (schema == null) return TaskResult.Abort;
 
-            var execution = await ExecuteAsync(request, seed!, schema);
+            var execution = await ExecuteAsync(request, seed, schema);
 
             return Finalize(execution, request);
         }

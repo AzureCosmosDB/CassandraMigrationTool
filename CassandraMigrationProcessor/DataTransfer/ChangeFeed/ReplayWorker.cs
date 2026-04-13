@@ -137,6 +137,9 @@ namespace CassandraMigrationProcessor.DataTransfer.ChangeFeed
         /// </summary>
         private async Task<(PreparedStatement Ps, List<string> ColumnNames)> PrepareReplayAsync(TableMigration mu)
         {
+            var targetSession = _targetSession ?? throw new InvalidOperationException(
+                "Target session is required for replay but was not provided");
+
             var columns = await SchemaManager.GetTableColumnsAsync(
                 _sourceSession, mu.KeyspaceName, mu.TableName);
             var userColumns = columns
@@ -144,7 +147,7 @@ namespace CassandraMigrationProcessor.DataTransfer.ChangeFeed
                 .ToList();
 
             return await CassandraQueries.PrepareInsertAsync(
-                _targetSession!,
+                targetSession,
                 mu.GetEffectiveTargetKeyspaceName(),
                 mu.GetEffectiveTargetTableName(),
                 userColumns);
@@ -272,6 +275,9 @@ namespace CassandraMigrationProcessor.DataTransfer.ChangeFeed
             TableMigration mu,
             CancellationToken ct)
         {
+            var targetSession = _targetSession ?? throw new InvalidOperationException(
+                "Target session is required for replay but was not provided");
+
             int insertCount = 0;
             int errorCount = 0;
             int available = rs.GetAvailableWithoutFetching();
@@ -288,7 +294,7 @@ namespace CassandraMigrationProcessor.DataTransfer.ChangeFeed
                     var values = new object[colNames.Count];
                     for (int i = 0; i < colNames.Count; i++)
                         values[i] = row[colNames[i]];
-                    await _targetSession!.ExecuteAsync(ps.Bind(values));
+                    await targetSession.ExecuteAsync(ps.Bind(values));
                     insertCount++;
                 }
                 catch (Exception ex)

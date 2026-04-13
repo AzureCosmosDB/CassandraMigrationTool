@@ -6,7 +6,7 @@ namespace CassandraMigrationProcessor.Infrastructure
 {
     public class LogBucket
     {
-        public List<LogObject>? Logs { get; set; } = new List<LogObject>();
+        public List<LogObject> Logs { get; set; } = new List<LogObject>();
     }
 
     /// <summary>

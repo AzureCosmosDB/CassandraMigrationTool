@@ -14,7 +14,7 @@ namespace CassandraMigrationProcessor.Persistence
     /// </summary>
     public class DiskPersistence : IPersistenceStorage
     {
-        private static string? _storagePath;
+        private static string _storagePath = string.Empty;
         private static bool _isInitialized = false;
         private static readonly object _initLock = new object();
         private static LogPersistence? _logPersistence;
@@ -95,13 +95,13 @@ namespace CassandraMigrationProcessor.Persistence
             {
                 // Simple ID, just use as filename (already has .json extension)
                 var sanitizedId = SanitizeFileName(parts[0]);
-                return Path.Combine(_storagePath!, sanitizedId);
+                return Path.Combine(_storagePath, sanitizedId);
             }
             else
             {
                 // Hierarchical ID like "job1\mu1.json"
                 // Create folder structure: storagePath/job1/mu1.json
-                var pathParts = new List<string> { _storagePath! };
+                var pathParts = new List<string> { _storagePath };
 
                 // Add all parts except the last as directories
                 for (int i = 0; i < parts.Length - 1; i++)
@@ -130,7 +130,7 @@ namespace CassandraMigrationProcessor.Persistence
             // Split by backslash or forward slash
             var parts = id.Split('\\', '/');
 
-            var pathParts = new List<string> { _storagePath! };
+            var pathParts = new List<string> { _storagePath };
 
             // Add all parts as directories
             foreach (var part in parts)
@@ -268,7 +268,7 @@ namespace CassandraMigrationProcessor.Persistence
             {
                 var ids = new List<string>();
 
-                var files = FileSystem.ListFiles(_storagePath!, "*" + FILE_EXTENSION, recursive: true);
+                var files = FileSystem.ListFiles(_storagePath, "*" + FILE_EXTENSION, recursive: true);
 
                 foreach (var file in files)
                 {
@@ -279,7 +279,7 @@ namespace CassandraMigrationProcessor.Persistence
                     }
                     else
                     {
-                        relativePath = Path.GetRelativePath(_storagePath!, file);
+                        relativePath = Path.GetRelativePath(_storagePath, file);
                     }
 
                     var id = relativePath.Replace('/', '\\').Replace(Path.DirectorySeparatorChar, '\\');
