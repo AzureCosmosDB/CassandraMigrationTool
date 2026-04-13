@@ -1,7 +1,6 @@
 using CassandraMigrationProcessor.Infrastructure;
 using CassandraMigrationProcessor.Models;
 using System;
-using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -33,10 +32,8 @@ internal class BulkCopyWorker
         PageWriter? writer = null;
         try
         {
-            reader = new PageReader(_log, ctx.Worker.SourceConnection, ctx.Worker.Context.KeyspaceName,
-                ctx.Worker.Columns.Select(c => c.Name).ToList(), _pageSize, _workerId, _ct);
-            writer = new PageWriter(_log, ctx.Worker.TargetConnection, ctx.Worker.Columns,
-                ctx.Worker.Context.TargetKeyspaceName, ctx.Worker.Context.TargetTableName, _pageSize, _workerId, _ct);
+            reader = new PageReader(_log, ctx.Worker, _pageSize, _workerId, _ct);
+            writer = new PageWriter(_log, ctx.Worker, _pageSize, _workerId, _ct);
 
             while (!_ct.IsCancellationRequested && Volatile.Read(ref ctx.Counters.FatalErrorFlag) == 0)
             {

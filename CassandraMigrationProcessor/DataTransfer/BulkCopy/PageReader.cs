@@ -5,6 +5,7 @@ using CassandraMigrationProcessor.Models;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -27,17 +28,16 @@ internal class PageReader : IDisposable
     private const int RetryDelayMs = 5000;
 
     public PageReader(MigrationLog log,
-        ConnectionOptions sourceConnection, string keyspace,
-        List<string> columnNames, int pageSize,
+        WorkerConfig config, int pageSize,
         int workerId,
         CancellationToken cancellationToken)
     {
         _log = log;
         _ct = cancellationToken;
         _workerId = workerId;
-        _columnNames = columnNames;
+        _columnNames = config.Columns.Select(c => c.Name).ToList();
         _pageSize = pageSize;
-        _sourceSession = CassandraClientFactory.CreateSourceSession(log, sourceConnection, keyspace);
+        _sourceSession = CassandraClientFactory.CreateSourceSession(log, config.SourceConnection, config.Context.KeyspaceName);
     }
 
     public void Dispose() => MigrationUtilities.SafeDispose(_sourceSession, "PageReader source session");

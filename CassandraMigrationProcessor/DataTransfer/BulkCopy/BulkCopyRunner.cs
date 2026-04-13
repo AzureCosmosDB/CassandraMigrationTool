@@ -145,10 +145,9 @@ internal class BulkCopyRunner
         int pageSize = _pipelineConfig.PageSize;
         long priorCopied = request.TableMigration.CopyRowsCopied;
 
-        var tracker = new CopyProgressTracker(_log, ctx0.KeyspaceName, ctx0.TableName,
-            workerCount, priorCopied,
-            request.TableMigration, request.ChunkIndex,
-            request.InitialPercent, request.ContributionFactor, request.TotalRowCount);
+        var tracker = new CopyProgressTracker(_log, workerCount, priorCopied,
+            request.TableMigration,
+            new ProgressConfig(request.ChunkIndex, request.InitialPercent, request.ContributionFactor, request.TotalRowCount));
 
         var stopwatch = Stopwatch.StartNew();
 

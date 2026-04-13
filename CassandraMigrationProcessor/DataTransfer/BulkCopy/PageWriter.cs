@@ -25,14 +25,14 @@ internal class PageWriter : IDisposable
 
     private const int WriteTimeoutMs = 60_000;
 
-    public PageWriter(MigrationLog log, ConnectionOptions targetConnection, List<(string Name, string Type, string Kind, string ClusteringOrder, int Position)> columns, string targetKeyspace, string targetTable, int pageSize, int workerId, CancellationToken cancellationToken)
+    public PageWriter(MigrationLog log, WorkerConfig config, int pageSize, int workerId, CancellationToken cancellationToken)
     {
         _log = log;
         _ct = cancellationToken;
         _workerId = workerId;
         _pageSize = pageSize;
-        _targetSession = CassandraClientFactory.CreateTargetSession(log, targetConnection, "");
-        var (ps, _) = CassandraQueries.PrepareInsert(_targetSession, targetKeyspace, targetTable, columns);
+        _targetSession = CassandraClientFactory.CreateTargetSession(log, config.TargetConnection, "");
+        var (ps, _) = CassandraQueries.PrepareInsert(_targetSession, config.Context.TargetKeyspaceName, config.Context.TargetTableName, config.Columns);
         _preparedInsert = ps;
     }
 

@@ -26,6 +26,12 @@ internal class PipelineCounters
     public ConcurrentBag<TaskResult> WorkerErrors { get; } = new();
 }
 
+public record ProgressConfig(
+    int ChunkIndex,
+    double InitialPercent,
+    double ContributionFactor,
+    long TotalRowCount);
+
 /// <summary>
 /// Shared state passed to each worker.
 /// </summary>

@@ -92,22 +92,21 @@ public class CopyProgressTracker
         }
     }
 
-    public CopyProgressTracker(MigrationLog MigrationLog, string keyspace, string table, int workerCount,
+    public CopyProgressTracker(MigrationLog log, int workerCount,
         long initialCopied,
-        TableMigration TableMigration, int chunkIndex,
-        double initialPercent, double contributionFactor, long totalRowCount)
+        TableMigration migration, ProgressConfig progressConfig)
     {
-        _log = MigrationLog;
-        _keyspace = keyspace;
-        _table = table;
+        _log = log;
+        _keyspace = migration.KeyspaceName;
+        _table = migration.TableName;
         _workerCount = workerCount;
         _counters = new ProgressCounters(initialCopied);
         _windowCopied = initialCopied;
-        _migrationUnit = TableMigration;
-        _chunkIndex = chunkIndex;
-        _initialPercent = initialPercent;
-        _contributionFactor = contributionFactor;
-        _totalRowCount = totalRowCount;
+        _migrationUnit = migration;
+        _chunkIndex = progressConfig.ChunkIndex;
+        _initialPercent = progressConfig.InitialPercent;
+        _contributionFactor = progressConfig.ContributionFactor;
+        _totalRowCount = progressConfig.TotalRowCount;
         _lastCheckpointTicks = DateTime.UtcNow.Ticks;
         _stopwatch = Stopwatch.StartNew();
     }
