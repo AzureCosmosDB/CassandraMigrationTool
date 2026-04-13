@@ -1,9 +1,7 @@
 using System.Collections.Generic;
 
-namespace CassandraMigrationProcessor.Models
+namespace CassandraMigrationProcessor.Models;
+public class JobIndex
 {
-    public class JobIndex
-    {
-        public List<string> MigrationJobIds { get; set; } = new();
-    }
+    public List<string> MigrationJobIds { get; set; } = new();
 }

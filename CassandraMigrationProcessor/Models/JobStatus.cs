@@ -1,12 +1,10 @@
-namespace CassandraMigrationProcessor.Models
+namespace CassandraMigrationProcessor.Models;
+public enum JobStatus
 {
-    public enum JobStatus
-    {
-        Pending,
-        Running,
-        Paused,
-        Completed,
-        Cancelled,
-        Faulted
-    }
+    Pending,
+    Running,
+    Paused,
+    Completed,
+    Cancelled,
+    Faulted
 }

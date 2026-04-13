@@ -2,37 +2,35 @@ using Microsoft.AspNetCore.Components.Authorization;
 using CassandraMigrationWebApp.Service;
 using System.Security.Claims;
 
-namespace CassandraMigrationWebApp.Service
+namespace CassandraMigrationWebApp.Service;
+public class CustomAuthenticationStateProvider : AuthenticationStateProvider
 {
-    public class CustomAuthenticationStateProvider : AuthenticationStateProvider
+    private readonly AuthenticationService _authService;
+
+    public CustomAuthenticationStateProvider(AuthenticationService authService)
     {
-        private readonly AuthenticationService _authService;
+        _authService = authService;
+    }
 
-        public CustomAuthenticationStateProvider(AuthenticationService authService)
+    public override async Task<AuthenticationState> GetAuthenticationStateAsync()
+    {
+        var isAuthenticated = await _authService.IsAuthenticatedAsync();
+
+        ClaimsIdentity identity;
+
+        if (isAuthenticated)
         {
-            _authService = authService;
+            identity = new ClaimsIdentity(new[]
+            {
+                new Claim(ClaimTypes.Name, "User")
+            }, "Custom Authentication");
+        }
+        else
+        {
+            identity = new ClaimsIdentity();
         }
 
-        public override async Task<AuthenticationState> GetAuthenticationStateAsync()
-        {
-            var isAuthenticated = await _authService.IsAuthenticatedAsync();
-
-            ClaimsIdentity identity;
-
-            if (isAuthenticated)
-            {
-                identity = new ClaimsIdentity(new[]
-                {
-                    new Claim(ClaimTypes.Name, "User")
-                }, "Custom Authentication");
-            }
-            else
-            {
-                identity = new ClaimsIdentity();
-            }
-
-            var user = new ClaimsPrincipal(identity);
-            return new AuthenticationState(user);
-        }
+        var user = new ClaimsPrincipal(identity);
+        return new AuthenticationState(user);
     }
 }

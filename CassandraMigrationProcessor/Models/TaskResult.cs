@@ -1,11 +1,9 @@
-namespace CassandraMigrationProcessor.Models
+namespace CassandraMigrationProcessor.Models;
+public enum TaskResult
 {
-    public enum TaskResult
-    {
-        Success,
-        Retry,
-        Abort,
-        FailedAfterRetries,
-        Canceled
-    }
+    Success,
+    Retry,
+    Abort,
+    FailedAfterRetries,
+    Canceled
 }

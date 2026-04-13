@@ -11,152 +11,150 @@ using System.Text.RegularExpressions;
 #pragma warning disable CS8602
 #pragma warning disable CS8604
 
-namespace CassandraMigrationProcessor.Infrastructure
+namespace CassandraMigrationProcessor.Infrastructure;
+public static class MigrationUtilities
 {
-    public static class MigrationUtilities
+    public static bool IsOnline(Job job)
     {
-        public static bool IsOnline(Job job)
+        if (job == null) return false;
+        return job.CDCMode != CDCMode.Offline;
+    }
+
+    public static bool IsMigrationUnitValid(TableMigrationSummary mu)
+    {
+        // Allow both OK and Failed status — Failed tables
+        // are retried on resume (e.g. after token expiry).
+        // Only NotFound tables are truly invalid.
+        return mu.SourceStatus == TableStatus.OK
+            || mu.SourceStatus == TableStatus.Failed;
+    }
+
+    #region Logging
+
+    public static void LogToFile(
+        string message,
+        string fileName = "AutoStartLog.txt")
+    {
+        try
         {
-            if (job == null) return false;
-            return job.CDCMode != CDCMode.Offline;
-        }
+            string path = Path.Combine(
+                DataDirectoryResolver.GetWorkingFolder(), fileName);
+            string timestamp =
+                DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss.fff");
+            string logEntry =
+                $"[{timestamp} UTC] {message}{Environment.NewLine}";
 
-        public static bool IsMigrationUnitValid(TableMigrationSummary mu)
+            System.IO.File.AppendAllText(path, logEntry);
+        }
+        catch (Exception ex)
         {
-            // Allow both OK and Failed status — Failed tables
-            // are retried on resume (e.g. after token expiry).
-            // Only NotFound tables are truly invalid.
-            return mu.SourceStatus == TableStatus.OK
-                || mu.SourceStatus == TableStatus.Failed;
+            Console.Error.WriteLine($"[WARN] LogToFile failed: {ex.Message}");
         }
+    }
 
-        #region Logging
-
-        public static void LogToFile(
-            string message,
-            string fileName = "AutoStartLog.txt")
+    /// <summary>
+    /// Disposes an object, swallowing and logging any exception.
+    /// Use instead of try { obj?.Dispose(); } catch { ... } blocks.
+    /// </summary>
+    public static void SafeDispose(IDisposable? obj, string name)
+    {
+        try { obj?.Dispose(); }
+        catch (Exception ex)
         {
-            try
-            {
-                string path = Path.Combine(
-                    DataDirectoryResolver.GetWorkingFolder(), fileName);
-                string timestamp =
-                    DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss.fff");
-                string logEntry =
-                    $"[{timestamp} UTC] {message}{Environment.NewLine}";
-
-                System.IO.File.AppendAllText(path, logEntry);
-            }
-            catch (Exception ex)
-            {
-                Console.Error.WriteLine($"[WARN] LogToFile failed: {ex.Message}");
-            }
+            Console.Error.WriteLine($"[WARN] {name} dispose failed: {ex.Message}");
         }
+    }
 
-        /// <summary>
-        /// Disposes an object, swallowing and logging any exception.
-        /// Use instead of try { obj?.Dispose(); } catch { ... } blocks.
-        /// </summary>
-        public static void SafeDispose(IDisposable? obj, string name)
+    /// <summary>
+    /// Executes an action, returning a fallback on failure.
+    /// Shared helper for the repeated try/catch-warn-return pattern.
+    /// </summary>
+    public static T SafeExecute<T>(Func<T> action, T fallback, string operation)
+    {
+        try { return action(); }
+        catch (Exception ex)
         {
-            try { obj?.Dispose(); }
-            catch (Exception ex)
-            {
-                Console.Error.WriteLine($"[WARN] {name} dispose failed: {ex.Message}");
-            }
+            Console.WriteLine($"[WARN] {operation}: {ex.Message}");
+            return fallback;
         }
+    }
 
-        /// <summary>
-        /// Executes an action, returning a fallback on failure.
-        /// Shared helper for the repeated try/catch-warn-return pattern.
-        /// </summary>
-        public static T SafeExecute<T>(Func<T> action, T fallback, string operation)
+    public static void SafeExecuteVoid(Action action, string operation)
+    {
+        try { action(); }
+        catch (Exception ex)
         {
-            try { return action(); }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[WARN] {operation}: {ex.Message}");
-                return fallback;
-            }
+            Console.WriteLine($"[WARN] {operation}: {ex.Message}");
         }
+    }
 
-        public static void SafeExecuteVoid(Action action, string operation)
+    #endregion
+
+    public static string GenerateMigrationUnitId(
+        string keyspaceName, string tableName)
+    {
+        using (var sha = SHA256.Create())
         {
-            try { action(); }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[WARN] {operation}: {ex.Message}");
-            }
+            byte[] hashBytes = sha.ComputeHash(
+                Encoding.UTF8.GetBytes(
+                    $"{keyspaceName}.{tableName}"));
+            return BitConverter.ToString(hashBytes)
+                .Replace("-", "").Substring(0, 16).ToLower();
         }
+    }
 
-        #endregion
+    public static (long Total, long Inserted, long Failed)
+        GetProcessedTotals(TableMigration mu)
+    {
+        long inserted = mu.CopyChunks?
+            .Sum(c => c.TargetInsertedRowCount) ?? 0;
+        long failed = mu.CopyChunks?
+            .Sum(c => c.TargetFailedRowCount) ?? 0;
+        long total = inserted + failed;
+        return (total, inserted, failed);
+    }
 
-        public static string GenerateMigrationUnitId(
-            string keyspaceName, string tableName)
-        {
-            using (var sha = SHA256.Create())
-            {
-                byte[] hashBytes = sha.ComputeHash(
-                    Encoding.UTF8.GetBytes(
-                        $"{keyspaceName}.{tableName}"));
-                return BitConverter.ToString(hashBytes)
-                    .Replace("-", "").Substring(0, 16).ToLower();
-            }
-        }
+    public static string GetTimestampDiff(DateTime timestamp)
+    {
+        var lag = DateTime.UtcNow - timestamp;
+        if (lag.TotalSeconds < 0) return "Invalid";
+        if (lag.TotalSeconds < 60)
+            return $"{(int)lag.TotalSeconds} sec";
+        else if (lag.TotalMinutes < 60)
+            return $"{(int)lag.TotalMinutes} min {(int)lag.Seconds} sec";
+        else
+            return $"{(int)lag.TotalHours}h {(int)lag.Minutes}m";
+    }
 
-        public static (long Total, long Inserted, long Failed)
-            GetProcessedTotals(TableMigration mu)
-        {
-            long inserted = mu.CopyChunks?
-                .Sum(c => c.TargetInsertedRowCount) ?? 0;
-            long failed = mu.CopyChunks?
-                .Sum(c => c.TargetFailedRowCount) ?? 0;
-            long total = inserted + failed;
-            return (total, inserted, failed);
-        }
+    public static bool IsOfflineJobCompleted(Job job)
+    {
+        if (job == null || job.Tables.Count == 0)
+            return false;
 
-        public static string GetTimestampDiff(DateTime timestamp)
-        {
-            var lag = DateTime.UtcNow - timestamp;
-            if (lag.TotalSeconds < 0) return "Invalid";
-            if (lag.TotalSeconds < 60)
-                return $"{(int)lag.TotalSeconds} sec";
-            else if (lag.TotalMinutes < 60)
-                return $"{(int)lag.TotalMinutes} min {(int)lag.Seconds} sec";
-            else
-                return $"{(int)lag.TotalHours}h {(int)lag.Minutes}m";
-        }
+        return job.Tables
+            .Where(mu => IsMigrationUnitValid(mu))
+            .All(mu => mu.CopyComplete);
+    }
 
-        public static bool IsOfflineJobCompleted(Job job)
-        {
-            if (job == null || job.Tables.Count == 0)
-                return false;
+    public static bool AnyValidTable(Job job)
+    {
+        if (job == null)
+            return false;
+        return job.Tables
+            .Any(mu => IsMigrationUnitValid(mu));
+    }
 
-            return job.Tables
-                .Where(mu => IsMigrationUnitValid(mu))
-                .All(mu => mu.CopyComplete);
-        }
-
-        public static bool AnyValidTable(Job job)
-        {
-            if (job == null)
-                return false;
-            return job.Tables
-                .Any(mu => IsMigrationUnitValid(mu));
-        }
-
-        /// <summary>
-        /// Validates that a string is a safe CQL identifier
-        /// (alphanumeric, underscore, or hyphen only).
-        /// Throws ArgumentException if invalid.
-        /// </summary>
-        public static string ValidateCqlIdentifier(string identifier)
-        {
-            if (string.IsNullOrWhiteSpace(identifier))
-                throw new ArgumentException("CQL identifier cannot be empty");
-            if (!Regex.IsMatch(identifier, @"^[a-zA-Z0-9_\-]+$"))
-                throw new ArgumentException($"Invalid CQL identifier: {identifier}");
-            return identifier;
-        }
+    /// <summary>
+    /// Validates that a string is a safe CQL identifier
+    /// (alphanumeric, underscore, or hyphen only).
+    /// Throws ArgumentException if invalid.
+    /// </summary>
+    public static string ValidateCqlIdentifier(string identifier)
+    {
+        if (string.IsNullOrWhiteSpace(identifier))
+            throw new ArgumentException("CQL identifier cannot be empty");
+        if (!Regex.IsMatch(identifier, @"^[a-zA-Z0-9_\-]+$"))
+            throw new ArgumentException($"Invalid CQL identifier: {identifier}");
+        return identifier;
     }
 }

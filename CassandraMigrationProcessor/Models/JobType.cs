@@ -1,7 +1,5 @@
-namespace CassandraMigrationProcessor.Models
+namespace CassandraMigrationProcessor.Models;
+public enum JobType
 {
-    public enum JobType
-    {
-        CqlCopy,
-    }
+    CqlCopy,
 }

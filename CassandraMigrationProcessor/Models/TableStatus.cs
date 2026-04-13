@@ -1,16 +1,14 @@
 using Newtonsoft.Json;
 using Newtonsoft.Json.Converters;
 
-namespace CassandraMigrationProcessor.Models
+namespace CassandraMigrationProcessor.Models;
+/// <summary>
+/// Status of a table during migration.
+/// </summary>
+[JsonConverter(typeof(StringEnumConverter))]
+public enum TableStatus
 {
-    /// <summary>
-    /// Status of a table during migration.
-    /// </summary>
-    [JsonConverter(typeof(StringEnumConverter))]
-    public enum TableStatus
-    {
-        OK,
-        NotFound,
-        Failed,
-    }
+    OK,
+    NotFound,
+    Failed,
 }

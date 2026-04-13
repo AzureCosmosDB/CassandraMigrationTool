@@ -5,149 +5,147 @@ using CassandraMigrationProcessor.Persistence;
 using System.Security.Cryptography;
 using System.Text;
 
-namespace CassandraMigrationWebApp.Service
+namespace CassandraMigrationWebApp.Service;
+public class PasswordManager
 {
-    public class PasswordManager
+    private const string PasswordFileName = "app.password";
+    private const string KeyFileName = "app.keyfile";
+
+    private readonly string _passwordFilePath;
+    private readonly string _keyFilePath;
+    private byte[]? _encryptionKey;
+
+    public PasswordManager()
     {
-        private const string PasswordFileName = "app.password";
-        private const string KeyFileName = "app.keyfile";
+        var workingFolder = DataDirectoryResolver.GetWorkingFolder();
 
-        private readonly string _passwordFilePath;
-        private readonly string _keyFilePath;
-        private byte[]? _encryptionKey;
-
-        public PasswordManager()
+        if (!Directory.Exists(workingFolder))
         {
-            var workingFolder = DataDirectoryResolver.GetWorkingFolder();
-
-            if (!Directory.Exists(workingFolder))
-            {
-                Directory.CreateDirectory(workingFolder);
-            }
-
-            _passwordFilePath = Path.Combine(workingFolder, PasswordFileName);
-            _keyFilePath = Path.Combine(workingFolder, KeyFileName);
+            Directory.CreateDirectory(workingFolder);
         }
 
-        /// <summary>
-        /// Gets or creates the encryption key. Generated once per
-        /// deployment and stored alongside the password file.
-        /// </summary>
-        private byte[] GetEncryptionKey()
+        _passwordFilePath = Path.Combine(workingFolder, PasswordFileName);
+        _keyFilePath = Path.Combine(workingFolder, KeyFileName);
+    }
+
+    /// <summary>
+    /// Gets or creates the encryption key. Generated once per
+    /// deployment and stored alongside the password file.
+    /// </summary>
+    private byte[] GetEncryptionKey()
+    {
+        if (_encryptionKey != null) return _encryptionKey;
+
+        if (File.Exists(_keyFilePath))
         {
-            if (_encryptionKey != null) return _encryptionKey;
+            _encryptionKey = File.ReadAllBytes(_keyFilePath);
+            if (_encryptionKey.Length == 32)
+                return _encryptionKey;
 
-            if (File.Exists(_keyFilePath))
-            {
-                _encryptionKey = File.ReadAllBytes(_keyFilePath);
-                if (_encryptionKey.Length == 32)
-                    return _encryptionKey;
-
-                Console.WriteLine("[WARN] PasswordManager: invalid keyfile detected, regenerating key. Previously stored passwords will be invalidated.");
-            }
-
-            // Generate a new random 256-bit key
-            _encryptionKey = RandomNumberGenerator.GetBytes(32);
-            var dir = Path.GetDirectoryName(_keyFilePath);
-            if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
-                Directory.CreateDirectory(dir);
-            File.WriteAllBytes(_keyFilePath, _encryptionKey);
-            return _encryptionKey;
+            Console.WriteLine("[WARN] PasswordManager: invalid keyfile detected, regenerating key. Previously stored passwords will be invalidated.");
         }
 
-        public async Task<bool> ValidatePasswordAsync(string password)
+        // Generate a new random 256-bit key
+        _encryptionKey = RandomNumberGenerator.GetBytes(32);
+        var dir = Path.GetDirectoryName(_keyFilePath);
+        if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
+            Directory.CreateDirectory(dir);
+        File.WriteAllBytes(_keyFilePath, _encryptionKey);
+        return _encryptionKey;
+    }
+
+    public async Task<bool> ValidatePasswordAsync(string password)
+    {
+        var storedPassword = await GetStoredPasswordAsync();
+        if (storedPassword == null)
         {
-            var storedPassword = await GetStoredPasswordAsync();
-            if (storedPassword == null)
-            {
-                return false;
-            }
-            return password == storedPassword;
+            return false;
+        }
+        return password == storedPassword;
+    }
+
+    public Task<string?> GetStoredPasswordAsync()
+    {
+        if (!FileSystem.Exists(_passwordFilePath))
+        {
+            return Task.FromResult<string?>(null);
         }
 
-        public Task<string?> GetStoredPasswordAsync()
+        try
         {
-            if (!FileSystem.Exists(_passwordFilePath))
-            {
-                return Task.FromResult<string?>(null);
-            }
+            byte[] encryptedBytes = File.ReadAllBytes(_passwordFilePath);
 
-            try
-            {
-                byte[] encryptedBytes = File.ReadAllBytes(_passwordFilePath);
+            var decryptedPassword = Decrypt(encryptedBytes);
+            return Task.FromResult<string?>(decryptedPassword);
+        }
+        catch
+        {
+            // If decryption fails, return null
+            return Task.FromResult<string?>(null);
+        }
+    }
 
-                var decryptedPassword = Decrypt(encryptedBytes);
-                return Task.FromResult<string?>(decryptedPassword);
-            }
-            catch
-            {
-                // If decryption fails, return null
-                return Task.FromResult<string?>(null);
-            }
+    public Task<bool> IsPasswordSetAsync()
+    {
+        return Task.FromResult(FileSystem.Exists(_passwordFilePath));
+    }
+
+    public Task SetPasswordAsync(string newPassword)
+    {
+        var encryptedBytes = Encrypt(newPassword);
+
+        // Ensure directory exists for local file
+        var directory = Path.GetDirectoryName(_passwordFilePath);
+        if (!string.IsNullOrEmpty(directory) && !Directory.Exists(directory))
+        {
+            Directory.CreateDirectory(directory);
         }
 
-        public Task<bool> IsPasswordSetAsync()
-        {
-            return Task.FromResult(FileSystem.Exists(_passwordFilePath));
-        }
+        File.WriteAllBytes(_passwordFilePath, encryptedBytes);
+        return Task.CompletedTask;
+    }
 
-        public Task SetPasswordAsync(string newPassword)
+    private byte[] Encrypt(string plainText)
+    {
+        using (Aes aes = Aes.Create())
         {
-            var encryptedBytes = Encrypt(newPassword);
+            aes.Key = GetEncryptionKey();
+            aes.GenerateIV();
 
-            // Ensure directory exists for local file
-            var directory = Path.GetDirectoryName(_passwordFilePath);
-            if (!string.IsNullOrEmpty(directory) && !Directory.Exists(directory))
+            using (var encryptor = aes.CreateEncryptor(aes.Key, aes.IV))
+            using (var ms = new MemoryStream())
             {
-                Directory.CreateDirectory(directory);
-            }
+                // Write IV to the beginning of the stream
+                ms.Write(aes.IV, 0, aes.IV.Length);
 
-            File.WriteAllBytes(_passwordFilePath, encryptedBytes);
-            return Task.CompletedTask;
-        }
-
-        private byte[] Encrypt(string plainText)
-        {
-            using (Aes aes = Aes.Create())
-            {
-                aes.Key = GetEncryptionKey();
-                aes.GenerateIV();
-
-                using (var encryptor = aes.CreateEncryptor(aes.Key, aes.IV))
-                using (var ms = new MemoryStream())
+                using (var cs = new CryptoStream(ms, encryptor, CryptoStreamMode.Write))
+                using (var sw = new StreamWriter(cs))
                 {
-                    // Write IV to the beginning of the stream
-                    ms.Write(aes.IV, 0, aes.IV.Length);
-
-                    using (var cs = new CryptoStream(ms, encryptor, CryptoStreamMode.Write))
-                    using (var sw = new StreamWriter(cs))
-                    {
-                        sw.Write(plainText);
-                    }
-
-                    return ms.ToArray();
+                    sw.Write(plainText);
                 }
+
+                return ms.ToArray();
             }
         }
+    }
 
-        private string Decrypt(byte[] cipherText)
+    private string Decrypt(byte[] cipherText)
+    {
+        using (Aes aes = Aes.Create())
         {
-            using (Aes aes = Aes.Create())
+            aes.Key = GetEncryptionKey();
+
+            // Extract IV from the beginning of the cipher text
+            byte[] iv = new byte[aes.IV.Length];
+            Array.Copy(cipherText, 0, iv, 0, iv.Length);
+            aes.IV = iv;
+
+            using (var decryptor = aes.CreateDecryptor(aes.Key, aes.IV))
+            using (var ms = new MemoryStream(cipherText, iv.Length, cipherText.Length - iv.Length))
+            using (var cs = new CryptoStream(ms, decryptor, CryptoStreamMode.Read))
+            using (var sr = new StreamReader(cs))
             {
-                aes.Key = GetEncryptionKey();
-
-                // Extract IV from the beginning of the cipher text
-                byte[] iv = new byte[aes.IV.Length];
-                Array.Copy(cipherText, 0, iv, 0, iv.Length);
-                aes.IV = iv;
-
-                using (var decryptor = aes.CreateDecryptor(aes.Key, aes.IV))
-                using (var ms = new MemoryStream(cipherText, iv.Length, cipherText.Length - iv.Length))
-                using (var cs = new CryptoStream(ms, decryptor, CryptoStreamMode.Read))
-                using (var sr = new StreamReader(cs))
-                {
-                    return sr.ReadToEnd();
-                }
+                return sr.ReadToEnd();
             }
         }
     }

@@ -1,66 +1,64 @@
 using System.Threading;
 
-namespace CassandraMigrationProcessor.DataTransfer.BulkCopy
+namespace CassandraMigrationProcessor.DataTransfer.BulkCopy;
+/// <summary>
+/// Represents a feed range partition with its work
+/// chunk list. Passed through the partition pool channel.
+/// </summary>
+internal class Partition
 {
-    /// <summary>
-    /// Represents a feed range partition with its work
-    /// chunk list. Passed through the partition pool channel.
-    /// </summary>
-    internal class Partition
+    public string FeedRange { get; }
+    public bool IsExhausted { get; private set; }
+    public byte[]? LastPagingState { get; private set; }
+
+    private WorkChunk? _head;
+    private WorkChunk? _tail;
+    private readonly object _lock = new();
+
+    public Partition(string feedRange, byte[]? initialPagingState)
     {
-        public string FeedRange { get; }
-        public bool IsExhausted { get; private set; }
-        public byte[]? LastPagingState { get; private set; }
+        FeedRange = feedRange;
+        LastPagingState = initialPagingState;
+        if (initialPagingState != null)
+            _head = _tail = new WorkChunk { ContinuationToken = initialPagingState, IsCompleted = true };
+    }
 
-        private WorkChunk? _head;
-        private WorkChunk? _tail;
-        private readonly object _lock = new();
-
-        public Partition(string feedRange, byte[]? initialPagingState)
+    /// <summary>
+    /// Atomically updates the paging state and exhaustion flag under the lock.
+    /// </summary>
+    public void SetPageState(byte[]? pagingState, bool isExhausted)
+    {
+        lock (_lock)
         {
-            FeedRange = feedRange;
-            LastPagingState = initialPagingState;
-            if (initialPagingState != null)
-                _head = _tail = new WorkChunk { ContinuationToken = initialPagingState, IsCompleted = true };
+            LastPagingState = pagingState;
+            if (isExhausted) IsExhausted = true;
         }
+    }
 
-        /// <summary>
-        /// Atomically updates the paging state and exhaustion flag under the lock.
-        /// </summary>
-        public void SetPageState(byte[]? pagingState, bool isExhausted)
+    public WorkChunk AddChunkAndTrim(byte[]? continuationToken)
+    {
+        var chunk = new WorkChunk { ContinuationToken = continuationToken };
+        lock (_lock)
         {
-            lock (_lock)
-            {
-                LastPagingState = pagingState;
-                if (isExhausted) IsExhausted = true;
-            }
+            while (_head != null && _head.IsCompleted) _head = _head.Next;
+            if (_head == null) _tail = null;
+            if (_tail == null) _head = _tail = chunk;
+            else { _tail.Next = chunk; _tail = chunk; }
         }
+        return chunk;
+    }
 
-        public WorkChunk AddChunkAndTrim(byte[]? continuationToken)
+    public byte[]? GetResumeToken()
+    {
+        lock (_lock)
         {
-            var chunk = new WorkChunk { ContinuationToken = continuationToken };
-            lock (_lock)
+            var node = _head;
+            while (node != null)
             {
-                while (_head != null && _head.IsCompleted) _head = _head.Next;
-                if (_head == null) _tail = null;
-                if (_tail == null) _head = _tail = chunk;
-                else { _tail.Next = chunk; _tail = chunk; }
+                if (!node.IsCompleted) return node.ContinuationToken;
+                node = node.Next;
             }
-            return chunk;
-        }
-
-        public byte[]? GetResumeToken()
-        {
-            lock (_lock)
-            {
-                var node = _head;
-                while (node != null)
-                {
-                    if (!node.IsCompleted) return node.ContinuationToken;
-                    node = node.Next;
-                }
-                return _tail?.ContinuationToken;
-            }
+            return _tail?.ContinuationToken;
         }
     }
 }

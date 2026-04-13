@@ -11,291 +11,289 @@ using System.Threading;
 using System.Threading.Tasks;
 using CassandraMigrationProcessor.Models;
 
-namespace CassandraMigrationProcessor.Context
+namespace CassandraMigrationProcessor.Context;
+public static class MigrationJobContext
 {
-    public static class MigrationJobContext
+    private static readonly object _writeJobListLock = new object();
+    private static MigrationLog _log;
+
+    public static TableMigrationCache MigrationUnitsCache
+    { get; set; }
+
+    /// <summary>
+    /// In-memory storage for source connection strings, keyed by job ID.
+    /// In-memory only. Never persisted to disk.
+    /// Cleared on app restart — user must re-enter on resume.
+    /// </summary>
+    public static ConcurrentDictionary<string, string> SourceConnectionString
+    { get; set; } = new();
+
+    /// <summary>
+    /// In-memory storage for target connection strings, keyed by job ID.
+    /// In-memory only. Never persisted to disk.
+    /// Cleared on app restart — user must re-enter on resume.
+    /// </summary>
+    public static ConcurrentDictionary<string, string> TargetConnectionString
+    { get; set; } = new();
+
+    /// <summary>
+    /// In-memory set of job IDs that should auto-start when
+    /// the viewer page opens. Cleared after the job starts.
+    /// Never persisted to disk.
+    /// </summary>
+    public static ConcurrentDictionary<string, byte> PendingAutoStartJobIds
+    { get; set; } = new();
+
+    private static volatile string _activeMigrationJobId;
+    public static string ActiveMigrationJobId
     {
-        private static readonly object _writeJobListLock = new object();
-        private static MigrationLog _log;
+        get => _activeMigrationJobId;
+        set => _activeMigrationJobId = value;
+    }
 
-        public static TableMigrationCache MigrationUnitsCache
-        { get; set; }
+    private static volatile bool _controlledPauseRequested;
+    public static bool ControlledPauseRequested
+        => _controlledPauseRequested;
 
-        /// <summary>
-        /// In-memory storage for source connection strings, keyed by job ID.
-        /// In-memory only. Never persisted to disk.
-        /// Cleared on app restart — user must re-enter on resume.
-        /// </summary>
-        public static ConcurrentDictionary<string, string> SourceConnectionString
-        { get; set; } = new();
+    public static JobIndex JobIndex { get; private set; }
 
-        /// <summary>
-        /// In-memory storage for target connection strings, keyed by job ID.
-        /// In-memory only. Never persisted to disk.
-        /// Cleared on app restart — user must re-enter on resume.
-        /// </summary>
-        public static ConcurrentDictionary<string, string> TargetConnectionString
-        { get; set; } = new();
+    public static void ResetControlledPause()
+    {
+        AddVerboseLog("Resetting controlled pause request.");
+        _controlledPauseRequested = false;
+    }
 
-        /// <summary>
-        /// In-memory set of job IDs that should auto-start when
-        /// the viewer page opens. Cleared after the job starts.
-        /// Never persisted to disk.
-        /// </summary>
-        public static ConcurrentDictionary<string, byte> PendingAutoStartJobIds
-        { get; set; } = new();
+    public static void RequestControlledPause(string location)
+    {
+        if (_log == null)
+            throw new Exception("MigrationLog not initialized.");
 
-        private static volatile string _activeMigrationJobId;
-        public static string ActiveMigrationJobId
+        _log.WriteLine(
+            $"{location} caused controlled pause.", LogType.Warning);
+        _controlledPauseRequested = true;
+    }
+
+    public static void UpdateLogLevel(
+        LogType level, Job job)
+    {
+        if (CurrentlyActiveJob == null
+            || CurrentlyActiveJob.Status == JobStatus.Cancelled
+            || CurrentlyActiveJob.Status == JobStatus.Completed)
         {
-            get => _activeMigrationJobId;
-            set => _activeMigrationJobId = value;
+            job.LogLevel = level;
+            SaveMigrationJob(job);
         }
-
-        private static volatile bool _controlledPauseRequested;
-        public static bool ControlledPauseRequested
-            => _controlledPauseRequested;
-
-        public static JobIndex JobIndex { get; private set; }
-
-        public static void ResetControlledPause()
+        else
         {
-            AddVerboseLog("Resetting controlled pause request.");
-            _controlledPauseRequested = false;
+            CurrentlyActiveJob.LogLevel = level;
+            SaveMigrationJob(CurrentlyActiveJob);
         }
+    }
 
-        public static void RequestControlledPause(string location)
+    public static void AddVerboseLog(string message)
+    {
+        if (_log == null
+            || CurrentlyActiveJob == null
+            || CurrentlyActiveJob.Status == JobStatus.Cancelled
+            || CurrentlyActiveJob.Status == JobStatus.Completed)
+            return;
+
+        _log?.WriteLine(message, LogType.Verbose);
+    }
+
+    public static LogStorageCallbacks CreateLogStorageCallbacks(
+        Persistence.IPersistenceStorage store)
+    {
+        return new LogStorageCallbacks
         {
-            if (_log == null)
-                throw new Exception("MigrationLog not initialized.");
-
-            _log.WriteLine(
-                $"{location} caused controlled pause.", LogType.Warning);
-            _controlledPauseRequested = true;
-        }
-
-        public static void UpdateLogLevel(
-            LogType level, Job job)
-        {
-            if (CurrentlyActiveJob == null
-                || CurrentlyActiveJob.Status == JobStatus.Cancelled
-                || CurrentlyActiveJob.Status == JobStatus.Completed)
+            ReadLogs = id =>
             {
-                job.LogLevel = level;
-                SaveMigrationJob(job);
+                var bucket = store.ReadLogs(id, out var backupFile);
+                return (bucket, backupFile);
+            },
+            PushLogEntry = (jobId, logObj) =>
+                store.PushLogEntry(jobId, logObj),
+            ExportLogsAsBytes = (id, top, bottom) =>
+                store.ExportLogsAsBytes(id, top, bottom),
+            GetLogCount = id => store.GetLogCount(id),
+            DownloadLogsPaginated = (id, skip, take) =>
+                store.DownloadLogsPaginated(id, skip, take),
+        };
+    }
+
+    public static Job? CurrentlyActiveJob
+    {
+        get
+        {
+            if (JobStore.CachedActiveJob != null
+                && !string.IsNullOrEmpty(ActiveMigrationJobId)
+                && JobStore.CachedActiveJob.Id
+                    == ActiveMigrationJobId)
+            {
+                return JobStore.CachedActiveJob;
             }
-            else
+
+            if (!string.IsNullOrEmpty(ActiveMigrationJobId))
             {
-                CurrentlyActiveJob.LogLevel = level;
-                SaveMigrationJob(CurrentlyActiveJob);
+                JobStore.CachedActiveJob =
+                    JobStore.LoadJob(ActiveMigrationJobId);
+                if (MigrationUnitsCache == null)
+                    MigrationUnitsCache =
+                        new TableMigrationCache();
+                return JobStore.CachedActiveJob;
             }
+
+            return null;
+        }
+    }
+
+    public static IPersistenceStorage? Store { get; private set; }
+    public static string? AppId { get; set; }
+
+    public static void Initialize(IConfiguration configuration)
+    {
+        MigrationUtilities.LogToFile("MigrationJobContext.Initialize started");
+
+        var stateStoreCSorPath = string.Empty;
+        var appId = string.Empty;
+        try
+        {
+            stateStoreCSorPath =
+                configuration["StateStore:ConnectionStringOrPath"];
+            appId = configuration["StateStore:AppID"];
+            AppId = appId;
+            DataDirectoryResolver.SetAppId(appId);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[WARN] Initialize config read failed: {ex.Message}");
         }
 
-        public static void AddVerboseLog(string message)
-        {
-            if (_log == null
-                || CurrentlyActiveJob == null
-                || CurrentlyActiveJob.Status == JobStatus.Cancelled
-                || CurrentlyActiveJob.Status == JobStatus.Completed)
-                return;
+        Store = new DiskPersistence();
+        var localPath =
+            string.IsNullOrEmpty(stateStoreCSorPath)
+            ? DataDirectoryResolver.GetWorkingFolder()
+            : stateStoreCSorPath;
+        Store.Initialize(localPath);
 
-            _log?.WriteLine(message, LogType.Verbose);
+        JobIndex = LoadJobList(
+            out bool notFound, out string errorMessage);
+        if (notFound && JobIndex == null)
+        {
+            JobIndex = new JobIndex();
+            JobIndex.MigrationJobIds = new List<string>();
         }
-
-        public static LogStorageCallbacks CreateLogStorageCallbacks(
-            Persistence.IPersistenceStorage store)
+        else if (JobIndex == null
+            && !string.IsNullOrEmpty(errorMessage))
         {
-            return new LogStorageCallbacks
+            throw new InvalidOperationException(
+                $"Error initializing Job List: {errorMessage}");
+        }
+        SaveJobList();
+    }
+
+    // Facade: delegates to JobStore
+
+    public static Job? GetMigrationJob(string jobId)
+        => JobStore.GetJob(jobId);
+
+    // Facade: delegates to JobStore
+    public static List<Job> PopulateMigrationJobs(
+        List<string> ids)
+        => JobStore.GetAllJobs(ids);
+
+    // Facade: delegates to JobStore
+    public static bool SaveMigrationJob(Job job)
+        => JobStore.SaveJob(job);
+
+    // Facade: delegates to JobStore
+    public static void ClearCurrentlyActiveJobCache()
+        => JobStore.ClearCache();
+
+    // Facade: delegates to UnitStore
+    public static bool SaveMigrationUnit(
+        TableMigration mu, bool updateParent)
+        => UnitStore.SaveUnit(mu, updateParent);
+
+    // Facade: delegates to UnitStore
+    public static TableMigration GetMigrationUnit(
+        string key, string jobId = null)
+        => UnitStore.GetUnit(key, jobId);
+
+    // Facade: delegates to UnitStore
+    public static TableMigration GetMigrationUnitFromStorage(
+        string jobId, string unitId)
+        => UnitStore.GetFromStorage(jobId, unitId);
+
+    // -- JobIndex (stays here: global state) --
+
+    private static JobIndex LoadJobList(
+        out bool notFound, out string errorMessage)
+    {
+        errorMessage = string.Empty;
+        notFound = false;
+        string path = $"{JobStore.JobsFolder}\\JobRegistry.json";
+
+        try
+        {
+            for (int i = 0; i < 5; i++)
             {
-                ReadLogs = id =>
+                try
                 {
-                    var bucket = store.ReadLogs(id, out var backupFile);
-                    return (bucket, backupFile);
-                },
-                PushLogEntry = (jobId, logObj) =>
-                    store.PushLogEntry(jobId, logObj),
-                ExportLogsAsBytes = (id, top, bottom) =>
-                    store.ExportLogsAsBytes(id, top, bottom),
-                GetLogCount = id => store.GetLogCount(id),
-                DownloadLogsPaginated = (id, skip, take) =>
-                    store.DownloadLogsPaginated(id, skip, take),
-            };
-        }
-
-        public static Job? CurrentlyActiveJob
-        {
-            get
-            {
-                if (JobStore.CachedActiveJob != null
-                    && !string.IsNullOrEmpty(ActiveMigrationJobId)
-                    && JobStore.CachedActiveJob.Id
-                        == ActiveMigrationJobId)
-                {
-                    return JobStore.CachedActiveJob;
-                }
-
-                if (!string.IsNullOrEmpty(ActiveMigrationJobId))
-                {
-                    JobStore.CachedActiveJob =
-                        JobStore.LoadJob(ActiveMigrationJobId);
-                    if (MigrationUnitsCache == null)
-                        MigrationUnitsCache =
-                            new TableMigrationCache();
-                    return JobStore.CachedActiveJob;
-                }
-
-                return null;
-            }
-        }
-
-        public static IPersistenceStorage? Store { get; private set; }
-        public static string? AppId { get; set; }
-
-        public static void Initialize(IConfiguration configuration)
-        {
-            MigrationUtilities.LogToFile("MigrationJobContext.Initialize started");
-
-            var stateStoreCSorPath = string.Empty;
-            var appId = string.Empty;
-            try
-            {
-                stateStoreCSorPath =
-                    configuration["StateStore:ConnectionStringOrPath"];
-                appId = configuration["StateStore:AppID"];
-                AppId = appId;
-                DataDirectoryResolver.SetAppId(appId);
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[WARN] Initialize config read failed: {ex.Message}");
-            }
-
-            Store = new DiskPersistence();
-            var localPath =
-                string.IsNullOrEmpty(stateStoreCSorPath)
-                ? DataDirectoryResolver.GetWorkingFolder()
-                : stateStoreCSorPath;
-            Store.Initialize(localPath);
-
-            JobIndex = LoadJobList(
-                out bool notFound, out string errorMessage);
-            if (notFound && JobIndex == null)
-            {
-                JobIndex = new JobIndex();
-                JobIndex.MigrationJobIds = new List<string>();
-            }
-            else if (JobIndex == null
-                && !string.IsNullOrEmpty(errorMessage))
-            {
-                throw new InvalidOperationException(
-                    $"Error initializing Job List: {errorMessage}");
-            }
-            SaveJobList();
-        }
-
-        // Facade: delegates to JobStore
-
-        public static Job? GetMigrationJob(string jobId)
-            => JobStore.GetJob(jobId);
-
-        // Facade: delegates to JobStore
-        public static List<Job> PopulateMigrationJobs(
-            List<string> ids)
-            => JobStore.GetAllJobs(ids);
-
-        // Facade: delegates to JobStore
-        public static bool SaveMigrationJob(Job job)
-            => JobStore.SaveJob(job);
-
-        // Facade: delegates to JobStore
-        public static void ClearCurrentlyActiveJobCache()
-            => JobStore.ClearCache();
-
-        // Facade: delegates to UnitStore
-        public static bool SaveMigrationUnit(
-            TableMigration mu, bool updateParent)
-            => UnitStore.SaveUnit(mu, updateParent);
-
-        // Facade: delegates to UnitStore
-        public static TableMigration GetMigrationUnit(
-            string key, string jobId = null)
-            => UnitStore.GetUnit(key, jobId);
-
-        // Facade: delegates to UnitStore
-        public static TableMigration GetMigrationUnitFromStorage(
-            string jobId, string unitId)
-            => UnitStore.GetFromStorage(jobId, unitId);
-
-        // -- JobIndex (stays here: global state) --
-
-        private static JobIndex LoadJobList(
-            out bool notFound, out string errorMessage)
-        {
-            errorMessage = string.Empty;
-            notFound = false;
-            string path = $"{JobStore.JobsFolder}\\JobRegistry.json";
-
-            try
-            {
-                for (int i = 0; i < 5; i++)
-                {
-                    try
+                    if (!Store.Exists(path))
                     {
-                        if (!Store.Exists(path))
+                        notFound = true;
+                        errorMessage = "Job list not found.";
+                    }
+                    else
+                    {
+                        string json = Store.Read(path);
+                        var obj = JsonConvert
+                            .DeserializeObject<JobIndex>(json);
+                        if (obj != null)
                         {
-                            notFound = true;
-                            errorMessage = "Job list not found.";
-                        }
-                        else
-                        {
-                            string json = Store.Read(path);
-                            var obj = JsonConvert
-                                .DeserializeObject<JobIndex>(json);
-                            if (obj != null)
-                            {
-                                JobIndex = obj;
-                                return JobIndex;
-                            }
+                            JobIndex = obj;
+                            return JobIndex;
                         }
                     }
-                    catch (JsonException ex)
-                    {
-                        errorMessage =
-                            $"Error deserializing: {ex}";
-                    }
-                    finally
-                    {
-                        Thread.Sleep(200);
-                    }
                 }
-                errorMessage = "Error loading migration jobs.";
-                return null;
-            }
-            catch (Exception ex)
-            {
-                errorMessage = $"Error: {ex}";
-                return null;
-            }
-        }
-
-        public static bool SaveJobList()
-        {
-            return MigrationUtilities.SafeExecute(() =>
-            {
-                if (JobIndex != null)
+                catch (JsonException ex)
                 {
-                    lock (_writeJobListLock)
-                    {
-                        var filePath = Path.Combine(
-                            JobStore.JobsFolder, "JobRegistry.json");
-                        string json =
-                            JsonConvert.SerializeObject(
-                                JobIndex, Formatting.Indented);
-                        Store.Write(filePath, json);
-                    }
+                    errorMessage =
+                        $"Error deserializing: {ex}";
                 }
-                return true;
-            }, false, "SaveJobList");
+                finally
+                {
+                    Thread.Sleep(200);
+                }
+            }
+            errorMessage = "Error loading migration jobs.";
+            return null;
         }
+        catch (Exception ex)
+        {
+            errorMessage = $"Error: {ex}";
+            return null;
+        }
+    }
+
+    public static bool SaveJobList()
+    {
+        return MigrationUtilities.SafeExecute(() =>
+        {
+            if (JobIndex != null)
+            {
+                lock (_writeJobListLock)
+                {
+                    var filePath = Path.Combine(
+                        JobStore.JobsFolder, "JobRegistry.json");
+                    string json =
+                        JsonConvert.SerializeObject(
+                            JobIndex, Formatting.Indented);
+                    Store.Write(filePath, json);
+                }
+            }
+            return true;
+        }, false, "SaveJobList");
     }
 }
