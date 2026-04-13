@@ -40,4 +40,13 @@ internal record PipelineContext(
     WorkerConfig Worker,
     RangeState Ranges,
     PipelineCounters Counters,
-    CopyProgressTracker Tracker);
+    CopyProgressTracker Tracker)
+{
+    // Convenience accessors to reduce Law of Demeter violations
+    public string KeyspaceName => Worker.Context.KeyspaceName;
+    public string TableName => Worker.Context.TableName;
+    public string TargetKeyspaceName => Worker.Context.TargetKeyspaceName;
+    public string TargetTableName => Worker.Context.TargetTableName;
+    public ConnectionOptions SourceConnection => Worker.SourceConnection;
+    public ConnectionOptions TargetConnection => Worker.TargetConnection;
+}

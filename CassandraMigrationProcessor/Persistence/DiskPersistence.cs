@@ -11,7 +11,7 @@ namespace CassandraMigrationProcessor.Persistence;
 /// Disk-based implementation of PersistenceStorage.
 /// Stores documents as JSON files on the local file system.
 /// </summary>
-public class DiskPersistence : IPersistenceStorage
+public class DiskPersistence : IDocumentStorage, ILogStorage
 {
     private static string _storagePath = string.Empty;
     private static bool _isInitialized = false;

@@ -83,7 +83,6 @@ internal class BulkCopyWorker
                     }
 
                     SaveCheckpoint(partition, ctx);
-                    ctx.Tracker.IncrementCompletedRanges();
                     ctx.PartitionPool.Writer.TryComplete();
                 }
                 finally
@@ -131,7 +130,6 @@ internal class BulkCopyWorker
             ctx.Ranges.Checkpoints.Remove(partition.FeedRange);
             ctx.Ranges.Completed.Add(partition.FeedRange);
         }
-        ctx.Tracker.IncrementCompletedRanges();
         if (ctx.Ranges.Completed.Count >= ctx.Ranges.FeedRanges.Count)
             ctx.PartitionPool.Writer.TryComplete();
     }

@@ -74,14 +74,6 @@ public class CopyProgressTracker
     /// </summary>
     public void WorkerExited() => Interlocked.Decrement(ref _activeWorkers);
 
-    /// <summary>
-    /// Call when a worker finishes a feed range.
-    /// Kept for API compatibility; no longer tracks internally.
-    /// </summary>
-    public void IncrementCompletedRanges()
-    {
-        // No-op: _completedRanges was removed as it was never read
-    }
     public double RecentSpeed
     {
         get

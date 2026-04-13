@@ -64,8 +64,11 @@ public class MigrationContextService
 
     // -- Persistence --
 
-    public IPersistenceStorage? Store
+    public IDocumentStorage? Store
         => MigrationJobContext.Store;
+
+    public ILogStorage? LogStore
+        => MigrationJobContext.LogStore;
 
     // -- Connection strings (in-memory only) --
 

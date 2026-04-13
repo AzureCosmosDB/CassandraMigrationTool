@@ -40,8 +40,8 @@ public class JobManager
     private MigrationLog CreateLog()
     {
         var log = new MigrationLog();
-        if (_ctx.Store != null)
-            log.SetStorage(MigrationJobContext.CreateLogStorageCallbacks(_ctx.Store));
+        if (_ctx.LogStore != null)
+            log.SetStorage(MigrationJobContext.CreateLogStorageCallbacks(_ctx.LogStore));
         return log;
     }
 
@@ -114,7 +114,7 @@ public class JobManager
         Task.Run(() =>
         {
             _ctx.Store.Delete($"{Path.Combine(JobStore.JobsFolder, jobId)}");
-            _ctx.Store.DeleteLogs(jobId);
+            _ctx.LogStore.DeleteLogs(jobId);
 
             string dumpPath = Path.Combine(DataDirectoryResolver.GetWorkingFolder(), "cassandradump", jobId);
             if (Directory.Exists(dumpPath))

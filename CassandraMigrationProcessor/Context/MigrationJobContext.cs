@@ -102,7 +102,7 @@ public static class MigrationJobContext
     }
 
     public static LogStorageCallbacks CreateLogStorageCallbacks(
-        Persistence.IPersistenceStorage store)
+        Persistence.ILogStorage store)
     {
         return new LogStorageCallbacks
         {
@@ -147,7 +147,8 @@ public static class MigrationJobContext
         }
     }
 
-    public static IPersistenceStorage? Store { get; private set; }
+    public static IDocumentStorage? Store { get; private set; }
+    public static ILogStorage? LogStore { get; private set; }
     public static string? AppId { get; set; }
 
     public static void Initialize(IConfiguration configuration)
@@ -169,12 +170,15 @@ public static class MigrationJobContext
             Console.WriteLine($"[WARN] Initialize config read failed: {ex.Message}");
         }
 
-        Store = new DiskPersistence();
+        var persistence = new DiskPersistence();
         var localPath =
             string.IsNullOrEmpty(stateStoreCSorPath)
             ? DataDirectoryResolver.GetWorkingFolder()
             : stateStoreCSorPath;
-        Store.Initialize(localPath);
+        persistence.Initialize(localPath);
+
+        Store = persistence;
+        LogStore = persistence;
 
         JobIndex = LoadJobList(
             out bool notFound, out string errorMessage);
