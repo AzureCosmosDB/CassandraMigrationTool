@@ -145,5 +145,5 @@ MigrationLog.WriteLine(message, logType)
 ### 5.3 Add unit tests
 Priority: checkpoint correctness, ExceptionClassifier, Partition linked list, TableDiscovery.
 
-### 5.4 Extract interfaces for testability
-`ICassandraSessionFactory`, `ICassandraQueries` for mocking.
+### 5.4 Extract ICassandraQueries interface
+`ICassandraSessionFactory` is done. `ICassandraQueries` still needed for mocking query methods.

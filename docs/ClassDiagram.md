@@ -8,29 +8,31 @@ Program.cs (DI setup)
  │    ├─► MigrationLog()                         [creates per job]
  │    ├─► MigrationWorker(MigrationLog)          [creates per job]
  │    │    └─► BulkCopyEngine(log, sourceSession, config, job, worker)
- │    │         │   inherits MigrationProcessor
  │    │         │
  │    │         ├─► BulkCopyRunner(log, job, config, cts, ensureTargetSession)
  │    │         │    ├─► CopyProgressTracker(log, keyspace, table, workerCount, ...)
- │    │         │    ├─► WorkerPool(log, workerCount, cts)
+ │    │         │    │    └─► ProgressCounters()
+ │    │         │    ├─► WorkerPool(log, workerCount)
  │    │         │    │    └─► BulkCopyWorker(log, cts, workerId, pageSize)  [N workers]
  │    │         │    │         ├─► PageReader(log, connOpts, keyspace, cols, pageSize, id, cts)
  │    │         │    │         └─► PageWriter(log, connOpts, cols, keyspace, table, pageSize, id, cts)
  │    │         │    └─► Partition(feedRange, pagingState)  [per feed range]
  │    │         │         └─► WorkChunk { ContinuationToken, IsCompleted, Next }
  │    │         │
- │    │         └─► ReplayProcessor(log, sourceSession, targetSession, muCache, config, job)
- │    │              └─► ReplayWorker(log, sourceSession, targetSession, config, job, isCancelled)
+ │    │         └─► ChangeFeedManager(log, sourceSession, config, job)
+ │    │              └─► ReplayProcessor(log, sourceSession, targetSession, muCache, config, job)
+ │    │                   └─► ReplayWorker(log, sourceSession, targetSession, config, job, isCancelled)
  │    │
- │    └─► MigrationSettings                     [from IConfiguration]
+ │    └─► AppSettings                            [from IConfiguration]
  │
  ├─► MigrationContextService()                   [DI singleton, wraps static context]
  │    └── delegates to ──► MigrationJobContext (static)
- │                          ├─► DiskPersistence() : IPersistenceStorage
- │                          │    └─► LogPersistence(storagePath)
- │                          ├─► MigrationUnitCache()
+ │                          ├─► DiskPersistence() : IDocumentStorage
+ │                          │    └─► LogPersistence() : ILogStorage
+ │                          ├─► TableMigrationCache()
  │                          ├── JobStore (static)
- │                          └── UnitStore (static)
+ │                          ├── UnitStore (static)
+ │                          └── SettingsManager (static)
  │
  ├─► AuthenticationService(sessionStorage, PasswordManager)
  │    └─► PasswordManager()
@@ -45,14 +47,16 @@ CassandraDriver/
   CassandraClientFactory  ──► creates ISession (source + target)
        calls ──► TokenRefreshManager    (AAD token refresh)
        calls ──► ArmCredentialDiscovery (ARM-based credential lookup)
+  CassandraSessionFactory ──► ICassandraSessionFactory (DI wrapper)
   CassandraQueries        ──► ListKeyspaces, ListTables, GetRowCount, GetFeedRanges, PrepareInsert
   SchemaManager           ──► SyncSchemaAsync, EnsureKeyspace, CreateTable, AlterColumns
 
 Infrastructure/
   ExceptionClassifier     ──► IsTransient, IsFatal, IsNotFound, IsThrottle
-  MigrationUtilities      ──► SafeDispose, IsOnline, GenerateMigrationUnitId, status helpers
+  MigrationUtilities      ──► SafeDispose, SafeExecute, IsOnline, status helpers
   MigrationDefaults       ──► Constants: WorkerMultiplier, MinWorkers, DefaultPageSize
   TableDiscovery          ──► ParseNamespaceEntries, ValidateNamespaceFormat
+  TableMigrationMapper    ──► TableMigration ↔ TableMigrationSummary mapping
   DataDirectoryResolver   ──► Resolve working data directory
 
 Persistence/
@@ -63,7 +67,8 @@ Persistence/
 
 ```
 ConnectionOptions(Host, Port, Username, Password, UseSsl, MaxConnectionsPerHost)
-PipelineRequest(MigrationUnit, ChunkIndex, InitialPercent, ContributionFactor, TotalRowCount, Context, FeedRanges)
+PipelineRequest(TableMigration, ChunkIndex, InitialPercent, ContributionFactor, TotalRowCount, Context, FeedRanges)
+PipelineConfig(PageSize, WorkerCount, CheckpointInterval, ...)   [resolved from Job + AppSettings]
 WorkerConfig(SourceConnection, TargetConnection, Columns, Context)
 RangeState(Completed, Checkpoints, FeedRanges)
 PipelineContext(PartitionPool, Worker, Ranges, Counters, Tracker)
@@ -74,29 +79,29 @@ PartitionStageResult(Pool, Completed, Checkpoints, PendingCount) [nested in Bulk
 ## Models (mutable POCOs, JSON-serialized)
 
 ```
-MigrationJob
+Job
  ├── Id, Name, Status (JobStatus enum)
  ├── Source/Target connection fields
- ├── Tables: List<MigrationUnitBasic>
+ ├── Tables: List<TableMigrationSummary>
  └── SourceConnection / TargetConnection (ConnectionOptions)
 
-MigrationUnit : MigrationUnitBasic
+TableMigration : TableMigrationSummary
  ├── Per-table state: keyspace, table, copy progress, change feed counters
- ├── MigrationChunks: List<MigrationChunk>
+ ├── CopyChunks: List<CopyChunk>
+ │    └── CopyChunk { RowCount, Segments: List<ChunkSegment> }
  ├── CompletedCopyFeedRanges: HashSet<string>
  ├── CopyFeedRangeCheckpoints: Dictionary<string, string?>
- └── ParentJob: MigrationJob [JsonIgnore]
+ └── ParentJob: Job [JsonIgnore]
 
-MigrationChunk
- ├── Row counts, download/upload flags
- └── Segments: List<Segment>
+AppSettings : ICloneable
+ └── Pipeline defaults: PageSize, WorkerMultiplier, MaxParallelTables, etc.
 
 TableContext
- ├── MigrationUnitId, JobId
+ ├── TableMigrationId, JobId
  ├── KeyspaceName, TableName, TargetKeyspaceName, TargetTableName
  └── SourceSession: ISession
 
-JobRegistry
+JobIndex
  └── MigrationJobIds: List<string>
 ```
 
@@ -106,7 +111,7 @@ JobRegistry
 JobManager.StartMigration(jobId)
   └─► MigrationWorker.ExecuteAsync(job)
        └─► [parallel per table] BulkCopyEngine.StartProcessAsync(unitId)
-            └─► ProcessChunkAsync(unit, chunkIndex, context)
+            └─► ProcessChunkAsync(tableMigration, chunkIndex, context)
                  ├── CassandraQueries.GetRowCountAsync()
                  ├── CassandraQueries.GetFeedRangesAsync()
                  └─► BulkCopyRunner.RunAsync(PipelineRequest)
@@ -128,11 +133,11 @@ JobManager.StartMigration(jobId)
 
 ```
 BulkCopyEngine (after table completes)
-  └─► MigrationProcessor.AddTableToChangeFeedQueue(unit)
+  └─► ChangeFeedManager.AddTable(tableMigration, cts)
        └─► ReplayProcessor.AddTableToProcess(unitId, cts)
-            └─► ReplayWorker.RunAsync(mu, ct)
+            └─► ReplayWorker.RunAsync(tableMigration, ct)
                  ├── parallel mode: N range tasks via SemaphoreSlim
-                 └── each range: PollLoopAsync(mu, feedRange, ps, colNames, ct)
+                 └── each range: PollLoopAsync(tableMigration, feedRange, ps, colNames, ct)
                       loop:
                         ExecuteAsync(SELECT * WHERE COSMOS_CHANGEFEED_START_TIME()...)
                         write each row to target
@@ -143,10 +148,9 @@ BulkCopyEngine (after table completes)
 ## Inheritance
 
 ```
-MigrationProcessor (abstract, IDisposable)
- └── BulkCopyEngine
-      fields: _sourceSession (readonly), _targetSession (lazy via EnsureTargetSession)
-      fields: _log, _job, _config, _cancellation, _worker, _changeFeedProcessor
+BulkCopyEngine (IDisposable)
+     fields: _sourceSession (readonly), _targetSession (lazy via EnsureTargetSession)
+     fields: _log, _job, _config, _cancellation, _worker, _changeFeedManager
 ```
 
 ## Session Ownership
@@ -155,7 +159,7 @@ MigrationProcessor (abstract, IDisposable)
 ┌─────────────────────────┬──────────────────────────────────┬──────────────┐
 │ Session                 │ Purpose                          │ Lifetime     │
 ├─────────────────────────┼──────────────────────────────────┼──────────────┤
-│ MigrationProcessor      │ Metadata: row count, feed ranges │ Caller-owned │
+│ BulkCopyEngine          │ Metadata: row count, feed ranges │ Caller-owned │
 │   ._sourceSession       │                                  │ (readonly)   │
 ├─────────────────────────┼──────────────────────────────────┼──────────────┤
 │ EnsureTargetSession()   │ Schema sync, keyspace creation   │ Lazy, one    │
