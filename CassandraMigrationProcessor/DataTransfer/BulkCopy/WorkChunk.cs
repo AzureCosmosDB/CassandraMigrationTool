@@ -1,11 +1,10 @@
 namespace CassandraMigrationProcessor.DataTransfer.BulkCopy;
 /// <summary>
 /// Tracks a pending or completed read-write cycle.
-/// Forms a linked list per partition.
+/// Managed by Partition via LinkedList.
 /// </summary>
 internal class WorkChunk
 {
     public byte[]? ContinuationToken { get; set; }
     public bool IsCompleted { get; set; }
-    public WorkChunk? Next { get; set; }
 }

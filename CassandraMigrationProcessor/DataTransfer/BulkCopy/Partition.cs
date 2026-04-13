@@ -1,9 +1,9 @@
-using System.Threading;
+using System.Collections.Generic;
 
 namespace CassandraMigrationProcessor.DataTransfer.BulkCopy;
 /// <summary>
-/// Represents a feed range partition with its work
-/// chunk list. Passed through the partition pool channel.
+/// Represents a feed range partition with its work chunk list.
+/// Uses LinkedList for clean node management.
 /// </summary>
 internal class Partition
 {
@@ -11,21 +11,18 @@ internal class Partition
     public bool IsExhausted { get; private set; }
     public byte[]? LastPagingState { get; private set; }
 
-    private WorkChunk? _head;
-    private WorkChunk? _tail;
+    private readonly LinkedList<WorkChunk> _chunks = new();
     private readonly object _lock = new();
 
     public Partition(string feedRange, byte[]? initialPagingState)
     {
         FeedRange = feedRange;
         LastPagingState = initialPagingState;
+
         if (initialPagingState != null)
-            _head = _tail = new WorkChunk { ContinuationToken = initialPagingState, IsCompleted = true };
+            _chunks.AddLast(new WorkChunk { ContinuationToken = initialPagingState, IsCompleted = true });
     }
 
-    /// <summary>
-    /// Atomically updates the paging state and exhaustion flag under the lock.
-    /// </summary>
     public void SetPageState(byte[]? pagingState, bool isExhausted)
     {
         lock (_lock)
@@ -40,10 +37,11 @@ internal class Partition
         var chunk = new WorkChunk { ContinuationToken = continuationToken };
         lock (_lock)
         {
-            while (_head != null && _head.IsCompleted) _head = _head.Next;
-            if (_head == null) _tail = null;
-            if (_tail == null) _head = _tail = chunk;
-            else { _tail.Next = chunk; _tail = chunk; }
+            // Trim completed chunks from the front
+            while (_chunks.First != null && _chunks.First.Value.IsCompleted)
+                _chunks.RemoveFirst();
+
+            _chunks.AddLast(chunk);
         }
         return chunk;
     }
@@ -52,13 +50,11 @@ internal class Partition
     {
         lock (_lock)
         {
-            var node = _head;
-            while (node != null)
+            foreach (var chunk in _chunks)
             {
-                if (!node.IsCompleted) return node.ContinuationToken;
-                node = node.Next;
+                if (!chunk.IsCompleted) return chunk.ContinuationToken;
             }
-            return _tail?.ContinuationToken;
+            return _chunks.Last?.Value.ContinuationToken;
         }
     }
 }
