@@ -199,7 +199,7 @@ public class ReplayWorker
 
                     consecutiveErrors = 0;
                 }
-                catch (OperationCanceledException)
+                catch (OperationCanceledException) // Expected: graceful cancellation
                 {
                     break;
                 }
@@ -407,7 +407,7 @@ public class ReplayWorker
         int ms, CancellationToken ct)
     {
         try { await Task.Delay(ms, ct); return true; }
-        catch (OperationCanceledException) { return false; }
+        catch (OperationCanceledException) { return false; } // Expected: graceful cancellation
     }
 
     private async Task<(bool Success, PreparedStatement Ps, List<string> ColNames)> TryReconnectSourceAsync(

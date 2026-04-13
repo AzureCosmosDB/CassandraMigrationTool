@@ -107,7 +107,7 @@ internal class BulkCopyWorker
                 if (ctx.PartitionPool.Reader.TryRead(out var p))
                     return p;
         }
-        catch (OperationCanceledException) { }
+        catch (OperationCanceledException) { } // Expected: graceful cancellation
         return null;
     }
 

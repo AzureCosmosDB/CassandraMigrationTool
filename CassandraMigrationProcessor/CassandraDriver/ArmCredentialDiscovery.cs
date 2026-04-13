@@ -146,9 +146,9 @@ public static class ArmCredentialDiscovery
                 }
             }
         }
-        catch (Exception)
+        catch (Exception ex)
         {
-            // ARM MI cluster search error — fall through
+            Console.Error.WriteLine($"ARM discovery: {ex.Message}");
         }
         return null;
     }
@@ -228,9 +228,9 @@ public static class ArmCredentialDiscovery
                 }
             }
         }
-        catch (Exception)
+        catch (Exception ex)
         {
-            // ARM Cosmos account search error — fall through
+            Console.Error.WriteLine($"ARM discovery: {ex.Message}");
         }
         return null;
     }

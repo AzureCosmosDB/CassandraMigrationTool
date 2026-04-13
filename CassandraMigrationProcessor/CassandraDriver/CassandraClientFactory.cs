@@ -391,9 +391,9 @@ public static class CassandraClientFactory
                     password = string.Empty;
                 }
             }
-            catch (Exception)
+            catch (Exception ex)
             {
-                // ARM discovery failed — continue with empty credentials
+                MigrationLog?.WriteLine($"ARM credential discovery failed: {ex.Message}", LogType.Debug);
             }
         }
 

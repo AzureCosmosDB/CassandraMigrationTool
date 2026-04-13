@@ -83,8 +83,9 @@ public class LogPersistence
                     br.BaseStream.Seek(bytesToSkip, SeekOrigin.Current);
                     count++;
                 }
-                catch (Exception)
+                catch (Exception ex)
                 {
+                    Console.Error.WriteLine($"LogPersistence read error: {ex.Message}");
                     break;
                 }
             }
@@ -129,8 +130,9 @@ public class LogPersistence
                     br.BaseStream.Seek(bytesToSkip, SeekOrigin.Current);
                     offsets.Add(offset);
                 }
-                catch (Exception)
+                catch (Exception ex)
                 {
+                    Console.Error.WriteLine($"LogPersistence read error: {ex.Message}");
                     break;
                 }
             }
@@ -325,8 +327,9 @@ public class LogPersistence
                     br.BaseStream.Seek(bytesToSkip, SeekOrigin.Current);
                     offsets.Add(offset);
                 }
-                catch (Exception)
+                catch (Exception ex)
                 {
+                    Console.Error.WriteLine($"LogPersistence read error: {ex.Message}");
                     break;
                 }
             }
