@@ -72,7 +72,7 @@ public class TableMigrationEngine : IDisposable
 
     // ── Change Feed ──
 
-    public void StopOfflineOrInvokeChangeFeed()
+    public void FinalizeOrStartChangeFeed()
     {
         if (!MigrationUtilities.IsOnline(_migrationJob)
             && MigrationUtilities.IsOfflineJobCompleted(_migrationJob))
@@ -97,7 +97,7 @@ public class TableMigrationEngine : IDisposable
     // ── Job Orchestration ──
 
     /// <summary>Runs the bulk-copy pipeline for the specified migration unit.</summary>
-    public async Task<TaskResult> StartProcessAsync(string migrationUnitId)
+    public async Task<TaskResult> MigrateTableAsync(string migrationUnitId)
     {
         if (string.IsNullOrWhiteSpace(migrationUnitId))
             throw new ArgumentException("Migration unit ID is required", nameof(migrationUnitId));
@@ -145,7 +145,7 @@ public class TableMigrationEngine : IDisposable
 
                 if (tableMigration.CopyChunks[chunkIndex].IsDownloaded != true)
                 {
-                    TaskResult result = await new RetryHelper().ExecuteTask(
+                    TaskResult result = await new RetryHelper().ExecuteWithRetryAsync(
                             () => ProcessChunkAsync(tableMigration, chunkIndex, context, initialPercent, contributionFactor),
                             (ex, _, _) => HandleChunkException(ex),
                             _migrationLog, ct: _cts.Token);

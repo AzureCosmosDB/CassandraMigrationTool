@@ -66,7 +66,7 @@ public class ChangeFeedManager : IDisposable
         }
 
         _log.WriteLine($"Adding {mu.KeyspaceName}.{mu.TableName} to change feed queue", LogType.Debug);
-        _replayProcessor?.AddTableToProcess(mu.Id, cancellationToken);
+        _replayProcessor?.QueueTableForReplay(mu.Id, cancellationToken);
 
         return true;
     }

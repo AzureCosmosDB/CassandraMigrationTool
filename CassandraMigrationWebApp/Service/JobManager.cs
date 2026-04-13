@@ -227,7 +227,7 @@ public class JobManager
             }
 
             _log = CreateLog();
-            _log.Init(job.Id);
+            _log.Initialize(job.Id);
             _log.SetJob(job);
             MigrationWorker = new MigrationWorker(_log);
             _migrationCts = new CancellationTokenSource();

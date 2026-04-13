@@ -230,7 +230,7 @@ public class MigrationWorker
         _activeProcessors[mu.Id] = processor;
         ct.ThrowIfCancellationRequested();
 
-        TaskResult result = await processor.StartProcessAsync(mu.Id);
+        TaskResult result = await processor.MigrateTableAsync(mu.Id);
 
         if (result == TaskResult.Success)
             _log.WriteLine($"Copy succeeded for {mu.KeyspaceName}.{mu.TableName}", LogType.Info);

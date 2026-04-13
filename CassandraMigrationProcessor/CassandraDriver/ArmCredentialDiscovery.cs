@@ -43,7 +43,7 @@ public static class ArmCredentialDiscovery
         if (string.IsNullOrEmpty(subscriptionId))
         {
             // Try to discover from the current resource's metadata
-            subscriptionId = await GetSubscriptionIdFromImds();
+            subscriptionId = await GetSubscriptionIdFromInstanceMetadata();
         }
 
         if (string.IsNullOrEmpty(subscriptionId))
@@ -52,7 +52,7 @@ public static class ArmCredentialDiscovery
         }
 
         // 1. Check MI clusters
-        var miResult = await CheckMiClusters(
+        var miResult = await CheckManagedInstanceClusters(
             armToken, subscriptionId, targetContactPoint);
         if (miResult != null) return miResult;
 
@@ -69,7 +69,7 @@ public static class ArmCredentialDiscovery
     /// Try to get subscription ID from Azure IMDS
     /// (works in App Service and VMs).
     /// </summary>
-    private static async Task<string?> GetSubscriptionIdFromImds()
+    private static async Task<string?> GetSubscriptionIdFromInstanceMetadata()
     {
         try
         {
@@ -88,7 +88,7 @@ public static class ArmCredentialDiscovery
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"[WARN] GetSubscriptionIdFromImds failed: {ex.Message}");
+            Console.WriteLine($"[WARN] GetSubscriptionIdFromInstanceMetadata failed: {ex.Message}");
             return null;
         }
     }
@@ -97,7 +97,7 @@ public static class ArmCredentialDiscovery
     /// Search MI clusters in the subscription for one whose
     /// seed nodes match the target contact point.
     /// </summary>
-    private static async Task<ArmCredentialResult?> CheckMiClusters(
+    private static async Task<ArmCredentialResult?> CheckManagedInstanceClusters(
         string armToken, string subscriptionId,
         string targetContactPoint)
     {

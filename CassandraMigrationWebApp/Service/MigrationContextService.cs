@@ -30,7 +30,7 @@ public class MigrationContextService
         => _context.SaveMigrationJob(job);
 
     public List<Job> PopulateJobs(List<string> ids)
-        => _context.PopulateMigrationJobs(ids);
+        => _context.GetJobsById(ids);
 
     // -- Unit operations --
 

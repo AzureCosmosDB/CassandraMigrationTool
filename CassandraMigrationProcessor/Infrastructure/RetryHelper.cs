@@ -13,7 +13,7 @@ public class RetryHelper
     private static int EscalateDelay(int currentDelay)
         => Math.Min(currentDelay * 2, MaxBackoffMs);
 
-    public async Task<TaskResult> ExecuteTask(
+    public async Task<TaskResult> ExecuteWithRetryAsync(
         Func<Task<TaskResult>> taskFunc,
         Func<Exception, int, int, Task<TaskResult>> exceptionHandler,
         MigrationLog MigrationLog,

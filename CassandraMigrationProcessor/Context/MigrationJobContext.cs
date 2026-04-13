@@ -221,7 +221,7 @@ public class MigrationJobContext
         => JobStore.GetJob(jobId);
 
     // Facade: delegates to JobStore
-    public List<Job> PopulateMigrationJobs(
+    public List<Job> GetJobsById(
         List<string> ids)
         => JobStore.GetAllJobs(ids);
 

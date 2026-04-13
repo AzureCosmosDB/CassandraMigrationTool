@@ -85,7 +85,7 @@ public class MigrationLog : IDisposable
         }
     }
 
-    public string Init(string id)
+    public string Initialize(string id)
     {
         lock (_initLock)
         {

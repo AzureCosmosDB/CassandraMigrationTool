@@ -46,7 +46,7 @@ public class ReplayWorker
     /// Entry point: discovers feed ranges and dispatches to
     /// parallel or single-range processing.
     /// </summary>
-    public async Task RunAsync(TableMigration mu, CancellationToken ct)
+    public async Task ReplayTableAsync(TableMigration mu, CancellationToken ct)
     {
         var feedRanges = await CassandraQueries.GetFeedRangesAsync(
             _sourceSession, mu.KeyspaceName, mu.TableName,

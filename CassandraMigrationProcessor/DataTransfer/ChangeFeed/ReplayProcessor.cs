@@ -68,7 +68,7 @@ public class ReplayProcessor : IDisposable
     /// <summary>
     /// Enqueue a single table for change-feed processing.
     /// </summary>
-    public void AddTableToProcess(string migrationUnitId, CancellationToken ct)
+    public void QueueTableForReplay(string migrationUnitId, CancellationToken ct)
     {
         _pendingTables.Enqueue(migrationUnitId);
         StartPendingTables(ct);
@@ -117,7 +117,7 @@ public class ReplayProcessor : IDisposable
                         _pipelineConfig, () => ExecutionCancelled,
                         _tokenRefreshManager);
 
-                    await worker.RunAsync(mu, ct);
+                    await worker.ReplayTableAsync(mu, ct);
                 }
                 catch (Exception ex)
                 {
