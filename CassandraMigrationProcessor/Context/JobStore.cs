@@ -61,6 +61,7 @@ public static class JobStore
         }, (Job?)null, $"LoadJob({jobId})");
     }
 
+    /// <summary>Retrieves a job by ID, preferring the active in-memory job if it matches.</summary>
     public static Job? GetJob(string jobId)
     {
         if (jobId == MigrationJobContext.Instance.ActiveMigrationJobId
@@ -70,6 +71,7 @@ public static class JobStore
         return LoadJob(jobId);
     }
 
+    /// <summary>Loads and returns all jobs matching the given IDs.</summary>
     public static List<Job> GetAllJobs(List<string> ids)
     {
         List<Job> jobs = new();
@@ -81,6 +83,7 @@ public static class JobStore
         return jobs;
     }
 
+    /// <summary>Persists a job to disk and updates the in-memory cache.</summary>
     public static bool SaveJob(Job job)
     {
         return MigrationUtilities.SafeExecute(() =>
@@ -118,6 +121,7 @@ public static class JobStore
         }
     }
 
+    /// <summary>Clears the cached active job reference.</summary>
     public static void ClearCache()
     {
         lock (_cacheLock)

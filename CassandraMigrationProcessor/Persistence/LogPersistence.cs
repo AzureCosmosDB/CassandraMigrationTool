@@ -144,19 +144,19 @@ public class LogPersistence
             foreach (var offset in selectedOffsets)
             {
                 fs.Position = offset;
-                var MigrationLog = TryReadLogEntry(br);
-                if (MigrationLog != null)
-                    logBucket.Logs.Add(MigrationLog);
+                var logEntry = TryReadLogEntry(br);
+                if (logEntry != null)
+                    logBucket.Logs.Add(logEntry);
             }
         }, $"DownloadLogsPaginated({id})");
 
         // Format logs
         var sb = new StringBuilder();
-        foreach (var MigrationLog in logBucket.Logs)
+        foreach (var logEntry in logBucket.Logs)
         {
-            char typeChar = FormatLogTypeChar(MigrationLog.Type);
-            string dateTime = MigrationLog.Datetime.ToString("MM/dd/yyyy HH:mm:ss");
-            sb.AppendLine($"{typeChar}|{dateTime}|{MigrationLog.Message}");
+            char typeChar = FormatLogTypeChar(logEntry.Type);
+            string dateTime = logEntry.Datetime.ToString("MM/dd/yyyy HH:mm:ss");
+            sb.AppendLine($"{typeChar}|{dateTime}|{logEntry.Message}");
         }
 
         return Encoding.UTF8.GetBytes(sb.ToString());
@@ -169,11 +169,11 @@ public class LogPersistence
         var logs = ParseLogBinFile(binPath, topEntries, bottomEntries);
 
         var sb = new StringBuilder();
-        foreach (var MigrationLog in logs.Logs)
+        foreach (var logEntry in logs.Logs)
         {
-            char typeChar = FormatLogTypeChar(MigrationLog.Type);
-            string dateTime = MigrationLog.Datetime.ToString("MM/dd/yyyy HH:mm:ss");
-            sb.AppendLine($"{typeChar}|{dateTime}|{MigrationLog.Message}");
+            char typeChar = FormatLogTypeChar(logEntry.Type);
+            string dateTime = logEntry.Datetime.ToString("MM/dd/yyyy HH:mm:ss");
+            sb.AppendLine($"{typeChar}|{dateTime}|{logEntry.Message}");
         }
 
         return Encoding.UTF8.GetBytes(sb.ToString());
@@ -262,17 +262,17 @@ public class LogPersistence
             using var fs = FileSystem.OpenAppend(binPath);
             using var bw = new BinaryWriter(fs);
 
-            foreach (var MigrationLog in logs)
+            foreach (var logEntry in logs)
             {
                 try
                 {
-                    var message = MigrationLog.Message ?? string.Empty;
+                    var message = logEntry.Message ?? string.Empty;
                     var messageBytes = Encoding.UTF8.GetBytes(message);
 
                     bw.Write(messageBytes.Length);
                     bw.Write(messageBytes);
-                    bw.Write((byte)MigrationLog.Type);
-                    bw.Write(MigrationLog.Datetime.ToBinary());
+                    bw.Write((byte)logEntry.Type);
+                    bw.Write(logEntry.Datetime.ToBinary());
                 }
                 catch (Exception ex)
                 {
@@ -305,7 +305,7 @@ public class LogPersistence
             if (fs == null) return;
             using var br = new BinaryReader(fs);
 
-            // First pass: collect offsets of valid MigrationLog entries
+            // First pass: collect offsets of valid log entries
             while (fs.Position < fs.Length)
             {
                 long offset = fs.Position;
@@ -364,9 +364,9 @@ public class LogPersistence
             foreach (var offset in selectedOffsets)
             {
                 fs.Position = offset;
-                var MigrationLog = TryReadLogEntry(br);
-                if (MigrationLog != null)
-                    logBucket.Logs.Add(MigrationLog);
+                var logEntry = TryReadLogEntry(br);
+                if (logEntry != null)
+                    logBucket.Logs.Add(logEntry);
             }
         }, "ParseLogBinFile");
 

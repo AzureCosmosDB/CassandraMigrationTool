@@ -10,6 +10,7 @@ public static class UnitStore
 {
     private static readonly object _writeMULock = new object();
 
+    /// <summary>Retrieves a migration unit by ID, using the in-memory cache when available.</summary>
     public static TableMigration GetUnit(
         string unitId, string jobId = null)
     {
@@ -26,6 +27,7 @@ public static class UnitStore
                 .GetMigrationUnit(unitId, jobId);
     }
 
+    /// <summary>Persists a migration unit to disk and optionally updates its parent job.</summary>
     public static bool SaveUnit(
         TableMigration mu, bool updateParent)
     {
@@ -66,6 +68,7 @@ public static class UnitStore
         }, false, "SaveUnit");
     }
 
+    /// <summary>Removes a migration unit from its parent job and deletes it from storage.</summary>
     public static bool RemoveUnit(TableMigrationSummary unit)
     {
         if (unit == null || unit.ParentJob == null)

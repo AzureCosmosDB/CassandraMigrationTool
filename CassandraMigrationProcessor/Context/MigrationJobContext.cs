@@ -162,21 +162,30 @@ public class MigrationJobContext
         Instance = this;
         MigrationUtilities.LogToFile("MigrationJobContext.Initialize started");
 
-        var stateStoreCSorPath = string.Empty;
-        var appId = string.Empty;
+        var stateStoreCSorPath = ReadConfig(configuration);
+        InitializePersistence(stateStoreCSorPath);
+        BootstrapJobList();
+    }
+
+    private string ReadConfig(IConfiguration configuration)
+    {
         try
         {
-            stateStoreCSorPath =
-                configuration["StateStore:ConnectionStringOrPath"];
-            appId = configuration["StateStore:AppID"];
+            var path = configuration["StateStore:ConnectionStringOrPath"];
+            var appId = configuration["StateStore:AppID"];
             AppId = appId;
             DataDirectoryResolver.SetAppId(appId);
+            return path ?? string.Empty;
         }
         catch (Exception ex)
         {
             Console.WriteLine($"[WARN] Initialize config read failed: {ex.Message}");
+            return string.Empty;
         }
+    }
 
+    private void InitializePersistence(string stateStoreCSorPath)
+    {
         var persistence = new DiskPersistence();
         var localPath =
             string.IsNullOrEmpty(stateStoreCSorPath)
@@ -186,7 +195,10 @@ public class MigrationJobContext
 
         Store = persistence;
         LogStore = persistence;
+    }
 
+    private void BootstrapJobList()
+    {
         JobIndex = LoadJobList(
             out bool notFound, out string errorMessage);
         if (notFound && JobIndex == null)
@@ -245,46 +257,52 @@ public class MigrationJobContext
         notFound = false;
         string path = $"{JobStore.JobsFolder}\\JobRegistry.json";
 
+        for (int i = 0; i < 5; i++)
+        {
+            var (result, found, error) = TryLoadJobListOnce(path);
+            if (result != null)
+            {
+                JobIndex = result;
+                return result;
+            }
+            if (!found)
+            {
+                notFound = true;
+                errorMessage = error;
+                return null;
+            }
+            if (!string.IsNullOrEmpty(error))
+                errorMessage = error;
+
+            Thread.Sleep(200);
+        }
+
+        errorMessage = "Error loading migration jobs.";
+        return null;
+    }
+
+    /// <summary>
+    /// Attempts a single load of the job list from disk.
+    /// Returns (result, fileExists, errorMessage).
+    /// </summary>
+    private (JobIndex? result, bool fileExists, string error) TryLoadJobListOnce(string path)
+    {
         try
         {
-            for (int i = 0; i < 5; i++)
-            {
-                try
-                {
-                    if (!Store.Exists(path))
-                    {
-                        notFound = true;
-                        errorMessage = "Job list not found.";
-                    }
-                    else
-                    {
-                        string json = Store.Read(path);
-                        var obj = JsonConvert
-                            .DeserializeObject<JobIndex>(json);
-                        if (obj != null)
-                        {
-                            JobIndex = obj;
-                            return JobIndex;
-                        }
-                    }
-                }
-                catch (JsonException ex)
-                {
-                    errorMessage =
-                        $"Error deserializing: {ex}";
-                }
-                finally
-                {
-                    Thread.Sleep(200);
-                }
-            }
-            errorMessage = "Error loading migration jobs.";
-            return null;
+            if (!Store.Exists(path))
+                return (null, false, "Job list not found.");
+
+            string json = Store.Read(path);
+            var obj = JsonConvert.DeserializeObject<JobIndex>(json);
+            return (obj, true, string.Empty);
+        }
+        catch (JsonException ex)
+        {
+            return (null, true, $"Error deserializing: {ex}");
         }
         catch (Exception ex)
         {
-            errorMessage = $"Error: {ex}";
-            return null;
+            return (null, true, $"Error: {ex}");
         }
     }
 

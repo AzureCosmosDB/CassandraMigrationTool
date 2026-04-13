@@ -50,6 +50,7 @@ public class TableMigrationEngine : IDisposable
 
     // ── Lifecycle ──
 
+    /// <summary>Stops the migration and resets job status to Pending.</summary>
     public void StopProcessing()
     {
         if (_migrationJob.Status == JobStatus.Running)
@@ -57,6 +58,7 @@ public class TableMigrationEngine : IDisposable
         Shutdown();
     }
 
+    /// <summary>Pauses the migration and persists current state.</summary>
     public void PauseProcessing()
     {
         _migrationJob.Status = JobStatus.Paused;
@@ -97,18 +99,19 @@ public class TableMigrationEngine : IDisposable
 
     // ── Job Orchestration ──
 
+    /// <summary>Runs the bulk-copy pipeline for the specified migration unit.</summary>
     public async Task<TaskResult> StartProcessAsync(string migrationUnitId)
     {
         if (string.IsNullOrWhiteSpace(migrationUnitId))
             throw new ArgumentException("Migration unit ID is required", nameof(migrationUnitId));
 
-        var TableMigration = MigrationJobContext.Instance.GetMigrationUnit(migrationUnitId);
-        TableMigration.ParentJob = _migrationJob;
+        var tableMigration = MigrationJobContext.Instance.GetMigrationUnit(migrationUnitId);
+        tableMigration.ParentJob = _migrationJob;
         ProcessRunning = true;
 
-        var context = CreateTableContext(TableMigration);
+        var context = CreateTableContext(tableMigration);
 
-        if (TableMigration.CopyComplete)
+        if (tableMigration.CopyComplete)
         {
             _migrationLog.WriteLine($"Copy for {context.KeyspaceName}.{context.TableName} already completed.", LogType.Debug);
             return TaskResult.Success;
@@ -116,12 +119,13 @@ public class TableMigrationEngine : IDisposable
 
         _migrationLog.WriteLine($"{context.KeyspaceName}.{context.TableName} Copy started", LogType.Info);
 
-        if (!TableMigration.CopyComplete && !_cts.Token.IsCancellationRequested)
+        bool hasWorkRemaining = !tableMigration.CopyComplete && !_cts.Token.IsCancellationRequested;
+        if (hasWorkRemaining)
         {
-            if (TableMigration.CopyChunks == null || TableMigration.CopyChunks.Count == 0)
-                TableMigration.CopyChunks = new List<CopyChunk> { new CopyChunk() };
+            if (tableMigration.CopyChunks == null || tableMigration.CopyChunks.Count == 0)
+                tableMigration.CopyChunks = new List<CopyChunk> { new CopyChunk() };
 
-            for (int chunkIndex = 0; chunkIndex < TableMigration.CopyChunks.Count; chunkIndex++)
+            for (int chunkIndex = 0; chunkIndex < tableMigration.CopyChunks.Count; chunkIndex++)
             {
                 if (MigrationJobContext.Instance.ControlledPauseRequested)
                 {
@@ -131,13 +135,13 @@ public class TableMigrationEngine : IDisposable
 
                 _cts.Token.ThrowIfCancellationRequested();
 
-                double initialPercent = ((double)100 / TableMigration.CopyChunks.Count) * chunkIndex;
-                double contributionFactor = 1.0 / TableMigration.CopyChunks.Count;
+                double initialPercent = ((double)100 / tableMigration.CopyChunks.Count) * chunkIndex;
+                double contributionFactor = 1.0 / tableMigration.CopyChunks.Count;
 
-                if (TableMigration.CopyChunks[chunkIndex].IsDownloaded != true)
+                if (tableMigration.CopyChunks[chunkIndex].IsDownloaded != true)
                 {
                     TaskResult result = await new RetryHelper().ExecuteTask(
-                            () => ProcessChunkAsync(TableMigration, chunkIndex, context, initialPercent, contributionFactor),
+                            () => ProcessChunkAsync(tableMigration, chunkIndex, context, initialPercent, contributionFactor),
                             (ex, _, _) => HandleChunkException(ex),
                             _migrationLog, ct: _cts.Token);
 
@@ -148,7 +152,8 @@ public class TableMigrationEngine : IDisposable
                         return TaskResult.Canceled;
                     }
 
-                    if (result == TaskResult.Abort || result == TaskResult.FailedAfterRetries)
+                    bool isUnrecoverableFailure = result == TaskResult.Abort || result == TaskResult.FailedAfterRetries;
+                    if (isUnrecoverableFailure)
                     {
                         _migrationLog.WriteLine($"Copy failed for {context.KeyspaceName}.{context.TableName}[{chunkIndex}] after retries.", LogType.Error);
                         StopProcessing();
@@ -164,21 +169,22 @@ public class TableMigrationEngine : IDisposable
                 return TaskResult.Success;
             }
 
-            TableMigration.SourceCountDuringCopy = TableMigration.CopyChunks.Sum(c => c.SourceQueryRowCount);
-            long failed = TableMigration.CopyChunks.Sum(c => c.TargetFailedRowCount);
+            tableMigration.SourceCountDuringCopy = tableMigration.CopyChunks.Sum(c => c.SourceQueryRowCount);
+            long failed = tableMigration.CopyChunks.Sum(c => c.TargetFailedRowCount);
 
-            if (failed <= 0 && TableMigration.CopyChunks.All(c => c.IsDownloaded == true))
+            bool allChunksSucceeded = failed <= 0 && tableMigration.CopyChunks.All(c => c.IsDownloaded == true);
+            if (allChunksSucceeded)
             {
-                TableMigration.BulkCopyEndedOn = DateTime.UtcNow;
-                TableMigration.CopyPercent = 100;
-                TableMigration.CopyComplete = true;
-                TableMigrationMapper.UpdateParentJob(TableMigration);
+                tableMigration.BulkCopyEndedOn = DateTime.UtcNow;
+                tableMigration.CopyPercent = 100;
+                tableMigration.CopyComplete = true;
+                TableMigrationMapper.UpdateParentJob(tableMigration);
 
-                await _changeFeedManager.AddTable(TableMigration, _cts.Token);
-                MigrationJobContext.Instance.SaveMigrationUnit(TableMigration, true);
+                await _changeFeedManager.AddTable(tableMigration, _cts.Token);
+                MigrationJobContext.Instance.SaveMigrationUnit(tableMigration, true);
 
                 if (!MigrationUtilities.IsOnline(_migrationJob))
-                    MigrationJobContext.Instance.MigrationUnitsCache.RemoveMigrationUnit(TableMigration.Id);
+                    MigrationJobContext.Instance.MigrationUnitsCache.RemoveMigrationUnit(tableMigration.Id);
             }
             else
             {
