@@ -146,7 +146,7 @@ internal class BulkCopyRunner
         long priorCopied = request.TableMigration.CopyRowsCopied;
 
         var tracker = new CopyProgressTracker(_log, ctx0.KeyspaceName, ctx0.TableName,
-            workerCount, seed.PendingCount, priorCopied,
+            workerCount, priorCopied,
             request.TableMigration, request.ChunkIndex,
             request.InitialPercent, request.ContributionFactor, request.TotalRowCount);
 

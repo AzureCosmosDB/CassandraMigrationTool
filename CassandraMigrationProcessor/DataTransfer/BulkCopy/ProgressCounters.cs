@@ -36,7 +36,6 @@ internal class ProgressCounters
 
     public void AddCopied(long count) => Interlocked.Add(ref _totalCopied, count);
     public void AddFailed(long count) => Interlocked.Add(ref _totalFailed, count);
-    public void AddSkipped(long count) => Interlocked.Add(ref _totalSkipped, count);
     public void AddRead(long count) => Interlocked.Add(ref _totalRead, count);
     public void AddBytes(long bytes) => Interlocked.Add(ref _totalBytes, bytes);
 

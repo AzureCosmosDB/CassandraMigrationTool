@@ -27,8 +27,6 @@ public class CopyProgressTracker
 
     private int _activeWorkers;
     private int _peakActiveWorkers;
-    private int _completedRanges;
-    private int _totalRanges;
     private long _lastLogTicks = 0;
 
     // Sliding window for recent speed
@@ -54,8 +52,6 @@ public class CopyProgressTracker
     public long TotalCopied => _counters.TotalCopied;
     public long TotalFailed => _counters.TotalFailed;
     public long TotalSkipped => _counters.TotalSkipped;
-    public long TotalRead => _counters.TotalRead;
-    public int ActiveWorkers => _activeWorkers;
 
     /// <summary>
     /// Call once when a worker thread starts.
@@ -74,19 +70,18 @@ public class CopyProgressTracker
     }
 
     /// <summary>
-    /// Call when a worker finishes a feed range.
-    /// Only logs range completion — does NOT affect
-    /// active worker count.
-    /// </summary>
-    public void IncrementCompletedRanges()
-    {
-        Interlocked.Increment(ref _completedRanges);
-    }
-
-    /// <summary>
     /// Call once when a worker thread exits.
     /// </summary>
     public void WorkerExited() => Interlocked.Decrement(ref _activeWorkers);
+
+    /// <summary>
+    /// Call when a worker finishes a feed range.
+    /// Kept for API compatibility; no longer tracks internally.
+    /// </summary>
+    public void IncrementCompletedRanges()
+    {
+        // No-op: _completedRanges was removed as it was never read
+    }
     public double RecentSpeed
     {
         get
@@ -97,7 +92,7 @@ public class CopyProgressTracker
         }
     }
 
-    public CopyProgressTracker(MigrationLog MigrationLog, string keyspace, string table, int workerCount, int totalRanges,
+    public CopyProgressTracker(MigrationLog MigrationLog, string keyspace, string table, int workerCount,
         long initialCopied,
         TableMigration TableMigration, int chunkIndex,
         double initialPercent, double contributionFactor, long totalRowCount)
@@ -106,7 +101,6 @@ public class CopyProgressTracker
         _keyspace = keyspace;
         _table = table;
         _workerCount = workerCount;
-        _totalRanges = totalRanges;
         _counters = new ProgressCounters(initialCopied);
         _windowCopied = initialCopied;
         _migrationUnit = TableMigration;
@@ -157,11 +151,6 @@ public class CopyProgressTracker
     public void AddFailed(long count)
     {
         _counters.AddFailed(count);
-    }
-
-    public void AddSkipped(long count)
-    {
-        _counters.AddSkipped(count);
     }
 
     /// <summary>Track source rows read.</summary>
