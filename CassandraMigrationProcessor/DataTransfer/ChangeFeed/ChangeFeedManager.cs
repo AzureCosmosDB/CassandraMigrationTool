@@ -93,7 +93,7 @@ public class ChangeFeedManager : IDisposable
         {
             var source = CassandraClientFactory.CreateSourceSession(_log, _job, keyspace, _tokenRefreshManager);
             _replayProcessor = new ReplayProcessor(_log, source, _targetSession,
-                MigrationJobContext.MigrationUnitsCache, _pipelineConfig,
+                MigrationJobContext.Instance.MigrationUnitsCache, _pipelineConfig,
                 _job, _tokenRefreshManager);
         }
     }

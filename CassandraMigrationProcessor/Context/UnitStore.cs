@@ -14,15 +14,15 @@ public static class UnitStore
         string unitId, string jobId = null)
     {
         if (string.IsNullOrEmpty(jobId)
-            && MigrationJobContext.CurrentlyActiveJob != null)
+            && MigrationJobContext.Instance.CurrentlyActiveJob != null)
         {
-            jobId = MigrationJobContext.CurrentlyActiveJob.Id;
+            jobId = MigrationJobContext.Instance.CurrentlyActiveJob.Id;
         }
 
-        if (MigrationJobContext.MigrationUnitsCache == null)
+        if (MigrationJobContext.Instance.MigrationUnitsCache == null)
             return GetFromStorage(jobId, unitId);
         else
-            return MigrationJobContext.MigrationUnitsCache
+            return MigrationJobContext.Instance.MigrationUnitsCache
                 .GetMigrationUnit(unitId, jobId);
     }
 
@@ -33,9 +33,9 @@ public static class UnitStore
         {
             if (mu == null) return false;
 
-            if (mu.ParentJob == null && MigrationJobContext.CurrentlyActiveJob != null)
+            if (mu.ParentJob == null && MigrationJobContext.Instance.CurrentlyActiveJob != null)
                 mu.ParentJob =
-                    MigrationJobContext.CurrentlyActiveJob;
+                    MigrationJobContext.Instance.CurrentlyActiveJob;
 
             if (mu.ParentJob != null && updateParent)
                 TableMigrationMapper.UpdateParentJob(mu);
@@ -48,18 +48,18 @@ public static class UnitStore
                 string muJson =
                     JsonConvert.SerializeObject(
                         mu, Formatting.Indented);
-                MigrationJobContext.Store.Write(
+                MigrationJobContext.Instance.Store.Write(
                     muFilePath, muJson);
             }
 
-            if (MigrationJobContext.CurrentlyActiveJob != null
+            if (MigrationJobContext.Instance.CurrentlyActiveJob != null
                 && updateParent)
             {
                 JobStore.PersistActiveJobUnderLock();
             }
 
-            if (MigrationJobContext.MigrationUnitsCache != null)
-                MigrationJobContext.MigrationUnitsCache
+            if (MigrationJobContext.Instance.MigrationUnitsCache != null)
+                MigrationJobContext.Instance.MigrationUnitsCache
                     .UpdateMigrationUnit(mu);
 
             return true;
@@ -80,13 +80,13 @@ public static class UnitStore
 
             job.Tables.RemoveAt(index);
 
-            if (!MigrationJobContext.SaveMigrationJob(job))
+            if (!MigrationJobContext.Instance.SaveMigrationJob(job))
                 return false;
 
             var filePath = Path.Combine(
                 JobStore.JobsFolder, unit.JobId,
                 $"{unit.Id}.json");
-            MigrationJobContext.Store.Delete(filePath);
+            MigrationJobContext.Instance.Store.Delete(filePath);
 
             return true;
         }, false, "RemoveUnit");
@@ -99,7 +99,7 @@ public static class UnitStore
         {
             var filePath = Path.Combine(
                 JobStore.JobsFolder, jobId, $"{unitId}.json");
-            string json = MigrationJobContext.Store
+            string json = MigrationJobContext.Instance.Store
                 .Read(filePath);
             return JsonConvert
                 .DeserializeObject<TableMigration>(json);
@@ -118,7 +118,7 @@ public static class UnitStore
             if (summary.CopyComplete) continue;
             if (summary.SkippedDueToMaxRetries) continue;
 
-            var mu = MigrationJobContext.GetMigrationUnit(summary.Id);
+            var mu = MigrationJobContext.Instance.GetMigrationUnit(summary.Id);
             if (mu != null)
             {
                 mu.ParentJob = job;
@@ -147,7 +147,7 @@ public static class UnitStore
 
             foreach (var mu in newUnits)
             {
-                if (!MigrationJobContext.SaveMigrationUnit(mu, false))
+                if (!MigrationJobContext.Instance.SaveMigrationUnit(mu, false))
                 {
                     log?.WriteLine(
                         $"Warning: failed to save migration unit {mu.KeyspaceName}.{mu.TableName}",
@@ -155,7 +155,7 @@ public static class UnitStore
                 }
                 AddMigrationUnit(mu, job);
             }
-            MigrationJobContext.SaveMigrationJob(job);
+            MigrationJobContext.Instance.SaveMigrationJob(job);
         }
         return true;
     }

@@ -57,7 +57,6 @@ var appId = Environment.GetEnvironmentVariable("StateStoreAppID");
 if (!string.IsNullOrEmpty(appId))
 {
     builder.Configuration["StateStore:AppID"] = appId;
-    MigrationJobContext.AppId = appId;
     DataDirectoryResolver.SetAppId(appId);
 }
 
@@ -73,6 +72,12 @@ builder.Services.AddRazorPages();
 builder.Services.AddServerSideBlazor();
 builder.Services.AddSingleton(builder.Configuration);
 builder.Services.AddSingleton<ICassandraSessionFactory, CassandraSessionFactory>();
+
+// Create and initialize the MigrationJobContext singleton
+var migrationJobContext = new MigrationJobContext();
+migrationJobContext.Initialize(builder.Configuration);
+builder.Services.AddSingleton(migrationJobContext);
+
 builder.Services.AddSingleton<MigrationContextService>();
 builder.Services.AddSingleton<JobManager>();
 

@@ -10,12 +10,12 @@ public static class SettingsManager
 
     public static void Load(AppSettings settings)
     {
-        if (MigrationJobContext.Store == null) return;
+        if (MigrationJobContext.Instance.Store == null) return;
 
         var filePath = GetFilePath();
-        if (MigrationJobContext.Store.Exists(filePath))
+        if (MigrationJobContext.Instance.Store.Exists(filePath))
         {
-            string json = MigrationJobContext.Store.Read(filePath);
+            string json = MigrationJobContext.Instance.Store.Read(filePath);
             var loaded =
                 JsonConvert.DeserializeObject<AppSettings>(json);
             if (loaded != null)
@@ -31,7 +31,7 @@ public static class SettingsManager
     public static bool Save(
         AppSettings settings, out string errorMessage)
     {
-        if (MigrationJobContext.Store == null)
+        if (MigrationJobContext.Instance.Store == null)
         {
             errorMessage = "Store not initialized";
             return false;
@@ -40,7 +40,7 @@ public static class SettingsManager
         try
         {
             string json = JsonConvert.SerializeObject(settings);
-            MigrationJobContext.Store.Write(
+            MigrationJobContext.Instance.Store.Write(
                 GetFilePath(), json);
             errorMessage = string.Empty;
             return true;

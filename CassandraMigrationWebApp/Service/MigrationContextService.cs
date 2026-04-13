@@ -5,94 +5,101 @@ using CassandraMigrationProcessor.Persistence;
 
 namespace CassandraMigrationWebApp.Service;
 /// <summary>
-/// Thin wrapper around the static <see cref="MigrationJobContext"/>,
+/// Thin wrapper around <see cref="MigrationJobContext"/>,
 /// <see cref="JobStore"/>, and <see cref="UnitStore"/> classes.
 /// Registered as a singleton in DI so that controllers, Razor pages,
 /// and services can depend on it via constructor/property injection
 /// instead of reaching for static members directly.
-/// The processor library continues to use the static classes unchanged.
+/// The processor library continues to use MigrationJobContext.Instance.
 /// </summary>
 public class MigrationContextService
 {
+    private readonly MigrationJobContext _context;
+
+    public MigrationContextService(MigrationJobContext context)
+    {
+        _context = context;
+    }
+
     // -- Job operations --
 
     public Job? GetJob(string jobId)
-        => MigrationJobContext.GetMigrationJob(jobId);
+        => _context.GetMigrationJob(jobId);
 
     public bool SaveJob(Job job)
-        => MigrationJobContext.SaveMigrationJob(job);
+        => _context.SaveMigrationJob(job);
 
     public List<Job> PopulateJobs(List<string> ids)
-        => MigrationJobContext.PopulateMigrationJobs(ids);
+        => _context.PopulateMigrationJobs(ids);
 
     // -- Unit operations --
 
     public TableMigration? GetUnit(string key, string? jobId = null)
-        => MigrationJobContext.GetMigrationUnit(key, jobId);
+        => _context.GetMigrationUnit(key, jobId);
 
     public bool RemoveUnit(TableMigrationSummary mub)
         => UnitStore.RemoveUnit(mub);
 
     // -- Job list --
 
-    public JobIndex JobIndex => MigrationJobContext.JobIndex;
+    public JobIndex JobIndex => _context.JobIndex;
 
     public bool SaveJobList()
-        => MigrationJobContext.SaveJobList();
+        => _context.SaveJobList();
 
     // -- Active job --
 
     public Job? CurrentlyActiveJob
-        => MigrationJobContext.CurrentlyActiveJob;
+        => _context.CurrentlyActiveJob;
 
     public string? ActiveMigrationJobId
     {
-        get => MigrationJobContext.ActiveMigrationJobId;
-        set => MigrationJobContext.ActiveMigrationJobId = value!;
+        get => _context.ActiveMigrationJobId;
+        set => _context.ActiveMigrationJobId = value!;
     }
 
     // -- Controlled pause --
 
     public bool ControlledPauseRequested
-        => MigrationJobContext.ControlledPauseRequested;
+        => _context.ControlledPauseRequested;
 
     public void RequestControlledPause(string location)
-        => MigrationJobContext.RequestControlledPause(location);
+        => _context.RequestControlledPause(location);
 
     public void ResetControlledPause()
-        => MigrationJobContext.ResetControlledPause();
+        => _context.ResetControlledPause();
 
     // -- Persistence --
 
     public IDocumentStorage? Store
-        => MigrationJobContext.Store;
+        => _context.Store;
 
     public ILogStorage? LogStore
-        => MigrationJobContext.LogStore;
+        => _context.LogStore;
 
     // -- Connection strings (in-memory only) --
 
     public ConcurrentDictionary<string, string> SourceConnectionString
-        => MigrationJobContext.SourceConnectionString;
+        => _context.SourceConnectionString;
 
     public ConcurrentDictionary<string, string> TargetConnectionString
-        => MigrationJobContext.TargetConnectionString;
+        => _context.TargetConnectionString;
 
     // -- Auto-start flags --
 
     public ConcurrentDictionary<string, byte> PendingAutoStartJobIds
-        => MigrationJobContext.PendingAutoStartJobIds;
+        => _context.PendingAutoStartJobIds;
 
     // -- Logging --
 
     public void UpdateLogLevel(LogType level, Job job)
-        => MigrationJobContext.UpdateLogLevel(level, job);
+        => _context.UpdateLogLevel(level, job);
 
     public void AddVerboseLog(string message)
-        => MigrationJobContext.AddVerboseLog(message);
+        => _context.AddVerboseLog(message);
 
     // -- Cache --
 
     public TableMigrationCache? MigrationUnitsCache
-        => MigrationJobContext.MigrationUnitsCache;
+        => _context.MigrationUnitsCache;
 }

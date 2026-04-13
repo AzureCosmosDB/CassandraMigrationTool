@@ -50,7 +50,7 @@ public class ReplayWorker
     {
         var feedRanges = await CassandraQueries.GetFeedRangesAsync(
             _sourceSession, mu.KeyspaceName, mu.TableName,
-            msg => MigrationJobContext.AddVerboseLog(msg));
+            msg => MigrationJobContext.Instance.AddVerboseLog(msg));
 
         _log.WriteLine(
             $"Feed ranges discovered: {feedRanges.Count} for {mu.KeyspaceName}.{mu.TableName}",
@@ -300,7 +300,7 @@ public class ReplayWorker
             {
                 errorCount++;
                 Interlocked.Increment(ref mu._changeFeedErrors);
-                MigrationJobContext.AddVerboseLog(
+                MigrationJobContext.Instance.AddVerboseLog(
                     $"CF apply fail: {ex.Message}");
             }
         }
@@ -333,7 +333,7 @@ public class ReplayWorker
         SaveContinuation(mu, feedRange, continuationState);
 
         TableMigrationMapper.UpdateParentJob(mu);
-        MigrationJobContext.SaveMigrationUnit(
+        MigrationJobContext.Instance.SaveMigrationUnit(
             mu, insertCount > 0 || errorCount > 0);
 
         if (feedRange == null && (insertCount > 0 || errorCount > 0))
@@ -417,7 +417,7 @@ public class ReplayWorker
     {
         try
         {
-            var job = MigrationJobContext.CurrentlyActiveJob;
+            var job = MigrationJobContext.Instance.CurrentlyActiveJob;
             ISession newSource;
             if (_tokenRefreshManager != null
                 && TokenRefreshManager.IsLikelyAadToken(job.SourcePassword))

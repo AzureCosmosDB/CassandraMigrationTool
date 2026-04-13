@@ -66,7 +66,7 @@ public class BulkCopyEngine : IDisposable
     {
         _cts?.Cancel();
         _changeFeedManager.Stop();
-        MigrationJobContext.SaveMigrationJob(_migrationJob);
+        MigrationJobContext.Instance.SaveMigrationJob(_migrationJob);
         ProcessRunning = false;
     }
 
@@ -77,17 +77,17 @@ public class BulkCopyEngine : IDisposable
         if (!MigrationUtilities.IsOnline(_migrationJob)
             && MigrationUtilities.IsOfflineJobCompleted(_migrationJob))
         {
-            if (!MigrationJobContext.ControlledPauseRequested
+            if (!MigrationJobContext.Instance.ControlledPauseRequested
                 && _migrationJob.Status != JobStatus.Cancelled
                 && _migrationJob.Status != JobStatus.Paused)
             {
                 _migrationLog.WriteLine($"Job {_migrationJob.Id} Completed", LogType.Info);
                 _migrationJob.Status = JobStatus.Completed;
-                MigrationJobContext.SaveMigrationJob(_migrationJob);
+                MigrationJobContext.Instance.SaveMigrationJob(_migrationJob);
             }
             StopProcessing();
         }
-        else if (!MigrationJobContext.ControlledPauseRequested)
+        else if (!MigrationJobContext.Instance.ControlledPauseRequested)
         {
             _migrationLog.WriteLine("Invoke RunChangeFeedForAllTables.", LogType.Debug);
             _changeFeedManager.StartAll(_cts.Token);
@@ -101,7 +101,7 @@ public class BulkCopyEngine : IDisposable
         if (string.IsNullOrWhiteSpace(migrationUnitId))
             throw new ArgumentException("Migration unit ID is required", nameof(migrationUnitId));
 
-        var TableMigration = MigrationJobContext.GetMigrationUnit(migrationUnitId);
+        var TableMigration = MigrationJobContext.Instance.GetMigrationUnit(migrationUnitId);
         TableMigration.ParentJob = _migrationJob;
         ProcessRunning = true;
 
@@ -122,7 +122,7 @@ public class BulkCopyEngine : IDisposable
 
             for (int chunkIndex = 0; chunkIndex < TableMigration.CopyChunks.Count; chunkIndex++)
             {
-                if (MigrationJobContext.ControlledPauseRequested)
+                if (MigrationJobContext.Instance.ControlledPauseRequested)
                 {
                     _migrationLog.WriteLine($"Controlled pause before chunk {chunkIndex}", LogType.Info);
                     break;
@@ -156,7 +156,7 @@ public class BulkCopyEngine : IDisposable
                 }
             }
 
-            if (MigrationJobContext.ControlledPauseRequested)
+            if (MigrationJobContext.Instance.ControlledPauseRequested)
             {
                 _migrationLog.WriteLine("Controlled pause - exiting", LogType.Debug);
                 PauseProcessing();
@@ -174,10 +174,10 @@ public class BulkCopyEngine : IDisposable
                 TableMigrationMapper.UpdateParentJob(TableMigration);
 
                 await _changeFeedManager.AddTable(TableMigration, _cts.Token);
-                MigrationJobContext.SaveMigrationUnit(TableMigration, true);
+                MigrationJobContext.Instance.SaveMigrationUnit(TableMigration, true);
 
                 if (!MigrationUtilities.IsOnline(_migrationJob))
-                    MigrationJobContext.MigrationUnitsCache.RemoveMigrationUnit(TableMigration.Id);
+                    MigrationJobContext.Instance.MigrationUnitsCache.RemoveMigrationUnit(TableMigration.Id);
             }
             else
             {
@@ -207,7 +207,7 @@ public class BulkCopyEngine : IDisposable
             await SchemaManager.EnsureKeyspaceExistsAsync(_target, context.TargetKeyspaceName);
 
         var feedRanges = await CassandraQueries.GetFeedRangesAsync(context.SourceSession, context.KeyspaceName,
-            context.TableName, msg => MigrationJobContext.AddVerboseLog(msg));
+            context.TableName, msg => MigrationJobContext.Instance.AddVerboseLog(msg));
 
         _migrationLog.WriteLine($"{context.KeyspaceName}.{context.TableName}: " +
             $"{(rowCount >= 0 ? $"{rowCount:N0} rows" : "count unavailable")}, " +
@@ -228,12 +228,12 @@ public class BulkCopyEngine : IDisposable
         if (result == TaskResult.Success)
         {
             if (!_cts.Token.IsCancellationRequested
-                && !MigrationJobContext.ControlledPauseRequested
+                && !MigrationJobContext.Instance.ControlledPauseRequested
                 && TableMigration.CopyChunks[chunkIndex].Segments.All(seg => seg.IsProcessed == true))
             {
                 TableMigration.CopyChunks[chunkIndex].IsDownloaded = true;
             }
-            MigrationJobContext.SaveMigrationUnit(TableMigration, false);
+            MigrationJobContext.Instance.SaveMigrationUnit(TableMigration, false);
         }
         else if (result == TaskResult.Canceled)
         {

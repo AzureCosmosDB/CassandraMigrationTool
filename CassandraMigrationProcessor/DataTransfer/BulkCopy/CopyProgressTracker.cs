@@ -179,7 +179,7 @@ public class CopyProgressTracker
         if ((nowTicks - prevTicks) / TimeSpan.TicksPerSecond >= MigrationDefaults.CheckpointIntervalSeconds
             && Interlocked.CompareExchange(ref _lastCheckpointTicks, nowTicks, prevTicks) == prevTicks)
         {
-            MigrationJobContext.SaveMigrationUnit(_migrationUnit, true);
+            MigrationJobContext.Instance.SaveMigrationUnit(_migrationUnit, true);
         }
     }
 

@@ -24,15 +24,15 @@ public class JobManager
     private string _lastJobID = string.Empty;
     private readonly IConfiguration _configuration;
     private readonly MigrationContextService _ctx;
+    private readonly MigrationJobContext _migrationJobContext;
     private string? _webAppBaseUrl = null;
 
-    public JobManager(IConfiguration configuration, MigrationContextService ctx)
+    public JobManager(IConfiguration configuration, MigrationContextService ctx, MigrationJobContext migrationJobContext)
     {
         _configuration = configuration;
         _ctx = ctx;
+        _migrationJobContext = migrationJobContext;
         _log = CreateLog();
-
-        MigrationJobContext.Initialize(_configuration);
 
         MigrationUtilities.LogToFile("JobManager initialized");
     }
@@ -41,7 +41,7 @@ public class JobManager
     {
         var log = new MigrationLog();
         if (_ctx.LogStore != null)
-            log.SetStorage(MigrationJobContext.CreateLogStorageCallbacks(_ctx.LogStore));
+            log.SetStorage(_migrationJobContext.CreateLogStorageCallbacks(_ctx.LogStore));
         return log;
     }
 

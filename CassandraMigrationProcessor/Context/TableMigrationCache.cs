@@ -14,7 +14,7 @@ public class TableMigrationCache
     {
         if (string.IsNullOrEmpty(jobId))
         {
-            jobId = MigrationJobContext.CurrentlyActiveJob?.Id;
+            jobId = MigrationJobContext.Instance.CurrentlyActiveJob?.Id;
             if (string.IsNullOrEmpty(jobId))
                 return null;
         }
@@ -24,7 +24,7 @@ public class TableMigrationCache
         if (_migrationUnits.TryGetValue(cacheKey, out TableMigration? cachedMigrationUnit))
             return cachedMigrationUnit;
 
-        var mu = MigrationJobContext.GetMigrationUnitFromStorage(jobId, migrationUnitId);
+        var mu = MigrationJobContext.Instance.GetMigrationUnitFromStorage(jobId, migrationUnitId);
         if (mu != null)
             _migrationUnits[cacheKey] = mu;
 

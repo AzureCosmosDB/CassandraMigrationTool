@@ -64,7 +64,7 @@ public class MigrationWorker
                 },
                 async (mu, token) =>
                 {
-                    if (MigrationJobContext.ControlledPauseRequested)
+                    if (MigrationJobContext.Instance.ControlledPauseRequested)
                         return;
                     if (Volatile.Read(ref _consecutiveAuthErrors) >= MigrationDefaults.MaxConsecutiveAuthErrors)
                     {
@@ -112,12 +112,12 @@ public class MigrationWorker
         {
             if (!MigrationUtilities.IsMigrationUnitValid(mub) || !mub.CopyComplete)
                 continue;
-            var mu = MigrationJobContext.GetMigrationUnit(mub.Id);
+            var mu = MigrationJobContext.Instance.GetMigrationUnit(mub.Id);
             if (mu != null)
                 await _activeProcessor.ChangeFeed.AddTable(mu, CancellationToken.None);
         }
 
-        while (!cancellationToken.IsCancellationRequested && !MigrationJobContext.ControlledPauseRequested)
+        while (!cancellationToken.IsCancellationRequested && !MigrationJobContext.Instance.ControlledPauseRequested)
             await Task.Delay(2000, cancellationToken);
 
         return cancellationToken.IsCancellationRequested ? TaskResult.Canceled : TaskResult.Success;
@@ -148,17 +148,17 @@ public class MigrationWorker
         if (MigrationUtilities.IsOnline(job))
         {
             _log.WriteLine("All tables copied. Change feed replaying.", LogType.Info);
-            while (!cancellationToken.IsCancellationRequested && !MigrationJobContext.ControlledPauseRequested)
+            while (!cancellationToken.IsCancellationRequested && !MigrationJobContext.Instance.ControlledPauseRequested)
                 await Task.Delay(2000, cancellationToken);
         }
         else if (MigrationUtilities.IsOfflineJobCompleted(job)
-            && !MigrationJobContext.ControlledPauseRequested
+            && !MigrationJobContext.Instance.ControlledPauseRequested
             && job.Status != JobStatus.Cancelled
             && job.Status != JobStatus.Paused)
         {
             _log.WriteLine($"Job {job.Id} Completed", LogType.Info);
             job.Status = JobStatus.Completed;
-            MigrationJobContext.SaveMigrationJob(job);
+            MigrationJobContext.Instance.SaveMigrationJob(job);
         }
     }
 
@@ -168,7 +168,7 @@ public class MigrationWorker
         if (mu.SourceStatus == TableStatus.Failed)
         {
             mu.SourceStatus = TableStatus.OK;
-            MigrationJobContext.SaveMigrationUnit(mu, true);
+            MigrationJobContext.Instance.SaveMigrationUnit(mu, true);
         }
 
         ISession? localSourceSession = null;
@@ -182,7 +182,7 @@ public class MigrationWorker
             {
                 _log.WriteLine($"Source table {mu.KeyspaceName}.{mu.TableName} not found.", LogType.Error);
                 mu.SourceStatus = TableStatus.NotFound;
-                MigrationJobContext.SaveMigrationUnit(mu, true);
+                MigrationJobContext.Instance.SaveMigrationUnit(mu, true);
                 return;
             }
 
@@ -200,9 +200,9 @@ public class MigrationWorker
                     "yyyy-MM-ddTHH:mm:ss.fffZ", System.Globalization.CultureInfo.InvariantCulture);
             }
 
-            MigrationJobContext.SaveMigrationUnit(mu, true);
+            MigrationJobContext.Instance.SaveMigrationUnit(mu, true);
             await RunCopyForUnitAsync(job, config, session, mu, cancellationToken);
-            MigrationJobContext.SaveMigrationUnit(mu, true);
+            MigrationJobContext.Instance.SaveMigrationUnit(mu, true);
         }
         catch (OperationCanceledException) { throw; }
         catch (Exception ex)
@@ -261,7 +261,7 @@ public class MigrationWorker
         {
             var rangeCount = (await CassandraQueries.GetFeedRangesAsync(session,
                 mu.KeyspaceName, mu.TableName,
-                msg => MigrationJobContext.AddVerboseLog(msg))).Count;
+                msg => MigrationJobContext.Instance.AddVerboseLog(msg))).Count;
             _log.WriteLine($"Feed ranges: {rangeCount} for {mu.KeyspaceName}.{mu.TableName}", LogType.Debug);
         }
         catch (Exception ex)
@@ -285,7 +285,7 @@ public class MigrationWorker
             Interlocked.Exchange(ref _consecutiveAuthErrors, 0);
         }
 
-        MigrationJobContext.SaveMigrationUnit(mu, true);
+        MigrationJobContext.Instance.SaveMigrationUnit(mu, true);
     }
 
     private void EnsureSourceSession(Job job, string keyspace)

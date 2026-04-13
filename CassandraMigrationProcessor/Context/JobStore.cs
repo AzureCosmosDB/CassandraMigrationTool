@@ -39,7 +39,7 @@ public static class JobStore
         var filePath = GetJobDefinitionPath(job.Id);
         string json = JsonConvert.SerializeObject(
             job, Formatting.Indented);
-        MigrationJobContext.Store.Write(filePath, json);
+        MigrationJobContext.Instance.Store.Write(filePath, json);
     }
 
     internal static Job? LoadJob(string jobId)
@@ -50,7 +50,7 @@ public static class JobStore
         return MigrationUtilities.SafeExecute(() =>
         {
             var filePath = GetJobDefinitionPath(jobId);
-            var json = MigrationJobContext.Store.Read(
+            var json = MigrationJobContext.Instance.Store.Read(
                 filePath);
             var loadedObject =
                 JsonConvert.DeserializeObject<Job>(json);
@@ -63,9 +63,9 @@ public static class JobStore
 
     public static Job? GetJob(string jobId)
     {
-        if (jobId == MigrationJobContext.ActiveMigrationJobId
-            && MigrationJobContext.CurrentlyActiveJob != null)
-            return MigrationJobContext.CurrentlyActiveJob;
+        if (jobId == MigrationJobContext.Instance.ActiveMigrationJobId
+            && MigrationJobContext.Instance.CurrentlyActiveJob != null)
+            return MigrationJobContext.Instance.CurrentlyActiveJob;
 
         return LoadJob(jobId);
     }
@@ -90,10 +90,10 @@ public static class JobStore
                 SerializeAndPersist(job);
                 _jobs[job.Id] = job;
                 if (!string.IsNullOrEmpty(
-                        MigrationJobContext
+                        MigrationJobContext.Instance
                             .ActiveMigrationJobId)
                     && job.Id
-                        == MigrationJobContext
+                        == MigrationJobContext.Instance
                             .ActiveMigrationJobId)
                 {
                     lock (_cacheLock)
@@ -108,7 +108,7 @@ public static class JobStore
 
     internal static void PersistActiveJobUnderLock()
     {
-        var job = MigrationJobContext.CurrentlyActiveJob;
+        var job = MigrationJobContext.Instance.CurrentlyActiveJob;
         if (job != null)
         {
             lock (_writeJobLock)

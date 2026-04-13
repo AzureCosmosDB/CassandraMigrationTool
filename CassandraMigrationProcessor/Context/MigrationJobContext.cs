@@ -12,12 +12,18 @@ using System.Threading.Tasks;
 using CassandraMigrationProcessor.Models;
 
 namespace CassandraMigrationProcessor.Context;
-public static class MigrationJobContext
+public class MigrationJobContext
 {
-    private static readonly object _writeJobListLock = new object();
-    private static MigrationLog _log;
+    /// <summary>
+    /// Static accessor for backward compatibility in the Processor
+    /// library (no DI container). Set automatically by Initialize().
+    /// </summary>
+    public static MigrationJobContext Instance { get; private set; }
 
-    public static TableMigrationCache MigrationUnitsCache
+    private readonly object _writeJobListLock = new object();
+    private MigrationLog _log;
+
+    public TableMigrationCache MigrationUnitsCache
     { get; set; }
 
     /// <summary>
@@ -25,7 +31,7 @@ public static class MigrationJobContext
     /// In-memory only. Never persisted to disk.
     /// Cleared on app restart — user must re-enter on resume.
     /// </summary>
-    public static ConcurrentDictionary<string, string> SourceConnectionString
+    public ConcurrentDictionary<string, string> SourceConnectionString
     { get; set; } = new();
 
     /// <summary>
@@ -33,7 +39,7 @@ public static class MigrationJobContext
     /// In-memory only. Never persisted to disk.
     /// Cleared on app restart — user must re-enter on resume.
     /// </summary>
-    public static ConcurrentDictionary<string, string> TargetConnectionString
+    public ConcurrentDictionary<string, string> TargetConnectionString
     { get; set; } = new();
 
     /// <summary>
@@ -41,29 +47,29 @@ public static class MigrationJobContext
     /// the viewer page opens. Cleared after the job starts.
     /// Never persisted to disk.
     /// </summary>
-    public static ConcurrentDictionary<string, byte> PendingAutoStartJobIds
+    public ConcurrentDictionary<string, byte> PendingAutoStartJobIds
     { get; set; } = new();
 
-    private static volatile string _activeMigrationJobId;
-    public static string ActiveMigrationJobId
+    private volatile string _activeMigrationJobId;
+    public string ActiveMigrationJobId
     {
         get => _activeMigrationJobId;
         set => _activeMigrationJobId = value;
     }
 
-    private static volatile bool _controlledPauseRequested;
-    public static bool ControlledPauseRequested
+    private volatile bool _controlledPauseRequested;
+    public bool ControlledPauseRequested
         => _controlledPauseRequested;
 
-    public static JobIndex JobIndex { get; private set; }
+    public JobIndex JobIndex { get; private set; }
 
-    public static void ResetControlledPause()
+    public void ResetControlledPause()
     {
         AddVerboseLog("Resetting controlled pause request.");
         _controlledPauseRequested = false;
     }
 
-    public static void RequestControlledPause(string location)
+    public void RequestControlledPause(string location)
     {
         if (_log == null)
             throw new Exception("MigrationLog not initialized.");
@@ -73,7 +79,7 @@ public static class MigrationJobContext
         _controlledPauseRequested = true;
     }
 
-    public static void UpdateLogLevel(
+    public void UpdateLogLevel(
         LogType level, Job job)
     {
         if (CurrentlyActiveJob == null
@@ -90,7 +96,7 @@ public static class MigrationJobContext
         }
     }
 
-    public static void AddVerboseLog(string message)
+    public void AddVerboseLog(string message)
     {
         if (_log == null
             || CurrentlyActiveJob == null
@@ -101,7 +107,7 @@ public static class MigrationJobContext
         _log?.WriteLine(message, LogType.Verbose);
     }
 
-    public static LogStorageCallbacks CreateLogStorageCallbacks(
+    public LogStorageCallbacks CreateLogStorageCallbacks(
         Persistence.ILogStorage store)
     {
         return new LogStorageCallbacks
@@ -121,7 +127,7 @@ public static class MigrationJobContext
         };
     }
 
-    public static Job? CurrentlyActiveJob
+    public Job? CurrentlyActiveJob
     {
         get
         {
@@ -147,12 +153,13 @@ public static class MigrationJobContext
         }
     }
 
-    public static IDocumentStorage? Store { get; private set; }
-    public static ILogStorage? LogStore { get; private set; }
-    public static string? AppId { get; set; }
+    public IDocumentStorage? Store { get; private set; }
+    public ILogStorage? LogStore { get; private set; }
+    public string? AppId { get; set; }
 
-    public static void Initialize(IConfiguration configuration)
+    public void Initialize(IConfiguration configuration)
     {
+        Instance = this;
         MigrationUtilities.LogToFile("MigrationJobContext.Initialize started");
 
         var stateStoreCSorPath = string.Empty;
@@ -198,40 +205,40 @@ public static class MigrationJobContext
 
     // Facade: delegates to JobStore
 
-    public static Job? GetMigrationJob(string jobId)
+    public Job? GetMigrationJob(string jobId)
         => JobStore.GetJob(jobId);
 
     // Facade: delegates to JobStore
-    public static List<Job> PopulateMigrationJobs(
+    public List<Job> PopulateMigrationJobs(
         List<string> ids)
         => JobStore.GetAllJobs(ids);
 
     // Facade: delegates to JobStore
-    public static bool SaveMigrationJob(Job job)
+    public bool SaveMigrationJob(Job job)
         => JobStore.SaveJob(job);
 
     // Facade: delegates to JobStore
-    public static void ClearCurrentlyActiveJobCache()
+    public void ClearCurrentlyActiveJobCache()
         => JobStore.ClearCache();
 
     // Facade: delegates to UnitStore
-    public static bool SaveMigrationUnit(
+    public bool SaveMigrationUnit(
         TableMigration mu, bool updateParent)
         => UnitStore.SaveUnit(mu, updateParent);
 
     // Facade: delegates to UnitStore
-    public static TableMigration GetMigrationUnit(
+    public TableMigration GetMigrationUnit(
         string key, string jobId = null)
         => UnitStore.GetUnit(key, jobId);
 
     // Facade: delegates to UnitStore
-    public static TableMigration GetMigrationUnitFromStorage(
+    public TableMigration GetMigrationUnitFromStorage(
         string jobId, string unitId)
         => UnitStore.GetFromStorage(jobId, unitId);
 
     // -- JobIndex (stays here: global state) --
 
-    private static JobIndex LoadJobList(
+    private JobIndex LoadJobList(
         out bool notFound, out string errorMessage)
     {
         errorMessage = string.Empty;
@@ -281,7 +288,7 @@ public static class MigrationJobContext
         }
     }
 
-    public static bool SaveJobList()
+    public bool SaveJobList()
     {
         return MigrationUtilities.SafeExecute(() =>
         {
