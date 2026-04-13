@@ -1,3 +1,5 @@
+using Cassandra;
+using CassandraMigrationProcessor.CassandraDriver;
 using CassandraMigrationProcessor.Infrastructure;
 using CassandraMigrationProcessor.Models;
 using System;
@@ -21,28 +23,37 @@ internal class PartitionSeeder
         Channel<Partition> Pool,
         HashSet<string> Completed,
         Dictionary<string, string?> Checkpoints,
+        List<string> FeedRanges,
         int PendingCount);
 
-    public async Task<(SeedResult? Result, bool AllRangesComplete)> SeedAsync(PipelineRequest request)
+    /// <summary>
+    /// Discovers feed ranges, filters completed, restores
+    /// checkpoints, and seeds the partition pool channel.
+    /// </summary>
+    public async Task<(SeedResult? Result, bool AllRangesComplete)> DiscoverAndSeedAsync(
+        ISession sourceSession, TableMigration mu, TableContext context)
     {
-        var mu = request.TableMigration;
-        var ctx0 = request.Context;
+        var feedRanges = await CassandraQueries.GetFeedRangesAsync(
+            sourceSession, context.KeyspaceName, context.TableName);
+
+        _log.WriteLine($"{context.KeyspaceName}.{context.TableName}: {feedRanges.Count} feed range(s)", LogType.Info);
+
         var completed = mu.CompletedCopyFeedRanges;
         var checkpoints = mu.CopyFeedRangeCheckpoints;
 
         List<string> pendingRanges;
         lock (checkpoints)
         {
-            pendingRanges = request.FeedRanges.Where(r => !completed.Contains(r)).ToList();
+            pendingRanges = feedRanges.Where(r => !completed.Contains(r)).ToList();
         }
 
         if (pendingRanges.Count == 0)
         {
-            _log.WriteLine($"All {request.FeedRanges.Count} ranges already completed for {ctx0.KeyspaceName}.{ctx0.TableName}", LogType.Info);
+            _log.WriteLine($"All {feedRanges.Count} ranges already completed for {context.KeyspaceName}.{context.TableName}", LogType.Info);
             return (null, AllRangesComplete: true);
         }
 
-        _log.WriteLine($"Pipeline copy: {pendingRanges.Count} ranges ({completed.Count} already done) for {ctx0.KeyspaceName}.{ctx0.TableName}", LogType.Info);
+        _log.WriteLine($"Pipeline copy: {pendingRanges.Count} ranges ({completed.Count} already done) for {context.KeyspaceName}.{context.TableName}", LogType.Info);
 
         var pool = Channel.CreateBounded<Partition>(new BoundedChannelOptions(pendingRanges.Count)
             { FullMode = BoundedChannelFullMode.Wait });
@@ -61,6 +72,6 @@ internal class PartitionSeeder
         if (resumedCount > 0)
             _log.WriteLine($"Resuming {resumedCount}/{pendingRanges.Count} ranges from checkpoint", LogType.Info);
 
-        return (new SeedResult(pool, completed, checkpoints, pendingRanges.Count), AllRangesComplete: false);
+        return (new SeedResult(pool, completed, checkpoints, feedRanges, pendingRanges.Count), AllRangesComplete: false);
     }
 }

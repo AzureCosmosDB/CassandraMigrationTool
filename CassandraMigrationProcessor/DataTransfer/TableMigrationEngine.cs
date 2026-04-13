@@ -212,14 +212,6 @@ public class TableMigrationEngine : IDisposable
         if (_target != null)
             await SchemaManager.EnsureKeyspaceExistsAsync(_target, context.TargetKeyspaceName);
 
-        // Discover feed ranges
-        var feedRanges = await CassandraQueries.GetFeedRangesAsync(context.SourceSession, context.KeyspaceName,
-            context.TableName, msg => MigrationJobContext.Instance.AddVerboseLog(msg));
-
-        _migrationLog.WriteLine($"{context.KeyspaceName}.{context.TableName}: " +
-            $"{(rowCount >= 0 ? $"{rowCount:N0} rows" : "count unavailable")}, " +
-            $"{feedRanges.Count} feed range(s)", LogType.Info);
-
         if (_migrationJob.IsSimulatedRun)
         {
             _migrationLog.WriteLine($"Simulated: {context.KeyspaceName}.{context.TableName}", LogType.Info);
@@ -229,12 +221,10 @@ public class TableMigrationEngine : IDisposable
         var target = _target ?? throw new InvalidOperationException(
             "Target session not initialized for non-simulated run");
 
-        var request = new PipelineRequest(tableMigration, chunkIndex, initialPercent,
-            contributionFactor, rowCount, context, feedRanges);
-
-        // Seed → Schema → Execute → Finalize
+        // Discover + Seed → Schema → Execute → Finalize
         var seeder = new PartitionSeeder(_migrationLog);
-        var (seedResult, allComplete) = await seeder.SeedAsync(request);
+        var (seedResult, allComplete) = await seeder.DiscoverAndSeedAsync(
+            context.SourceSession, tableMigration, context);
         if (allComplete)
         {
             MarkChunkComplete(tableMigration, chunkIndex);
@@ -242,7 +232,14 @@ public class TableMigrationEngine : IDisposable
         }
 
         var seed = seedResult ?? throw new InvalidOperationException(
-            "SeedAsync returned null result when ranges are still pending");
+            "Seeder returned null result when ranges are still pending");
+
+        _migrationLog.WriteLine($"{context.KeyspaceName}.{context.TableName}: " +
+            $"{(rowCount >= 0 ? $"{rowCount:N0} rows" : "count unavailable")}, " +
+            $"{seed.FeedRanges.Count} feed range(s)", LogType.Info);
+
+        var request = new PipelineRequest(tableMigration, chunkIndex, initialPercent,
+            contributionFactor, rowCount, context, seed.FeedRanges);
 
         var migrator = new SchemaMigrator(_migrationLog);
         var schema = await migrator.SyncAsync(context.SourceSession, target, context);
