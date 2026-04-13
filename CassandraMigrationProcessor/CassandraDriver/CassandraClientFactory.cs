@@ -417,7 +417,7 @@ public static class CassandraClientFactory
     public static ISession CreateTargetSession(
         MigrationLog MigrationLog, Job job, string keyspace)
     {
-        // Sync required: constructor context (BulkCopyEngine)
+        // Sync required: constructor context (TableMigrationEngine)
         return CreateTargetSessionAsync(MigrationLog, job, keyspace)
             .GetAwaiter().GetResult();
     }

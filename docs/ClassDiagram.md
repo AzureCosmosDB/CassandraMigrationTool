@@ -9,7 +9,7 @@ Program.cs (DI setup)
  ├─► JobManager(IConfiguration, MigrationContextService)
  │    ├─► MigrationLog()                         [creates per job]
  │    ├─► MigrationWorker(MigrationLog)          [creates per job]
- │    │    └─► BulkCopyEngine(log, sourceSession, config, job, worker)
+ │    │    └─► TableMigrationEngine(log, sourceSession, config, job, worker)
  │    │         │
  │    │         ├─► CopyProgressTracker(log, keyspace, table, workerCount, ...)
  │    │         │    └─► ProgressCounters()
@@ -75,7 +75,7 @@ WorkerConfig(SourceConnection, TargetConnection, Columns, Context)
 RangeState(Completed, Checkpoints, FeedRanges)
 PipelineContext(PartitionPool, Worker, Ranges, Counters, Tracker)
 ReadResult(Rows, WorkChunk, IsLastPage)                          [nested in PageReader]
-SeedResult(Pool, Completed, Checkpoints, PendingCount)            [nested in BulkCopyEngine]
+SeedResult(Pool, Completed, Checkpoints, PendingCount)            [nested in TableMigrationEngine]
 ```
 
 ## Models (mutable POCOs, JSON-serialized)
@@ -112,11 +112,11 @@ JobIndex
 ```
 JobManager.StartMigration(jobId)
   └─► MigrationWorker.ExecuteAsync(job)
-       └─► [parallel per table] BulkCopyEngine.StartProcessAsync(unitId)
+       └─► [parallel per table] TableMigrationEngine.StartProcessAsync(unitId)
             └─► ProcessChunkAsync(tableMigration, chunkIndex, context)
                  ├── CassandraQueries.GetRowCountAsync()
                  ├── CassandraQueries.GetFeedRangesAsync()
-                 └─► Pipeline stages (inline in BulkCopyEngine):
+                 └─► Pipeline stages (inline in TableMigrationEngine):
                       ├── Stage 1: SeedAsync → Channel<Partition>
                       ├── Stage 2: SyncSchemaAsync
                       ├── Stage 3: ExecuteAsync → WorkerPool.Start()
@@ -134,7 +134,7 @@ JobManager.StartMigration(jobId)
 ## Data Flow: Change Feed Replay
 
 ```
-BulkCopyEngine (after table completes)
+TableMigrationEngine (after table completes)
   └─► ChangeFeedManager.AddTable(tableMigration, cts)
        └─► ReplayProcessor.AddTableToProcess(unitId, cts)
             └─► ReplayWorker.RunAsync(tableMigration, ct)
@@ -150,7 +150,7 @@ BulkCopyEngine (after table completes)
 ## Inheritance
 
 ```
-BulkCopyEngine (IDisposable)
+TableMigrationEngine (IDisposable)
      fields: _sourceSession (readonly), _targetSession (lazy via EnsureTargetSession)
      fields: _log, _job, _config, _cancellation, _worker, _changeFeedManager
 ```
@@ -161,7 +161,7 @@ BulkCopyEngine (IDisposable)
 ┌─────────────────────────┬──────────────────────────────────┬──────────────┐
 │ Session                 │ Purpose                          │ Lifetime     │
 ├─────────────────────────┼──────────────────────────────────┼──────────────┤
-│ BulkCopyEngine          │ Metadata: row count, feed ranges │ Caller-owned │
+│ TableMigrationEngine          │ Metadata: row count, feed ranges │ Caller-owned │
 │   ._sourceSession       │                                  │ (readonly)   │
 ├─────────────────────────┼──────────────────────────────────┼──────────────┤
 │ EnsureTargetSession()   │ Schema sync, keyspace creation   │ Lazy, one    │

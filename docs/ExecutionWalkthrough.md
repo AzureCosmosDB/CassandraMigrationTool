@@ -30,14 +30,14 @@ Creates source session: CassandraClientFactory.CreateSourceSession(...)
 Creates TokenRefreshManager (for AAD token refresh)
 Parallel.ForEachAsync(units, maxParallel, (unit, ct) => ProcessWithRetryAsync(...))
   └── per table: ProcessMigrationUnitAsync(job, config, unit, ct)
-        └── Creates BulkCopyEngine(log, sourceSession, config, job, tokenRefreshManager)
+        └── Creates TableMigrationEngine(log, sourceSession, config, job, tokenRefreshManager)
         └── Calls engine.StartProcessAsync(unitId)
 On completion: engine.StopOfflineOrInvokeChangeFeed()
 ```
 
 ## 3. Bulk Copy Engine (Per-Table Orchestration)
 
-### `BulkCopyEngine.StartProcessAsync(migrationUnitId)`
+### `TableMigrationEngine.StartProcessAsync(migrationUnitId)`
 ```
 Loads: TableMigration from MigrationJobContext
 Creates: TableContext(keyspace, table, targetKeyspace, targetTable, sourceSession)
@@ -54,7 +54,7 @@ On all chunks complete:
   └── Saves unit to disk
 ```
 
-### `BulkCopyEngine.ProcessChunkAsync(unit, chunkIndex, context, ...)`
+### `TableMigrationEngine.ProcessChunkAsync(unit, chunkIndex, context, ...)`
 ```
 1. Count rows: CassandraQueries.GetRowCountAsync(sourceSession, keyspace, table)
 2. Ensure target: SchemaManager.EnsureKeyspaceExistsAsync()
@@ -64,7 +64,7 @@ On all chunks complete:
    SeedAsync → SyncSchemaAsync → ExecuteAsync → Finalize
 ```
 
-## 4. Pipeline Execution (4-Stage Pattern, within BulkCopyEngine)
+## 4. Pipeline Execution (4-Stage Pattern, within TableMigrationEngine)
 
 ```
 Stage 1: SeedAsync(request)
@@ -174,7 +174,7 @@ PollLoopAsync(mu, feedRange, ps, colNames, ct):
 MigrationWorker
   └── creates _sourceSession (metadata: row count, feed ranges)
 
-BulkCopyEngine
+TableMigrationEngine
   └── creates _target session in constructor (schema sync, keyspace creation)
   └── passes target session to pipeline stages and ChangeFeedManager
 

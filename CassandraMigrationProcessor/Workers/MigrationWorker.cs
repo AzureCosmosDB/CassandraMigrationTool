@@ -19,10 +19,10 @@ namespace CassandraMigrationProcessor.DataTransfer;
 public class MigrationWorker
 {
     private readonly MigrationLog _log;
-    private BulkCopyEngine? _activeProcessor;
+    private TableMigrationEngine? _activeProcessor;
     private ISession? _sourceSession;
     private int _consecutiveAuthErrors;
-    private readonly ConcurrentDictionary<string, BulkCopyEngine> _activeProcessors = new();
+    private readonly ConcurrentDictionary<string, TableMigrationEngine> _activeProcessors = new();
     private readonly TokenRefreshManager _tokenRefreshManager;
 
     public MigrationWorker(MigrationLog migrationLog)
@@ -106,7 +106,7 @@ public class MigrationWorker
         EnsureSourceSession(job, job.Tables.First().KeyspaceName);
         var sourceSession = _sourceSession ?? throw new InvalidOperationException(
             "Source session not initialized after EnsureSourceSession");
-        _activeProcessor = new BulkCopyEngine(_log, sourceSession, config, job, _tokenRefreshManager);
+        _activeProcessor = new TableMigrationEngine(_log, sourceSession, config, job, _tokenRefreshManager);
 
         foreach (var mub in job.Tables)
         {
@@ -241,7 +241,7 @@ public class MigrationWorker
     private async Task RunCopyForUnitAsync(Job job, AppSettings config,
         ISession sourceSession, TableMigration mu, CancellationToken ct)
     {
-        var processor = new BulkCopyEngine(_log, sourceSession, config, job, _tokenRefreshManager);
+        var processor = new TableMigrationEngine(_log, sourceSession, config, job, _tokenRefreshManager);
         _activeProcessors[mu.Id] = processor;
         ct.ThrowIfCancellationRequested();
 

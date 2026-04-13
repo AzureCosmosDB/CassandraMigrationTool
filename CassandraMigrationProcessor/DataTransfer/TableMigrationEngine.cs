@@ -18,7 +18,7 @@ namespace CassandraMigrationProcessor.DataTransfer;
 /// chunk retry loop, and the per-chunk pipeline
 /// (count → discover → seed → schema → execute → finalize).
 /// </summary>
-public class BulkCopyEngine : IDisposable
+public class TableMigrationEngine : IDisposable
 {
     private readonly MigrationLog _migrationLog;
     private readonly Job _migrationJob;
@@ -32,7 +32,7 @@ public class BulkCopyEngine : IDisposable
 
     public ChangeFeedManager ChangeFeed => _changeFeedManager;
 
-    public BulkCopyEngine(MigrationLog log, ISession sourceSession, AppSettings config, Job job,
+    public TableMigrationEngine(MigrationLog log, ISession sourceSession, AppSettings config, Job job,
         TokenRefreshManager? tokenRefreshManager = null)
     {
         _migrationLog = log ?? throw new ArgumentNullException(nameof(log));
@@ -370,6 +370,6 @@ public class BulkCopyEngine : IDisposable
     {
         _changeFeedManager?.Dispose();
         _cts?.Dispose();
-        MigrationUtilities.SafeDispose(_target, "BulkCopyEngine target session");
+        MigrationUtilities.SafeDispose(_target, "TableMigrationEngine target session");
     }
 }

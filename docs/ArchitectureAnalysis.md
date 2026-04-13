@@ -85,7 +85,7 @@ CassandraMigration.sln
 
 | File | Purpose |
 |------|---------|
-| `BulkCopyEngine.cs` | Orchestrator: `StartProcessAsync` → per-chunk retry loop → delegates to Runner |
+| `TableMigrationEngine.cs` | Orchestrator: `StartProcessAsync` → per-chunk retry loop → delegates to Runner |
 | `PipelineConfig.cs` | Resolved immutable pipeline settings (record) from job + app settings |
 | `ProgressConfig` | Record (in PipelineContext.cs): chunk index, initial percent, contribution factor, total row count |
 
@@ -115,7 +115,7 @@ CassandraMigration.sln
 
 | File | Purpose |
 |------|---------|
-| `MigrationWorker.cs` | Per-job worker: creates `BulkCopyEngine`, manages parallel table execution |
+| `MigrationWorker.cs` | Per-job worker: creates `TableMigrationEngine`, manages parallel table execution |
 
 ---
 
@@ -177,7 +177,7 @@ CassandraMigration.sln
 ### Session Roles
 | Session | Purpose | Lifetime |
 |---------|---------|----------|
-| `_sourceSession` (BulkCopyEngine) | Metadata: row count, feed ranges | Caller-owned, readonly |
+| `_sourceSession` (TableMigrationEngine) | Metadata: row count, feed ranges | Caller-owned, readonly |
 | `EnsureTargetSession()` | Schema sync, keyspace creation | Lazy, one per engine |
 | `PageReader._sourceSession` | Per-worker data reads | Worker-scoped |
 | `PageWriter._targetSession` | Per-worker data writes | Worker-scoped |
