@@ -62,20 +62,20 @@ namespace CassandraMigrationProcessor.DataTransfer.BulkCopy
         {
             var ctx0 = request.Context;
 
-            var seed = await SeedAsync(request);
-            if (seed == null) return TaskResult.Success;
+            var (seed, allComplete) = await SeedAsync(request);
+            if (allComplete) return TaskResult.Success;
 
             var schema = await SyncSchemaAsync(ctx0);
             if (schema == null) return TaskResult.Abort;
 
-            var execution = await ExecuteAsync(request, seed, schema);
+            var execution = await ExecuteAsync(request, seed!, schema);
 
             return Finalize(execution, request);
         }
 
         // ── Stage 1: Seed partitions ──
 
-        private async Task<SeedResult?> SeedAsync(PipelineRequest request)
+        private async Task<(SeedResult? Result, bool AllRangesComplete)> SeedAsync(PipelineRequest request)
         {
             var mu = request.TableMigration;
             var ctx0 = request.Context;
@@ -91,7 +91,7 @@ namespace CassandraMigrationProcessor.DataTransfer.BulkCopy
             if (pendingRanges.Count == 0)
             {
                 _log.WriteLine($"All {request.FeedRanges.Count} ranges already completed for {ctx0.KeyspaceName}.{ctx0.TableName}", LogType.Info);
-                return null;
+                return (null, AllRangesComplete: true);
             }
 
             _log.WriteLine($"Pipeline copy: {pendingRanges.Count} ranges ({completed.Count} already done) for {ctx0.KeyspaceName}.{ctx0.TableName}", LogType.Info);
@@ -113,7 +113,7 @@ namespace CassandraMigrationProcessor.DataTransfer.BulkCopy
             if (resumedCount > 0)
                 _log.WriteLine($"Resuming {resumedCount}/{pendingRanges.Count} ranges from checkpoint", LogType.Info);
 
-            return new SeedResult(pool, completed, checkpoints, pendingRanges.Count);
+            return (new SeedResult(pool, completed, checkpoints, pendingRanges.Count), AllRangesComplete: false);
         }
 
         // ── Stage 2: Schema sync ──
