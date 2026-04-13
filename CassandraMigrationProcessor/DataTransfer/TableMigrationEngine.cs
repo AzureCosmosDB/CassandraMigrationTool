@@ -23,7 +23,7 @@ public class TableMigrationEngine : IDisposable
     private readonly Job _migrationJob;
     private readonly PipelineConfig _pipelineConfig;
     private readonly ISession _source;
-    private readonly ISession? _target;
+    private readonly ISession _target;
     private readonly CancellationTokenSource _cts;
     private readonly ChangeFeedManager _changeFeedManager;
 
@@ -41,11 +41,9 @@ public class TableMigrationEngine : IDisposable
         _migrationJob = job;
         _cts = new CancellationTokenSource();
         _target = job.IsSimulatedRun
-            ? null
+            ? new NullSession()
             : CassandraClientFactory.CreateTargetSession(log, job, string.Empty);
-        var targetForChangeFeed = _target ?? throw new InvalidOperationException(
-            "Target session is required for ChangeFeedManager but was not created");
-        _changeFeedManager = new ChangeFeedManager(log, job, config, targetForChangeFeed, tokenRefreshManager);
+        _changeFeedManager = new ChangeFeedManager(log, job, config, _target, tokenRefreshManager);
     }
 
     // ── Lifecycle ──
@@ -214,17 +212,13 @@ public class TableMigrationEngine : IDisposable
         tableMigration.CopyChunks[chunkIndex].SourceQueryRowCount = rowCount;
 
         // Ensure keyspace
-        if (_target != null)
-            await SchemaManager.EnsureKeyspaceExistsAsync(_target, context.TargetKeyspaceName);
+        await SchemaManager.EnsureKeyspaceExistsAsync(_target, context.TargetKeyspaceName);
 
         if (_migrationJob.IsSimulatedRun)
         {
             _migrationLog.WriteLine($"Simulated: {context.KeyspaceName}.{context.TableName}", LogType.Info);
             return TaskResult.Success;
         }
-
-        var target = _target ?? throw new InvalidOperationException(
-            "Target session not initialized for non-simulated run");
 
         // Discover + Seed → Schema → Execute → Finalize
         var seeder = new PartitionSeeder(_migrationLog);
@@ -247,11 +241,11 @@ public class TableMigrationEngine : IDisposable
             contributionFactor, rowCount, context, seed.FeedRanges);
 
         var migrator = new SchemaMigrator(_migrationLog);
-        var schema = await migrator.SyncAsync(context.SourceSession, target, context);
+        var schema = await migrator.SyncAsync(context.SourceSession, _target, context);
         if (schema == null) return TaskResult.Abort;
 
         var executor = new WorkerExecutor(_migrationLog, _migrationJob, _pipelineConfig, _cts.Token);
-        var execution = await executor.ExecuteAsync(request, seed, schema, target);
+        var execution = await executor.ExecuteAsync(request, seed, schema, _target);
         var result = executor.Finalize(execution, request);
 
         // Post-pipeline bookkeeping

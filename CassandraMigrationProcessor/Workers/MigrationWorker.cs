@@ -186,13 +186,11 @@ public class MigrationWorker
                 return;
             }
 
-            if (!job.IsSimulatedRun)
-                await SetupTargetSchemaAsync(job, session, mu);
+            await SetupTargetSchemaAsync(job, session, mu);
 
             mu.BulkCopyStartedOn ??= DateTime.UtcNow;
 
-            if (!job.IsSimulatedRun)
-                await LogFeedRangesAsync(session, mu);
+            await LogFeedRangesAsync(session, mu);
 
             if (MigrationUtilities.IsOnline(job))
             {
