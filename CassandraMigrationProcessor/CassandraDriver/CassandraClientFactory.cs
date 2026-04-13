@@ -39,43 +39,17 @@ public static class CassandraClientFactory
         tokenRefreshManager?.CacheSourceConnectionParams(
             contactPoint, port, username, keyspace);
 
-        var sslOptions = new SSLOptions(
-            SslProtocols.Tls12, true,
-            (sender, certificate, chain, sslPolicyErrors) =>
-            {
-                return true; // Azure MI/Cosmos certs may have chain+name issues
-            });
-        sslOptions.SetHostNameResolver(
-            (ipAddress) => contactPoint);
+        // Source always uses SSL (Cosmos DB requires it)
+        var builder = CreateBaseBuilder(
+            contactPoint, port, username, password,
+            useSsl: true);
 
         const int MaxRetries = 5;
         for (int attempt = 1; attempt <= MaxRetries; attempt++)
         {
-            Cluster? cluster = null;
             try
             {
-                cluster = Cluster.Builder()
-                    .AddContactPoint(contactPoint)
-                    .WithPort(port)
-                    .WithAuthProvider(
-                        new PlainTextAuthProvider(
-                            username, password))
-                    .WithSSL(sslOptions)
-                    .WithSocketOptions(new SocketOptions()
-                        .SetReadTimeoutMillis(ReadTimeoutMs)
-                        .SetConnectTimeoutMillis(ConnectTimeoutMs))
-                    .WithQueryOptions(new QueryOptions()
-                        .SetConsistencyLevel(
-                            ConsistencyLevel.LocalQuorum))
-                    .WithReconnectionPolicy(
-                        new ExponentialReconnectionPolicy(
-                            ReconnectBaseDelayMs, ReconnectMaxDelayMs))
-                    .Build();
-
-                var session =
-                    string.IsNullOrWhiteSpace(keyspace)
-                        ? cluster.Connect()
-                        : cluster.Connect(keyspace);
+                var session = ConnectCluster(builder, keyspace);
 
                 if (TokenRefreshManager.IsLikelyAadToken(password))
                 {
@@ -89,7 +63,6 @@ public static class CassandraClientFactory
                 IsRetryableException(ex)
                 && attempt < MaxRetries)
             {
-                cluster?.Dispose();
                 int delayMs = GetRetryDelayMs(ex, attempt);
                 MigrationLog.WriteLine(
                     $"Source connect retry " +
@@ -100,27 +73,7 @@ public static class CassandraClientFactory
         }
 
         // Final attempt — let exception propagate
-        var finalCluster = Cluster.Builder()
-            .AddContactPoint(contactPoint)
-            .WithPort(port)
-            .WithAuthProvider(
-                new PlainTextAuthProvider(username, password))
-            .WithSSL(sslOptions)
-            .WithSocketOptions(new SocketOptions()
-                .SetReadTimeoutMillis(ReadTimeoutMs)
-                .SetConnectTimeoutMillis(ConnectTimeoutMs))
-            .WithQueryOptions(new QueryOptions()
-                .SetConsistencyLevel(
-                    ConsistencyLevel.LocalQuorum))
-            .WithReconnectionPolicy(
-                new ExponentialReconnectionPolicy(
-                    ReconnectBaseDelayMs, ReconnectMaxDelayMs))
-            .Build();
-
-        var finalSession =
-            string.IsNullOrWhiteSpace(keyspace)
-                ? finalCluster.Connect()
-                : finalCluster.Connect(keyspace);
+        var finalSession = ConnectCluster(builder, keyspace);
 
         if (TokenRefreshManager.IsLikelyAadToken(password))
         {
@@ -207,11 +160,11 @@ public static class CassandraClientFactory
         {
             try
             {
-                var session = BuildAndConnect(
-                    contactPoint, port, username, password,
-                    keyspace, useSsl: true,
-                    maxConnectionsPerHost);
-                return session;
+                return ConnectCluster(
+                    CreateBaseBuilder(
+                        contactPoint, port, username, password,
+                        useSsl: true, maxConnectionsPerHost),
+                    keyspace);
             }
             catch (Exception ex)
             {
@@ -221,11 +174,11 @@ public static class CassandraClientFactory
 
         try
         {
-            var session = BuildAndConnect(
-                contactPoint, port, username, password,
-                keyspace, useSsl: false,
-                maxConnectionsPerHost);
-            return session;
+            return ConnectCluster(
+                CreateBaseBuilder(
+                    contactPoint, port, username, password,
+                    useSsl: false, maxConnectionsPerHost),
+                keyspace);
         }
         catch (Exception ex)
         {
@@ -238,64 +191,63 @@ public static class CassandraClientFactory
         }
     }
 
-    private static ISession BuildAndConnect(
+    private static Builder CreateBaseBuilder(
         string contactPoint, int port,
-        string username, string password,
-        string keyspace, bool useSsl,
-        int maxConnectionsPerHost = 0)
+        string? username, string? password,
+        bool useSsl, int maxConnectionsPerHost = 0)
     {
-        int localMax = maxConnectionsPerHost > 0
-            ? maxConnectionsPerHost : 1;
-        int localCore = Math.Max(1, localMax / 2);
-        int remoteMax = Math.Max(1, localMax / 2);
-        int remoteCore = Math.Max(1, remoteMax / 2);
-
         var builder = Cluster.Builder()
             .AddContactPoint(contactPoint)
             .WithPort(port)
             .WithSocketOptions(new SocketOptions()
                 .SetReadTimeoutMillis(ReadTimeoutMs)
                 .SetConnectTimeoutMillis(ConnectTimeoutMs))
-            .WithPoolingOptions(new PoolingOptions()
-                .SetMaxConnectionsPerHost(
-                    HostDistance.Local, localMax)
-                .SetCoreConnectionsPerHost(
-                    HostDistance.Local, localCore)
-                .SetMaxConnectionsPerHost(
-                    HostDistance.Remote, remoteMax)
-                .SetCoreConnectionsPerHost(
-                    HostDistance.Remote, remoteCore))
             .WithQueryOptions(new QueryOptions()
                 .SetConsistencyLevel(
                     ConsistencyLevel.LocalQuorum))
             .WithReconnectionPolicy(
-                new ExponentialReconnectionPolicy(ReconnectBaseDelayMs, ReconnectMaxDelayMs));
+                new ExponentialReconnectionPolicy(
+                    ReconnectBaseDelayMs, ReconnectMaxDelayMs));
 
         if (!string.IsNullOrWhiteSpace(username))
-        {
             builder = builder.WithAuthProvider(
                 new PlainTextAuthProvider(username, password));
-        }
 
         if (useSsl)
         {
             var sslOptions = new SSLOptions(
                 SslProtocols.Tls12, true,
-                (sender, certificate, chain, sslPolicyErrors) =>
-                {
-                    return true; // Azure MI certs may have chain+name issues
-                });
+                (sender, cert, chain, errors) => true);
+            sslOptions.SetHostNameResolver(_ => contactPoint);
             builder = builder.WithSSL(sslOptions);
         }
 
+        if (maxConnectionsPerHost > 0)
+        {
+            int localMax = maxConnectionsPerHost;
+            int localCore = Math.Max(1, localMax / 2);
+            int remoteMax = Math.Max(1, localMax / 2);
+            int remoteCore = Math.Max(1, remoteMax / 2);
+            builder = builder.WithPoolingOptions(new PoolingOptions()
+                .SetMaxConnectionsPerHost(HostDistance.Local, localMax)
+                .SetCoreConnectionsPerHost(HostDistance.Local, localCore)
+                .SetMaxConnectionsPerHost(HostDistance.Remote, remoteMax)
+                .SetCoreConnectionsPerHost(HostDistance.Remote, remoteCore));
+        }
+
+        return builder;
+    }
+
+    private static ISession ConnectCluster(
+        Builder builder, string keyspace)
+    {
         Cluster? cluster = null;
         try
         {
             cluster = builder.Build();
-            var session = string.IsNullOrWhiteSpace(keyspace)
+            return string.IsNullOrWhiteSpace(keyspace)
                 ? cluster.Connect()
                 : cluster.Connect(keyspace);
-            return session;
         }
         catch
         {
