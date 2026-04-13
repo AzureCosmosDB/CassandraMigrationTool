@@ -40,7 +40,8 @@ internal class WorkerPool : IDisposable
     {
         if (_workers == null) return;
         try { await Task.WhenAll(_workers); }
-        catch (OperationCanceledException) { } // Expected: graceful cancellation
+        catch (OperationCanceledException) { }
+        catch (AggregateException) { }
     }
 
     /// <summary>

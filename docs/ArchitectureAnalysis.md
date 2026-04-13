@@ -89,11 +89,10 @@ CassandraMigration.sln
 | `PipelineConfig.cs` | Resolved immutable pipeline settings (record) from job + app settings |
 | `ProgressConfig` | Record (in PipelineContext.cs): chunk index, initial percent, contribution factor, total row count |
 
-**BulkCopy/ — Pipeline implementation (3-class chain):**
+**BulkCopy/ — Pipeline internals:**
 
 | File | Purpose |
 |------|---------|
-| `BulkCopyRunner.cs` | Pipeline: seed partitions → schema sync → launch workers → finalize results |
 | `BulkCopyWorker.cs` | Worker loop: take partition → read page → recycle → write rows → checkpoint |
 | `PageReader.cs` | Reads one page from source, owns its own session, returns `ReadResult` |
 | `PageWriter.cs` | Writes rows concurrently to target, owns its own session + PreparedStatement |

@@ -11,15 +11,14 @@ Program.cs (DI setup)
  │    ├─► MigrationWorker(MigrationLog)          [creates per job]
  │    │    └─► BulkCopyEngine(log, sourceSession, config, job, worker)
  │    │         │
- │    │         ├─► BulkCopyRunner(log, job, config, cts, ensureTargetSession)
- │    │         │    ├─► CopyProgressTracker(log, keyspace, table, workerCount, ...)
- │    │         │    │    └─► ProgressCounters()
- │    │         │    ├─► WorkerPool(log, workerCount)
- │    │         │    │    └─► BulkCopyWorker(log, cts, workerId, pageSize)  [N workers]
- │    │         │    │         ├─► PageReader(log, connOpts, keyspace, cols, pageSize, id, cts)
- │    │         │    │         └─► PageWriter(log, connOpts, cols, keyspace, table, pageSize, id, cts)
- │    │         │    └─► Partition(feedRange, pagingState)  [per feed range]
- │    │         │         └─► WorkChunk { ContinuationToken, IsCompleted, Next }
+ │    │         ├─► CopyProgressTracker(log, keyspace, table, workerCount, ...)
+ │    │         │    └─► ProgressCounters()
+ │    │         ├─► WorkerPool(log, workerCount)
+ │    │         │    └─► BulkCopyWorker(log, cts, workerId, pageSize)  [N workers]
+ │    │         │         ├─► PageReader(log, connOpts, keyspace, cols, pageSize, id, cts)
+ │    │         │         └─► PageWriter(log, connOpts, cols, keyspace, table, pageSize, id, cts)
+ │    │         ├─► Partition(feedRange, pagingState)  [per feed range]
+ │    │         │    └─► WorkChunk { ContinuationToken, IsCompleted, Next }
  │    │         │
  │    │         └─► ChangeFeedManager(log, sourceSession, config, job)
  │    │              └─► ReplayProcessor(log, sourceSession, targetSession, muCache, config, job)
@@ -76,7 +75,7 @@ WorkerConfig(SourceConnection, TargetConnection, Columns, Context)
 RangeState(Completed, Checkpoints, FeedRanges)
 PipelineContext(PartitionPool, Worker, Ranges, Counters, Tracker)
 ReadResult(Rows, WorkChunk, IsLastPage)                          [nested in PageReader]
-PartitionStageResult(Pool, Completed, Checkpoints, PendingCount) [nested in BulkCopyRunner]
+SeedResult(Pool, Completed, Checkpoints, PendingCount)            [nested in BulkCopyEngine]
 ```
 
 ## Models (mutable POCOs, JSON-serialized)
@@ -117,10 +116,10 @@ JobManager.StartMigration(jobId)
             └─► ProcessChunkAsync(tableMigration, chunkIndex, context)
                  ├── CassandraQueries.GetRowCountAsync()
                  ├── CassandraQueries.GetFeedRangesAsync()
-                 └─► BulkCopyRunner.RunAsync(PipelineRequest)
-                      ├── Stage 1: SeedPartitionsAsync → Channel<Partition>
-                      ├── Stage 2: SchemaManager.SyncSchemaAsync()
-                      ├── Stage 3: WorkerPool.Start()
+                 └─► Pipeline stages (inline in BulkCopyEngine):
+                      ├── Stage 1: SeedAsync → Channel<Partition>
+                      ├── Stage 2: SyncSchemaAsync
+                      ├── Stage 3: ExecuteAsync → WorkerPool.Start()
                       │    └─► [N workers] BulkCopyWorker.RunAsync(ctx)
                       │         loop:
                       │           take Partition from Channel

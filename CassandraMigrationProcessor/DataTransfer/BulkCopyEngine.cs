@@ -7,14 +7,17 @@ using CassandraMigrationProcessor.DataTransfer.BulkCopy;
 using CassandraMigrationProcessor.DataTransfer.ChangeFeed;
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using System.Threading;
+using System.Threading.Channels;
 using System.Threading.Tasks;
 
 namespace CassandraMigrationProcessor.DataTransfer;
 /// <summary>
-/// Orchestrates bulk copy for each table and manages
-/// session lifecycle and cancellation.
+/// Orchestrates bulk copy for each table: session lifecycle,
+/// chunk retry loop, and the per-chunk pipeline
+/// (count → discover → seed → schema → execute → finalize).
 /// </summary>
 public class BulkCopyEngine : IDisposable
 {
@@ -70,7 +73,7 @@ public class BulkCopyEngine : IDisposable
         ProcessRunning = false;
     }
 
-    // ── Job completion ──
+    // ── Change Feed ──
 
     public void StopOfflineOrInvokeChangeFeed()
     {
@@ -94,7 +97,7 @@ public class BulkCopyEngine : IDisposable
         }
     }
 
-    // ── Bulk copy orchestration ──
+    // ── Job Orchestration ──
 
     public async Task<TaskResult> StartProcessAsync(string migrationUnitId)
     {
@@ -189,23 +192,28 @@ public class BulkCopyEngine : IDisposable
         return TaskResult.Success;
     }
 
-    private async Task<TaskResult> ProcessChunkAsync(TableMigration TableMigration, int chunkIndex,
+    // ── Per-Chunk Pipeline ──
+
+    private async Task<TaskResult> ProcessChunkAsync(TableMigration tableMigration, int chunkIndex,
         TableContext context, double initialPercent, double contributionFactor)
     {
+        // Count rows
         long rowCount = await CassandraQueries.GetRowCountAsync(context.SourceSession, context.KeyspaceName,
             context.TableName);
 
         if (rowCount > 0)
         {
-            TableMigration.EstimatedRowCount = rowCount;
-            TableMigrationMapper.UpdateParentJob(TableMigration);
+            tableMigration.EstimatedRowCount = rowCount;
+            TableMigrationMapper.UpdateParentJob(tableMigration);
         }
 
-        TableMigration.CopyChunks[chunkIndex].SourceQueryRowCount = rowCount;
+        tableMigration.CopyChunks[chunkIndex].SourceQueryRowCount = rowCount;
 
+        // Ensure keyspace
         if (_target != null)
             await SchemaManager.EnsureKeyspaceExistsAsync(_target, context.TargetKeyspaceName);
 
+        // Discover feed ranges
         var feedRanges = await CassandraQueries.GetFeedRangesAsync(context.SourceSession, context.KeyspaceName,
             context.TableName, msg => MigrationJobContext.Instance.AddVerboseLog(msg));
 
@@ -221,19 +229,31 @@ public class BulkCopyEngine : IDisposable
 
         var target = _target ?? throw new InvalidOperationException(
             "Target session not initialized for non-simulated run");
-        var runner = new BulkCopyRunner(_migrationLog, _migrationJob, _pipelineConfig, _cts.Token, target);
-        var result = await runner.RunAsync(new PipelineRequest(TableMigration, chunkIndex, initialPercent,
-            contributionFactor, rowCount, context, feedRanges));
 
+        var request = new PipelineRequest(tableMigration, chunkIndex, initialPercent,
+            contributionFactor, rowCount, context, feedRanges);
+
+        // Seed → Schema → Execute → Finalize
+        var (seedResult, allComplete) = await SeedAsync(request);
+        if (allComplete)
+        {
+            MarkChunkComplete(tableMigration, chunkIndex);
+            return TaskResult.Success;
+        }
+
+        var seed = seedResult ?? throw new InvalidOperationException(
+            "SeedAsync returned null result when ranges are still pending");
+
+        var schema = await SyncSchemaAsync(context, target);
+        if (schema == null) return TaskResult.Abort;
+
+        var execution = await ExecuteAsync(request, seed, schema, target);
+        var result = Finalize(execution, request);
+
+        // Post-pipeline bookkeeping
         if (result == TaskResult.Success)
         {
-            if (!_cts.Token.IsCancellationRequested
-                && !MigrationJobContext.Instance.ControlledPauseRequested
-                && TableMigration.CopyChunks[chunkIndex].Segments.All(seg => seg.IsProcessed == true))
-            {
-                TableMigration.CopyChunks[chunkIndex].IsDownloaded = true;
-            }
-            MigrationJobContext.Instance.SaveMigrationUnit(TableMigration, false);
+            MarkChunkComplete(tableMigration, chunkIndex);
         }
         else if (result == TaskResult.Canceled)
         {
@@ -245,6 +265,160 @@ public class BulkCopyEngine : IDisposable
         }
         return result;
     }
+
+    private void MarkChunkComplete(TableMigration tableMigration, int chunkIndex)
+    {
+        if (!_cts.Token.IsCancellationRequested
+            && !MigrationJobContext.Instance.ControlledPauseRequested
+            && tableMigration.CopyChunks[chunkIndex].Segments.All(seg => seg.IsProcessed == true))
+        {
+            tableMigration.CopyChunks[chunkIndex].IsDownloaded = true;
+        }
+        MigrationJobContext.Instance.SaveMigrationUnit(tableMigration, false);
+    }
+
+    // ── Stage 1: Seed partitions ──
+
+    private record SeedResult(
+        Channel<Partition> Pool,
+        HashSet<string> Completed,
+        Dictionary<string, string?> Checkpoints,
+        int PendingCount);
+
+    private async Task<(SeedResult? Result, bool AllRangesComplete)> SeedAsync(PipelineRequest request)
+    {
+        var mu = request.TableMigration;
+        var ctx0 = request.Context;
+        var completed = mu.CompletedCopyFeedRanges;
+        var checkpoints = mu.CopyFeedRangeCheckpoints;
+
+        List<string> pendingRanges;
+        lock (checkpoints)
+        {
+            pendingRanges = request.FeedRanges.Where(r => !completed.Contains(r)).ToList();
+        }
+
+        if (pendingRanges.Count == 0)
+        {
+            _migrationLog.WriteLine($"All {request.FeedRanges.Count} ranges already completed for {ctx0.KeyspaceName}.{ctx0.TableName}", LogType.Info);
+            return (null, AllRangesComplete: true);
+        }
+
+        _migrationLog.WriteLine($"Pipeline copy: {pendingRanges.Count} ranges ({completed.Count} already done) for {ctx0.KeyspaceName}.{ctx0.TableName}", LogType.Info);
+
+        var pool = Channel.CreateBounded<Partition>(new BoundedChannelOptions(pendingRanges.Count)
+            { FullMode = BoundedChannelFullMode.Wait });
+
+        int resumedCount = 0;
+        foreach (var range in pendingRanges)
+        {
+            byte[]? pagingState = null;
+            if (checkpoints.TryGetValue(range, out var base64Token) && base64Token != null)
+            {
+                pagingState = Convert.FromBase64String(base64Token);
+                resumedCount++;
+            }
+            await pool.Writer.WriteAsync(new Partition(range, pagingState));
+        }
+        if (resumedCount > 0)
+            _migrationLog.WriteLine($"Resuming {resumedCount}/{pendingRanges.Count} ranges from checkpoint", LogType.Info);
+
+        return (new SeedResult(pool, completed, checkpoints, pendingRanges.Count), AllRangesComplete: false);
+    }
+
+    // ── Stage 2: Schema sync ──
+
+    private record SchemaResult(
+        List<(string Name, string Type, string Kind, string ClusteringOrder, int Position)> Columns);
+
+    private async Task<SchemaResult?> SyncSchemaAsync(TableContext ctx0, ISession targetSession)
+    {
+        var columns = await SchemaManager.SyncSchemaAsync(
+            ctx0.SourceSession, targetSession,
+            ctx0.KeyspaceName, ctx0.TableName,
+            ctx0.TargetKeyspaceName, ctx0.TargetTableName);
+
+        if (columns.Count == 0)
+        {
+            _migrationLog.WriteLine($"No columns for {ctx0.KeyspaceName}.{ctx0.TableName}", LogType.Error);
+            return null;
+        }
+
+        return new SchemaResult(columns);
+    }
+
+    // ── Stage 3: Execute workers ──
+
+    private record ExecutionResult(
+        CopyProgressTracker Tracker,
+        PipelineContext Context,
+        TimeSpan Elapsed);
+
+    private async Task<ExecutionResult> ExecuteAsync(PipelineRequest request, SeedResult seed,
+        SchemaResult schema, ISession targetSession)
+    {
+        int workerCount = _pipelineConfig.WorkerCount;
+        int pageSize = _pipelineConfig.PageSize;
+        var ctx0 = request.Context;
+        long priorCopied = request.TableMigration.CopyRowsCopied;
+
+        var tracker = new CopyProgressTracker(_migrationLog, workerCount, priorCopied,
+            request.TableMigration,
+            new ProgressConfig(request.ChunkIndex, request.InitialPercent, request.ContributionFactor, request.TotalRowCount));
+
+        var stopwatch = Stopwatch.StartNew();
+
+        var ctx = new PipelineContext(
+            seed.Pool,
+            new WorkerConfig(_migrationJob.SourceConnection, _migrationJob.TargetConnection, schema.Columns, ctx0),
+            new RangeState(seed.Completed, seed.Checkpoints, request.FeedRanges),
+            new PipelineCounters(),
+            tracker);
+
+        _migrationLog.WriteLine($"Launching {workerCount} workers for {ctx0.KeyspaceName}.{ctx0.TableName} ({seed.PendingCount} feed ranges, page size={pageSize})...", LogType.Info);
+        using var pool = new WorkerPool(_migrationLog, workerCount);
+        pool.Start(workerId => new BulkCopyWorker(_migrationLog, _cts.Token, workerId, pageSize).RunAsync(ctx));
+        await pool.WaitForCompletionAsync();
+        ctx.PartitionPool.Writer.TryComplete();
+
+        return new ExecutionResult(tracker, ctx, stopwatch.Elapsed);
+    }
+
+    // ── Stage 4: Finalize ──
+
+    private TaskResult Finalize(ExecutionResult execution, PipelineRequest request)
+    {
+        execution.Tracker.LogFinal();
+        execution.Tracker.UpdateMigrationUnit();
+        LogPipelineSummary(execution, request);
+        return DetermineOutcome(execution.Context.Counters, execution.Tracker.TotalFailed);
+    }
+
+    private void LogPipelineSummary(ExecutionResult execution, PipelineRequest request)
+    {
+        long sessionWritten = execution.Tracker.TotalCopied - request.TableMigration.CopyRowsCopied;
+        double speed = execution.Elapsed.TotalSeconds > 0 ? sessionWritten / execution.Elapsed.TotalSeconds : 0;
+        int completedCount;
+        lock (execution.Context.Ranges.Checkpoints) { completedCount = execution.Context.Ranges.Completed.Count; }
+
+        _migrationLog.WriteLine($"Pipeline complete for {request.Context.KeyspaceName}.{request.Context.TableName}: " +
+            $"session={sessionWritten:N0} written, {execution.Tracker.TotalFailed:N0} failed | " +
+            $"cumulative={execution.Tracker.TotalCopied:N0} | {completedCount}/{request.FeedRanges.Count} ranges | " +
+            $"{execution.Elapsed.TotalSeconds:F1}s ({speed:F0} rows/sec)", LogType.Info);
+    }
+
+    private static TaskResult DetermineOutcome(PipelineCounters counters, long failedCount)
+    {
+        if (Volatile.Read(ref counters.FatalErrorFlag) != 0)
+            return TaskResult.Abort;
+        if (counters.WorkerErrors.Any(r => r == TaskResult.Abort))
+            return TaskResult.Abort;
+        if (counters.WorkerErrors.Any(r => r == TaskResult.Canceled))
+            return TaskResult.Canceled;
+        return failedCount > 0 ? TaskResult.Retry : TaskResult.Success;
+    }
+
+    // ── Helpers ──
 
     private TableContext CreateTableContext(TableMigration mu)
     {

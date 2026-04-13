@@ -57,16 +57,15 @@ On all chunks complete:
 ### `BulkCopyEngine.ProcessChunkAsync(unit, chunkIndex, context, ...)`
 ```
 1. Count rows: CassandraQueries.GetRowCountAsync(sourceSession, keyspace, table)
-2. Ensure target: EnsureTargetSession() → SchemaManager.EnsureKeyspaceExistsAsync()
+2. Ensure target: SchemaManager.EnsureKeyspaceExistsAsync()
 3. Discover ranges: CassandraQueries.GetFeedRangesAsync(sourceSession, keyspace, table)
 4. Log: "{keyspace}.{table}: {rowCount} rows, {ranges.Count} feed range(s)"
-5. Run pipeline: new BulkCopyRunner(log, job, config, cts.Token, targetSession)
-                    .RunAsync(new PipelineRequest(unit, chunkIndex, percent, factor, rowCount, context, feedRanges))
+5. Pipeline stages (inline):
+   SeedAsync → SyncSchemaAsync → ExecuteAsync → Finalize
 ```
 
-## 4. Pipeline Execution (4-Stage Pattern)
+## 4. Pipeline Execution (4-Stage Pattern, within BulkCopyEngine)
 
-### `BulkCopyRunner.RunAsync(PipelineRequest)`
 ```
 Stage 1: SeedAsync(request)
   ├── Filters completed feed ranges
@@ -75,15 +74,15 @@ Stage 1: SeedAsync(request)
   ├── Seeds partitions into channel
   └── Returns (SeedResult, allComplete)
 
-Stage 2: SyncSchemaAsync(tableContext)
+Stage 2: SyncSchemaAsync(tableContext, targetSession)
   ├── SchemaManager.SyncSchemaAsync(source, target, keyspace, table)
   ├── Creates/alters target table to match source schema
   └── Returns column list
 
-Stage 3: ExecuteAsync(request, seed, schema)
+Stage 3: ExecuteAsync(request, seed, schema, targetSession)
   ├── Creates CopyProgressTracker(log, workerCount, migration, progressConfig)
   ├── Creates PipelineContext(partitionPool, workerConfig, rangeState, counters, tracker)
-  ├── Creates WorkerPool(log, workerCount, ct)
+  ├── Creates WorkerPool(log, workerCount)
   ├── Starts N workers: BulkCopyWorker(log, ct, workerId, pageSize).RunAsync(ctx)
   ├── Awaits pool.WaitForCompletionAsync()
   └── Returns ExecutionResult(tracker, context, elapsed)
@@ -177,7 +176,7 @@ MigrationWorker
 
 BulkCopyEngine
   └── creates _target session in constructor (schema sync, keyspace creation)
-  └── passes to BulkCopyRunner and ChangeFeedManager
+  └── passes target session to pipeline stages and ChangeFeedManager
 
 BulkCopyWorker (N instances)
   └── PageReader creates own source session (per-worker data reads)
