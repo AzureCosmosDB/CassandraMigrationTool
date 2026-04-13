@@ -34,6 +34,9 @@ public class MigrationWorker
     public async Task<TaskResult> StartAsync(Job job, AppSettings config,
         CancellationToken cancellationToken)
     {
+        ArgumentNullException.ThrowIfNull(job);
+        ArgumentNullException.ThrowIfNull(config);
+
         try
         {
             var units = UnitStore.GetMigrationUnitsToMigrate(job);

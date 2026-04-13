@@ -33,9 +33,10 @@ public class BulkCopyEngine : IDisposable
     public BulkCopyEngine(MigrationLog log, ISession sourceSession, AppSettings config, Job job,
         TokenRefreshManager? tokenRefreshManager = null)
     {
-        _migrationLog = log;
-        _source = sourceSession;
-        _pipelineConfig = PipelineConfig.Resolve(job, config);
+        _migrationLog = log ?? throw new ArgumentNullException(nameof(log));
+        _source = sourceSession ?? throw new ArgumentNullException(nameof(sourceSession));
+        _pipelineConfig = PipelineConfig.Resolve(job ?? throw new ArgumentNullException(nameof(job)),
+            config ?? throw new ArgumentNullException(nameof(config)));
         _migrationJob = job;
         _cts = new CancellationTokenSource();
         _target = job.IsSimulatedRun
@@ -50,22 +51,21 @@ public class BulkCopyEngine : IDisposable
 
     public void StopProcessing()
     {
-        _cts?.Cancel();
-        _changeFeedManager.Stop();
-
         if (_migrationJob.Status == JobStatus.Running)
             _migrationJob.Status = JobStatus.Pending;
-
-        MigrationJobContext.SaveMigrationJob(_migrationJob);
-        ProcessRunning = false;
+        Shutdown();
     }
 
     public void PauseProcessing()
     {
+        _migrationJob.Status = JobStatus.Paused;
+        Shutdown();
+    }
+
+    private void Shutdown()
+    {
         _cts?.Cancel();
         _changeFeedManager.Stop();
-
-        _migrationJob.Status = JobStatus.Paused;
         MigrationJobContext.SaveMigrationJob(_migrationJob);
         ProcessRunning = false;
     }
@@ -98,6 +98,9 @@ public class BulkCopyEngine : IDisposable
 
     public async Task<TaskResult> StartProcessAsync(string migrationUnitId)
     {
+        if (string.IsNullOrWhiteSpace(migrationUnitId))
+            throw new ArgumentException("Migration unit ID is required", nameof(migrationUnitId));
+
         var TableMigration = MigrationJobContext.GetMigrationUnit(migrationUnitId);
         TableMigration.ParentJob = _migrationJob;
         ProcessRunning = true;

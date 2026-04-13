@@ -1,38 +1,52 @@
 using Cassandra;
 using System;
+using System.Collections.Generic;
+using System.Linq;
 
 namespace CassandraMigrationProcessor.Infrastructure;
 /// <summary>
 /// Centralized exception classification for Cassandra operations.
-/// Uses concrete driver exception types — no string matching.
+/// Transient and fatal sets are registrable so new exception types
+/// can be added without modifying this class (Open/Closed principle).
 /// </summary>
 public static class ExceptionClassifier
 {
+    private static readonly HashSet<Type> _transientTypes = new()
+    {
+        typeof(NoHostAvailableException),
+        typeof(WriteTimeoutException),
+        typeof(ReadTimeoutException),
+        typeof(UnavailableException),
+        typeof(OverloadedException),
+        typeof(TimeoutException),
+        typeof(System.IO.IOException),
+        typeof(System.Net.Sockets.SocketException),
+        typeof(ObjectDisposedException),
+    };
+
+    private static readonly HashSet<Type> _fatalTypes = new()
+    {
+        typeof(AuthenticationException),
+        typeof(UnauthorizedException),
+        typeof(InvalidQueryException),
+        typeof(SyntaxError),
+    };
+
+    public static void RegisterTransient(Type exceptionType) => _transientTypes.Add(exceptionType);
+    public static void RegisterFatal(Type exceptionType) => _fatalTypes.Add(exceptionType);
+
     /// <summary>
     /// Transient errors that should be retried.
     /// </summary>
     public static bool IsTransient(Exception ex)
     {
-        if (ex is AggregateException agg && agg.InnerException != null)
-            ex = agg.InnerException;
+        var inner = UnwrapAggregate(ex);
 
-        // Cassandra driver transient errors
-        if (ex is NoHostAvailableException
-            || ex is WriteTimeoutException
-            || ex is ReadTimeoutException
-            || ex is UnavailableException
-            || ex is OverloadedException)
+        if (_transientTypes.Contains(inner.GetType()))
             return true;
 
-        // System transient errors
-        if (ex is TimeoutException
-            || ex is System.IO.IOException
-            || ex is System.Net.Sockets.SocketException
-            || ex is ObjectDisposedException)
-            return true;
-
-        // Cosmos DB 429 throttling
-        var msg = ex.Message ?? string.Empty;
+        // Cosmos DB 429 throttling (message-based, not type-based)
+        var msg = inner.Message ?? string.Empty;
         if (msg.Contains("429")
             || msg.Contains("TooManyRequests", StringComparison.OrdinalIgnoreCase))
             return true;
@@ -45,18 +59,8 @@ public static class ExceptionClassifier
     /// </summary>
     public static bool IsFatal(Exception ex)
     {
-        if (ex is AggregateException agg && agg.InnerException != null)
-            ex = agg.InnerException;
-
-        if (ex is AuthenticationException
-            || ex is UnauthorizedException)
-            return true;
-
-        if (ex is InvalidQueryException
-            || ex is SyntaxError)
-            return true;
-
-        return false;
+        var inner = UnwrapAggregate(ex);
+        return _fatalTypes.Contains(inner.GetType());
     }
 
     /// <summary>
@@ -65,10 +69,9 @@ public static class ExceptionClassifier
     /// </summary>
     public static bool IsNotFound(Exception ex)
     {
-        if (ex is AggregateException agg && agg.InnerException != null)
-            ex = agg.InnerException;
+        var inner = UnwrapAggregate(ex);
 
-        if (ex is InvalidQueryException iqe)
+        if (inner is InvalidQueryException iqe)
         {
             var msg = iqe.Message ?? string.Empty;
             return msg.Contains("unconfigured table", StringComparison.OrdinalIgnoreCase)
@@ -91,4 +94,8 @@ public static class ExceptionClassifier
             || msg.Contains("TooManyRequests", StringComparison.OrdinalIgnoreCase)
             || msg.Contains("rate is large", StringComparison.OrdinalIgnoreCase);
     }
+
+    private static Exception UnwrapAggregate(Exception ex)
+        => ex is AggregateException agg && agg.InnerException != null
+            ? agg.InnerException : ex;
 }

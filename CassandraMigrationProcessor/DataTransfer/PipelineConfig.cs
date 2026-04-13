@@ -22,6 +22,9 @@ public record PipelineConfig(
     /// </summary>
     public static PipelineConfig Resolve(Job job, AppSettings settings)
     {
+        ArgumentNullException.ThrowIfNull(job);
+        ArgumentNullException.ThrowIfNull(settings);
+
         int workerCount = job.MaxFeedRangeParallelism > 0
             ? job.MaxFeedRangeParallelism
             : AutoWorkerCount(job.ParallelThreads);

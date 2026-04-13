@@ -32,11 +32,11 @@ internal class BulkCopyRunner
     public BulkCopyRunner(MigrationLog log, Job job, PipelineConfig pipelineConfig,
         CancellationToken cancellationToken, ISession targetSession)
     {
-        _log = log;
-        _job = job;
-        _pipelineConfig = pipelineConfig;
+        _log = log ?? throw new ArgumentNullException(nameof(log));
+        _job = job ?? throw new ArgumentNullException(nameof(job));
+        _pipelineConfig = pipelineConfig ?? throw new ArgumentNullException(nameof(pipelineConfig));
         _ct = cancellationToken;
-        _targetSession = targetSession;
+        _targetSession = targetSession ?? throw new ArgumentNullException(nameof(targetSession));
     }
 
     // ── Stage results ──
