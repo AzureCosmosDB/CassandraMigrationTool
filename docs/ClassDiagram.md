@@ -4,6 +4,8 @@
 
 ```
 Program.cs (DI setup)
+ ├─► MigrationJobContext()                         [created + Initialize(), registered as DI singleton]
+ ├─► ICassandraSessionFactory → CassandraSessionFactory [DI singleton]
  ├─► JobManager(IConfiguration, MigrationContextService)
  │    ├─► MigrationLog()                         [creates per job]
  │    ├─► MigrationWorker(MigrationLog)          [creates per job]
@@ -25,8 +27,8 @@ Program.cs (DI setup)
  │    │
  │    └─► AppSettings                            [from IConfiguration]
  │
- ├─► MigrationContextService()                   [DI singleton, wraps static context]
- │    └── delegates to ──► MigrationJobContext (static)
+ ├─► MigrationContextService(MigrationJobContext)  [DI singleton, constructor-injected]
+ │    └── delegates to ──► MigrationJobContext      [DI singleton, instance class]
  │                          ├─► DiskPersistence() : IDocumentStorage
  │                          │    └─► LogPersistence() : ILogStorage
  │                          ├─► TableMigrationCache()
@@ -69,6 +71,7 @@ Persistence/
 ConnectionOptions(Host, Port, Username, Password, UseSsl, MaxConnectionsPerHost)
 PipelineRequest(TableMigration, ChunkIndex, InitialPercent, ContributionFactor, TotalRowCount, Context, FeedRanges)
 PipelineConfig(PageSize, WorkerCount, CheckpointInterval, ...)   [resolved from Job + AppSettings]
+ProgressConfig(ChunkIndex, InitialPercent, ContributionFactor, TotalRowCount)
 WorkerConfig(SourceConnection, TargetConnection, Columns, Context)
 RangeState(Completed, Checkpoints, FeedRanges)
 PipelineContext(PartitionPool, Worker, Ranges, Counters, Tracker)

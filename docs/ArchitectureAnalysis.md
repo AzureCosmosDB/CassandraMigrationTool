@@ -63,7 +63,7 @@ CassandraMigration.sln
 
 | File | Purpose |
 |------|---------|
-| `MigrationJobContext.cs` | Static coordinator: Initialize, Load/Save job list, facade for JobStore/UnitStore |
+| `MigrationJobContext.cs` | DI singleton: Initialize, Load/Save job list, facade for JobStore/UnitStore |
 | `JobStore.cs` | Job CRUD with `SafeExecute` error handling |
 | `UnitStore.cs` | TableMigration CRUD with `RemoveUnit` |
 | `TableMigrationCache.cs` | Thread-safe in-memory cache for active TableMigration objects |
@@ -87,6 +87,7 @@ CassandraMigration.sln
 |------|---------|
 | `BulkCopyEngine.cs` | Orchestrator: `StartProcessAsync` → per-chunk retry loop → delegates to Runner |
 | `PipelineConfig.cs` | Resolved immutable pipeline settings (record) from job + app settings |
+| `ProgressConfig` | Record (in PipelineContext.cs): chunk index, initial percent, contribution factor, total row count |
 
 **BulkCopy/ — Pipeline implementation (3-class chain):**
 
@@ -98,7 +99,7 @@ CassandraMigration.sln
 | `PageWriter.cs` | Writes rows concurrently to target, owns its own session + PreparedStatement |
 | `Partition.cs` | Feed range state + WorkChunk linked list for checkpoint tracking |
 | `WorkChunk.cs` | Continuation token + completion flag, linked list node |
-| `PipelineContext.cs` | Records: `WorkerConfig`, `RangeState`, `PipelineContext` |
+| `PipelineContext.cs` | Records: `WorkerConfig`, `RangeState`, `ProgressConfig`, `PipelineContext` (with convenience properties) |
 | `CopyProgressTracker.cs` | Row counters, speed calc, TableMigration updates, checkpoint saves |
 | `ProgressCounters.cs` | Thread-safe atomic counters for pipeline progress/diagnostics |
 | `WorkerPool.cs` | Manages worker task lifecycle (Start, WaitForCompletion, Dispose) |
@@ -152,7 +153,7 @@ CassandraMigration.sln
 | File | Purpose |
 |------|---------|
 | `JobManager.cs` | Job lifecycle: Start/Stop/Pause/Resume, locked operations |
-| `MigrationContextService.cs` | DI wrapper for static context classes |
+| `MigrationContextService.cs` | DI wrapper: receives `MigrationJobContext` via constructor injection |
 | `PasswordManager.cs` | In-memory password storage (never persisted) |
 | `AuthenticationService.cs` | Simple auth with hashed passwords |
 | `CustomAuthenticationStateProvider.cs` | Blazor auth state provider |

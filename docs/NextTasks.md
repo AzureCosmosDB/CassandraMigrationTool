@@ -140,10 +140,8 @@ MigrationLog.WriteLine(message, logType)
 
 **No changes needed to callers** — `MigrationLog.WriteLine()` API stays the same, telemetry is added internally.
 
-### 5.2 Convert MigrationJobContext from static to DI singleton
-
-### 5.3 Add unit tests
+### 5.2 Add unit tests
 Priority: checkpoint correctness, ExceptionClassifier, Partition linked list, TableDiscovery.
 
-### 5.4 Extract ICassandraQueries interface
-`ICassandraSessionFactory` is done. `ICassandraQueries` still needed for mocking query methods.
+### 5.3 Extract ICassandraQueries interface
+`ICassandraQueries` still needed for mocking query methods in `CassandraQueries`.

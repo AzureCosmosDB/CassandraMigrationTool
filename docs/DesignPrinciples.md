@@ -4,7 +4,7 @@
 
 | Principle | Verdict | Notes |
 |-----------|---------|-------|
-| **S** Single Responsibility | ⚠️ Partial | MigrationJobContext still a static coordinator (~285 lines) |
+| **S** Single Responsibility | ✅ Pass | MigrationJobContext is a DI singleton (~310 lines); facade over JobStore/UnitStore |
 | **O** Open/Closed | ✅ Pass | ExceptionClassifier uses type-based dispatch |
 | **L** Liskov Substitution | ✅ Pass | No problematic inheritance |
 | **I** Interface Segregation | ✅ Pass | Split into `IDocumentStorage` + `ILogStorage` |
@@ -18,13 +18,9 @@
 ## What's Good
 - Clean dependency hierarchy (Models → Infra → Persist → Context → Driver → DataTransfer → Workers)
 - Pipeline pattern (Engine → Runner → Worker) with typed stage results
-- Records for immutable data carriers (PipelineContext, WorkerConfig, PipelineConfig, etc.)
+- Records for immutable data carriers (PipelineContext, WorkerConfig, PipelineConfig, ProgressConfig, etc.)
 - No inheritance abuse (Liskov pass)
 - File-scoped namespaces, proper CancellationToken ownership
 - Split persistence interfaces (IDocumentStorage, ILogStorage)
 - ICassandraSessionFactory for testable session creation
-
-## Remaining Work
-
-### MigrationJobContext static → DI singleton
-The single biggest remaining architectural debt. MigrationJobContext is a static coordinator with global mutable state. Converting it to a DI singleton would unblock testability and multi-job support. `MigrationContextService` already wraps it — making that the real implementation is the path forward.
+- MigrationJobContext registered as DI singleton; MigrationContextService injects it via constructor
