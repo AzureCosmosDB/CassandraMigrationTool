@@ -10,7 +10,6 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
 using System.Threading;
-using System.Threading.Channels;
 using System.Threading.Tasks;
 
 namespace CassandraMigrationProcessor.DataTransfer;
@@ -234,7 +233,8 @@ public class BulkCopyEngine : IDisposable
             contributionFactor, rowCount, context, feedRanges);
 
         // Seed → Schema → Execute → Finalize
-        var (seedResult, allComplete) = await SeedAsync(request);
+        var seeder = new PartitionSeeder(_migrationLog);
+        var (seedResult, allComplete) = await seeder.SeedAsync(request);
         if (allComplete)
         {
             MarkChunkComplete(tableMigration, chunkIndex);
@@ -244,7 +244,8 @@ public class BulkCopyEngine : IDisposable
         var seed = seedResult ?? throw new InvalidOperationException(
             "SeedAsync returned null result when ranges are still pending");
 
-        var schema = await SyncSchemaAsync(context, target);
+        var migrator = new SchemaMigrator(_migrationLog);
+        var schema = await migrator.SyncAsync(context.SourceSession, target, context);
         if (schema == null) return TaskResult.Abort;
 
         var execution = await ExecuteAsync(request, seed, schema, target);
@@ -277,76 +278,6 @@ public class BulkCopyEngine : IDisposable
         MigrationJobContext.Instance.SaveMigrationUnit(tableMigration, false);
     }
 
-    // ── Stage 1: Seed partitions ──
-
-    private record SeedResult(
-        Channel<Partition> Pool,
-        HashSet<string> Completed,
-        Dictionary<string, string?> Checkpoints,
-        int PendingCount);
-
-    private async Task<(SeedResult? Result, bool AllRangesComplete)> SeedAsync(PipelineRequest request)
-    {
-        var mu = request.TableMigration;
-        var ctx0 = request.Context;
-        var completed = mu.CompletedCopyFeedRanges;
-        var checkpoints = mu.CopyFeedRangeCheckpoints;
-
-        List<string> pendingRanges;
-        lock (checkpoints)
-        {
-            pendingRanges = request.FeedRanges.Where(r => !completed.Contains(r)).ToList();
-        }
-
-        if (pendingRanges.Count == 0)
-        {
-            _migrationLog.WriteLine($"All {request.FeedRanges.Count} ranges already completed for {ctx0.KeyspaceName}.{ctx0.TableName}", LogType.Info);
-            return (null, AllRangesComplete: true);
-        }
-
-        _migrationLog.WriteLine($"Pipeline copy: {pendingRanges.Count} ranges ({completed.Count} already done) for {ctx0.KeyspaceName}.{ctx0.TableName}", LogType.Info);
-
-        var pool = Channel.CreateBounded<Partition>(new BoundedChannelOptions(pendingRanges.Count)
-            { FullMode = BoundedChannelFullMode.Wait });
-
-        int resumedCount = 0;
-        foreach (var range in pendingRanges)
-        {
-            byte[]? pagingState = null;
-            if (checkpoints.TryGetValue(range, out var base64Token) && base64Token != null)
-            {
-                pagingState = Convert.FromBase64String(base64Token);
-                resumedCount++;
-            }
-            await pool.Writer.WriteAsync(new Partition(range, pagingState));
-        }
-        if (resumedCount > 0)
-            _migrationLog.WriteLine($"Resuming {resumedCount}/{pendingRanges.Count} ranges from checkpoint", LogType.Info);
-
-        return (new SeedResult(pool, completed, checkpoints, pendingRanges.Count), AllRangesComplete: false);
-    }
-
-    // ── Stage 2: Schema sync ──
-
-    private record SchemaResult(
-        List<(string Name, string Type, string Kind, string ClusteringOrder, int Position)> Columns);
-
-    private async Task<SchemaResult?> SyncSchemaAsync(TableContext ctx0, ISession targetSession)
-    {
-        var columns = await SchemaManager.SyncSchemaAsync(
-            ctx0.SourceSession, targetSession,
-            ctx0.KeyspaceName, ctx0.TableName,
-            ctx0.TargetKeyspaceName, ctx0.TargetTableName);
-
-        if (columns.Count == 0)
-        {
-            _migrationLog.WriteLine($"No columns for {ctx0.KeyspaceName}.{ctx0.TableName}", LogType.Error);
-            return null;
-        }
-
-        return new SchemaResult(columns);
-    }
-
     // ── Stage 3: Execute workers ──
 
     private record ExecutionResult(
@@ -354,8 +285,8 @@ public class BulkCopyEngine : IDisposable
         PipelineContext Context,
         TimeSpan Elapsed);
 
-    private async Task<ExecutionResult> ExecuteAsync(PipelineRequest request, SeedResult seed,
-        SchemaResult schema, ISession targetSession)
+    private async Task<ExecutionResult> ExecuteAsync(PipelineRequest request, PartitionSeeder.SeedResult seed,
+        SchemaMigrator.SchemaResult schema, ISession targetSession)
     {
         int workerCount = _pipelineConfig.WorkerCount;
         int pageSize = _pipelineConfig.PageSize;
