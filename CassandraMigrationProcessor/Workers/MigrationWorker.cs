@@ -20,7 +20,6 @@ public class MigrationWorker
 {
     private readonly MigrationLog _log;
     private TableMigrationEngine? _activeProcessor;
-    private ISession? _sourceSession;
     private int _consecutiveAuthErrors;
     private readonly ConcurrentDictionary<string, TableMigrationEngine> _activeProcessors = new();
     private readonly TokenRefreshManager _tokenRefreshManager;
@@ -95,7 +94,7 @@ public class MigrationWorker
         }
         finally
         {
-            CleanupSession();
+            _tokenRefreshManager.StopTokenRefreshTimer();
         }
     }
 
@@ -103,10 +102,7 @@ public class MigrationWorker
         CancellationToken cancellationToken)
     {
         _log.WriteLine("All tables copied. Resuming change feed processors.", LogType.Info);
-        EnsureSourceSession(job, job.Tables.First().KeyspaceName);
-        var sourceSession = _sourceSession ?? throw new InvalidOperationException(
-            "Source session not initialized after EnsureSourceSession");
-        _activeProcessor = new TableMigrationEngine(_log, sourceSession, config, job, _tokenRefreshManager);
+        _activeProcessor = new TableMigrationEngine(_log, config, job, _tokenRefreshManager);
 
         foreach (var mub in job.Tables)
         {
@@ -171,26 +167,11 @@ public class MigrationWorker
             MigrationJobContext.Instance.SaveMigrationUnit(mu, true);
         }
 
-        ISession? localSourceSession = null;
         try
         {
-            localSourceSession = CassandraClientFactory.CreateSourceSession(_log, job, mu.KeyspaceName, _tokenRefreshManager);
-            var session = localSourceSession ?? throw new InvalidOperationException(
-                "CreateSourceSession returned null");
-
-            if (!await SchemaManager.TableExistsAsync(session, mu.KeyspaceName, mu.TableName))
-            {
-                _log.WriteLine($"Source table {mu.KeyspaceName}.{mu.TableName} not found.", LogType.Error);
-                mu.SourceStatus = TableStatus.NotFound;
-                MigrationJobContext.Instance.SaveMigrationUnit(mu, true);
-                return;
-            }
-
-            await SetupTargetSchemaAsync(job, session, mu);
+            await SetupTargetSchemaAsync(job, mu);
 
             mu.BulkCopyStartedOn ??= DateTime.UtcNow;
-
-            await LogFeedRangesAsync(session, mu);
 
             if (MigrationUtilities.IsOnline(job))
             {
@@ -199,7 +180,7 @@ public class MigrationWorker
             }
 
             MigrationJobContext.Instance.SaveMigrationUnit(mu, true);
-            await RunCopyForUnitAsync(job, config, session, mu, cancellationToken);
+            await RunCopyForUnitAsync(job, config, mu, cancellationToken);
             MigrationJobContext.Instance.SaveMigrationUnit(mu, true);
         }
         catch (OperationCanceledException) { throw; }
@@ -211,35 +192,41 @@ public class MigrationWorker
         {
             _activeProcessors.TryRemove(mu.Id, out var removed);
             MigrationUtilities.SafeDispose(removed as IDisposable, "MigrationWorker processor");
-            MigrationUtilities.SafeDispose(localSourceSession, "MigrationWorker localSourceSession");
         }
     }
 
-    private async Task SetupTargetSchemaAsync(Job job, ISession sourceSession, TableMigration mu)
+    private async Task SetupTargetSchemaAsync(Job job, TableMigration mu)
     {
         using var targetSession = await CassandraClientFactory.CreateTargetSessionAsync(_log, job, string.Empty);
-
-        if (job.DropTargetTableBeforeStart
-            && await SchemaManager.TableExistsAsync(targetSession, mu.KeyspaceName, mu.TableName))
+        var sourceSession = CassandraClientFactory.CreateSourceSession(_log, job, mu.KeyspaceName, _tokenRefreshManager);
+        try
         {
-            _log.WriteLine($"Dropping target table {mu.KeyspaceName}.{mu.TableName} (DropTargetTableBeforeStart)", LogType.Info);
-            await targetSession.ExecuteAsync(new SimpleStatement(
-                $"DROP TABLE \"{mu.KeyspaceName}\".\"{mu.TableName}\""));
+            if (job.DropTargetTableBeforeStart
+                && await SchemaManager.TableExistsAsync(targetSession, mu.KeyspaceName, mu.TableName))
+            {
+                _log.WriteLine($"Dropping target table {mu.KeyspaceName}.{mu.TableName} (DropTargetTableBeforeStart)", LogType.Info);
+                await targetSession.ExecuteAsync(new SimpleStatement(
+                    $"DROP TABLE \"{mu.KeyspaceName}\".\"{mu.TableName}\""));
+            }
+
+            bool existed = await SchemaManager.TableExistsAsync(targetSession, mu.KeyspaceName, mu.TableName);
+
+            await SchemaManager.SyncSchemaAsync(sourceSession, targetSession,
+                mu.KeyspaceName, mu.TableName, mu.KeyspaceName, mu.TableName);
+
+            if (!existed)
+                _log.WriteLine($"Created target table {mu.KeyspaceName}.{mu.TableName}", LogType.Info);
         }
-
-        bool existed = await SchemaManager.TableExistsAsync(targetSession, mu.KeyspaceName, mu.TableName);
-
-        await SchemaManager.SyncSchemaAsync(sourceSession, targetSession,
-            mu.KeyspaceName, mu.TableName, mu.KeyspaceName, mu.TableName);
-
-        if (!existed)
-            _log.WriteLine($"Created target table {mu.KeyspaceName}.{mu.TableName}", LogType.Info);
+        finally
+        {
+            MigrationUtilities.SafeDispose(sourceSession, "SetupTargetSchemaAsync source session");
+        }
     }
 
     private async Task RunCopyForUnitAsync(Job job, AppSettings config,
-        ISession sourceSession, TableMigration mu, CancellationToken ct)
+        TableMigration mu, CancellationToken ct)
     {
-        var processor = new TableMigrationEngine(_log, sourceSession, config, job, _tokenRefreshManager);
+        var processor = new TableMigrationEngine(_log, config, job, _tokenRefreshManager);
         _activeProcessors[mu.Id] = processor;
         ct.ThrowIfCancellationRequested();
 
@@ -251,21 +238,6 @@ public class MigrationWorker
             _log.WriteLine($"Copy paused for {mu.KeyspaceName}.{mu.TableName}", LogType.Info);
         else
             _log.WriteLine($"Copy failed for {mu.KeyspaceName}.{mu.TableName}", LogType.Error);
-    }
-
-    private async Task LogFeedRangesAsync(ISession session, TableMigration mu)
-    {
-        try
-        {
-            var rangeCount = (await CassandraQueries.GetFeedRangesAsync(session,
-                mu.KeyspaceName, mu.TableName,
-                msg => MigrationJobContext.Instance.AddVerboseLog(msg))).Count;
-            _log.WriteLine($"Feed ranges: {rangeCount} for {mu.KeyspaceName}.{mu.TableName}", LogType.Debug);
-        }
-        catch (Exception ex)
-        {
-            _log.WriteLine($"GetFeedRanges failed: {ex.Message}", LogType.Warning);
-        }
     }
 
     private void HandleMigrationUnitError(TableMigration mu, Exception ex)
@@ -286,20 +258,6 @@ public class MigrationWorker
         MigrationJobContext.Instance.SaveMigrationUnit(mu, true);
     }
 
-    private void EnsureSourceSession(Job job, string keyspace)
-    {
-        if (_sourceSession != null && !_sourceSession.IsDisposed)
-            return;
-        _sourceSession = CassandraClientFactory.CreateSourceSession(_log, job, keyspace, _tokenRefreshManager);
-    }
-
-    private void CleanupSession()
-    {
-        _tokenRefreshManager.StopTokenRefreshTimer();
-        MigrationUtilities.SafeDispose(_sourceSession, "MigrationWorker source session");
-        _sourceSession = null;
-    }
-
     private static bool IsAuthError(Exception ex)
     {
         if (ex is Cassandra.AuthenticationException)
@@ -317,7 +275,7 @@ public class MigrationWorker
             kvp.Value?.StopProcessing();
         _activeProcessors.Clear();
         _activeProcessor?.StopProcessing();
-        CleanupSession();
+        _tokenRefreshManager.StopTokenRefreshTimer();
     }
 
 }

@@ -31,15 +31,14 @@ public class TableMigrationEngine : IDisposable
 
     public ChangeFeedManager ChangeFeed => _changeFeedManager;
 
-    public TableMigrationEngine(MigrationLog log, ISession sourceSession, AppSettings config, Job job,
+    public TableMigrationEngine(MigrationLog log, AppSettings config, Job job,
         TokenRefreshManager? tokenRefreshManager = null)
     {
         _migrationLog = log ?? throw new ArgumentNullException(nameof(log));
-        _source = sourceSession ?? throw new ArgumentNullException(nameof(sourceSession));
-        _pipelineConfig = PipelineConfig.Resolve(job ?? throw new ArgumentNullException(nameof(job)),
-            config ?? throw new ArgumentNullException(nameof(config)));
-        _migrationJob = job;
+        _migrationJob = job ?? throw new ArgumentNullException(nameof(job));
+        _pipelineConfig = PipelineConfig.Resolve(job, config ?? throw new ArgumentNullException(nameof(config)));
         _cts = new CancellationTokenSource();
+        _source = CassandraClientFactory.CreateSourceSession(log, job, string.Empty, tokenRefreshManager);
         _target = job.IsSimulatedRun
             ? new NullSession()
             : CassandraClientFactory.CreateTargetSession(log, job, string.Empty);
@@ -108,6 +107,14 @@ public class TableMigrationEngine : IDisposable
         ProcessRunning = true;
 
         var context = CreateTableContext(tableMigration);
+
+        if (!await SchemaManager.TableExistsAsync(_source, context.KeyspaceName, context.TableName))
+        {
+            _migrationLog.WriteLine($"Source table {context.KeyspaceName}.{context.TableName} not found.", LogType.Error);
+            tableMigration.SourceStatus = TableStatus.NotFound;
+            MigrationJobContext.Instance.SaveMigrationUnit(tableMigration, true);
+            return TaskResult.Abort;
+        }
 
         if (tableMigration.CopyComplete)
         {
@@ -297,5 +304,6 @@ public class TableMigrationEngine : IDisposable
         _changeFeedManager?.Dispose();
         _cts?.Dispose();
         MigrationUtilities.SafeDispose(_target, "TableMigrationEngine target session");
+        MigrationUtilities.SafeDispose(_source, "TableMigrationEngine source session");
     }
 }
