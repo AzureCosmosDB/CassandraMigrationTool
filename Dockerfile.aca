@@ -1,0 +1,28 @@
+FROM mcr.microsoft.com/dotnet/aspnet:9.0 AS base
+WORKDIR /app
+EXPOSE 8080
+
+FROM mcr.microsoft.com/dotnet/sdk:9.0 AS build
+ARG BUILD_CONFIGURATION=Release
+WORKDIR /src
+COPY ["CassandraMigrationWebApp/CassandraMigrationWebApp.csproj", "CassandraMigrationWebApp/"]
+COPY ["CassandraMigrationProcessor/CassandraMigrationProcessor.csproj", "CassandraMigrationProcessor/"]
+RUN dotnet restore "./CassandraMigrationWebApp/CassandraMigrationWebApp.csproj"
+COPY . .
+WORKDIR "/src/CassandraMigrationWebApp"
+RUN dotnet build "./CassandraMigrationWebApp.csproj" -c $BUILD_CONFIGURATION -o /app/build
+
+FROM build AS publish
+ARG BUILD_CONFIGURATION=Release
+RUN dotnet publish "./CassandraMigrationWebApp.csproj" -c $BUILD_CONFIGURATION -o /app/publish /p:UseAppHost=false
+
+FROM base AS final
+WORKDIR /app
+RUN mkdir -p /app/migration-data
+COPY --from=publish /app/publish .
+ENV ASPNETCORE_URLS=http://+:8080
+ENV StateStoreConnectionStringOrPath=/app/migration-data
+ENV StateStoreUseLocalDisk=true
+ENV HOME=/app
+ENV ASPNETCORE_ENVIRONMENT=Development
+ENTRYPOINT ["dotnet", "CassandraMigrationWebApp.dll"]

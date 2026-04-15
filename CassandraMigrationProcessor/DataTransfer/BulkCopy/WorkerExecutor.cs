@@ -1,4 +1,5 @@
 using Cassandra;
+using CassandraMigrationProcessor.Context;
 using CassandraMigrationProcessor.Infrastructure;
 using CassandraMigrationProcessor.Models;
 using System;
@@ -68,6 +69,9 @@ internal class WorkerExecutor
     {
         execution.Tracker.LogFinal();
         execution.Tracker.UpdateMigrationUnit();
+        // Force-flush checkpoint to disk (UpdateMigrationUnit uses a
+        // timer and may skip if called too soon after the last save)
+        MigrationJobContext.Instance.SaveMigrationUnit(request.TableMigration, true);
         LogPipelineSummary(execution, request);
         return DetermineOutcome(execution.Context.Counters, execution.Tracker.TotalFailed);
     }

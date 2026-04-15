@@ -216,8 +216,11 @@ public static class CassandraClientFactory
         if (useSsl)
         {
             var sslOptions = new SSLOptions(
-                SslProtocols.Tls12, true,
-                (sender, cert, chain, errors) => true);
+                SslProtocols.None, false,
+                (sender, certificate, chain, sslPolicyErrors) =>
+                {
+                    return true; // Azure MI certs may have chain+name issues
+                });
             sslOptions.SetHostNameResolver(_ => contactPoint);
             builder = builder.WithSSL(sslOptions);
         }

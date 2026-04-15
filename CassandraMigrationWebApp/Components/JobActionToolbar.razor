@@ -29,22 +29,9 @@
 
         @if (IsPauseEnabled && !IsLoadingCollections)
         {
-            @if (IsControlledPauseApplicable)
-            {
-                <div class="btn-group mx-2">
-                    <button class="btn btn-primary dropdown-toggle" type="button" id="pauseJobDropdown" data-bs-toggle="dropdown" aria-expanded="false" title="Choose pause method">
-                        Pause Job
-                    </button>
-                    <ul class="dropdown-menu" aria-labelledby="pauseJobDropdown">
-                        <li><a class="dropdown-item" @onclick="OnPauseControlled" title="Stops accepting new chunks but allows active chunks to complete"><i class="bi bi-pause-circle"></i> Controlled Pause (Graceful)</a></li>
-                        <li><a class="dropdown-item" @onclick="OnPauseImmediate" title="Immediately cancels all operations"><i class="bi bi-stop-circle"></i> Immediate Stop</a></li>
-                    </ul>
-                </div>
-            }
-            else
-            {
-                <button class="btn btn-primary mx-2" title="Pause Job" @onclick="OnPauseImmediate">Pause Job</button>
-            }
+            <button class="btn btn-primary mx-2" title="Gracefully pause — active pages complete before stopping" @onclick="OnPauseControlled">
+                <i class="bi bi-pause-circle"></i> Pause Job
+            </button>
             
             @if (IsControlledPauseRequested && IsRunning)
             {

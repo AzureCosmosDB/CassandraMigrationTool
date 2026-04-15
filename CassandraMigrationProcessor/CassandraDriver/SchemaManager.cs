@@ -79,7 +79,7 @@ public static class SchemaManager
             try
             {
                 var probe = new SimpleStatement(
-                    $"SELECT * FROM \"{keyspace}\".\"{table}\" WHERE COSMOS_CHANGEFEED_FROM_START() = true");
+                    $"SELECT * FROM \"{keyspace}\".\"{table}\" LIMIT 1");
                 probe.SetPageSize(1);
                 probe.SetAutoPage(false);
                 probe.SetReadTimeoutMillis(ProbeTimeoutMs);

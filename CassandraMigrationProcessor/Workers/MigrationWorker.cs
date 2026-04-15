@@ -226,7 +226,7 @@ public class MigrationWorker
     private async Task RunCopyForUnitAsync(Job job, AppSettings config,
         TableMigration mu, CancellationToken ct)
     {
-        var processor = new TableMigrationEngine(_log, config, job, _tokenRefreshManager);
+        var processor = new TableMigrationEngine(_log, config, job, _tokenRefreshManager, ct);
         _activeProcessors[mu.Id] = processor;
         ct.ThrowIfCancellationRequested();
 

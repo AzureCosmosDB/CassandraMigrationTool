@@ -1,4 +1,5 @@
 using CassandraMigrationProcessor.Infrastructure;
+using CassandraMigrationProcessor.Models;
 using System;
 using System.Linq;
 using System.Threading;
@@ -40,7 +41,10 @@ internal class WorkerPool : IDisposable
     {
         if (_workers == null) return;
         try { await Task.WhenAll(_workers); }
-        catch (OperationCanceledException) { }
+        catch (OperationCanceledException)
+        {
+            _log.WriteLine("Workers cancelled — graceful shutdown", LogType.Info);
+        }
         catch (AggregateException) { }
     }
 

@@ -24,6 +24,8 @@ internal class PageWriter : IDisposable
     private readonly int _pageSize;
 
     private const int WriteTimeoutMs = 60_000;
+    private const int MaxRowRetries = 5;
+    private const int RetryDelayMs = 500;
 
     public PageWriter(MigrationLog log, WorkerConfig config, int pageSize, int workerId, CancellationToken cancellationToken)
     {
@@ -45,31 +47,46 @@ internal class PageWriter : IDisposable
         public long LatencySum;
     }
 
-    private async Task WriteRowAsync(BoundStatement bound, PipelineContext ctx, WriteCounters counters)
+    private async Task WriteRowAsync(BoundStatement bound, PipelineContext ctx, WriteCounters counters, int rowIndex)
     {
-        var writeStart = Stopwatch.GetTimestamp();
-        try
+        for (int attempt = 1; attempt <= MaxRowRetries; attempt++)
         {
-            await _targetSession.ExecuteAsync(bound);
-            long elapsed = (Stopwatch.GetTimestamp() - writeStart) * 1000 / Stopwatch.Frequency;
-            Interlocked.Add(ref counters.LatencySum, elapsed);
-            Interlocked.Increment(ref counters.Done);
-        }
-        catch (Exception ex)
-        {
-            Interlocked.Increment(ref counters.Failed);
-            _log.WriteLine($"[W{_workerId}] INSERT failed: {ex.GetType().Name}: {ex.Message}",
-                LogType.Error);
-
-            if (ExceptionClassifier.IsFatal(ex))
+            var writeStart = Stopwatch.GetTimestamp();
+            try
             {
-                _log.WriteLine($"[W{_workerId}] FATAL: {ex.GetType().Name} — failing job",
-                    LogType.Error);
-                Interlocked.Exchange(ref ctx.Counters.FatalErrorFlag, 1);
+                await _targetSession.ExecuteAsync(bound);
+                long elapsed = (Stopwatch.GetTimestamp() - writeStart) * 1000 / Stopwatch.Frequency;
+                Interlocked.Add(ref counters.LatencySum, elapsed);
+                Interlocked.Increment(ref counters.Done);
+                return; // success
             }
-            else if (!ExceptionClassifier.IsTransient(ex))
+            catch (Exception ex)
             {
-                Interlocked.Exchange(ref ctx.Counters.FatalErrorFlag, 1);
+                if (ExceptionClassifier.IsFatal(ex))
+                {
+                    _log.WriteLine($"[W{_workerId}] FATAL row {rowIndex}: {ex.GetType().Name}: {ex.Message}",
+                        LogType.Error);
+                    Interlocked.Exchange(ref ctx.Counters.FatalErrorFlag, 1);
+                    Interlocked.Increment(ref counters.Failed);
+                    return;
+                }
+
+                if (ExceptionClassifier.IsTransient(ex) && attempt < MaxRowRetries)
+                {
+                    await Task.Delay(RetryDelayMs * attempt);
+                    continue; // retry
+                }
+
+                // Non-transient or final retry exhausted
+                Interlocked.Increment(ref counters.Failed);
+                _log.WriteLine($"[W{_workerId}] Row {rowIndex} FAILED after {attempt} attempt(s): {ex.GetType().Name}: {ex.Message}",
+                    LogType.Error);
+
+                if (!ExceptionClassifier.IsTransient(ex))
+                {
+                    Interlocked.Exchange(ref ctx.Counters.FatalErrorFlag, 1);
+                }
+                return;
             }
         }
     }
@@ -92,17 +109,17 @@ internal class PageWriter : IDisposable
         var counters = new WriteCounters();
         var writeTasks = new List<Task>(rows.Count);
 
-        foreach (var rowValues in rows)
+        for (int i = 0; i < rows.Count; i++)
         {
             if (_ct.IsCancellationRequested
                 || Volatile.Read(ref ctx.Counters.FatalErrorFlag) != 0)
                 break;
 
-            var bound = _preparedInsert.Bind(rowValues);
+            var bound = _preparedInsert.Bind(rows[i]);
             bound.SetReadTimeoutMillis(WriteTimeoutMs);
             bound.SetConsistencyLevel(ConsistencyLevel.LocalOne);
 
-            writeTasks.Add(WriteRowAsync(bound, ctx, counters));
+            writeTasks.Add(WriteRowAsync(bound, ctx, counters, i));
         }
 
         ctx.Tracker.SetPipelineState(ctx.Ranges.FeedRanges.Count

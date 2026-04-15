@@ -32,12 +32,15 @@ public class TableMigrationEngine : IDisposable
     public ChangeFeedManager ChangeFeed => _changeFeedManager;
 
     public TableMigrationEngine(MigrationLog log, AppSettings config, Job job,
-        TokenRefreshManager? tokenRefreshManager = null)
+        TokenRefreshManager? tokenRefreshManager = null,
+        CancellationToken externalToken = default)
     {
         _migrationLog = log ?? throw new ArgumentNullException(nameof(log));
         _migrationJob = job ?? throw new ArgumentNullException(nameof(job));
         _pipelineConfig = PipelineConfig.Resolve(job, config ?? throw new ArgumentNullException(nameof(config)));
-        _cts = new CancellationTokenSource();
+        _cts = externalToken.CanBeCanceled
+            ? CancellationTokenSource.CreateLinkedTokenSource(externalToken)
+            : new CancellationTokenSource();
         _source = CassandraClientFactory.CreateSourceSession(log, job, string.Empty, tokenRefreshManager);
         _target = job.IsSimulatedRun
             ? new NullSession()
@@ -193,7 +196,7 @@ public class TableMigrationEngine : IDisposable
             }
             else
             {
-                _migrationLog.WriteLine($"Copy for {context.KeyspaceName}.{context.TableName} had failures.", LogType.Error);
+                _migrationLog.WriteLine($"Copy for {context.KeyspaceName}.{context.TableName} had {failed} failed row(s). Job will retry on resume.", LogType.Error);
                 return TaskResult.Retry;
             }
         }

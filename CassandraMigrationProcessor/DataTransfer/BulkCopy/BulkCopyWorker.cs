@@ -1,3 +1,4 @@
+using CassandraMigrationProcessor.Context;
 using CassandraMigrationProcessor.Infrastructure;
 using CassandraMigrationProcessor.Models;
 using System;
@@ -35,7 +36,9 @@ internal class BulkCopyWorker
             reader = new PageReader(_log, ctx.Worker, _pageSize, _workerId, _ct);
             writer = new PageWriter(_log, ctx.Worker, _pageSize, _workerId, _ct);
 
-            while (!_ct.IsCancellationRequested && Volatile.Read(ref ctx.Counters.FatalErrorFlag) == 0)
+            while (!_ct.IsCancellationRequested
+                && Volatile.Read(ref ctx.Counters.FatalErrorFlag) == 0
+                && !MigrationJobContext.Instance.ControlledPauseRequested)
             {
                 var partition = await TakeNextPartitionAsync(ctx);
                 if (partition == null) break;
@@ -56,15 +59,24 @@ internal class BulkCopyWorker
                             await ctx.PartitionPool.Writer.WriteAsync(partition, _ct);
 
                         await writer.WriteAsync(result.Rows, result.WorkChunk, ctx);
+
+                        // Only advance checkpoint if ALL rows in the page succeeded.
+                        // If any rows failed, checkpoint stays at previous position
+                        // so these rows are retried on resume.
+                        if (result.WorkChunk.IsCompleted)
+                            SaveCheckpoint(partition, ctx);
+                        else
+                            _log.WriteLine($"[W{_workerId}] Checkpoint NOT advanced — page had failures", LogType.Warning);
                     }
 
-                    SaveCheckpoint(partition, ctx);
                     if (partition.IsExhausted) MarkCompleted(partition, ctx);
                 }
                 catch (OperationCanceledException)
                 {
                     ctx.Counters.WorkerErrors.Add(TaskResult.Canceled);
-                    SaveCheckpoint(partition, ctx);
+                    // Don't advance checkpoint on cancel — the current page
+                    // may have been partially written. Resume will re-read
+                    // from the last successfully checkpointed position.
                     ctx.PartitionPool.Writer.TryComplete();
                 }
                 catch (Exception ex)
@@ -82,7 +94,8 @@ internal class BulkCopyWorker
                         ctx.Counters.WorkerErrors.Add(TaskResult.Retry);
                     }
 
-                    SaveCheckpoint(partition, ctx);
+                    // Don't advance checkpoint on error — same reasoning
+                    // as cancel: partially written page would skip rows.
                     ctx.PartitionPool.Writer.TryComplete();
                 }
                 finally

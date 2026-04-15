@@ -201,11 +201,25 @@ public class ReplayWorker
                 }
                 catch (OperationCanceledException) // Expected: graceful cancellation
                 {
+                    // Save continuation token before exiting so resume
+                    // starts from the correct position (no duplicates)
+                    SaveContinuation(mu, feedRange, continuationState);
+                    TableMigrationMapper.UpdateParentJob(mu);
+                    MigrationJobContext.Instance.SaveMigrationUnit(mu, true);
                     break;
                 }
                 catch (Exception ex)
                 {
                     consecutiveErrors++;
+
+                    if (ExceptionClassifier.IsFatal(ex))
+                    {
+                        _log.WriteLine(
+                            $"Change feed FATAL error: {ex.GetType().Name}: {ex.Message} — stopping",
+                            LogType.Error);
+                        break;
+                    }
+
                     _log.WriteLine(
                         $"Change feed error ({consecutiveErrors}): {ex.GetType().Name}: {ex.Message}",
                         LogType.Warning);
@@ -235,6 +249,12 @@ public class ReplayWorker
 
                 if (!await DelayOrBreak(intervalMs, ct)) break;
             }
+
+            // Always persist final continuation state when exiting
+            // the loop (pause, cancel, or isCancelled flag)
+            SaveContinuation(mu, feedRange, continuationState);
+            TableMigrationMapper.UpdateParentJob(mu);
+            MigrationJobContext.Instance.SaveMigrationUnit(mu, true);
         }
         catch (Exception ex)
         {
@@ -281,6 +301,7 @@ public class ReplayWorker
         int errorCount = 0;
         int available = rs.GetAvailableWithoutFetching();
         int consumed = 0;
+        const int maxRetries = 5;
 
         foreach (var row in rs)
         {
@@ -288,20 +309,46 @@ public class ReplayWorker
             consumed++;
             if (ct.IsCancellationRequested || _isCancelled()) break;
 
-            try
+            bool written = false;
+            for (int attempt = 1; attempt <= maxRetries; attempt++)
             {
-                var values = new object[colNames.Count];
-                for (int i = 0; i < colNames.Count; i++)
-                    values[i] = row[colNames[i]];
-                await targetSession.ExecuteAsync(ps.Bind(values));
-                insertCount++;
-            }
-            catch (Exception ex)
-            {
-                errorCount++;
-                Interlocked.Increment(ref mu._changeFeedErrors);
-                MigrationJobContext.Instance.AddVerboseLog(
-                    $"CF apply fail: {ex.Message}");
+                try
+                {
+                    var values = new object[colNames.Count];
+                    for (int i = 0; i < colNames.Count; i++)
+                        values[i] = row[colNames[i]];
+                    await targetSession.ExecuteAsync(ps.Bind(values));
+                    insertCount++;
+                    written = true;
+                    break;
+                }
+                catch (Exception ex)
+                {
+                    if (ExceptionClassifier.IsFatal(ex))
+                    {
+                        _log.WriteLine(
+                            $"CF FATAL row in {mu.KeyspaceName}.{mu.TableName}: {ex.GetType().Name}: {ex.Message}",
+                            LogType.Error);
+                        errorCount++;
+                        Interlocked.Increment(ref mu._changeFeedErrors);
+                        break; // don't retry fatal
+                    }
+
+                    if (ExceptionClassifier.IsTransient(ex) && attempt < maxRetries)
+                    {
+                        await Task.Delay(500 * attempt);
+                        continue;
+                    }
+
+                    // Final failure — mark as fatal to fail the job
+                    errorCount++;
+                    Interlocked.Increment(ref mu._changeFeedErrors);
+                    _log.WriteLine(
+                        $"CF row FAILED in {mu.KeyspaceName}.{mu.TableName} after {attempt} attempt(s): {ex.GetType().Name}: {ex.Message}",
+                        LogType.Error);
+                    mu.SourceStatus = TableStatus.Failed;
+                    break;
+                }
             }
         }
 
@@ -355,7 +402,7 @@ public class ReplayWorker
             $"SELECT * FROM \"{mu.KeyspaceName}\".\"{mu.TableName}\" WHERE COSMOS_CHANGEFEED_START_TIME() = '{startTime}'";
         if (feedRange != null)
         {
-            MigrationUtilities.ValidateCqlIdentifier(feedRange);
+            // feedRange is a Cosmos DB token (JSON), not a CQL identifier
             cql += $" AND COSMOS_FEEDRANGE() = '{feedRange}'";
         }
         return cql;

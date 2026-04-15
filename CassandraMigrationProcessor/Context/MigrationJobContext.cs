@@ -71,10 +71,7 @@ public class MigrationJobContext
 
     public void RequestControlledPause(string location)
     {
-        if (_log == null)
-            throw new Exception("MigrationLog not initialized.");
-
-        _log.WriteLine(
+        _log?.WriteLine(
             $"{location} caused controlled pause.", LogType.Warning);
         _controlledPauseRequested = true;
     }

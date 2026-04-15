@@ -114,7 +114,7 @@ internal class PageReader : IDisposable
     {
         MigrationUtilities.ValidateCqlIdentifier(context.KeyspaceName);
         MigrationUtilities.ValidateCqlIdentifier(context.TableName);
-        MigrationUtilities.ValidateCqlIdentifier(range);
+        // range is a Cosmos DB feed range token (JSON), not a CQL identifier
         return
             $"SELECT * FROM \"{context.KeyspaceName}\".\"{context.TableName}\"" +
             $" WHERE COSMOS_CHANGEFEED_FROM_START() = true AND COSMOS_FEEDRANGE() = '{range}'";

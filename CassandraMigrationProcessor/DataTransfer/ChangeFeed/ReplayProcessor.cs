@@ -102,33 +102,60 @@ public class ReplayProcessor : IDisposable
 
             var task = Task.Run(async () =>
             {
-                try
+                const int maxTaskRetries = 3;
+                for (int attempt = 1; attempt <= maxTaskRetries; attempt++)
                 {
-                    var mu = _muCache.GetMigrationUnit(muId, _job?.Id);
-                    if (mu == null)
+                    try
+                    {
+                        var mu = _muCache.GetMigrationUnit(muId, _job?.Id);
+                        if (mu == null)
+                        {
+                            _log.WriteLine(
+                                $"ChangeFeed: MU {muId} not found", LogType.Error);
+                            return;
+                        }
+
+                        var worker = new ReplayWorker(
+                            _log, _sourceSession, _targetSession,
+                            _pipelineConfig, () => ExecutionCancelled,
+                            _tokenRefreshManager);
+
+                        await worker.ReplayTableAsync(mu, ct);
+                        return; // success
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        return; // expected on pause/stop
+                    }
+                    catch (Exception ex)
                     {
                         _log.WriteLine(
-                            $"ChangeFeed: MU {muId} not found", LogType.Error);
-                        return;
+                            $"CF muId={muId} attempt {attempt}/{maxTaskRetries}: {ex.GetType().Name}: {ex.Message}",
+                            LogType.Error);
+
+                        if (ExceptionClassifier.IsFatal(ex) || attempt >= maxTaskRetries)
+                        {
+                            _log.WriteLine(
+                                $"CF muId={muId}: GIVING UP after {attempt} attempt(s) — marking table as failed",
+                                LogType.Error);
+                            var failedMu = _muCache.GetMigrationUnit(muId, _job?.Id);
+                            if (failedMu != null)
+                            {
+                                failedMu.SourceStatus = TableStatus.Failed;
+                                MigrationJobContext.Instance.SaveMigrationUnit(failedMu, true);
+                            }
+                            return;
+                        }
+
+                        await Task.Delay(5000 * attempt);
                     }
-
-                    var worker = new ReplayWorker(
-                        _log, _sourceSession, _targetSession,
-                        _pipelineConfig, () => ExecutionCancelled,
-                        _tokenRefreshManager);
-
-                    await worker.ReplayTableAsync(mu, ct);
                 }
-                catch (Exception ex)
-                {
-                    _log.WriteLine(
-                        $"CF muId={muId}: {ex.GetType().Name}: {ex.Message}", LogType.Error);
-                }
-
-                _activeTasks.TryRemove(muId, out _);
             });
 
             _activeTasks[muId] = task;
+
+            // Clean up tracking after task completes (success or failure)
+            _ = task.ContinueWith(_ => _activeTasks.TryRemove(muId, out _));
         }
     }
 }

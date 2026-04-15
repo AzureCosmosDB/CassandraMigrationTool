@@ -140,7 +140,7 @@
         <h5 class="mb-0">
             <button class="btn btn-light" @onclick="DownloadFile" title="Download Log File" style="border: none; background: transparent;">
                 <i class="bi bi-download"></i>
-            </button> Logs
+            </button> Logs (@LogBucket.Logs.Count entries)
         </h5>
         <div class="d-flex align-items-center">
             <input type="text" class="form-control form-control-sm me-2" style="width: 200px;"
@@ -966,21 +966,33 @@ else if (@_showLogBackupFile)
     private void PauseJobImmediate()
     {
         _errorMessage = string.Empty;
-        // Set status BEFORE stopping so StopProcessing
-        // won't downgrade from Paused to Pending
-        if (CurrentlyLoadedMigrationJob != null)
-            CurrentlyLoadedMigrationJob.Status = JobStatus.Paused;
-        MigrationContext.SaveJob(CurrentlyLoadedMigrationJob);
-        JobManager.StopMigration();
+        try
+        {
+            // Set status BEFORE stopping so StopProcessing
+            // won't downgrade from Paused to Pending
+            if (CurrentlyLoadedMigrationJob != null)
+                CurrentlyLoadedMigrationJob.Status = JobStatus.Paused;
+            MigrationContext.SaveJob(CurrentlyLoadedMigrationJob);
+            JobManager.StopMigration();
+        }
+        catch (Exception ex)
+        {
+            _errorMessage = $"Pause failed: {ex.Message}";
+        }
     }
 
     private void PauseJobControlled()
     {
         _errorMessage = string.Empty;
-        MigrationContext.RequestControlledPause("UI Button Click");
-
-        if (MigrationContext.SaveJob(CurrentlyLoadedMigrationJob))
-            return;
+        try
+        {
+            MigrationContext.RequestControlledPause("UI Button Click");
+            MigrationContext.SaveJob(CurrentlyLoadedMigrationJob);
+        }
+        catch (Exception ex)
+        {
+            _errorMessage = $"Controlled pause failed: {ex.Message}";
+        }
     }
 
     private bool NoOtherActiveJobs()

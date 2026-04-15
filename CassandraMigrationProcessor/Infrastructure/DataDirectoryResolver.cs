@@ -23,9 +23,20 @@ public static class DataDirectoryResolver
 
         if (!IsWindows())
         {
-            _workingFolder =
-                $"{Environment.GetEnvironmentVariable("ResourceDrive")}/" +
-                $"{_appId}/";
+            var resourceDrive = Environment.GetEnvironmentVariable("ResourceDrive");
+            var stateStore = Environment.GetEnvironmentVariable("StateStoreConnectionStringOrPath");
+            if (!string.IsNullOrEmpty(resourceDrive) && !string.IsNullOrEmpty(_appId))
+            {
+                _workingFolder = $"{resourceDrive}/{_appId}/";
+            }
+            else if (!string.IsNullOrEmpty(stateStore))
+            {
+                _workingFolder = stateStore.EndsWith("/") ? stateStore : stateStore + "/";
+            }
+            else
+            {
+                _workingFolder = "/tmp/migration-data/";
+            }
             if (!Directory.Exists(_workingFolder))
                 Directory.CreateDirectory(_workingFolder);
             MigrationUtilities.LogToFile($"WorkingFolder (Linux): {_workingFolder}");

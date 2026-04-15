@@ -87,7 +87,23 @@ public class PasswordManager
 
     public Task<bool> IsPasswordSetAsync()
     {
-        return Task.FromResult(FileSystem.Exists(_passwordFilePath));
+        if (!FileSystem.Exists(_passwordFilePath))
+            return Task.FromResult(false);
+
+        // Verify the file is actually readable (key may have changed)
+        try
+        {
+            byte[] encryptedBytes = File.ReadAllBytes(_passwordFilePath);
+            Decrypt(encryptedBytes);
+            return Task.FromResult(true);
+        }
+        catch
+        {
+            // Password file exists but is unreadable (key changed, container restarted)
+            // Delete the corrupt file so user can set a new password
+            try { File.Delete(_passwordFilePath); } catch { }
+            return Task.FromResult(false);
+        }
     }
 
     public Task SetPasswordAsync(string newPassword)
