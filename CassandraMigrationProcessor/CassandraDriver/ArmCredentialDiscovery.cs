@@ -23,6 +23,9 @@ public static class ArmCredentialDiscovery
 
     private static readonly HttpClient _armHttpClient = new();
 
+    /// <summary>Azure Instance Metadata Service — well-known endpoint (docs.microsoft.com/azure/virtual-machines/instance-metadata-service)</summary>
+    private const string ImdsEndpoint = "http://169.254.169.254/metadata/instance";
+
     /// <summary>
     /// Discover target credentials via ARM control plane.
     /// Searches for Cassandra MI clusters and Cosmos DB accounts
@@ -74,8 +77,7 @@ public static class ArmCredentialDiscovery
         try
         {
             using var req = new HttpRequestMessage(HttpMethod.Get,
-                "http://169.254.169.254/metadata/instance" +
-                "?api-version=2021-02-01");
+                ImdsEndpoint + "?api-version=2021-02-01");
             req.Headers.Add("Metadata", "true");
             using var resp = await _armHttpClient.SendAsync(req);
             if (!resp.IsSuccessStatusCode) return null;
