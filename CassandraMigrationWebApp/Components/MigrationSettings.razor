@@ -1,0 +1,124 @@
+@using CassandraMigrationProcessor
+@using CassandraMigrationProcessor.Models
+
+<div class="modal fade show d-block bg-dark bg-opacity-75" id="myModal" aria-modal="true" role="dialog">
+    <div class="modal-dialog bg-dark">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h4 class="modal-title">Edit Configuration Settings</h4>
+                <button type="button" class="btn-close" aria-label="Close" @onclick="@Cancel"></button>
+            </div>
+            <div class="modal-body">
+                <!-- Tab Navigation -->
+                <ul class="nav nav-tabs mb-3">
+                    <li class="nav-item">
+                        <button class="nav-link @(activeTab == "OfflineDataMovement" ? "active" : "")" @onclick="SwitchToOfflineDataMovementTab">Offline</button>
+                    </li>
+                    <li class="nav-item">
+                        <button class="nav-link @(activeTab == "ChangeStream" ? "active" : "")" @onclick="SwitchToChangeStreamTab">Online</button>
+                    </li>
+                    <li class="nav-item">
+                        <button class="nav-link @(activeTab == "Other" ? "active" : "")" @onclick="SwitchToOtherTab">Other</button>
+                    </li>
+                </ul>
+
+                <!-- Offline Data Movement Tab Content -->
+                <div class="@(activeTab == "OfflineDataMovement" ? "" : "d-none")">
+                    <div class="mb-3">
+                        <label for="cql-copy-page-size" class="form-label">CQL Copy page size</label>
+                        <input type="number" id="cql-copy-page-size" class="form-control" @bind="(_configurationBackup ??= new CassandraMigrationProcessor.Models.AppSettings()).CqlCopyPageSize" />
+                    </div>
+                </div>
+
+                <!-- Change Stream Tab Content -->
+                <div class="@(activeTab == "ChangeStream" ? "" : "d-none")">
+                </div>
+
+                <!-- Other Tab Content -->
+                <div class="@(activeTab == "Other" ? "" : "d-none")">
+                    <div class="mb-3">
+                        <label for="log-page-size" class="form-label">Log page size</label>
+                        <input type="text" id="log-page-size" class="form-control" @bind="(_configurationBackup ??= new CassandraMigrationProcessor.Models.AppSettings()).LogPageSize" />
+                    </div>
+                </div>
+
+                @if (!string.IsNullOrEmpty(errorMessage))
+                {
+                    <div class="alert alert-danger mt-2">
+                        @errorMessage
+                        <button type="button" class="btn-close btn-close-sm" aria-label="Close" @onclick="() => errorMessage = string.Empty"></button>
+                    </div>
+                }
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-primary" @onclick=@HandleSubmit>OK</button>
+                <button type="button" class="btn btn-secondary" @onclick="@Cancel">Cancel</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+@code
+{
+    [Parameter]
+    public CassandraMigrationProcessor.Models.AppSettings? _configuration { get; set; }
+
+    [Parameter]
+    public EventCallback<CassandraMigrationProcessor.Models.AppSettings?> On_configurationSaved { get; set; }
+
+    private string errorMessage = string.Empty;
+    private string activeTab = "OfflineDataMovement";
+
+    private void SwitchToOfflineDataMovementTab()
+    {
+        activeTab = "OfflineDataMovement";
+    }
+
+    private void SwitchToChangeStreamTab()
+    {
+        activeTab = "ChangeStream";
+    }
+
+    private void SwitchToOtherTab()
+    {
+        activeTab = "Other";
+    }
+
+    CassandraMigrationProcessor.Models.AppSettings? _configurationBackup;
+
+    protected override void OnInitialized()
+    {
+        _configurationBackup = (CassandraMigrationProcessor.Models.AppSettings?)(_configuration?.Clone()) ?? new CassandraMigrationProcessor.Models.AppSettings();
+    }
+
+    private async Task HandleSubmit()
+    {
+        if ((_configurationBackup?.LogPageSize ?? 0) < 1000 || (_configurationBackup?.LogPageSize ?? 0) > 100000)
+        {
+            errorMessage = "Log page size should be between 1000 and 100000.";
+            return;
+        }
+
+        if ((_configurationBackup?.CqlCopyPageSize ?? 0) < 50 || (_configurationBackup?.CqlCopyPageSize ?? 0) > 40000)
+        {
+            errorMessage = "Page size should be between 50 and 40000.";
+            return;
+        }
+
+        _configurationBackup ??= new CassandraMigrationProcessor.Models.AppSettings();
+        _configuration = (CassandraMigrationProcessor.Models.AppSettings)_configurationBackup.Clone();
+
+        if (On_configurationSaved.HasDelegate)
+        {
+            await On_configurationSaved.InvokeAsync(_configuration);
+        }
+    }
+
+    private async Task Cancel()
+    {
+        if (On_configurationSaved.HasDelegate)
+        {
+            await On_configurationSaved.InvokeAsync(null);
+        }
+    }
+}

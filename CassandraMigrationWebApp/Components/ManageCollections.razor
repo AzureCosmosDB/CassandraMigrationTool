@@ -1,0 +1,387 @@
+@using CassandraMigrationProcessor
+@using CassandraMigrationProcessor.Infrastructure
+@using System.Text.RegularExpressions;
+@using CassandraMigrationWebApp.Helpers
+
+<div class="modal fade show d-block bg-dark bg-opacity-75" id="myModal" aria-modal="true" role="dialog">
+    <div class="modal-dialog bg-dark modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h4 class="modal-title">Add/Remove Tables</h4>
+                <button type="button" class="btn-close" aria-label="Close" @onclick="@Cancel"></button>
+            </div>
+            <div class="modal-body">
+                @* Filter section - only show if more than 25 collections *@
+                @if (_paginationHelper.ShowFilter())
+                {
+                    <div class="mb-3 manage-collections-filter">
+                        <div class="input-group">
+                            <span class="input-group-text"><i class="bi bi-search"></i></span>
+                            <input type="text" class="form-control" placeholder="Filter tables (keyspace.table)"
+                                   @bind="_paginationHelper.FilterText" @bind:event="oninput" @onkeyup="OnFilterChanged" />
+                            @if (!string.IsNullOrWhiteSpace(_paginationHelper.FilterText))
+                            {
+                                <button class="btn btn-outline-secondary" type="button" @onclick="ClearFilter" title="Clear filter">
+                                    <i class="bi bi-x"></i>
+                                </button>
+                            }
+                        </div>
+                        <div class="d-flex justify-content-between align-items-center mt-2">
+                            <small class="text-muted">
+                                Showing @_paginationHelper.GetDisplayedItemsInfo() of @_paginationHelper.GetFilteredItemsCount() 
+                                @(_paginationHelper.GetFilteredItemsCount() != _paginationHelper.TotalItemsCount ? $"(filtered from {_paginationHelper.TotalItemsCount} total)" : "") tables
+                            </small>
+                            <div class="page-size-selector-top">
+                                <select class="form-select form-select-sm page-size-dropdown" @bind="_paginationHelper.PageSize" @bind:after="OnPageSizeChanged" style="width: auto;" title="Items per page">
+                                    <option value="10">10 per page</option>
+                                    <option value="25">25 per page</option>
+                                    <option value="50">50 per page</option>
+                                    <option value="100">100 per page</option>
+                                </select>
+                            </div>
+                        </div>
+                    </div>
+                }
+
+                <div class="table-responsive" style="max-height: 400px; overflow-y: auto;">
+                    <table class="table table-borderless table-sm">
+                        <thead class="sticky-top bg-light">
+                            <tr>
+                                <th>Table</th>
+                                <th style="width: 100px;">Action</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @{
+                                var collectionsToShow = _paginationHelper.ShowFilter() ? _paginationHelper.GetPagedItems() : LoadUpdatedMigrationUnits();
+                            }
+                            
+                            @if (collectionsToShow.Any())
+                            {
+                                @foreach (var mu in collectionsToShow)
+                                {
+                                    <tr>
+                                        <td>
+                                            <span title="@($"Keyspace: {mu.KeyspaceName}, Table: {mu.TableName}")">
+                                                @mu.KeyspaceName.@mu.TableName
+                                            </span>
+                                        </td>
+                                        <td>
+                                            <button class="btn btn-danger btn-sm" @onclick="() => RemoveCollection(mu)" title="Remove collection">
+                                                <i class="bi bi-trash"></i>
+                                            </button>
+                                        </td>
+                                    </tr>
+                                }
+                            }
+                            else if (_paginationHelper.ShowFilter() && !string.IsNullOrWhiteSpace(_paginationHelper.FilterText))
+                            {
+                                <tr>
+                                    <td colspan="2" class="text-center text-muted py-3">
+                                        <i class="bi bi-search"></i>
+                                        <div>No tables match your filter</div>
+                                        <button class="btn btn-link btn-sm p-0" @onclick="ClearFilter">Clear filter</button>
+                                    </td>
+                                </tr>
+                            }
+                            else if (!LoadUpdatedMigrationUnits().Any())
+                            {
+                                <tr>
+                                    <td colspan="2" class="text-center text-muted py-3">
+                                        <i class="bi bi-collection"></i>
+                                        <div>No tables configured</div>
+                                    </td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+
+                @* Pagination Controls *@
+                @if (_paginationHelper.ShowPagination())
+                {
+                    <div class="d-flex justify-content-between align-items-center mt-3">
+                        <div>
+                            <nav aria-label="Collections pagination">
+                                <ul class="pagination pagination-sm mb-0">
+                                    <li class="page-item @(_paginationHelper.IsFirstPage() ? "disabled" : "")">
+                                        <button class="page-link" @onclick="() => GoToPage(1)" disabled="@_paginationHelper.IsFirstPage()" title="First page">
+                                            <i class="bi bi-chevron-double-left"></i>
+                                        </button>
+                                    </li>
+                                    <li class="page-item @(_paginationHelper.IsFirstPage() ? "disabled" : "")">
+                                        <button class="page-link" @onclick="() => GoToPage(_paginationHelper.CurrentPage - 1)" disabled="@_paginationHelper.IsFirstPage()" title="Previous page">
+                                            <i class="bi bi-chevron-left"></i>
+                                        </button>
+                                    </li>
+
+                                    @for (int page = _paginationHelper.GetStartPage(); page <= _paginationHelper.GetEndPage(); page++)
+                                    {
+                                        var pageNumber = page;
+                                        <li class="page-item @(_paginationHelper.CurrentPage == pageNumber ? "active" : "")">
+                                            <button class="page-link" @onclick="() => GoToPage(pageNumber)" title="Go to page @pageNumber">
+                                                @pageNumber
+                                            </button>
+                                        </li>
+                                    }
+
+                                    <li class="page-item @(_paginationHelper.IsLastPage() ? "disabled" : "")">
+                                        <button class="page-link" @onclick="() => GoToPage(_paginationHelper.CurrentPage + 1)" disabled="@_paginationHelper.IsLastPage()" title="Next page">
+                                            <i class="bi bi-chevron-right"></i>
+                                        </button>
+                                    </li>
+                                    <li class="page-item @(_paginationHelper.IsLastPage() ? "disabled" : "")">
+                                        <button class="page-link" @onclick="() => GoToPage(_paginationHelper.GetTotalPages())" disabled="@_paginationHelper.IsLastPage()" title="Last page">
+                                            <i class="bi bi-chevron-double-right"></i>
+                                        </button>
+                                    </li>
+                                </ul>
+                            </nav>
+                        </div>
+                        
+                        <div>
+                            <small class="text-muted">
+                                Page @_paginationHelper.CurrentPage of @_paginationHelper.GetTotalPages()
+                            </small>
+                        </div>
+                    </div>
+                }
+
+               
+
+                    <div class="mt-3">
+                    <label for="nameSpaces" class="form-label">Tables To Add</label>
+                    <textarea id="nameSpaces" @bind="newCollection" rows="4" placeholder="e.g. ks1.table1,ks1.table2,ks2.table1 or use wildcards like *.table, keyspace.*, *.*" class="form-control" />
+                    <button class="btn btn-primary btn-sm mt-2" @onclick="AddCollectionAsync" disabled="@isAddingCollections">
+                        @if (isAddingCollections)
+                        {
+                            <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
+                            <span>Adding...</span>
+                        }
+                        else
+                        {
+                            <span>Add</span>
+                        }
+                    </button>
+                </div>
+
+                @if (collectionRemoved)
+                {
+                    <div class="alert alert-warning mt-2">If a table is removed from the job, it will need to be migrated as new, and all migration details will be lost. Select Cancel if you wish to keep the table.</div>
+                }
+
+                @if (!string.IsNullOrEmpty(errorMessage))
+                {
+                    <div class="alert alert-danger mt-2">
+                        @errorMessage
+                        <button type="button" class="btn-close btn-close-sm" aria-label="Close" @onclick="() => errorMessage = string.Empty"></button>
+                    </div>
+                }
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-primary" @onclick=@HandleSubmit>Ok</button>
+                <button type="button" class="btn btn-secondary" @onclick="@Cancel">Cancel</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+@code
+{
+    [Parameter]
+    public Job? Job { get; set; }
+
+    [Parameter]
+    public List<TableMigration>? MigrationUnits { get; set; }
+
+    [Parameter]
+    public string? SourceConnectionString { get; set; }
+
+    [Parameter]
+    public EventCallback<List<TableMigration>?> OnCollectionsUpdated { get; set; }
+
+    private string errorMessage = string.Empty;
+    private string newCollection = string.Empty;
+    private List<TableMigration> updatedMigrationUnits = new List<TableMigration>();
+    private bool collectionRemoved = false;
+    private bool isAddingCollections = false;
+    
+    // Pagination helper
+    private PaginationHelper<TableMigration> _paginationHelper = null!;
+
+    protected override void OnInitialized()
+    {
+        // Initialize pagination helper with filter predicate
+        _paginationHelper = new PaginationHelper<TableMigration>(
+            LoadUpdatedMigrationUnits(),
+            (mu, filterText) =>
+                $"{mu.KeyspaceName}.{mu.TableName}".Contains(filterText, StringComparison.OrdinalIgnoreCase) ||
+                mu.KeyspaceName.Contains(filterText, StringComparison.OrdinalIgnoreCase) ||
+                mu.TableName.Contains(filterText, StringComparison.OrdinalIgnoreCase)
+        );
+    }
+
+    private List<TableMigration> LoadUpdatedMigrationUnits()
+    {
+        if (updatedMigrationUnits == null || updatedMigrationUnits.Count == 0)
+        {
+            updatedMigrationUnits = (MigrationUnits ?? new List<TableMigration>()).ToList();
+        }
+
+        return updatedMigrationUnits;
+    }
+
+    private void RefreshPaginationHelper()
+    {
+        _paginationHelper = new PaginationHelper<TableMigration>(
+            LoadUpdatedMigrationUnits(),
+            (mu, filterText) =>
+                $"{mu.KeyspaceName}.{mu.TableName}".Contains(filterText, StringComparison.OrdinalIgnoreCase) ||
+                mu.KeyspaceName.Contains(filterText, StringComparison.OrdinalIgnoreCase) ||
+                mu.TableName.Contains(filterText, StringComparison.OrdinalIgnoreCase)
+        );
+    }
+
+    private void OnFilterChanged()
+    {
+        StateHasChanged();
+    }
+
+    private void ClearFilter()
+    {
+        _paginationHelper.ClearFilter();
+        StateHasChanged();
+    }
+
+    private void OnPageSizeChanged()
+    {
+        StateHasChanged();
+    }
+
+    private void GoToPage(int pageNumber)
+    {
+        _paginationHelper.GoToPage(pageNumber);
+        StateHasChanged();
+    }
+
+    private async Task AddCollectionAsync()
+    {
+        errorMessage = string.Empty;
+        if (!string.IsNullOrWhiteSpace(newCollection))
+        {
+            if (Job == null)
+            {
+                errorMessage = "Job is not set.";
+                return;
+            }
+
+            Tuple<bool, string, string> retValue = TableDiscovery.ValidateNamespaceFormat(newCollection);
+            if (!retValue.Item1)
+            {
+                errorMessage = retValue.Item3; // Use Item3 for error message
+                return;
+            }
+
+            try
+            {
+                isAddingCollections = true;
+                StateHasChanged(); // Update UI to show spinner
+
+                // Use the async method with SourceConnectionString parameter
+                var newunits = await TableDiscovery.PopulateJobTablesAsync(Job, newCollection);
+                
+                foreach (var mu in newunits)
+                {
+                    // Ensure no duplicates
+                    if (!updatedMigrationUnits.Any(x => x.KeyspaceName == mu.KeyspaceName && x.TableName == mu.TableName))
+                    {
+                        var hasTargetClash = updatedMigrationUnits.Any(x =>
+                            string.Equals(x.GetEffectiveTargetKeyspaceName(), mu.GetEffectiveTargetKeyspaceName(), StringComparison.OrdinalIgnoreCase) &&
+                            string.Equals(x.GetEffectiveTargetTableName(), mu.GetEffectiveTargetTableName(), StringComparison.OrdinalIgnoreCase) &&
+                            !(string.Equals(x.KeyspaceName, mu.KeyspaceName, StringComparison.OrdinalIgnoreCase) &&
+                              string.Equals(x.TableName, mu.TableName, StringComparison.OrdinalIgnoreCase)));
+
+                        if (hasTargetClash)
+                        {
+                            errorMessage = $"Target namespace clash detected for {mu.GetEffectiveTargetKeyspaceName()}.{mu.GetEffectiveTargetTableName()}.";
+                            continue;
+                        }
+
+                        updatedMigrationUnits.Add(mu);
+                    }
+                }
+
+
+                newCollection = string.Empty;
+                
+                // Refresh pagination helper with new data
+                RefreshPaginationHelper();
+            }
+            catch (Exception ex)
+            {
+                errorMessage = $"Error adding collections. Details: {ex.Message}";
+            }
+            finally
+            {
+                isAddingCollections = false;
+                StateHasChanged(); // Update UI to hide spinner
+            }
+        }
+    }
+
+    private void RemoveCollection(TableMigration mu)
+    {
+        errorMessage = string.Empty;
+        if (updatedMigrationUnits.Count == 1)
+        {
+            errorMessage = "At least one table is required for migration.";
+            return;
+        }
+        updatedMigrationUnits.Remove(mu);
+        collectionRemoved = true;
+        
+        // Refresh pagination helper with updated data
+        RefreshPaginationHelper();
+        StateHasChanged();
+    }
+
+    private void HandleSubmit()
+    {
+        errorMessage = string.Empty;
+        
+        // Check if there's text in newCollection that hasn't been added
+        if (!string.IsNullOrWhiteSpace(newCollection))
+        {
+            errorMessage = "You were trying to add tables using the 'Tables To Add' field. Please click 'Add' to add them or clear the text box before submitting.";
+            return;
+        }
+
+        // Validate no target namespace clashes
+        var targetNamespaces = updatedMigrationUnits
+            .Select(mu => $"{mu.GetEffectiveTargetKeyspaceName()}.{mu.GetEffectiveTargetTableName()}")
+            .ToList();
+        var duplicates = targetNamespaces
+            .GroupBy(ns => ns, StringComparer.OrdinalIgnoreCase)
+            .Where(g => g.Count() > 1)
+            .Select(g => g.Key)
+            .ToList();
+        if (duplicates.Any())
+        {
+            errorMessage = $"Target namespace clash detected: {string.Join(", ", duplicates)}. Multiple source tables cannot map to the same target table.";
+            return;
+        }
+        
+        if (OnCollectionsUpdated.HasDelegate)
+        {
+            OnCollectionsUpdated.InvokeAsync(updatedMigrationUnits);
+        }
+    }
+
+    private void Cancel()
+    {
+        if (OnCollectionsUpdated.HasDelegate)
+        {
+            OnCollectionsUpdated.InvokeAsync(null);
+        }
+    }
+}

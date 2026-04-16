@@ -1,0 +1,178 @@
+@page "/jobreport/{JobId}"
+@using CassandraMigrationProcessor
+@inject Service.JobManager JobManager
+@inject NavigationManager NavigationManager
+
+<div class="no-print d-flex justify-content-between align-items-center mb-3">
+   
+    <h3 class="mb-0">
+        <button class="btn btn-light me-2" title="Back to Job List" @onclick="GoBack" style="border: none; background: transparent;">
+            <i class="bi bi-arrow-left"></i>
+        </button>
+        @Job?.Name - Job Report</h3>
+    <div class="d-flex align-items-center mb-3">
+       
+        <button class="btn btn-primary" title="Print" onclick="window.print()">
+            <i class="bi bi-printer"></i>
+        </button>
+    </div>
+</div>
+
+@if (Job is null)
+{
+    <div class="alert alert-warning">Job not found.</div>
+}
+else
+{
+    <style>
+        /* Printer friendly styles */
+        @@page {
+            margin: 8mm;
+        }
+        @@media print {
+            .no-print { display: none !important; }
+            body { -webkit-print-color-adjust: exact; print-color-adjust: exact; font-size: 10px; }
+            .small-text { font-size: 9px; }
+            .table-tight td, .table-tight th { padding: 2px 4px; }
+            .group-cell { line-height: 1.2; }
+        }
+        .kv-table thead th { width: 30%; }
+        .kv-table thead th + th { width: 70%; }
+        .section-title { font-size: 1.05rem; margin-top: 1rem; }
+        .small-text { font-size: .9rem; }
+        .nowrap { white-space: nowrap; }
+        .wrap { word-break: break-word; }
+        .table-tight td, .table-tight th { padding: .135rem .5rem; }
+        .report-table { table-layout: fixed; width: 100%; }
+        th, td { vertical-align: top; }
+        .col-db { width: 18ch; }
+        .col-cnt { width: 26ch; }
+        .col-cs { width: 28ch; }
+        .col-sb { width: 26ch; }        
+        .col-cmp { width: 26ch; }
+        .group-cell div {}        
+        .lbl { color: #555; }
+    </style>
+
+    <div>
+        
+        <table class="table table-borderless table-sm kv-table small-text">
+            <thead>
+                <tr>
+                    <th></th>
+                    <th></th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr><td class="nowrap">Job Name</td><td class="wrap">@Job.Name</td></tr>
+                <tr><td class="nowrap">Job Type</td><td>@GetToolName(Job.JobType)</td></tr>
+                <tr><td class="nowrap">Started On (UTC)</td><td>@(Job.StartedOn?.ToString() ?? "N/A")</td></tr>
+                <tr><td class="nowrap">Is Online</td><td>@(MigrationUtilities.IsOnline(Job) ? "Yes" : "No")</td></tr>
+                <tr><td class="nowrap">Is Completed</td><td>@(Job.Status == JobStatus.Completed ? "Yes" : "No")</td></tr>
+                <tr><td class="nowrap">Source Contact Point</td><td class="wrap">@Job.SourceContactPoint</td></tr>
+                <tr><td class="nowrap">Target Contact Point</td><td class="wrap">@Job.TargetContactPoint</td></tr>
+                <tr><td class="nowrap">Collection Count</td><td>@(@JobManager.GetMigrationUnits(Job)?.Count ?? 0)</td></tr>
+            </tbody>
+        </table>
+    </div>
+
+    <div class="section-title">Tables</div>
+    <table class="table table-bordered table-striped table-tight small-text report-table">
+        <thead>
+            <tr>
+                <th class="col-db">Namespace</th>
+                <th class="col-cnt">Offline Copy</th>
+                <th class="col-cs">Change Feed</th>
+            </tr>
+        </thead>
+        <tbody>
+        @foreach (var mu in (@JobManager.GetMigrationUnits(Job) ?? new List<TableMigration>()))
+        {
+            var duration = GetDuration(mu.BulkCopyStartedOn, mu.BulkCopyEndedOn);
+            <tr>
+                 <td class="group-cell">
+                    <div><span class="lbl">Keyspace:</span> @mu.KeyspaceName</div>
+                    <div><span class="lbl">Table:</span> @mu.TableName</div>
+                    @if (HasTargetNamespaceMapping(mu))
+                    {
+                        <div><span class="lbl">Target Namespace:</span> @GetTargetNamespace(mu)</div>
+                    }
+                </td>
+                <td class="group-cell">
+                    <div><span class="lbl">Source Status:</span> @mu.SourceStatus</div>
+                    <div><span class="lbl">Started On (UTC):</span> @(mu.BulkCopyStartedOn?.ToString() ?? "N/A")</div>
+                    <div><span class="lbl">Ended On (UTC):</span> @(mu.BulkCopyEndedOn?.ToString() ?? "N/A")</div>
+                    <div><span class="lbl">Duration:</span> @duration</div>
+                    <div><span class="lbl">Estimated Count:</span> @FormatLong(mu.EstimatedRowCount)</div>
+                    <div><span class="lbl">Actual Count:</span> @FormatLong(mu.ActualRowCount)</div>
+                    <div><span class="lbl">Count While Copying:</span> @FormatLong(mu.SourceCountDuringCopy)</div>
+                    @{
+                        var totals = MigrationUtilities.GetProcessedTotals(mu);
+                    }
+                    <div><span class="lbl">Processed Total:</span> @FormatLong(totals.Total)</div>
+                    <div><span class="lbl">Insert:</span> @FormatLong(totals.Inserted)</div>
+                    <div><span class="lbl">Failed:</span> @FormatLong(totals.Failed)</div>
+                </td>
+                <td class="group-cell">
+                    <div><span class="lbl">Started On (UTC):</span> @(mu.ChangeFeedStartedOn?.ToString() ?? "N/A")</div>
+                    <div><span class="lbl">Last Batch Count:</span> @FormatLong(mu.ChangeFeedUpdatesInLastBatch)</div>
+                    <div><span class="lbl">Inserted:</span> @FormatLong(mu.ChangeFeedRowsInserted) (from @FormatLong(mu.ChangeFeedInsertEvents) events)</div>
+                    <div><span class="lbl">Deleted:</span> @FormatLong(mu.ChangeFeedRowsDeleted) (from @FormatLong(mu.ChangeFeedDeleteEvents) events)</div>
+                    <div><span class="lbl">Updated:</span> @FormatLong(mu.ChangeFeedRowsUpdated) (from @FormatLong(mu.ChangeFeedUpdateEvents) events)</div>
+                    <div><span class="lbl">Failed (with retries):</span> @FormatLong(mu.ChangeFeedErrors)</div>
+                </td>
+            </tr>
+        }
+        </tbody>
+    </table>
+}
+
+@code {
+    [Parameter]
+    public string JobId { get; set; } = string.Empty;
+
+    private Job? Job { get; set; }
+
+    protected override void OnParametersSet()
+    {
+
+        Job = JobManager.GetMigrationJobById(JobId);
+    }
+
+    private void GoBack()
+    {
+        NavigationManager.NavigateTo("/");
+    }
+
+    private string GetToolName(CassandraMigrationProcessor.Models.JobType jobType)
+    {
+        return jobType switch
+        {
+            CassandraMigrationProcessor.Models.JobType.CqlCopy => "CQL Copy",
+            _ => "NA"
+        };
+    }
+
+    private static string GetDuration(DateTime? start, DateTime? end)
+    {
+        if (!start.HasValue || !end.HasValue || start.Value == DateTime.MinValue || end.Value == DateTime.MinValue)
+            return "N/A";
+        var d = end.Value - start.Value;
+        return $"{(int)d.TotalHours}h {d.Minutes}m {d.Seconds}s";
+    }
+
+    private static bool HasTargetNamespaceMapping(TableMigration mu)
+    {
+        return !string.Equals(mu.KeyspaceName, mu.GetEffectiveTargetKeyspaceName(), StringComparison.OrdinalIgnoreCase)
+            || !string.Equals(mu.TableName, mu.GetEffectiveTargetTableName(), StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string GetTargetNamespace(TableMigration mu)
+    {
+        return $"{mu.GetEffectiveTargetKeyspaceName()}.{mu.GetEffectiveTargetTableName()}";
+    }
+
+   
+
+    private static string FormatLong(long value) => string.Format(System.Globalization.CultureInfo.InvariantCulture, "{0:N0}", value);
+}

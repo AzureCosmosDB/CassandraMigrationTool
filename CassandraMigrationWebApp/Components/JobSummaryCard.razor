@@ -1,0 +1,120 @@
+@using CassandraMigrationProcessor
+@using CassandraMigrationProcessor.Models
+@using CassandraMigrationProcessor.Infrastructure
+
+@if (Job != null)
+{
+    var sj = Job;
+    var allUnits = sj.Tables;
+    int totalTables = allUnits.Count;
+    int copyDone = allUnits.Count(u => u.CopyComplete);
+    int inProgress = allUnits.Count(u => !u.CopyComplete && u.CopyPercent > 0);
+    int failedTables = allUnits.Count(u => u.SourceStatus == TableStatus.Failed);
+    long totalRows = allUnits.Sum(u => (long)u.CopyRowsCopied);
+    long totalDocs = allUnits.Sum(u => (long)u.TotalRowCount);
+    double avgSpeed = allUnits.Where(u => u.CopyRowsPerSecond > 0).Select(u => u.CopyRowsPerSecond).DefaultIfEmpty(0).Sum();
+
+    <div class="card mb-3 mt-2">
+        <div class="card-body py-2">
+            <div class="row align-items-center">
+                <div class="col-auto">
+                    <span class="badge @StatusBadge fs-6">@StatusLabel</span>
+                </div>
+                <div class="col">
+                    <small class="text-muted">
+                        <strong>Type:</strong> @sj.JobType
+                        @if (MigrationUtilities.IsOnline(sj)) { <span> · <strong>Mode:</strong> Online (CDC)</span> }
+                        else { <span> · <strong>Mode:</strong> Offline</span> }
+                        @if (sj.StartedOn.HasValue) { <span> · <strong>Started:</strong> @sj.StartedOn.Value.ToString("yyyy-MM-dd HH:mm:ss") UTC</span> }
+                        @if (sj.IsSimulatedRun) { <span class="badge bg-info ms-1">Simulated</span> }
+                    </small>
+                </div>
+            </div>
+            <hr class="my-1" />
+            <div class="row">
+                <div class="col-auto">
+                    <small class="text-muted">
+                        <i class="bi bi-table"></i>
+                        <strong>Tables:</strong> @copyDone/@totalTables done
+                        @if (inProgress > 0) { <span>, @inProgress active</span> }
+                        @if (failedTables > 0) { <span class="text-danger">, @failedTables failed</span> }
+                    </small>
+                </div>
+                <div class="col-auto">
+                    <small class="text-muted">
+                        <i class="bi bi-files"></i>
+                        <strong>Rows copied:</strong> @totalRows.ToString("N0")@(totalDocs > 0 ? $" / {totalDocs:N0}" : "")
+                    </small>
+                </div>
+                @if (totalDocs > 0)
+                {
+                <div class="col-auto">
+                    <small class="text-muted">
+                        <i class="bi bi-database"></i>
+                        <strong>Total documents:</strong> @totalDocs.ToString("N0")
+                    </small>
+                </div>
+                }
+                <div class="col-auto">
+                    <small class="text-muted">
+                        <i class="bi bi-speedometer2"></i>
+                        <strong>Speed:</strong>
+                        @{ var sp = avgSpeed; }
+                        @(sp >= 1000 ? $"{sp/1000:F1}k/s" : $"{sp:F0}/s")
+                    </small>
+                </div>
+                @if (avgSpeed > 0 && totalDocs > totalRows)
+                {
+                <div class="col-auto">
+                    <small class="text-muted">
+                        <i class="bi bi-clock-history"></i>
+                        <strong>ETA:</strong>
+                        @{
+                            long remaining = totalDocs - totalRows;
+                            double etaSec = remaining / avgSpeed;
+                            string etaStr;
+                            if (etaSec < 60) etaStr = $"{etaSec:F0}s";
+                            else if (etaSec < 3600) etaStr = $"{etaSec/60:F0}m {etaSec%60:F0}s";
+                            else etaStr = $"{etaSec/3600:F0}h {(etaSec%3600)/60:F0}m";
+                        }
+                        @etaStr
+                    </small>
+                </div>
+                }
+                <div class="col-auto">
+                    <small class="text-muted">
+                        <i class="bi bi-cpu"></i>
+                        <strong>Workers/table:</strong> @(sj.MaxFeedRangeParallelism > 0 ? sj.MaxFeedRangeParallelism.ToString() : $"auto ({Math.Max(4, Environment.ProcessorCount * 15 / Math.Max(1, sj.ParallelThreads))})")
+                        · <strong>Parallel tables:</strong> @sj.ParallelThreads
+                        · <strong>Connections/host:</strong> @(sj.MaxConnectionsPerHost > 0 ? sj.MaxConnectionsPerHost.ToString() : "1")
+                        · <strong>Page size:</strong> @(sj.PageSize > 0 ? sj.PageSize.ToString() : "500")
+                    </small>
+                </div>
+                <div class="col-auto">
+                    <small class="text-muted">
+                        <i class="bi bi-hdd-network"></i>
+                        <strong>Namespaces:</strong> @(sj.Namespaces ?? "all")
+                    </small>
+                </div>
+                @if (sj.DropTargetTableBeforeStart)
+                {
+                    <div class="col-auto">
+                        <span class="badge bg-danger">Drop target tables</span>
+                    </div>
+                }
+                @if (sj.AppendMode)
+                {
+                    <div class="col-auto">
+                        <span class="badge bg-info">Append mode</span>
+                    </div>
+                }
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    [Parameter] public Job? Job { get; set; }
+    [Parameter] public string StatusLabel { get; set; } = string.Empty;
+    [Parameter] public string StatusBadge { get; set; } = string.Empty;
+}

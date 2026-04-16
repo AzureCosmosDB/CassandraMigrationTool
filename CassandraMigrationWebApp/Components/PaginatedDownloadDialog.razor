@@ -1,0 +1,207 @@
+@inject IJSRuntime JS
+
+<div class="modal-backdrop" id="paginatedDownloadModal" aria-modal="true" role="dialog">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">Large Log File - Download in Pages</h5>
+                <button type="button" class="btn-close" aria-label="Close" @onclick="Close"></button>
+            </div>
+            <div class="modal-body">
+                <div class="alert alert-info mb-3">
+                    Theere are <strong>@TotalEntries.ToString("N0")</strong> log entries 
+                    (@TotalPages pages of @PageSize.ToString("N0") entries each).
+                </div>
+                
+                <p>Select a page to download:</p>
+                
+                <div class="d-flex justify-content-between align-items-center mb-3">
+                    <small class="text-muted">
+                        Page @_currentPage of @TotalPages 
+                        (Entries @GetStartEntry().ToString("N0") - @GetEndEntry().ToString("N0"))
+                    </small>
+                    @if (_downloadingPage > 0)
+                    {
+                        <span class="badge bg-primary">
+                            <span class="spinner-border spinner-border-sm" role="status"></span>
+                            Downloading page @_downloadingPage...
+                        </span>
+                    }
+                    else if (_downloadedPages.Contains(_currentPage))
+                    {
+                        <span class="badge bg-success">
+                            <i class="bi bi-check-circle"></i> Page @_currentPage downloaded
+                        </span>
+                    }
+                </div>
+                
+                <!-- Pagination Controls -->
+                <nav aria-label="Log page navigation">
+                    <ul class="pagination justify-content-center">
+                        <!-- First Page -->
+                        <li class="page-item @(_currentPage == 1 ? "disabled" : "")">
+                            <a class="page-link" href="#" @onclick="@(() => GoToPage(1))" @onclick:preventDefault="true">
+                                <i class="bi bi-chevron-double-left"></i>
+                            </a>
+                        </li>
+                        
+                        <!-- Previous Page -->
+                        <li class="page-item @(_currentPage == 1 ? "disabled" : "")">
+                            <a class="page-link" href="#" @onclick="@(() => GoToPage(_currentPage - 1))" @onclick:preventDefault="true">
+                                <i class="bi bi-chevron-left"></i>
+                            </a>
+                        </li>
+                        
+                        <!-- Page Numbers -->
+                        @foreach (var pageNum in GetPageNumbers())
+                        {
+                            <li class="page-item @(_currentPage == pageNum ? "active" : "")">
+                                <a class="page-link" href="#" @onclick="@(() => GoToPage(pageNum))" @onclick:preventDefault="true">
+                                    @pageNum
+                                    @if (_downloadedPages.Contains(pageNum))
+                                    {
+                                        <i class="bi bi-check-circle-fill text-success" style="font-size: 0.7rem; margin-left: 2px;"></i>
+                                    }
+                                </a>
+                            </li>
+                        }
+                        
+                        <!-- Next Page -->
+                        <li class="page-item @(_currentPage == TotalPages ? "disabled" : "")">
+                            <a class="page-link" href="#" @onclick="@(() => GoToPage(_currentPage + 1))" @onclick:preventDefault="true">
+                                <i class="bi bi-chevron-right"></i>
+                            </a>
+                        </li>
+                        
+                        <!-- Last Page -->
+                        <li class="page-item @(_currentPage == TotalPages ? "disabled" : "")">
+                            <a class="page-link" href="#" @onclick="@(() => GoToPage(TotalPages))" @onclick:preventDefault="true">
+                                <i class="bi bi-chevron-double-right"></i>
+                            </a>
+                        </li>
+                    </ul>
+                </nav>
+                
+                <div class="text-center mt-3">
+                    <button type="button" 
+                            class="btn btn-primary" 
+                            @onclick="@(() => DownloadPage(_currentPage))"
+                            disabled="@(_downloadingPage > 0)">
+                        <i class="bi bi-download"></i>
+                        Download Page @_currentPage
+                    </button>
+                </div>
+                
+                @if (_downloadedPages.Count > 0)
+                {
+                    <div class="mt-3">
+                        <small class="text-muted">
+                            Downloaded @_downloadedPages.Count of @TotalPages pages
+                        </small>
+                    </div>
+                }
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" @onclick="Close">Close</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+@code {
+    [Parameter] public int TotalEntries { get; set; }
+    [Parameter] public int PageSize { get; set; } = 5000;
+    [Parameter] public string JobId { get; set; } = string.Empty;
+    [Parameter] public EventCallback OnClose { get; set; }
+    
+    private int TotalPages => (int)Math.Ceiling((double)TotalEntries / Math.Max(1, PageSize));
+    private int _currentPage = 1;
+    private int _downloadingPage = 0;
+    private HashSet<int> _downloadedPages = new HashSet<int>();
+    
+    private void GoToPage(int pageNumber)
+    {
+        if (pageNumber >= 1 && pageNumber <= TotalPages)
+        {
+            _currentPage = pageNumber;
+            StateHasChanged();
+        }
+    }
+    
+    private List<int> GetPageNumbers()
+    {
+        var pages = new List<int>();
+        const int maxPagesToShow = 7;
+        
+        if (TotalPages <= maxPagesToShow)
+        {
+            // Show all pages
+            for (int i = 1; i <= TotalPages; i++)
+            {
+                pages.Add(i);
+            }
+        }
+        else
+        {
+            // Show current page with context
+            int startPage = Math.Max(1, _currentPage - 3);
+            int endPage = Math.Min(TotalPages, _currentPage + 3);
+            
+            // Adjust if at the beginning or end
+            if (_currentPage <= 4)
+            {
+                endPage = Math.Min(maxPagesToShow, TotalPages);
+            }
+            else if (_currentPage >= TotalPages - 3)
+            {
+                startPage = Math.Max(1, TotalPages - maxPagesToShow + 1);
+            }
+            
+            for (int i = startPage; i <= endPage; i++)
+            {
+                pages.Add(i);
+            }
+        }
+        
+        return pages;
+    }
+    
+    private int GetStartEntry()
+    {
+        return (_currentPage - 1) * PageSize + 1;
+    }
+    
+    private int GetEndEntry()
+    {
+        return Math.Min(_currentPage * PageSize, TotalEntries);
+    }
+    
+    private async Task DownloadPage(int pageNumber)
+    {
+        try
+        {
+            _downloadingPage = pageNumber;
+            StateHasChanged();
+
+            var encodedJobId = Uri.EscapeDataString(JobId);
+            var url = $"/api/File/download/log/{encodedJobId}/page/{pageNumber}/{PageSize}";
+
+            await JS.InvokeVoidAsync("open", url, "_blank");
+            _downloadedPages.Add(pageNumber);
+        }
+        catch (Exception ex)
+        {
+            await JS.InvokeVoidAsync("alert", $"Error downloading page {pageNumber}: {ex.Message}");
+        }
+        finally
+        {
+            _downloadingPage = 0;
+            StateHasChanged();
+        }
+    }
+    
+    private Task Close()
+    {
+        return OnClose.InvokeAsync();
+    }
+}

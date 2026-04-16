@@ -1,0 +1,407 @@
+@page "/"
+@inject Service.JobManager JobManager
+@inject Service.MigrationContextService MigrationContext
+@inject NavigationManager NavigationManager
+
+@using CassandraMigrationWebApp.Components
+@using CassandraMigrationProcessor
+@using CassandraMigrationProcessor.Infrastructure
+@using CassandraMigrationProcessor.Models
+
+
+<div class="card" style="border: none; box-shadow: none; background: transparent;">
+    <div style="background: var(--az-surface, #fff); border-bottom: 1px solid var(--az-border, #d6d6d6); padding: 10px 16px; display: flex; justify-content: space-between; align-items: center; border-radius: 4px 4px 0 0;">
+        <div style="font-size: 18px; font-weight: 600; color: var(--az-text, #323130);">
+            Migration Jobs
+        </div>
+        <div class="d-flex align-items-center gap-2">
+            <button class="btn btn-primary btn-sm d-flex align-items-center gap-1" title="New Job" @onclick="StartMigrationAsync">
+                <i class="bi bi-plus"></i> New
+            </button>
+            <button class="btn btn-outline-secondary btn-sm" title="Settings" @onclick="OpenConfig">
+                <i class="bi bi-gear"></i>
+            </button>
+        </div>
+    </div>
+</div>
+
+@if (_loadingComplete)
+{
+    @if (migrationJobs?.Count == 0)
+    {
+        <div class="card">
+            <div class="card-body empty-collections-state">
+                <i class="bi bi-database-add d-block"></i>
+                <div style="font-size: 14px; font-weight: 600; margin-bottom: 4px; color: var(--az-text, #323130);">No migration jobs</div>
+                <div style="font-size: 13px; color: var(--az-text-secondary, #605e5c); margin-bottom: 16px;">Create a migration job to get started.</div>
+                <button class="btn btn-primary btn-sm" @onclick="StartMigrationAsync">
+                    <i class="bi bi-plus me-1"></i> Create job
+                </button>
+            </div>
+        </div>
+    }
+    else
+    {
+        <div class="card" style="overflow: hidden;">
+            <div style="overflow-x: auto;">
+                <table class="table mb-0">
+                    <thead>
+                        <tr>
+                            <th style="width:32px;"></th>
+                            <th>Name</th>
+                            <th>Type</th>
+                            <th>Started</th>
+                            <th>Source → Target</th>
+                            <th>Mode</th>
+                            <th>Progress</th>
+                            <th>ETA</th>
+                            <th>Status</th>
+                            <th style="width:120px;"></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var migration in GetMigrations())
+                        {
+                            <tr style="cursor: pointer;" @onclick="() => ViewMigration(migration.Id)">
+                                <td class="text-center" style="padding: 8px 4px;">
+                                    @if (JobManager.IsProcessRunning(migration.Id ?? string.Empty))
+                                    {
+                                        <span style="display:inline-block; width:8px; height:8px; border-radius:50%; background: var(--az-success, #107c10);" title="Running"></span>
+                                    }
+                                    else
+                                    {
+                                        <span style="display:inline-block; width:8px; height:8px; border-radius:50%; background: var(--az-border, #d6d6d6);"></span>
+                                    }
+                                </td>
+                                <td>
+                                    <span style="color: var(--az-brand, #0078d4); font-weight: 600;">@migration.Name</span>
+                                </td>
+                                <td style="color: var(--az-text-secondary, #605e5c);">@GetToolName(migration.JobType)</td>
+                                <td style="color: var(--az-text-secondary, #605e5c); font-size: 12px;">@migration.StartedOn</td>
+                                <td style="font-size: 12px; max-width: 260px;" title="@GetTootTip(migration)">
+                                    <div class="text-truncate" style="color: var(--az-text, #323130);">@migration.SourceContactPoint</div>
+                                    <div class="text-truncate" style="color: var(--az-text-disabled, #a19f9d); font-size: 11px;">→ @migration.TargetContactPoint</div>
+                                </td>
+                                <td>
+                                    @if (MigrationUtilities.IsOnline(migration))
+                                    {
+                                        <span class="badge bg-info">Online</span>
+                                    }
+                                    else
+                                    {
+                                        <span class="badge bg-secondary">Offline</span>
+                                    }
+                                </td>
+                                <td style="font-size: 12px; white-space: nowrap;">
+                                    @{
+                                        long copiedRows = migration.Tables?.Sum(mu => mu.CopyRowsCopied) ?? 0;
+                                        long totalDocs = migration.Tables?.Sum(mu => mu.TotalRowCount) ?? 0;
+                                    }
+                                    @if (totalDocs > 0)
+                                    {
+                                        <span title="Rows copied / Total documents">@copiedRows.ToString("N0") / @totalDocs.ToString("N0")</span>
+                                    }
+                                    else if (copiedRows > 0)
+                                    {
+                                        <span>@copiedRows.ToString("N0")</span>
+                                    }
+                                    else
+                                    {
+                                        <span style="color: var(--az-text-disabled, #a19f9d);">—</span>
+                                    }
+                                </td>
+                                <td style="font-size: 12px; white-space: nowrap;">
+                                    @{
+                                        double speed = migration.Tables?
+                                            .Where(mu => mu.CopyRowsPerSecond > 0)
+                                            .Select(mu => mu.CopyRowsPerSecond)
+                                            .DefaultIfEmpty(0).Sum() ?? 0;
+                                        long remaining = totalDocs - copiedRows;
+                                    }
+                                    @if (speed > 0 && remaining > 0)
+                                    {
+                                        double etaSec = remaining / speed;
+                                        string etaStr;
+                                        if (etaSec < 60) etaStr = $"{etaSec:F0}s";
+                                        else if (etaSec < 3600) etaStr = $"{etaSec/60:F0}m {etaSec%60:F0}s";
+                                        else etaStr = $"{etaSec/3600:F0}h {(etaSec%3600)/60:F0}m";
+                                        <span>@etaStr</span>
+                                    }
+                                    else
+                                    {
+                                        <span style="color: var(--az-text-disabled, #a19f9d);">—</span>
+                                    }
+                                </td>
+                                <td><span class="badge @GetJobStatusBadge(migration)">@GetJobStatusLabel(migration)</span></td>
+                                <td @onclick:stopPropagation="true">
+                                    <div class="d-flex gap-1">
+                                        <button class="btn btn-outline-secondary btn-sm" title="View" @onclick="() => ViewMigration(migration.Id)">
+                                            <i class="bi bi-eye"></i>
+                                        </button>
+                                        <button class="btn btn-outline-secondary btn-sm" title="Report" @onclick="() => ViewJobReport(migration.Id)">
+                                            <i class="bi bi-file-earmark-text"></i>
+                                        </button>
+                                        <button class="btn btn-outline-secondary btn-sm" title="Delete" @onclick="() => RemoveMigration(migration.Id)">
+                                            <i class="bi bi-trash"></i>
+                                        </button>
+                                    </div>
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    }
+}
+
+@if (_migrationDetailsPopUpOpen)
+{
+    <MigrationDetails NewMode=true OnSubmit="@OnMigrationDetailsPopUpSubmit" CheckNameExists="CheckIfNameExistsAsync" />
+}
+
+@if (_yesNoDialogOpen)
+{
+    <YesNoDialog Type="YesNoDialog.Category.DeleteNot" Caption="Confirm Delete" Message="@_message" OnClose="@YesNoDialogSubmit" />
+}
+
+
+@if (_messageDialogOpen)
+{
+    <YesNoDialog Type="YesNoDialog.Category.Okay" Caption="Message" Message="@_message" OnClose="@YesNoDialogSubmit" />
+}
+
+@if (_editSettingsOpen)
+{
+    <MigrationSettings _configuration="@GetConfig()" On_configurationSaved="HandleConfigurationSaved" />
+}
+
+@code {
+    #pragma warning disable CS8603
+#pragma warning disable CS8604
+#pragma warning disable CS8600
+
+    private bool _migrationDetailsPopUpOpen;
+    private bool _yesNoDialogOpen;
+    private bool _messageDialogOpen;
+    private bool _editSettingsOpen;
+
+    private string _message = string.Empty;
+    private Job? _selectedMigrationJob;
+    private List<Job>? migrationJobs;
+    private bool _loadingComplete;
+
+    private string GetTootTip(Job Job)
+    {
+
+        return string.Join(",",
+            Job.Tables?
+                .Select(mu => $"{mu.KeyspaceName}.{mu.TableName}") ?? Enumerable.Empty<string>());
+    }
+
+
+    private string GetToolName(CassandraMigrationProcessor.Models.JobType jobType)
+    {
+        switch(jobType)
+        {
+            case CassandraMigrationProcessor.Models.JobType.CqlCopy:
+                return "CQL Copy";
+            default:
+                return "NA";
+        }
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        // Update WebAppBaseUrl from browser context for Keep-Alive functionality
+        try
+        {
+            var baseUri = NavigationManager.BaseUri;
+            JobManager.UpdateWebAppBaseUrlFromBrowser(baseUri);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error updating WebAppBaseUrl. Details: {ex}");
+        }
+
+        await base.OnInitializedAsync();
+    }
+
+#pragma warning disable CS1998
+    protected override async Task OnParametersSetAsync()
+    {
+        if (_loadingComplete)
+            return;
+
+        _loadingComplete = false;
+        migrationJobs = GetMigrationsFromManager(false);
+        _loadingComplete = true;
+    }
+#pragma warning restore CS1998
+#pragma warning disable CS8602
+
+    private List<Job> GetMigrations()
+    {
+        return GetMigrationsFromManager(true);
+    }
+
+    private List<Job> GetMigrationsFromManager(bool silent)
+    {
+        var ids = JobManager.GetMigrationIds();
+        var result = MigrationContext.PopulateJobs(ids);
+        // Latest jobs first
+        result.Reverse();
+        return result;
+    }
+
+
+    private void RemoveMigration(string? id)
+    {
+        _selectedMigrationJob = JobManager.GetMigrationJobById(id);       
+        if (!JobManager.IsProcessRunning(id ?? string.Empty))
+        {
+            _message = "Are you sure you want to delete " + _selectedMigrationJob?.Name + " ?";
+            _yesNoDialogOpen = true;
+        }
+        else
+        {
+            _message = "Can't delete active job " + _selectedMigrationJob?.Name + ". Please stop the job and try again.";
+            _messageDialogOpen = true;
+        }
+    }
+
+    private void YesNoDialogSubmit(YesNoDialog.YesNoDialogResult result)
+    {
+        if (_messageDialogOpen)
+        {
+            _messageDialogOpen = false;
+            return;
+        }
+        else
+        {
+            _yesNoDialogOpen = false;
+
+
+            if (result.IsConfirmed && (!JobManager.IsProcessRunning(_selectedMigrationJob?.Id ?? string.Empty)))
+            {
+
+                if (_selectedMigrationJob != null)
+                {
+                    string jobId = _selectedMigrationJob.Id;
+                    // Display-only removal from a fresh copy;
+                    // actual deletion happens in ClearJobFiles below.
+                    GetMigrations().Remove(_selectedMigrationJob);
+
+                    try
+                    {
+                        JobManager.ClearJobFiles(jobId);
+                    }
+                    catch { }
+                }
+
+            }
+
+            _selectedMigrationJob = null;
+        }
+    }
+
+    private CassandraMigrationProcessor.Models.AppSettings GetConfig()
+    {
+        return JobManager.GetConfig();
+    }
+
+
+
+    private void OpenConfig()
+    {
+        _editSettingsOpen = true;
+    }
+
+    private void HandleConfigurationSaved(CassandraMigrationProcessor.Models.AppSettings updatedConfig)
+    {
+        _editSettingsOpen = false;
+
+        if (updatedConfig != null)
+        {            
+            if (!JobManager.UpdateConfig(updatedConfig, out string errorMessage))
+            {
+                _message = errorMessage;
+                _messageDialogOpen = true;
+            }
+        }
+    }
+
+    private void ViewMigration(string? id)
+    {
+
+        NavigationManager.NavigateTo($"/MigrationJobViewer/{id}");
+    }
+
+    private void ViewJobReport(string? id)
+    {
+        NavigationManager.NavigateTo($"/jobreport/{id}");
+    }
+
+    private void StartMigrationAsync()
+    {
+        _selectedMigrationJob = null;
+        _migrationDetailsPopUpOpen = true;
+    }
+
+    private Task<bool> CheckIfNameExistsAsync(string name)
+    {
+        var Job = GetMigrations().Find(m => m.Name == name);
+        return Task.FromResult(Job != null);
+    }
+
+    private async Task<bool> OnMigrationDetailsPopUpSubmit(Job job, string sourceConnectionString, string targetConnectionString)
+    {
+        _migrationDetailsPopUpOpen = false;
+        if (job != null)
+        {
+            if (_selectedMigrationJob == null)
+            {
+                // Store connection strings if provided
+                if (!string.IsNullOrEmpty(sourceConnectionString))
+                    MigrationContext.SourceConnectionString[job.Id] = sourceConnectionString;
+
+                if (!string.IsNullOrEmpty(targetConnectionString))
+                    MigrationContext.TargetConnectionString[job.Id] = targetConnectionString;
+
+                MigrationContext.JobIndex.MigrationJobIds.Add(job.Id);
+
+                MigrationContext.PendingAutoStartJobIds.TryAdd(job.Id, 0);
+                MigrationContext.SaveJob(job);
+                MigrationContext.SaveJobList();
+                
+                ViewMigration(job.Id);
+            }
+        }
+        await InvokeAsync(StateHasChanged);
+        return true;
+    }
+
+    private string GetJobStatusLabel(Job job)
+    {
+        if (job.Status == JobStatus.Completed) return "Completed";
+        if (job.Status == JobStatus.Cancelled) return "Cancelled";
+        if (JobManager.IsProcessRunning(job.Id ?? string.Empty))
+            return "Running";
+        if (job.Status == JobStatus.Faulted) return "Faulted";
+        if (job.Status == JobStatus.Paused) return "Paused";
+        if (job.Status == JobStatus.Running) return "Stopped";
+        return "Not Started";
+    }
+
+    private string GetJobStatusBadge(Job job)
+    {
+        if (job.Status == JobStatus.Completed) return "bg-success";
+        if (job.Status == JobStatus.Cancelled) return "bg-secondary";
+        if (JobManager.IsProcessRunning(job.Id ?? string.Empty))
+            return "bg-primary";
+        if (job.Status == JobStatus.Faulted) return "bg-danger";
+        if (job.Status == JobStatus.Paused) return "bg-warning text-dark";
+        if (job.Status == JobStatus.Running) return "bg-info";
+        return "bg-secondary";
+    }
+}

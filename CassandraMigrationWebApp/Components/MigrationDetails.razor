@@ -1,0 +1,505 @@
+@inject Service.JobManager JobManager
+@inject IConfiguration Configuration
+@inject IJSRuntime JSRuntime
+
+@using Microsoft.JSInterop
+@using CassandraMigrationProcessor
+@using CassandraMigrationProcessor.Context
+@using CassandraMigrationProcessor.Infrastructure
+@using CassandraMigrationProcessor.Models
+
+<div class="modal fade show d-block bg-dark bg-opacity-75" id="myModal" aria-modal="true" role="dialog">
+    <div class="modal-dialog bg-dark">
+        <div class="modal-content">
+            <div class="modal-header">
+       <h4 class="modal-title">@(NewMode ? "New Job Details" : "Update Contact Points")</h4>
+           <button type="button" class="btn-close" aria-label="Close" @onclick="@Cancel"></button>
+ </div>
+       <div class="modal-body">
+                <!-- Tab Navigation -->
+                <ul class="nav nav-tabs mb-3">
+                    <li class="nav-item">
+                        <button class="nav-link @(activeTab == "Basic" ? "active" : "")" @onclick="SwitchToBasicTab">Basic</button>
+                    </li>
+                    <li class="nav-item">
+                        <button class="nav-link @(activeTab == "Advanced" ? "active" : "")" @onclick="SwitchToAdvancedTab">Advanced</button>
+                    </li>
+                </ul>
+
+                <!-- Basic Tab Content -->
+                <div class="@(activeTab == "Basic" ? "" : "d-none")">
+                    <!-- Basic Tab Fields -->
+                    <div class="mb-3">
+                        <label for="name" class="form-label">Name</label>
+                        <input type="text" id="name" class="form-control" disabled="@(!NewMode)" @bind="name" />
+                    </div>
+                    @if (NewMode)
+                    {
+                        <div class="mb-3">
+                            <label for="migration-tool" class="form-label">Migration Tool</label>
+                            <select id="migration-tool" class="form-select" disabled>
+                                <option value="CqlCopy" selected>CQL Copy</option>
+                            </select>
+                        </div>
+                    }
+                    <!-- Source Connection -->
+                    <h6 class="mt-3 mb-2 text-muted">Source (Cosmos DB Cassandra)</h6>
+                    <div class="row mb-2">
+                        <div class="col-md-8">
+                            <label for="sourceConnectionString" class="form-label">Contact Point</label>
+                            <input type="text" id="sourceConnectionString" placeholder="@(NewMode ? "e.g. myaccount.cassandra.cosmos.azure.com" : "")" class="form-control" @bind="sourceConnectionString" />
+                        </div>
+                        <div class="col-md-4">
+                            <label for="sourcePort" class="form-label">Port</label>
+                            <input type="number" id="sourcePort" class="form-control" @bind="sourcePort" />
+                        </div>
+                    </div>
+                    <div class="row mb-2">
+                        <div class="col-md-6">
+                            <label for="sourceUsername" class="form-label">Username</label>
+                            <input type="text" id="sourceUsername" placeholder="Account name or leave blank for AAD" class="form-control" @bind="sourceUsername" @bind:event="oninput" />
+                        </div>
+                        <div class="col-md-6">
+                            <label for="sourcePassword" class="form-label">Password / AAD Token</label>
+                            <div class="input-group">
+                                <input type="password" id="sourcePassword" placeholder="Leave blank for auto AAD token" class="form-control" @bind="sourcePassword" @bind:event="oninput" />
+                                <div class="input-group-text">
+                                    <input type="checkbox" class="form-check-input mt-0 me-1" id="sourceUseAad" @bind="sourceUseAad" />
+                                    <label class="form-check-label small" for="sourceUseAad">AAD</label>
+                                </div>
+                            </div>
+                            @if (sourceUseAad)
+                            {
+                                <small class="text-muted">Token will be fetched automatically via Managed Identity</small>
+                            }
+                        </div>
+                    </div>
+
+                    <!-- Target Connection -->
+                    <h6 class="mt-3 mb-2 text-muted">Target (Cassandra MI / OSS)</h6>
+                    <div class="row mb-2">
+                        <div class="col-md-8">
+                            <label for="targetConnectionString" class="form-label">Contact Point</label>
+                            <input type="text" id="targetConnectionString" placeholder="@(NewMode ? "e.g. target-cluster-ip or hostname" : "")" class="form-control" @bind="targetConnectionString" />
+                        </div>
+                        <div class="col-md-4">
+                            <label for="targetPort" class="form-label">Port</label>
+                            <input type="number" id="targetPort" class="form-control" @bind="targetPort" />
+                        </div>
+                    </div>
+                    <div class="row mb-3">
+                        <div class="col-md-6">
+                            <label for="targetUsername" class="form-label">Username</label>
+                            <input type="text" id="targetUsername" placeholder="Leave blank if no auth" class="form-control" @bind="targetUsername" />
+                        </div>
+                        <div class="col-md-6">
+                            <label for="targetPassword" class="form-label">Password</label>
+                            <input type="password" id="targetPassword" placeholder="Leave blank if no auth" class="form-control" @bind="targetPassword" @bind:event="oninput" />
+                        </div>
+                    </div>
+
+                    <div class="mb-3">
+                        <label for="nameSpaces" class="form-label">Tables To Migrate</label>
+                        <textarea id="nameSpaces" disabled="@(!NewMode || isFileUploaded)" rows="4" placeholder="e.g. ks1.table1,ks1.table2,ks2.table1 or use wildcards like keyspace.*. Max 1000 characters, use 'Upload File' for larger text." class="form-control" @bind="namespaces" @oninput="OnTextAreaInput"></textarea>
+                        @if (NewMode)
+                        {
+                            <div class="mt-2">
+                                <label for="fileUpload" class="btn btn-sm btn-outline-secondary" style="cursor: pointer;">
+                                    <i class="bi bi-upload"></i> Upload File
+                                </label>
+                                <InputFile id="fileUpload" OnChange="HandleFileUpload" class="d-none" disabled="@isTextAreaUsed" accept=".txt,.json" />
+                                @if (isFileUploaded)
+                                {
+                                    <span class="ms-2 text-success">
+                                        <i class="bi bi-check-circle"></i> @uploadedFileName
+                                    </span>
+                                    <button type="button" class="btn btn-sm btn-link text-danger" @onclick="ClearFileUpload">
+                                        <i class="bi bi-x-circle"></i> Clear
+                                    </button>
+                                }
+                            </div>
+                            @if (isTextAreaUsed && !isFileUploaded)
+                            {
+                                <small class="text-muted">File upload is disabled when text is entered manually.</small>
+                            }
+                            else if (isFileUploaded)
+                            {
+                                <small class="text-muted">Text area is disabled when a file is uploaded.</small>
+                            }
+                        }
+                    </div>
+                    <div class="mb-3">
+                        <label for="migration-mode" class="form-label" title="Online migration allows live data replication during the process.">
+                            Migration Mode
+                        </label>                
+                        <select id="migration-mode" value="@SelectedMode"  class="form-select" @onchange="OnModeSelectionChanged" disabled="@(!NewMode)">
+                            <option value="Offline">Offline</option>
+                            <option value="Online">Online</option>
+                        </select>
+                    </div>
+                </div>
+
+                <!-- Advanced Tab Content -->
+                <div class="@(activeTab == "Advanced" ? "" : "d-none")">
+                    <!-- Advanced Tab Fields -->
+                    <div class="mb-3">
+                        <label for="logLevel" class="form-label" title="Set the minimum log level for this migration job. Lower levels include more detailed logging.">Log Level</label>
+                        <select id="LogLevel" class="form-select" @bind="logLevel" disabled="@(!NewMode)">
+                            <option value="@LogType.Error">Error</option>
+                            <option value="@LogType.Warning">Warning</option>
+                            <option value="@LogType.Info">Info</option>
+                            <option value="@LogType.Debug">Debug</option>
+                            <option value="@LogType.Verbose">Verbose</option>
+                        </select>
+                    </div>
+                    <div class="mb-3">
+                        <label for="isSimulatedRun" class="form-label" title="Enable simulated run where no actual writes will occur on the target database.">
+                            <input type="checkbox" id="isSimulatedRun" disabled="@(!NewMode)" @bind="isSimulatedRun" />
+                            Simulation Mode (No Writes to Target)
+                        </label>
+                    </div>
+                    <div class="mb-3">
+                        <label for="dropTargetTable" class="form-label" title="Drop target tables before starting migration so they are recreated fresh from source schema.">
+                            <input type="checkbox" id="dropTargetTable" disabled="@(!NewMode)" @bind="dropTargetTableBeforeStart" />
+                            Drop Target Tables Before Start
+                        </label>
+                    </div>
+                    @if (jobType == JobType.CqlCopy)
+                    {
+                        <div class="row mb-3">
+                            <div class="col-md-6">
+                                <label for="parallelThreads" class="form-label" title="Number of tables to copy in parallel. Higher values copy more tables concurrently but use more connections. Default = ProcessorCount * 5.">Parallel tables</label>
+                                <input type="number" id="parallelThreads" class="form-control" @bind="parallelThreads" min="1" max="500" placeholder="@($"Default ({defaultParallelThreads})")"/>
+                            </div>
+                            <div class="col-md-6">
+                                <label for="feedRangeWorkers" class="form-label" title="Workers per table. 0 = auto (CPU cores × 15 / parallel tables).">Feed range workers</label>
+                                <input type="number" id="feedRangeWorkers" class="form-control" @bind="feedRangeWorkers" min="0" max="500" placeholder="Auto"/>
+                            </div>
+                        </div>
+                        <div class="row mb-3">
+                            <div class="col-md-6">
+                                <label for="connectionsPerHost" class="form-label" title="Cassandra driver connections per host per worker. 0 = default (1).">Connections per host</label>
+                                <input type="number" id="connectionsPerHost" class="form-control" @bind="connectionsPerHost" min="0" max="128" placeholder="Default (1)"/>
+                            </div>
+                        </div>
+                        <div class="row mb-3">
+                            <div class="col-md-6">
+                                <label for="pageSize" class="form-label" title="Rows per page when reading from source. Larger pages reduce round-trips but use more RU per request. Default = 500.">Page size</label>
+                                <input type="number" id="pageSize" class="form-control" @bind="pageSize" min="0" max="10000" placeholder="Default (500)"/>
+                            </div>
+                        </div>
+                    }</div>
+
+
+                @if (!string.IsNullOrEmpty(errorMessage))
+                {
+                    <div class="alert alert-danger mt-2">
+                        @errorMessage
+                        <button type="button" class="btn-close btn-close-sm" aria-label="Close" @onclick="() => errorMessage = string.Empty"></button>
+                    </div>
+                }
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-primary" @onclick="@HandleSubmit">Ok</button>
+                <button type="button" class="btn btn-secondary" @onclick="@Cancel">Cancel</button>
+            </div>
+
+            
+        </div>
+    </div>
+</div>
+
+@code {
+
+
+    [Parameter]
+    public bool NewMode { get; set; }
+
+    [Parameter]
+    public Job? Job { get; set; }
+
+    [Parameter]
+    public Func<Job, string, string, Task<bool>>? OnSubmit { get; set; }
+
+    [Parameter]
+    public Func<string, Task<bool>>? CheckNameExists { get; set; }
+
+    private string activeTab = "Basic"; // Track active tab
+    private string errorMessage = string.Empty;
+    private JobType jobType = JobType.CqlCopy; // Default to CqlCopy for Cassandra
+    private string selectedOption = "CQL Copy"; // Default dropdown value
+    private bool isSimulatedRun = false; // Variable to track the dummy run option
+    private bool appendMode = false;
+    private bool dropTargetTableBeforeStart = false;
+    private int? parallelThreads = null; // Parallel threads for CQL Copy
+    private int defaultParallelThreads = 5;
+    private int? feedRangeWorkers = null; // Max concurrent feed range workers per table
+    private int? connectionsPerHost = null; // Max connections per host (0 = default)
+    private int? pageSize = null; // Rows per page (0 = default 500)
+    private LogType logLevel = LogType.Info; // Minimum log level
+    private string namespaces = string.Empty;   // Comma-separated list of namespaces to migrate
+    private string name = string.Empty; // Name of the migration job
+    private string SelectedMode = "Offline"; // default or loaded value
+    private CDCMode cdcMode = CDCMode.Offline;
+    private string sourceConnectionString { get; set; } = string.Empty;
+    private string targetConnectionString { get; set; } = string.Empty;
+    private int sourcePort = 10350;
+    private string sourceUsername = string.Empty;
+    private string sourcePassword = string.Empty;
+    private bool sourceUseAad = false;
+    private int targetPort = 9042;
+    private string targetUsername = string.Empty;
+    private string targetPassword = string.Empty;
+    private bool overwrite = false;
+
+    // File upload state
+    private bool isFileUploaded = false;
+    private bool isTextAreaUsed = false;
+    private string uploadedFileName = string.Empty;
+
+    private void OnTextAreaInput(ChangeEventArgs e)
+    {
+        var value = e?.Value?.ToString() ?? string.Empty;
+        isTextAreaUsed = !string.IsNullOrWhiteSpace(value);
+    }
+
+    private void SwitchToBasicTab()
+    {
+        activeTab = "Basic";
+    }
+
+    private void SwitchToAdvancedTab()
+    {
+        activeTab = "Advanced";
+    }
+
+    private async Task HandleFileUpload(InputFileChangeEventArgs e)
+    {
+        try
+        {
+            var file = e.File;
+
+            if (file == null)
+            {
+                return;
+            }
+
+            // Limit file size to 10MB
+            const long maxFileSize = 10 * 1024 * 1024;
+            if (file.Size > maxFileSize)
+            {
+                errorMessage = "File size exceeds 10MB limit.";
+                return;
+            }
+
+            using var stream = file.OpenReadStream(maxFileSize);
+            using var reader = new StreamReader(stream);
+            namespaces = await reader.ReadToEndAsync();
+
+            isFileUploaded = true;
+            uploadedFileName = file.Name;
+            isTextAreaUsed = false; // Reset text area flag when file is uploaded
+            errorMessage = string.Empty;
+            StateHasChanged();
+        }
+        catch (Exception ex)
+        {
+            errorMessage = $"Error reading file: {ex.Message}";
+        }
+    }
+
+    private void ClearFileUpload()
+    {
+        isFileUploaded = false;
+        uploadedFileName = string.Empty;
+        namespaces = string.Empty;
+        StateHasChanged();
+    }
+
+    private void OnModeSelectionChanged(ChangeEventArgs e)
+    {
+        var val = e?.Value?.ToString() ?? string.Empty;
+        SelectedMode = val;
+        cdcMode = val switch
+        {
+            "Online" => CDCMode.Online,
+            _ => CDCMode.Offline
+        };
+    }
+
+    private bool ShowWarning()
+    {
+        return false;
+    }
+
+    private void OnSelectionChanged(ChangeEventArgs e)
+    {
+        selectedOption = e?.Value?.ToString() ?? selectedOption;
+        jobType = JobType.CqlCopy;
+    }
+
+    protected override void OnInitialized()
+    {
+        if (NewMode)
+        {
+            name = string.Empty;
+            sourceConnectionString = string.Empty;
+            targetConnectionString = string.Empty;
+            namespaces = string.Empty;
+            cdcMode = CDCMode.Offline;
+            jobType = JobType.CqlCopy;
+            selectedOption = "CQL Copy";
+            isSimulatedRun = false;
+            appendMode = false;
+            dropTargetTableBeforeStart = false;
+            parallelThreads = null; // Default will be calculated
+            logLevel = LogType.Info; // Default to Info
+            isFileUploaded = false;
+            isTextAreaUsed = false;
+            uploadedFileName = string.Empty;
+        }
+        else
+        {
+            name = Job?.Name ?? string.Empty;
+            sourceConnectionString = Job?.SourceContactPoint ?? string.Empty;
+            targetConnectionString = Job?.TargetContactPoint ?? string.Empty;
+            sourcePort = Job?.SourcePort ?? 10350;
+            sourceUsername = Job?.SourceUsername ?? string.Empty;
+            sourcePassword = Job?.SourcePassword ?? string.Empty;
+            sourceUseAad = Job?.SourceUseAad ?? false;
+            targetPort = Job?.TargetPort ?? 9042;
+            targetUsername = Job?.TargetUsername ?? string.Empty;
+            targetPassword = Job?.TargetPassword ?? string.Empty;
+            namespaces = Job?.Namespaces ?? string.Empty;
+            cdcMode = Job?.CDCMode ?? CDCMode.Offline;
+            jobType = Job?.JobType ?? JobType.CqlCopy;
+            selectedOption = "CQL Copy";
+            isSimulatedRun = Job?.IsSimulatedRun ?? false;
+            appendMode = Job?.AppendMode ?? false;
+            dropTargetTableBeforeStart = Job?.DropTargetTableBeforeStart ?? false;
+            parallelThreads = Job?.ParallelThreads == defaultParallelThreads ? null : Job?.ParallelThreads;
+            feedRangeWorkers = Job?.MaxFeedRangeParallelism == 0 ? null : Job?.MaxFeedRangeParallelism;
+            connectionsPerHost = Job?.MaxConnectionsPerHost == 0 ? null : Job?.MaxConnectionsPerHost;
+            pageSize = Job?.PageSize == 0 ? null : Job?.PageSize;
+            logLevel = Job?.LogLevel ?? LogType.Info;
+
+            // Set migration mode dropdown value based on CDCMode enum
+            SelectedMode = cdcMode switch
+            {
+                CDCMode.Online => "Online",
+                _ => "Offline"
+            };
+        }
+    }
+
+    private async Task HandleSubmit()
+    {
+        if (ShowWarning() && !overwrite)
+        {
+            errorMessage = "Please check the overwrite option to proceed with migration.";
+            return;
+        }
+
+        if (string.IsNullOrEmpty(name))
+        {
+            errorMessage = "Name can't be empty.";
+            return;
+        }
+
+        if (NewMode && CheckNameExists != null) // Ensure callback is provided
+        {
+            var nameExists = await CheckNameExists(name);
+            if (nameExists)
+            {
+                errorMessage = "Name already exists.";
+                return;
+            }
+        }
+
+        if (string.IsNullOrEmpty(sourceConnectionString))
+        {
+            errorMessage = "Source Connection String can't be empty.";
+            return;
+        }
+
+        // For simulation mode, add a dummy target connection string if not provided
+        if (string.IsNullOrEmpty(targetConnectionString))
+        {
+            if (isSimulatedRun)
+            {
+                targetConnectionString = "cassandra://simulation-mode-dummy:9042";
+            }
+            else
+            {
+                errorMessage = "Target Connection String can't be empty.";
+                return;
+            }
+        }
+
+        if (sourceConnectionString == targetConnectionString && !isSimulatedRun)
+        {
+            errorMessage = "Target and Source contact points can't be the same.";
+            return;
+        }
+
+        if (NewMode)
+        {
+            var retValue = TableDiscovery.ValidateNamespaceFormat(namespaces);
+
+            if (retValue == null)
+            {
+                errorMessage = "Invalid namespace format.";
+                return;
+            }
+            if (!retValue.Item1)
+            {
+                errorMessage = retValue.Item3;
+                return;
+            }
+            else
+            {
+                namespaces = retValue.Item2;
+            }
+        }
+
+
+        var job = new Job
+        {
+            Name = name,
+            Id = NewMode ? Guid.NewGuid().ToString() : (Job?.Id ?? Guid.NewGuid().ToString()),
+            CDCMode = cdcMode,
+            SourceContactPoint = sourceConnectionString,
+            SourcePort = sourcePort,
+            SourceUsername = sourceUsername,
+            SourcePassword = sourcePassword,
+            SourceUseAad = sourceUseAad,
+            TargetContactPoint = targetConnectionString,
+            TargetPort = targetPort,
+            TargetUsername = targetUsername,
+            TargetPassword = targetPassword,
+            Namespaces = namespaces,
+            JobType = jobType,
+            IsSimulatedRun = isSimulatedRun,
+            AppendMode = appendMode,
+            DropTargetTableBeforeStart = dropTargetTableBeforeStart,
+            ParallelThreads = parallelThreads ?? defaultParallelThreads,
+            MaxFeedRangeParallelism = feedRangeWorkers ?? 0,
+            MaxConnectionsPerHost = connectionsPerHost ?? 0,
+            PageSize = pageSize ?? 0,
+            LogLevel = logLevel,
+            Tables = new List<TableMigrationSummary>()
+        };
+        if (OnSubmit != null)
+        {
+            await OnSubmit(job, sourceConnectionString, targetConnectionString);
+        }
+    }
+
+    private async Task Cancel()
+    {
+        if (OnSubmit != null)
+        {
+            await OnSubmit(null, string.Empty, string.Empty);
+        }
+    }
+}

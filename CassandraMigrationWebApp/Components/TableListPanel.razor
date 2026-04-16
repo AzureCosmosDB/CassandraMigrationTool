@@ -1,0 +1,564 @@
+@using CassandraMigrationProcessor
+@using CassandraMigrationProcessor.Models
+@using CassandraMigrationProcessor.Infrastructure
+@using CassandraMigrationWebApp.Helpers
+
+@* Collections Filter and Pagination Controls *@
+@if (Job != null && Job.Tables.Count > 0 && !IsLoadingCollections)
+{
+    <div class="collections-filter-section">
+        <div class="row">
+            <div class="col-md-8">
+                <div class="input-group filter-input-group">
+                    <span class="input-group-text"><i class="bi bi-search"></i></span>
+                    <input type="text" class="form-control" placeholder="Filter tables by any column (keyspace, table, status, etc.)" 
+                           @bind="_filterText" @bind:event="oninput" @onkeyup="OnFilterChanged" />
+                    @if (!string.IsNullOrWhiteSpace(_filterText))
+                    {
+                        <button class="btn btn-outline-secondary filter-clear-btn" type="button" @onclick="ClearFilter" title="Clear filter">
+                            <i class="bi bi-x"></i>
+                        </button>
+                    }
+                </div>
+            </div>
+            <div class="col-md-4">
+                <div class="d-flex justify-content-end">
+                    <div class="page-size-selector-top">
+                        <select id="pageSizeSelect" class="form-select form-select-sm page-size-dropdown" @bind="_pageSize" @bind:after="OnPageSizeChanged" style="width: auto;" title="Items per page">
+                            <option value="10">10 per page</option>
+                            <option value="25">25 per page</option>
+                            <option value="50">50 per page</option>
+                            <option value="100">100 per page</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+}
+
+<div class="collections-table-wrapper">
+    <table class="table collections-table">
+        <thead>
+            <tr>
+                <th class="sortable-header @GetSortClass("KeyspaceName")" @onclick='() => SortBy("KeyspaceName")' style="cursor: pointer;">
+                    Keyspace Name
+                    <i class="bi @GetSortIcon("KeyspaceName") ms-1"></i>
+                </th>
+                <th class="sortable-header @GetSortClass("TableName")" @onclick='() => SortBy("TableName")' style="cursor: pointer;">
+                    Table Name
+                    <i class="bi @GetSortIcon("TableName") ms-1"></i>
+                </th>
+                <th class="sortable-header @GetSortClass("CopyStatus")" @onclick='() => SortBy("CopyStatus")' style="cursor: pointer; min-width: 180px;">
+                    Progress
+                    <i class="bi @GetSortIcon("CopyStatus") ms-1"></i>
+                </th>
+                <th class="sortable-header @GetSortClass("RowsCopied")" @onclick='() => SortBy("RowsCopied")' style="cursor: pointer;">
+                    Rows Copied
+                    <i class="bi @GetSortIcon("RowsCopied") ms-1"></i>
+                </th>
+                @if (Job != null && MigrationUtilities.IsOnline(Job))
+                {
+                    <th class="sortable-header @GetSortClass("TimeSinceLastChange")" @onclick='() => SortBy("TimeSinceLastChange")' style="cursor: pointer;">
+                        Last Checked
+                        <i class="bi @GetSortIcon("TimeSinceLastChange") ms-1"></i>
+                    </th>
+                    <th class="sortable-header @GetSortClass("LastBatchChanges")" @onclick='() => SortBy("LastBatchChanges")' style="cursor: pointer;">
+                        Last Batch – Total Changes
+                        <i class="bi @GetSortIcon("LastBatchChanges") ms-1"></i>
+                    </th>
+                }
+            </tr>
+        </thead>
+        <tbody>
+            @if (!IsLoadingCollections && Job != null && GetFilteredAndPagedUnits().Any())
+            {
+                @foreach (var mu in GetFilteredAndPagedUnits())
+                {
+                    <tr>
+                        <td>
+                            <i class="bi bi-info-circle-fill me-2 collection-info-icon" title="More info" style="cursor: pointer;"
+                               @onclick="() => OnTableSelected.InvokeAsync(mu)"></i>
+                            <i class="bi bi-download me-2 collection-info-icon" title="Download JSON" style="cursor: pointer;"
+                               @onclick="() => OnDownload.InvokeAsync(mu)"></i>
+                                     @GetDatabaseDisplayName(mu)
+                        </td>
+                                <td>@GetCollectionDisplayName(mu)</td>
+                        <td style="min-width: 180px;">
+                            @{
+                                string copyStatus;
+                                string barColor = "bg-primary";
+                                double pct = 0;
+
+                                if (mu.SourceStatus == TableStatus.NotFound)
+                                { copyStatus = "Skipped (404)"; barColor = "bg-secondary"; pct = 100; }
+                                else if (mu.SourceStatus == TableStatus.Failed)
+                                { copyStatus = "Failed"; barColor = "bg-danger"; pct = 100; }
+                                else if (mu.SkippedDueToMaxRetries)
+                                { copyStatus = "Skipped (Max Retries)"; barColor = "bg-warning"; pct = 100; }
+                                else if (mu.CopyComplete && Job != null
+                                    && MigrationUtilities.IsOnline(Job)
+                                    && Job.Status == JobStatus.Running)
+                                { copyStatus = "Replaying"; barColor = "bg-info"; pct = 100; }
+                                else if (mu.CopyComplete)
+                                { copyStatus = "Complete"; barColor = "bg-success"; pct = 100; }
+                                else if (mu.CopyPercent > 0)
+                                {
+                                    pct = Math.Min(mu.CopyPercent, 99.9);
+                                    string speedStr = mu.CopyRowsPerSecond >= 1000
+                                        ? $"{mu.CopyRowsPerSecond/1000:F1}k/s"
+                                        : mu.CopyRowsPerSecond > 0
+                                            ? $"{mu.CopyRowsPerSecond:F0}/s" : "";
+                                    copyStatus = speedStr != "" ? $"{pct:F1}% ({speedStr})" : $"{pct:F1}%";
+                                }
+                                else if (mu.CopyRowsCopied > 0)
+                                {
+                                    pct = 5;
+                                    string speedStr = mu.CopyRowsPerSecond >= 1000
+                                        ? $"{mu.CopyRowsPerSecond/1000:F1}k/s"
+                                        : mu.CopyRowsPerSecond > 0
+                                            ? $"{mu.CopyRowsPerSecond:F0}/s" : "";
+                                    copyStatus = speedStr != "" ? $"Copying ({speedStr})" : "Copying...";
+                                }
+                                else
+                                { copyStatus = "Pending"; pct = 0; }
+                            }
+                            <div class="progress" style="height: 20px; position: relative;">
+                                <div class="progress-bar @barColor" role="progressbar"
+                                     style="width: @($"{pct:F0}")%"
+                                     aria-valuenow="@pct" aria-valuemin="0" aria-valuemax="100">
+                                </div>
+                                <span style="position: absolute; width: 100%; text-align: center; font-size: 0.75rem; line-height: 20px; color: @(pct > 50 ? "white" : "black");">
+                                    @copyStatus
+                                </span>
+                            </div>
+                        </td>
+                        <td>
+                            @(mu.CopyRowsCopied > 0 ? mu.CopyRowsCopied.ToString("N0") : "-")
+                        </td>
+
+                        @if (Job != null && MigrationUtilities.IsOnline(Job))
+                        {
+                            <td title="Avg Read Latency: @mu.ChangeFeedAvgReadLatencyInMS.ToString("F2") ms | Avg Write Latency: @mu.ChangeFeedAvgWriteLatencyInMS.ToString("F2") ms">                           
+                                @(mu.ChangeFeedLastChecked.HasValue ? MigrationUtilities.GetTimestampDiff(mu.ChangeFeedLastChecked.Value) : "NA")
+                            </td>
+                            <td>
+                                @mu.ChangeFeedUpdatesInLastBatch
+                            </td>
+                        }
+                    </tr>
+                }
+            }
+            else if (!IsLoadingCollections && Job != null && Job.Tables.Count > 0 && !string.IsNullOrWhiteSpace(_filterText))
+            {
+                <tr>
+                    <td colspan="10" class="empty-collections-state">
+                        <i class="bi bi-search"></i>
+                        <h5>No tables match your filter</h5>
+                        <p>Try adjusting your search terms or <button class="btn btn-link p-0" @onclick="ClearFilter">clear the filter</button></p>
+                    </td>
+                </tr>
+            }
+            else if (!IsLoadingCollections && (Job == null || !Job.Tables.Any()))
+            {
+                <tr>
+                    <td colspan="10" class="empty-collections-state">
+                        <i class="bi bi-collection"></i>
+                        <h5>No tables configured</h5>
+                        <p>Use the "Update Tables" button below to add tables to this migration job.</p>
+                    </td>
+                </tr>
+            }
+        </tbody>
+    </table>
+</div>
+
+@* Pagination Controls *@
+@if (!IsLoadingCollections && GetTotalPages() > 1)
+{
+    <nav aria-label="Collections pagination" class="mt-3">
+        <ul class="pagination justify-content-center">
+            <li class="page-item @(IsFirstPage() ? "disabled" : "")">
+                <button class="page-link" @onclick="() => GoToPage(1)" disabled="@IsFirstPage()" title="First page">
+                    <i class="bi bi-chevron-double-left"></i>
+                </button>
+            </li>
+            <li class="page-item @(IsFirstPage() ? "disabled" : "")">
+                <button class="page-link" @onclick="() => GoToPage(_currentPage - 1)" disabled="@IsFirstPage()" title="Previous page">
+                    <i class="bi bi-chevron-left"></i>
+                </button>
+            </li>
+
+            @for (int page = GetStartPage(); page <= GetEndPage(); page++)
+            {
+                var pageNumber = page;
+                <li class="page-item @(_currentPage == pageNumber ? "active" : "")">
+                    <button class="page-link" @onclick="() => GoToPage(pageNumber)" title="Go to page @pageNumber">
+                        @pageNumber
+                    </button>
+                </li>
+            }
+
+            <li class="page-item @(IsLastPage() ? "disabled" : "")">
+                <button class="page-link" @onclick="() => GoToPage(_currentPage + 1)" disabled="@IsLastPage()" title="Next page">
+                    <i class="bi bi-chevron-right"></i>
+                </button>
+            </li>
+            <li class="page-item @(IsLastPage() ? "disabled" : "")">
+                <button class="page-link" @onclick="() => GoToPage(GetTotalPages())" disabled="@IsLastPage()" title="Last page">
+                    <i class="bi bi-chevron-double-right"></i>
+                </button>
+            </li>
+        </ul>
+        
+        <div class="text-center mt-2">
+            <small class="text-muted">
+                Page @_currentPage of @GetTotalPages() 
+                (@GetFilteredItemsCount() @(GetFilteredItemsCount() == 1 ? "table" : "tables"))
+            </small>
+        </div>
+    </nav>
+}
+
+@code {
+    [Parameter] public Job? Job { get; set; }
+    [Parameter] public bool IsLoadingCollections { get; set; }
+    [Parameter] public EventCallback<TableMigrationSummary> OnTableSelected { get; set; }
+    [Parameter] public EventCallback<TableMigrationSummary> OnDownload { get; set; }
+
+    // Pagination and filtering state
+    private string _filterText = string.Empty;
+    private int _currentPage = 1;
+    private int _pageSize = 10;
+
+    // Sorting state
+    private string _sortColumn = "KeyspaceName";
+    private bool _sortAscending = true;
+
+    // Pagination helper
+    private PaginationHelper<TableMigrationSummary> _paginationHelper = new PaginationHelper<TableMigrationSummary>(
+        new List<TableMigrationSummary>(),
+        (mu, filterText) => true
+    );
+
+    // Cache to prevent re-sorting/filtering on every render
+    private List<TableMigrationSummary>? _cachedFilteredAndPagedUnits = null;
+    private int _cachedFilteredItemsCount = 0;
+    private string _cachedDisplayedItemsInfo = string.Empty;
+    private int _cachedTotalPages = 0;
+    private int _lastMigrationUnitsCount = 0;
+    private string _lastSortColumn = string.Empty;
+    private bool _lastSortAscending = true;
+    private string _lastFilterText = string.Empty;
+    private int _lastPageSize = 0;
+    private int _lastCurrentPage = 0;
+
+    /// <summary>
+    /// Invalidate cached pagination data so the next render recomputes.
+    /// Call from the parent when the underlying job data changes (e.g. timer refresh).
+    /// </summary>
+    public void InvalidateCache()
+    {
+        _cachedFilteredAndPagedUnits = null;
+        _cachedFilteredItemsCount = 0;
+        _cachedDisplayedItemsInfo = string.Empty;
+        _cachedTotalPages = 0;
+    }
+
+    private Func<TableMigrationSummary, string, bool> GetFilterPredicate()
+    {
+        return (mu, filterText) =>
+        {
+            if (string.IsNullOrWhiteSpace(filterText))
+                return true;
+
+            var searchText = filterText.ToLower();
+
+            if (mu.KeyspaceName.Contains(searchText, StringComparison.OrdinalIgnoreCase))
+                return true;
+
+            if (mu.TableName.Contains(searchText, StringComparison.OrdinalIgnoreCase))
+                return true;
+
+            if ($"{mu.KeyspaceName}.{mu.TableName}".Contains(searchText, StringComparison.OrdinalIgnoreCase))
+                return true;
+
+            var sourceStatus = mu.SourceStatus == TableStatus.NotFound ? "Skipped (404)"
+                                                : mu.SourceStatus == TableStatus.Failed ? "Failed"
+                                                : mu.SkippedDueToMaxRetries ? "Skipped (Max Retries)"
+                                                : (mu.CopyComplete ? "Success" : $"{mu.CopyPercent:F1}%");
+            if (sourceStatus.Contains(searchText, StringComparison.OrdinalIgnoreCase))
+                return true;
+
+            if (Job != null && MigrationUtilities.IsOnline(Job) == true)
+            {
+                var lagText = mu.ChangeFeedLastChecked.HasValue ? MigrationUtilities.GetTimestampDiff(mu.ChangeFeedLastChecked.Value) : "NA";
+                if (lagText.Contains(searchText, StringComparison.OrdinalIgnoreCase))
+                    return true;
+            }
+
+            if (Job != null && MigrationUtilities.IsOnline(Job) == true)
+            {
+                var batchCount = mu.ChangeFeedUpdatesInLastBatch.ToString();
+                if (batchCount.Contains(searchText, StringComparison.OrdinalIgnoreCase))
+                    return true;
+            }
+
+            if (mu.SourceStatus == TableStatus.NotFound && 
+                ("missing".Contains(searchText) || "empty".Contains(searchText) || "notfound".Contains(searchText)))
+                return true;
+
+            if (mu.CopyComplete && "success".Contains(searchText))
+                return true;
+
+            if (searchText.Contains("%"))
+            {
+                var percentText = searchText.Replace("%", "").Trim();
+                if (double.TryParse(percentText, out var searchPercent))
+                {
+                    if (Math.Abs(mu.CopyPercent - searchPercent) < 0.1)
+                        return true;
+                }
+            }
+
+            return false;
+        };
+    }
+
+    #region Sorting Methods
+
+    private async Task SortBy(string columnName)
+    {
+        if (_sortColumn == columnName)
+        {
+            _sortAscending = !_sortAscending;
+        }
+        else
+        {
+            _sortColumn = columnName;
+            _sortAscending = true;
+        }
+
+        _currentPage = 1;
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private string GetSortIcon(string columnName)
+    {
+        if (_sortColumn != columnName)
+            return "bi-arrow-down-up";
+
+        return _sortAscending ? "bi-arrow-up" : "bi-arrow-down";
+    }
+
+    private string GetSortClass(string columnName)
+    {
+        return _sortColumn == columnName ? "sorted-column" : "";
+    }
+
+    private List<TableMigrationSummary> ApplySorting(List<TableMigrationSummary> units)
+    {
+        if (units == null || !units.Any())
+            return units ?? new List<TableMigrationSummary>();
+
+        return _sortColumn switch
+        {
+            "KeyspaceName" => _sortAscending 
+                ? units.OrderBy(u => u.KeyspaceName).ToList()
+                : units.OrderByDescending(u => u.KeyspaceName).ToList(),
+
+            "TableName" => _sortAscending
+                ? units.OrderBy(u => u.TableName).ToList()
+                : units.OrderByDescending(u => u.TableName).ToList(),
+
+            "CopyStatus" => _sortAscending
+                ? units.OrderBy(u => GetSortValueForStatus(u)).ToList()
+                : units.OrderByDescending(u => GetSortValueForStatus(u)).ToList(),
+
+            "RowsCopied" => _sortAscending
+                ? units.OrderBy(u => u.CopyRowsCopied).ToList()
+                : units.OrderByDescending(u => u.CopyRowsCopied).ToList(),
+
+            "TimeSinceLastChange" => _sortAscending
+                ? units.OrderBy(u => GetSortValueForTimestamp(u)).ToList()
+                : units.OrderByDescending(u => GetSortValueForTimestamp(u)).ToList(),
+
+            "TimeSinceLastBatch" => _sortAscending
+                ? units.OrderBy(u => GetSortValueForLastBatch(u)).ToList()
+                : units.OrderByDescending(u => GetSortValueForLastBatch(u)).ToList(),
+
+            "LastBatchChanges" => _sortAscending
+                ? units.OrderBy(u => u.ChangeFeedUpdatesInLastBatch).ToList()
+                : units.OrderByDescending(u => u.ChangeFeedUpdatesInLastBatch).ToList(),
+
+            _ => units
+        };
+    }
+
+    private object GetSortValueForStatus(TableMigrationSummary mu)
+    {
+        if (mu.SourceStatus == TableStatus.NotFound)
+            return "0_Skipped (404)";
+
+        if (mu.SourceStatus == TableStatus.Failed)
+            return "0_Failed";
+
+        if (mu.CopyComplete)
+            return "2_Success";
+        return $"1_{mu.CopyPercent:000.0}%";
+    }
+
+    private DateTime GetSortValueForTimestamp(TableMigrationSummary mu)
+    {
+        return mu.ChangeFeedLastChecked ?? DateTime.MinValue;
+    }
+
+    private DateTime GetSortValueForLastBatch(TableMigrationSummary mu)
+    {
+        return mu.ChangeFeedLastChecked ?? DateTime.MinValue;
+    }
+
+    #endregion
+
+    #region Pagination and Filtering Methods
+
+    private void UpdatePaginationHelper()
+    {
+        if (Job == null) return;
+
+        var currentUnitsCount = Job.Tables?.Count ?? 0;
+        bool needsUpdate = _cachedFilteredAndPagedUnits == null ||
+                          currentUnitsCount != _lastMigrationUnitsCount ||
+                          _sortColumn != _lastSortColumn ||
+                          _sortAscending != _lastSortAscending ||
+                          _filterText != _lastFilterText ||
+                          _pageSize != _lastPageSize ||
+                          _currentPage != _lastCurrentPage;
+
+        if (!needsUpdate)
+        {
+            return;
+        }
+
+        var currentUnits = Job.Tables;
+        currentUnits = ApplySorting(currentUnits);
+
+        _paginationHelper = new PaginationHelper<TableMigrationSummary>(
+            currentUnits,
+            GetFilterPredicate()
+        );
+
+        _paginationHelper.FilterText = _filterText;
+        _paginationHelper.PageSize = _pageSize;
+
+        var totalPages = _paginationHelper.GetTotalPages();
+        if (_currentPage > totalPages)
+        {
+            _currentPage = Math.Max(1, totalPages);
+        }
+        _paginationHelper.CurrentPage = _currentPage;
+
+        _cachedFilteredAndPagedUnits = _paginationHelper.GetPagedItems();
+        _cachedFilteredItemsCount = _paginationHelper.GetFilteredItemsCount();
+        _cachedDisplayedItemsInfo = _paginationHelper.GetDisplayedItemsInfo();
+        _cachedTotalPages = _paginationHelper.GetTotalPages();
+
+        _lastMigrationUnitsCount = currentUnitsCount;
+        _lastSortColumn = _sortColumn;
+        _lastSortAscending = _sortAscending;
+        _lastFilterText = _filterText;
+        _lastPageSize = _pageSize;
+        _lastCurrentPage = _currentPage;
+    }
+
+    private List<TableMigrationSummary> GetFilteredAndPagedUnits()
+    {
+        UpdatePaginationHelper();
+        return _cachedFilteredAndPagedUnits ?? new List<TableMigrationSummary>();
+    }
+
+    private int GetFilteredItemsCount()
+    {
+        UpdatePaginationHelper();
+        return _cachedFilteredItemsCount;
+    }
+
+    private int GetTotalPages()
+    {
+        UpdatePaginationHelper();
+        return _cachedTotalPages;
+    }
+
+    private bool IsFirstPage() 
+    {
+        UpdatePaginationHelper();
+        return _paginationHelper.IsFirstPage();
+    }
+
+    private bool IsLastPage() 
+    {
+        UpdatePaginationHelper();
+        return _paginationHelper.IsLastPage();
+    }
+
+    private int GetStartPage()
+    {
+        UpdatePaginationHelper();
+        return _paginationHelper.GetStartPage();
+    }
+
+    private int GetEndPage()
+    {
+        UpdatePaginationHelper();
+        return _paginationHelper.GetEndPage();
+    }
+
+    private async Task GoToPage(int pageNumber)
+    {
+        _currentPage = pageNumber;
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task OnFilterChanged()
+    {
+        _currentPage = 1;
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task ClearFilter()
+    {
+        _filterText = string.Empty;
+        _currentPage = 1;
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task OnPageSizeChanged()
+    {
+        _currentPage = 1;
+        await InvokeAsync(StateHasChanged);
+    }
+
+    #endregion
+
+    #region Display Helpers
+
+    private static string FormatNameWithTarget(string sourceName, string? targetName)
+    {
+        return string.IsNullOrWhiteSpace(targetName) ||
+               string.Equals(sourceName, targetName, StringComparison.OrdinalIgnoreCase)
+            ? sourceName
+            : $"{sourceName} ({targetName})";
+    }
+
+    private static string GetDatabaseDisplayName(TableMigrationSummary mu)
+    {
+        return FormatNameWithTarget(mu.KeyspaceName, mu.TargetKeyspaceName);
+    }
+
+    private static string GetCollectionDisplayName(TableMigrationSummary mu)
+    {
+        return FormatNameWithTarget(mu.TableName, mu.TargetTableName);
+    }
+
+    #endregion
+}

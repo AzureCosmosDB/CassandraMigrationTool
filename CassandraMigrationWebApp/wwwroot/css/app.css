@@ -1,0 +1,139 @@
+﻿.checkbox-container {
+    display: flex;
+    gap: 1rem;
+    margin-bottom: 1rem;
+}
+
+.checkbox-group {
+    flex: 1; /* Equal width */
+    display: flex;
+    align-items: center;
+}
+
+.checkbox-group label {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    width: 100%;
+    cursor: pointer;
+}
+
+.tooltip-text {
+    text-decoration: underline; /* Add underline to indicate interactivity */
+    color: #007bff; /* Optional: Add a blue color similar to a link */
+}
+
+.tooltip-text:hover {
+    text-decoration: none; /* Remove underline on hover for a clean look */
+    color: #0056b3; /* Darker blue on hover for a subtle effect */
+}
+
+.modal-backdrop {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background-color: rgba(0, 0, 0, 0.75); /* Adjust opacity if needed */
+}
+
+/* Console output table styles */
+.table.console-output {
+    background-color: black !important;
+    color: white;
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 11px;
+    --bs-table-bg: black;
+    --bs-table-color: white;
+    --bs-table-striped-bg: black;
+    --bs-table-hover-bg: #1a1a1a;
+}
+
+.table.message-output {
+    background-color: grey;
+    color: black;
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 11px; /* Adjust font size here */
+}
+
+
+.table.console-output th,.table.message-output th {
+    border: 1px solid gray;
+    padding: 8px;
+}
+
+.table.console-output td, .table.message-output td {
+    border: 0px solid gray;
+    padding: 8px;
+}
+
+.table.console-output th, .table.message-output th {
+    background-color: #333;
+}
+
+/* Log Type Styles with Colors and Icons */
+.table.console-output tr.error-row,
+.table.console-output tr.error-row td,
+.table.message-output tr.error-row,
+.table.message-output tr.error-row td {
+    color: #ff4444 !important; /* Bright red for errors */
+    font-weight: 500;
+}
+
+.table.console-output tr.warning-row,
+.table.console-output tr.warning-row td,
+.table.message-output tr.warning-row,
+.table.message-output tr.warning-row td {
+    color: #ffaa00 !important; /* Orange/amber for warnings */
+    font-weight: 500;
+}
+
+.table.console-output tr.info-row,
+.table.console-output tr.info-row td,
+.table.message-output tr.info-row,
+.table.message-output tr.info-row td {
+    color: #44aaff !important; /* Light blue for info */
+}
+
+.table.console-output tr.debug-row,
+.table.console-output tr.debug-row td,
+.table.message-output tr.debug-row,
+.table.message-output tr.debug-row td {
+    color: #44ff44 !important; /* Green for debug */
+}
+
+.table.console-output tr.verbose-row,
+.table.console-output tr.verbose-row td,
+.table.message-output tr.verbose-row,
+.table.message-output tr.verbose-row td {
+    color: #cccccc !important; /* Light gray for verbose */
+}
+
+/* Log icon column styling */
+.log-icon-cell {
+    width: 30px;
+    text-align: center;
+    padding: 4px 8px !important;
+    vertical-align: middle;
+}
+
+.log-icon-header {
+    width: 30px;
+    padding: 4px 8px !important;
+}
+
+.alert .btn-close {
+    position: absolute;
+    top: 0.25rem; 
+    right: 0.25rem; 
+}
+
+.btn-close-sm {
+    width: 0.75rem;
+    height: 0.75rem;
+    padding: 0.25rem;
+    background-size: 0.75rem;
+}
+

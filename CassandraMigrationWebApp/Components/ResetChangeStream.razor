@@ -1,0 +1,279 @@
+@using CassandraMigrationProcessor
+@using CassandraMigrationProcessor.Context
+@using System.Text.RegularExpressions;
+@using CassandraMigrationWebApp.Helpers
+
+<div class="modal fade show d-block bg-dark bg-opacity-75" id="myModal" aria-modal="true" role="dialog">
+    <div class="modal-dialog bg-dark modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h4 class="modal-title">Reset Change Stream</h4>
+                <button type="button" class="btn-close" aria-label="Close" @onclick="@Cancel"></button>
+            </div>
+            <div class="modal-body">
+                @* Filter section - only show if more than 25 collections *@
+                @if (_paginationHelper.ShowFilter())
+                {
+                    <div class="mb-3 manage-collections-filter">
+                        <div class="input-group">
+                            <span class="input-group-text"><i class="bi bi-search"></i></span>
+                            <input type="text" class="form-control" placeholder="Filter tables (keyspace.table)" 
+                                   @bind="_paginationHelper.FilterText" @bind:event="oninput" @onkeyup="OnFilterChanged" />
+                            @if (!string.IsNullOrWhiteSpace(_paginationHelper.FilterText))
+                            {
+                                <button class="btn btn-outline-secondary" type="button" @onclick="ClearFilter" title="Clear filter">
+                                    <i class="bi bi-x"></i>
+                                </button>
+                            }
+                        </div>
+                        <div class="d-flex justify-content-between align-items-center mt-2">
+                            <small class="text-muted">
+                                Showing @_paginationHelper.GetDisplayedItemsInfo() of @_paginationHelper.GetFilteredItemsCount() 
+                                @(_paginationHelper.GetFilteredItemsCount() != _paginationHelper.TotalItemsCount ? $"(filtered from {_paginationHelper.TotalItemsCount} total)" : "") collections
+                            </small>
+                            <div class="page-size-selector-top">
+                                <select class="form-select form-select-sm page-size-dropdown" @bind="_paginationHelper.PageSize" @bind:after="OnPageSizeChanged" style="width: auto;" title="Items per page">
+                                    <option value="10">10 per page</option>
+                                    <option value="25">25 per page</option>
+                                    <option value="50">50 per page</option>
+                                    <option value="100">100 per page</option>
+                                </select>
+                            </div>
+                        </div>
+                    </div>
+                }
+
+                <div class="table-responsive" style="max-height: 400px; overflow-y: auto;">
+                    <table class="table table-borderless table-sm">
+                        <thead class="sticky-top bg-light">
+                            <tr>
+                                <th>Collection</th>
+                                <th style="width: 100px;">Reset</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @{
+                                var collectionsToShow = _paginationHelper.ShowFilter() ? _paginationHelper.GetPagedItems() : GetAllMigrationUnits();
+                            }
+                            
+                            @if (collectionsToShow.Any())
+                            {
+                                @foreach (var mu in collectionsToShow)
+                                {
+                                    <tr>
+                                        <td>
+                                            <span title="@($"Keyspace: {mu.KeyspaceName}, Table: {mu.TableName}")">
+                                                @mu.KeyspaceName.@mu.TableName
+                                            </span>
+                                        </td>
+                                        <td>
+                                            <div class="form-check">
+                                                <input type="checkbox"
+                                                       class="form-check-input"
+                                                       id="checkbox-@mu.KeyspaceName-@mu.TableName"
+                                                       checked="@IsUnitToggled(mu)"
+                                                       @onchange="(e) => OnCollectionToggleChanged(e, mu)" />
+                                                <label class="form-check-label" for="checkbox-@mu.KeyspaceName-@mu.TableName">
+                                                    @(IsUnitToggled(mu) ? "Yes" : "No")
+                                                </label>
+                                            </div>
+                                        </td>
+                                    </tr>
+                                }
+                            }
+                            else if (_paginationHelper.ShowFilter() && !string.IsNullOrWhiteSpace(_paginationHelper.FilterText))
+                            {
+                                <tr>
+                                    <td colspan="2" class="text-center text-muted py-3">
+                                        <i class="bi bi-search"></i>
+                                        <div>No tables match your filter</div>
+                                        <button class="btn btn-link btn-sm p-0" @onclick="ClearFilter">Clear filter</button>
+                                    </td>
+                                </tr>
+                            }
+                            else if (!GetAllMigrationUnits().Any())
+                            {
+                                <tr>
+                                    <td colspan="2" class="text-center text-muted py-3">
+                                        <i class="bi bi-collection"></i>
+                                        <div>No tables available for change stream reset</div>
+                                    </td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+
+                @* Pagination Controls *@
+                @if (_paginationHelper.ShowPagination())
+                {
+                    <div class="d-flex justify-content-between align-items-center mt-3">
+                        <div>
+                            <nav aria-label="Collections pagination">
+                                <ul class="pagination pagination-sm mb-0">
+                                    <li class="page-item @(_paginationHelper.IsFirstPage() ? "disabled" : "")">
+                                        <button class="page-link" @onclick="() => GoToPage(1)" disabled="@_paginationHelper.IsFirstPage()" title="First page">
+                                            <i class="bi bi-chevron-double-left"></i>
+                                        </button>
+                                    </li>
+                                    <li class="page-item @(_paginationHelper.IsFirstPage() ? "disabled" : "")">
+                                        <button class="page-link" @onclick="() => GoToPage(_paginationHelper.CurrentPage - 1)" disabled="@_paginationHelper.IsFirstPage()" title="Previous page">
+                                            <i class="bi bi-chevron-left"></i>
+                                        </button>
+                                    </li>
+
+                                    @for (int page = _paginationHelper.GetStartPage(); page <= _paginationHelper.GetEndPage(); page++)
+                                    {
+                                        var pageNumber = page;
+                                        <li class="page-item @(_paginationHelper.CurrentPage == pageNumber ? "active" : "")">
+                                            <button class="page-link" @onclick="() => GoToPage(pageNumber)" title="Go to page @pageNumber">
+                                                @pageNumber
+                                            </button>
+                                        </li>
+                                    }
+
+                                    <li class="page-item @(_paginationHelper.IsLastPage() ? "disabled" : "")">
+                                        <button class="page-link" @onclick="() => GoToPage(_paginationHelper.CurrentPage + 1)" disabled="@_paginationHelper.IsLastPage()" title="Next page">
+                                            <i class="bi bi-chevron-right"></i>
+                                        </button>
+                                    </li>
+                                    <li class="page-item @(_paginationHelper.IsLastPage() ? "disabled" : "")">
+                                        <button class="page-link" @onclick="() => GoToPage(_paginationHelper.GetTotalPages())" disabled="@_paginationHelper.IsLastPage()" title="Last page">
+                                            <i class="bi bi-chevron-double-right"></i>
+                                        </button>
+                                    </li>
+                                </ul>
+                            </nav>
+                        </div>
+                        
+                        <div>
+                            <small class="text-muted">
+                                Page @_paginationHelper.CurrentPage of @_paginationHelper.GetTotalPages()
+                            </small>
+                        </div>
+                    </div>
+                }
+
+                @* Selection Summary *@
+                @if (updatedMigrationUnits.Count > 0)
+                {
+                    <div class="alert alert-info mt-3">
+                        <i class="bi bi-info-circle"></i>
+                        <strong>@updatedMigrationUnits.Count table(s) selected</strong> for change stream reset.
+                    </div>
+                }
+            </div>
+
+            @if (updatedMigrationUnits.Count > 0)
+            {
+                <div class="alert alert-warning mx-3 mb-3"> 
+                    <i class="bi bi-exclamation-triangle"></i>
+                    <strong>Warning:</strong> Resetting the change stream will reprocess all changes for the selected collections from the beginning of the migration. This may increase the migration workload and potentially delay processing for other collections.
+                </div>
+            }
+            
+            <div class="modal-footer">
+                <button type="button" class="btn btn-primary" @onclick=@HandleSubmit>Ok</button>
+                <button type="button" class="btn btn-secondary" @onclick="@Cancel">Cancel</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+@code
+{
+    [Parameter]
+    public List<TableMigration>? MigrationUnits { get; set; }
+
+    [Parameter]
+    public EventCallback<List<TableMigration>> OnCollectionsUpdated { get; set; }
+
+    private List<TableMigration> updatedMigrationUnits = new List<TableMigration>();
+    
+    // Pagination helper
+    private PaginationHelper<TableMigration> _paginationHelper = null!;
+
+    protected override void OnParametersSet()
+    {
+        updatedMigrationUnits = new List<TableMigration>();
+        
+        // Initialize pagination helper with filter predicate
+        _paginationHelper = new PaginationHelper<TableMigration>(
+            GetAllMigrationUnits(),
+            (mu, filterText) =>
+                $"{mu.KeyspaceName}.{mu.TableName}".Contains(filterText, StringComparison.OrdinalIgnoreCase) ||
+                mu.KeyspaceName.Contains(filterText, StringComparison.OrdinalIgnoreCase) ||
+                mu.TableName.Contains(filterText, StringComparison.OrdinalIgnoreCase)
+        );
+    }
+
+    private List<TableMigration> GetAllMigrationUnits()
+    {
+        if (MigrationUnits == null)
+            return new List<TableMigration>();
+
+        return MigrationUnits
+            .Where(mu => !string.IsNullOrEmpty(mu.ChangeFeedContinuationToken))
+            .ToList();
+    }
+
+    private void OnCollectionToggleChanged(ChangeEventArgs e, TableMigration mu)
+    {
+        bool isChecked = e.Value is bool b && b;
+        if (!isChecked)
+        {
+            updatedMigrationUnits.Remove(mu);
+        }
+        else
+        {
+            if (!updatedMigrationUnits.Contains(mu))
+            {
+                updatedMigrationUnits.Add(mu);
+            }
+        }
+        StateHasChanged(); // Refresh the UI to update selection summary
+    }   
+
+    private bool IsUnitToggled(TableMigration mu)
+    {
+        return updatedMigrationUnits.Contains(mu);
+    }
+
+    private void OnFilterChanged()
+    {
+        StateHasChanged();
+    }
+
+    private void ClearFilter()
+    {
+        _paginationHelper.ClearFilter();
+        StateHasChanged();
+    }
+
+    private void OnPageSizeChanged()
+    {
+        StateHasChanged();
+    }
+
+    private void GoToPage(int pageNumber)
+    {
+        _paginationHelper.GoToPage(pageNumber);
+        StateHasChanged();
+    }
+
+    private void HandleSubmit()
+    {
+        if (OnCollectionsUpdated.HasDelegate)
+        {
+            OnCollectionsUpdated.InvokeAsync(updatedMigrationUnits);
+        }
+    }
+
+    private void Cancel()
+    {
+        if (OnCollectionsUpdated.HasDelegate)
+        {
+            OnCollectionsUpdated.InvokeAsync(null);
+        }
+    }
+}
