@@ -5,7 +5,7 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <RootNamespace>CassandraMigrationWebApp</RootNamespace>
-    <UserSecretsId>ca29dd9a-23fe-4c3b-ad2b-fb0dadacd5fa</UserSecretsId>
+    <UserSecretsId>cassandra-migration-tool</UserSecretsId>
     <DockerDefaultTargetOS>Linux</DockerDefaultTargetOS>
     <NoWarn>CS8602;CS8603;CS8604;CS8618;CS1998;CS0219;CS0618;CS0105;CS8600;CS8625;CS8619;CS0168;CS8629;CS0472</NoWarn>
   </PropertyGroup>
