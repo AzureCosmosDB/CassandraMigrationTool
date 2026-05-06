@@ -38,6 +38,18 @@ internal class PageReader : IDisposable
         _columnNames = config.Columns.Select(c => c.Name).ToList();
         _pageSize = pageSize;
         _sourceSession = CassandraClientFactory.CreateSourceSession(log, config.SourceConnection, config.Context.KeyspaceName);
+        // Register dynamic UDT mappings so that UDT-typed columns are decoded
+        // into real CLR instances (instead of raw byte[]) and can be bound
+        // back into the target's prepared insert without serialization errors.
+        try
+        {
+            DynamicUdtRegistrar.RegisterAsync(_sourceSession, config.Context.KeyspaceName)
+                .GetAwaiter().GetResult();
+        }
+        catch (Exception ex)
+        {
+            _log.WriteLine($"[W{_workerId}] UDT mapping registration on source failed: {ex.Message}", LogType.Warning);
+        }
     }
 
     public void Dispose() => MigrationUtilities.SafeDispose(_sourceSession, "PageReader source session");

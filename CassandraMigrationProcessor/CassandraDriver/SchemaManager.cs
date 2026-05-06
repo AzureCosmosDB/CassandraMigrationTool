@@ -19,6 +19,15 @@ public static class SchemaManager
     private const int ThrottleMaxRetries = 10;
 
     /// <summary>
+    /// Generate and register a CLR mapping per UDT in the given keyspace
+    /// on the supplied session. Required so that the driver decodes UDT
+    /// cells into typed instances (instead of raw byte[]) and so values
+    /// read on one session can be re-bound on another.
+    /// </summary>
+    public static Task RegisterDynamicUdtMappingsAsync(ISession session, string keyspace)
+        => DynamicUdtRegistrar.RegisterAsync(session, keyspace);
+
+    /// <summary>
     /// Synchronises the target schema with the source:
     /// ensure keyspace → check table exists → create or
     /// alter → return source column list.
@@ -30,11 +39,159 @@ public static class SchemaManager
     {
         await EnsureKeyspaceExistsAsync(targetSession, targetKeyspace);
 
+        await ReplicateUserDefinedTypesAsync(sourceSession, targetSession,
+            sourceKeyspace, targetKeyspace);
+
         await CreateTableFromSourceAsync(sourceSession, targetSession,
             sourceKeyspace, sourceTable, targetKeyspace, targetTable);
 
         return await GetTableColumnsAsync(sourceSession, sourceKeyspace, sourceTable);
     }
+
+    /// <summary>
+    /// Replicate every User-Defined Type from the source keyspace
+    /// to the target keyspace. UDTs are created in dependency order
+    /// (a UDT that references another UDT in the same keyspace is
+    /// created after its dependency) and use CREATE TYPE IF NOT EXISTS
+    /// so that pre-existing target UDTs are left alone.
+    /// </summary>
+    public static async Task ReplicateUserDefinedTypesAsync(ISession sourceSession, ISession targetSession,
+        string sourceKeyspace, string targetKeyspace)
+    {
+        MigrationUtilities.ValidateCqlIdentifier(sourceKeyspace);
+        MigrationUtilities.ValidateCqlIdentifier(targetKeyspace);
+
+        var udts = await GetUserDefinedTypesAsync(sourceSession, sourceKeyspace);
+        if (udts.Count == 0) return;
+
+        var ordered = TopologicallySortUdts(udts);
+
+        foreach (var udt in ordered)
+        {
+            MigrationUtilities.ValidateCqlIdentifier(udt.TypeName);
+
+            var fieldDefs = new List<string>(udt.FieldNames.Count);
+            for (int i = 0; i < udt.FieldNames.Count; i++)
+            {
+                MigrationUtilities.ValidateCqlIdentifier(udt.FieldNames[i]);
+                fieldDefs.Add($"\"{udt.FieldNames[i]}\" {udt.FieldTypes[i]}");
+            }
+
+            string cql =
+                $"CREATE TYPE IF NOT EXISTS \"{targetKeyspace}\".\"{udt.TypeName}\" (" +
+                string.Join(", ", fieldDefs) + ")";
+
+            await ExecuteWithTimeoutRetryAsync(() =>
+                targetSession.ExecuteAsync(new SimpleStatement(cql)));
+        }
+    }
+
+    /// <summary>
+    /// Read every User-Defined Type defined in the given keyspace
+    /// from <c>system_schema.types</c>. Returns type name plus the
+    /// field name/type pairs in declaration order.
+    /// </summary>
+    public static async Task<List<UserDefinedTypeDef>> GetUserDefinedTypesAsync(ISession session, string keyspace)
+    {
+        var statement = new SimpleStatement(
+            "SELECT type_name, field_names, field_types " +
+            "FROM system_schema.types WHERE keyspace_name = ?",
+            keyspace);
+        statement.SetReadTimeoutMillis(SchemaQueryTimeoutMs);
+
+        var resultSet = await ExecuteWithTimeoutRetryAsync(() => session.ExecuteAsync(statement));
+
+        var udts = new List<UserDefinedTypeDef>();
+        foreach (var row in resultSet)
+        {
+            var typeName = row.GetValue<string>("type_name");
+            var fieldNames = row.GetValue<IEnumerable<string>>("field_names")?.ToList()
+                             ?? new List<string>();
+            var fieldTypes = row.GetValue<IEnumerable<string>>("field_types")?.ToList()
+                             ?? new List<string>();
+            udts.Add(new UserDefinedTypeDef(typeName, fieldNames, fieldTypes));
+        }
+        return udts;
+    }
+
+    /// <summary>
+    /// Topologically sort UDTs so that any UDT referenced by another
+    /// UDT in the same keyspace appears earlier in the returned list.
+    /// References are detected by case-insensitive word-boundary
+    /// matching against the field-type text. If a dependency cycle
+    /// is detected the remaining UDTs are appended in their original
+    /// order (the create attempt will surface the cycle as a Cassandra
+    /// error rather than silently dropping any UDT).
+    /// </summary>
+    internal static List<UserDefinedTypeDef> TopologicallySortUdts(List<UserDefinedTypeDef> udts)
+    {
+        var byName = new Dictionary<string, UserDefinedTypeDef>(StringComparer.OrdinalIgnoreCase);
+        foreach (var u in udts) byName[u.TypeName] = u;
+
+        var dependsOn = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
+        foreach (var u in udts)
+        {
+            var deps = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var ft in u.FieldTypes)
+            {
+                foreach (var other in udts)
+                {
+                    if (string.Equals(other.TypeName, u.TypeName, StringComparison.OrdinalIgnoreCase))
+                        continue;
+                    if (ContainsTypeName(ft, other.TypeName))
+                        deps.Add(other.TypeName);
+                }
+            }
+            dependsOn[u.TypeName] = deps;
+        }
+
+        var resolved = new List<UserDefinedTypeDef>();
+        var resolvedNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        bool progress = true;
+        while (progress && resolved.Count < udts.Count)
+        {
+            progress = false;
+            foreach (var u in udts)
+            {
+                if (resolvedNames.Contains(u.TypeName)) continue;
+                if (dependsOn[u.TypeName].All(d => resolvedNames.Contains(d)))
+                {
+                    resolved.Add(u);
+                    resolvedNames.Add(u.TypeName);
+                    progress = true;
+                }
+            }
+        }
+        if (resolved.Count < udts.Count)
+        {
+            foreach (var u in udts)
+                if (!resolvedNames.Contains(u.TypeName))
+                    resolved.Add(u);
+        }
+        return resolved;
+    }
+
+    private static bool ContainsTypeName(string fieldType, string typeName)
+    {
+        if (string.IsNullOrEmpty(fieldType) || string.IsNullOrEmpty(typeName)) return false;
+        int idx = 0;
+        while (idx <= fieldType.Length - typeName.Length)
+        {
+            int found = fieldType.IndexOf(typeName, idx, StringComparison.OrdinalIgnoreCase);
+            if (found < 0) return false;
+            bool leftOk = found == 0 || !IsIdentifierChar(fieldType[found - 1]);
+            int after = found + typeName.Length;
+            bool rightOk = after >= fieldType.Length || !IsIdentifierChar(fieldType[after]);
+            if (leftOk && rightOk) return true;
+            idx = found + 1;
+        }
+        return false;
+    }
+
+    private static bool IsIdentifierChar(char c) => char.IsLetterOrDigit(c) || c == '_';
+
+    /// <summary>Source-side definition of a User-Defined Type.</summary>
+    public sealed record UserDefinedTypeDef(string TypeName, List<string> FieldNames, List<string> FieldTypes);
 
     /// <summary>
     /// Check if a keyspace exists.

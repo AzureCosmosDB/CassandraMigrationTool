@@ -34,6 +34,29 @@ internal class PageWriter : IDisposable
         _workerId = workerId;
         _pageSize = pageSize;
         _targetSession = CassandraClientFactory.CreateTargetSession(log, config.TargetConnection, "");
+        // Register dynamic UDT mappings using the SOURCE keyspace's UDT
+        // definitions — those are the shapes the reader produces and what
+        // the target needs to be able to bind. Source and target UDTs are
+        // identical because SchemaManager.SyncSchemaAsync replicated them.
+        try
+        {
+            var sourceSession = CassandraClientFactory.CreateSourceSession(log, config.SourceConnection, config.Context.KeyspaceName);
+            try
+            {
+                var udts = SchemaManager.GetUserDefinedTypesAsync(sourceSession, config.Context.KeyspaceName)
+                    .GetAwaiter().GetResult();
+                DynamicUdtRegistrar.RegisterAsync(_targetSession, config.Context.TargetKeyspaceName, udts)
+                    .GetAwaiter().GetResult();
+            }
+            finally
+            {
+                MigrationUtilities.SafeDispose(sourceSession, "PageWriter UDT discovery session");
+            }
+        }
+        catch (Exception ex)
+        {
+            _log.WriteLine($"[W{_workerId}] UDT mapping registration on target failed: {ex.Message}", LogType.Warning);
+        }
         var (ps, _) = CassandraQueries.PrepareInsert(_targetSession, config.Context.TargetKeyspaceName, config.Context.TargetTableName, config.Columns);
         _preparedInsert = ps;
     }
