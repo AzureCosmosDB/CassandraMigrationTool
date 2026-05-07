@@ -56,9 +56,9 @@ public static class SchemaManager
     /// not just the UDTs referenced by the table currently being migrated.
     /// This is intentional — it keeps the implementation simple, guarantees
     /// nested UDT references resolve, and avoids surprises when subsequent
-    /// tables in the same keyspace are added to the job. Customers who want
-    /// to copy only a subset of UDTs (or none at all) should pre-create
-    /// the schema on the target and run the job with
+    /// tables in the same keyspace are added to the job. To copy only a
+    /// subset of UDTs (or none at all), pre-create the schema on the target
+    /// and run the job with
     /// <see cref="Models.Job.SkipSchemaSync"/> = <c>true</c>.
     /// </para>
     /// <para>

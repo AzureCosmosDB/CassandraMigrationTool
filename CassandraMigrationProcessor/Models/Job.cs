@@ -78,9 +78,9 @@ public class Job
 
     /// <summary>
     /// When true, the migration tool does NOT create or modify schema
-    /// (keyspaces, tables, or User-Defined Types) on the target. The
-    /// customer is expected to have provisioned an identical schema on
-    /// the target before starting the job. Use this when target schema
+    /// (keyspaces, tables, or User-Defined Types) on the target. An
+    /// identical schema is expected to have been provisioned on the
+    /// target before the job starts. Use this when target schema
     /// management is owned by another process or when it must be
     /// customised (e.g. different replication settings, table options,
     /// or a subset of UDTs) and the tool's automatic replication is
