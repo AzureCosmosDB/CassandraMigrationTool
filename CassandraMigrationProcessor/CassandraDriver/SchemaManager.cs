@@ -39,45 +39,51 @@ public static class SchemaManager
     {
         await EnsureKeyspaceExistsAsync(targetSession, targetKeyspace);
 
-        await ReplicateUserDefinedTypesAsync(sourceSession, targetSession,
-            sourceKeyspace, targetKeyspace);
+        // Discover source columns first so that UDT replication can be
+        // scoped to only the UDTs actually referenced by this table.
+        var sourceColumns = await GetTableColumnsAsync(sourceSession, sourceKeyspace, sourceTable);
+
+        var allUdts = await GetUserDefinedTypesAsync(sourceSession, sourceKeyspace);
+        var requiredUdts = FilterUdtsReferencedByTable(allUdts, sourceColumns.Select(c => c.Type));
+        if (requiredUdts.Count > 0)
+        {
+            await ReplicateUserDefinedTypesAsync(sourceSession, targetSession,
+                sourceKeyspace, targetKeyspace, requiredUdts);
+        }
 
         await CreateTableFromSourceAsync(sourceSession, targetSession,
             sourceKeyspace, sourceTable, targetKeyspace, targetTable);
 
-        return await GetTableColumnsAsync(sourceSession, sourceKeyspace, sourceTable);
+        return sourceColumns;
     }
 
     /// <summary>
-    /// Replicate every User-Defined Type from the source keyspace
-    /// to the target keyspace.
-    /// <para>
-    /// <b>Scope:</b> this copies <i>every</i> UDT in the source keyspace,
-    /// not just the UDTs referenced by the table currently being migrated.
-    /// This is intentional — it keeps the implementation simple, guarantees
-    /// nested UDT references resolve, and avoids surprises when subsequent
-    /// tables in the same keyspace are added to the job. To copy only a
-    /// subset of UDTs (or none at all), pre-create the schema on the target
-    /// and run the job with
-    /// <see cref="Models.Job.SkipSchemaSync"/> = <c>true</c>.
-    /// </para>
+    /// Replicate the supplied User-Defined Types (or every UDT in the source
+    /// keyspace if <paramref name="udtsToReplicate"/> is <c>null</c>) from the
+    /// source keyspace to the target keyspace.
     /// <para>
     /// UDTs are created in dependency order (a UDT that references another
     /// UDT in the same keyspace is created after its dependency) and use
     /// <c>CREATE TYPE IF NOT EXISTS</c> so that pre-existing target UDTs
     /// are left alone.
     /// </para>
+    /// <para>
+    /// Callers that need to bypass UDT replication entirely can run the job
+    /// with <see cref="Models.Job.SkipSchemaSync"/> = <c>true</c> and
+    /// pre-provision the target schema themselves.
+    /// </para>
     /// </summary>
     public static async Task ReplicateUserDefinedTypesAsync(ISession sourceSession, ISession targetSession,
-        string sourceKeyspace, string targetKeyspace)
+        string sourceKeyspace, string targetKeyspace,
+        IReadOnlyList<UserDefinedTypeDef>? udtsToReplicate = null)
     {
         MigrationUtilities.ValidateCqlIdentifier(sourceKeyspace);
         MigrationUtilities.ValidateCqlIdentifier(targetKeyspace);
 
-        var udts = await GetUserDefinedTypesAsync(sourceSession, sourceKeyspace);
-        if (udts.Count == 0) return;
+        udtsToReplicate ??= await GetUserDefinedTypesAsync(sourceSession, sourceKeyspace);
+        if (udtsToReplicate.Count == 0) return;
 
-        var ordered = TopologicallySortUdts(udts);
+        var ordered = TopologicallySortUdts(udtsToReplicate.ToList());
 
         foreach (var udt in ordered)
         {
@@ -125,6 +131,58 @@ public static class SchemaManager
             udts.Add(new UserDefinedTypeDef(typeName, fieldNames, fieldTypes));
         }
         return udts;
+    }
+
+    /// <summary>
+    /// Reduce <paramref name="allUdts"/> to the subset transitively
+    /// referenced by <paramref name="tableColumnTypes"/>.
+    /// <para>
+    /// A UDT is included if its name appears (with CQL identifier
+    /// boundaries) in any column type, or in the field types of another
+    /// UDT that is itself included. The matcher correctly handles nested
+    /// forms such as <c>frozen&lt;list&lt;frozen&lt;my_udt&gt;&gt;&gt;</c>,
+    /// <c>map&lt;text, frozen&lt;my_udt&gt;&gt;</c> and
+    /// <c>tuple&lt;…, my_udt, …&gt;</c>.
+    /// </para>
+    /// </summary>
+    public static List<UserDefinedTypeDef> FilterUdtsReferencedByTable(
+        IReadOnlyList<UserDefinedTypeDef> allUdts,
+        IEnumerable<string> tableColumnTypes)
+    {
+        if (allUdts == null || allUdts.Count == 0) return new List<UserDefinedTypeDef>();
+
+        var byName = new Dictionary<string, UserDefinedTypeDef>(StringComparer.OrdinalIgnoreCase);
+        foreach (var u in allUdts) byName[u.TypeName] = u;
+
+        var reached = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var queue = new Queue<string>();
+
+        foreach (var columnType in tableColumnTypes ?? Enumerable.Empty<string>())
+        {
+            if (string.IsNullOrEmpty(columnType)) continue;
+            foreach (var u in allUdts)
+            {
+                if (ContainsTypeName(columnType, u.TypeName) && reached.Add(u.TypeName))
+                    queue.Enqueue(u.TypeName);
+            }
+        }
+
+        while (queue.Count > 0)
+        {
+            var name = queue.Dequeue();
+            if (!byName.TryGetValue(name, out var udt)) continue;
+            foreach (var ft in udt.FieldTypes)
+            {
+                foreach (var other in allUdts)
+                {
+                    if (string.Equals(other.TypeName, name, StringComparison.OrdinalIgnoreCase)) continue;
+                    if (ContainsTypeName(ft, other.TypeName) && reached.Add(other.TypeName))
+                        queue.Enqueue(other.TypeName);
+                }
+            }
+        }
+
+        return allUdts.Where(u => reached.Contains(u.TypeName)).ToList();
     }
 
     /// <summary>

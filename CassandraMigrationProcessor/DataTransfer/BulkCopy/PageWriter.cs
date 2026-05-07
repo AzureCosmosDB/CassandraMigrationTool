@@ -5,6 +5,7 @@ using CassandraMigrationProcessor.Models;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -43,9 +44,11 @@ internal class PageWriter : IDisposable
             var sourceSession = CassandraClientFactory.CreateSourceSession(log, config.SourceConnection, config.Context.KeyspaceName);
             try
             {
-                var udts = SchemaManager.GetUserDefinedTypesAsync(sourceSession, config.Context.KeyspaceName)
+                var allUdts = SchemaManager.GetUserDefinedTypesAsync(sourceSession, config.Context.KeyspaceName)
                     .GetAwaiter().GetResult();
-                DynamicUdtRegistrar.RegisterAsync(_targetSession, config.Context.TargetKeyspaceName, udts)
+                var requiredUdts = SchemaManager.FilterUdtsReferencedByTable(
+                    allUdts, config.Columns.Select(c => c.Type));
+                DynamicUdtRegistrar.RegisterAsync(_targetSession, config.Context.TargetKeyspaceName, requiredUdts)
                     .GetAwaiter().GetResult();
             }
             finally
