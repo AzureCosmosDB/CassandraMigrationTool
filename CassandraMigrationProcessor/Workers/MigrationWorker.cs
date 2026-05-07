@@ -197,6 +197,14 @@ public class MigrationWorker
 
     private async Task SetupTargetSchemaAsync(Job job, TableMigration mu)
     {
+        if (job.SkipSchemaSync)
+        {
+            _log.WriteLine(
+                $"Skipping schema sync for {mu.KeyspaceName}.{mu.TableName} (job.SkipSchemaSync is enabled — target schema is assumed to already exist).",
+                LogType.Info);
+            return;
+        }
+
         using var targetSession = await CassandraClientFactory.CreateTargetSessionAsync(_log, job, string.Empty);
         var sourceSession = CassandraClientFactory.CreateSourceSession(_log, job, mu.KeyspaceName, _tokenRefreshManager);
         try

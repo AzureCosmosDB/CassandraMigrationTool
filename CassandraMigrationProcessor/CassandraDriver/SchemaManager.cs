@@ -50,10 +50,23 @@ public static class SchemaManager
 
     /// <summary>
     /// Replicate every User-Defined Type from the source keyspace
-    /// to the target keyspace. UDTs are created in dependency order
-    /// (a UDT that references another UDT in the same keyspace is
-    /// created after its dependency) and use CREATE TYPE IF NOT EXISTS
-    /// so that pre-existing target UDTs are left alone.
+    /// to the target keyspace.
+    /// <para>
+    /// <b>Scope:</b> this copies <i>every</i> UDT in the source keyspace,
+    /// not just the UDTs referenced by the table currently being migrated.
+    /// This is intentional — it keeps the implementation simple, guarantees
+    /// nested UDT references resolve, and avoids surprises when subsequent
+    /// tables in the same keyspace are added to the job. Customers who want
+    /// to copy only a subset of UDTs (or none at all) should pre-create
+    /// the schema on the target and run the job with
+    /// <see cref="Models.Job.SkipSchemaSync"/> = <c>true</c>.
+    /// </para>
+    /// <para>
+    /// UDTs are created in dependency order (a UDT that references another
+    /// UDT in the same keyspace is created after its dependency) and use
+    /// <c>CREATE TYPE IF NOT EXISTS</c> so that pre-existing target UDTs
+    /// are left alone.
+    /// </para>
     /// </summary>
     public static async Task ReplicateUserDefinedTypesAsync(ISession sourceSession, ISession targetSession,
         string sourceKeyspace, string targetKeyspace)

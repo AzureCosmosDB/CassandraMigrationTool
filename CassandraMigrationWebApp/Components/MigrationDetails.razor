@@ -160,8 +160,14 @@
                     </div>
                     <div class="mb-3">
                         <label for="dropTargetTable" class="form-label" title="Drop target tables before starting migration so they are recreated fresh from source schema.">
-                            <input type="checkbox" id="dropTargetTable" disabled="@(!NewMode)" @bind="dropTargetTableBeforeStart" />
+                            <input type="checkbox" id="dropTargetTable" disabled="@(!NewMode || skipSchemaSync)" @bind="dropTargetTableBeforeStart" />
                             Drop Target Tables Before Start
+                        </label>
+                    </div>
+                    <div class="mb-3">
+                        <label for="skipSchemaSync" class="form-label" title="Skip automatic schema sync. The tool will NOT create or modify keyspaces, tables, or User-Defined Types on the target — you must pre-create an identical schema before starting the job. Use this when target schema management is owned by another process or when you only want a subset of UDTs/tables on the target.">
+                            <input type="checkbox" id="skipSchemaSync" disabled="@(!NewMode)" @bind="skipSchemaSync" />
+                            Skip schema sync (target schema must already exist)
                         </label>
                     </div>
                     @if (jobType == JobType.CqlCopy)
@@ -231,6 +237,7 @@
     private bool isSimulatedRun = false; // Variable to track the dummy run option
     private bool appendMode = false;
     private bool dropTargetTableBeforeStart = false;
+    private bool skipSchemaSync = false;
     private int? parallelThreads = null; // Parallel threads for CQL Copy
     private int defaultParallelThreads = 5;
     private int? feedRangeWorkers = null; // Max concurrent feed range workers per table
@@ -352,6 +359,7 @@
             isSimulatedRun = false;
             appendMode = false;
             dropTargetTableBeforeStart = false;
+            skipSchemaSync = false;
             parallelThreads = null; // Default will be calculated
             logLevel = LogType.Info; // Default to Info
             isFileUploaded = false;
@@ -377,6 +385,7 @@
             isSimulatedRun = Job?.IsSimulatedRun ?? false;
             appendMode = Job?.AppendMode ?? false;
             dropTargetTableBeforeStart = Job?.DropTargetTableBeforeStart ?? false;
+            skipSchemaSync = Job?.SkipSchemaSync ?? false;
             parallelThreads = Job?.ParallelThreads == defaultParallelThreads ? null : Job?.ParallelThreads;
             feedRangeWorkers = Job?.MaxFeedRangeParallelism == 0 ? null : Job?.MaxFeedRangeParallelism;
             connectionsPerHost = Job?.MaxConnectionsPerHost == 0 ? null : Job?.MaxConnectionsPerHost;
@@ -482,6 +491,7 @@
             IsSimulatedRun = isSimulatedRun,
             AppendMode = appendMode,
             DropTargetTableBeforeStart = dropTargetTableBeforeStart,
+            SkipSchemaSync = skipSchemaSync,
             ParallelThreads = parallelThreads ?? defaultParallelThreads,
             MaxFeedRangeParallelism = feedRangeWorkers ?? 0,
             MaxConnectionsPerHost = connectionsPerHost ?? 0,

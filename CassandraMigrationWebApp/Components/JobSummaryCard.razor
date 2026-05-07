@@ -102,6 +102,12 @@
                         <span class="badge bg-danger">Drop target tables</span>
                     </div>
                 }
+                @if (sj.SkipSchemaSync)
+                {
+                    <div class="col-auto">
+                        <span class="badge bg-warning text-dark" title="Schema sync was skipped — target schema (keyspaces, tables, UDTs) was assumed to already exist.">Skip schema sync</span>
+                    </div>
+                }
                 @if (sj.AppendMode)
                 {
                     <div class="col-auto">
