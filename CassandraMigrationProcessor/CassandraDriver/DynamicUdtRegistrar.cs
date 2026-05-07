@@ -25,6 +25,42 @@ namespace CassandraMigrationProcessor.CassandraDriver;
 /// and reuses the same generated type for the matching UDT on every
 /// session so that a value read from the source can be written back to
 /// the target without manual conversion.
+///
+/// <para><b>Why <see cref="System.Reflection.Emit"/> and not a simpler
+/// approach?</b> The DataStax Java/Scala drivers expose an untyped
+/// <c>UdtValue</c> wrapper that other migration tools (datastax CDM,
+/// scylla-migrator) use to round-trip UDT cells without per-UDT classes.
+/// The C# driver (CassandraCSharpDriver 3.21.0) has no equivalent public
+/// API:
+/// <list type="bullet">
+///   <item><description><see cref="UdtMap{T}"/> is generic with a
+///   <c>where T : new()</c> constraint and its <c>Automap</c>/<c>ToObject</c>
+///   path calls <c>NetType.GetProperty(field.Name)</c>, requiring a real
+///   CLR class with one property per UDT field.</description></item>
+///   <item><description>The internal <c>UdtSerializer</c> indexes
+///   registrations by <c>typeof(T)</c> on the write path, so two distinct
+///   UDTs cannot share a single backing class — the second registration
+///   would overwrite the first and break writes.</description></item>
+///   <item><description><c>UdtMap.ToObject</c> is <c>internal</c>, so a
+///   subclass cannot replace the property-mapping flow.</description></item>
+///   <item><description>Custom <c>TypeSerializer</c>s registered via
+///   <c>Builder.WithTypeSerializers</c> cannot intercept UDT cells — the
+///   <c>UdtSerializer</c> path is hard-coded for <c>ColumnTypeCode.Udt</c>.
+///   </description></item>
+///   <item><description>Binding a raw <c>byte[]</c> to a UDT-typed parameter
+///   returns null from <c>UdtSerializer.Serialize</c> (no map for
+///   <c>typeof(byte[])</c>), so a bytes-passthrough strategy fails on the
+///   write side.</description></item>
+/// </list>
+/// Generating one CLR class per UDT shape at runtime is therefore the only
+/// path through the driver's public API. Roslyn / Castle DynamicProxy /
+/// other code-gen libraries all emit IL underneath, so they would add a
+/// heavier dependency without removing the underlying technique.
+/// TODO: revisit if upstream issue
+/// https://github.com/datastax/csharp-driver adds a non-generic
+/// <c>UdtMap.For(Type, ...)</c> factory or an <c>IDictionary</c>-backed UDT
+/// mapping mode — at that point this entire file can collapse to ~30 lines.
+/// </para>
 /// </summary>
 internal static class DynamicUdtRegistrar
 {
