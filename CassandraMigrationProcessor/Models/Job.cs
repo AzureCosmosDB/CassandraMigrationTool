@@ -101,9 +101,27 @@ public class Job
     // ── Computed ──
 
     [JsonIgnore]
-    public ConnectionOptions SourceConnection => new(
-        SourceContactPoint ?? "", SourcePort,
-        SourceUsername, SourcePassword, true);
+    public ConnectionOptions SourceConnection
+    {
+        get
+        {
+            // AAD on Cosmos DB Cassandra requires the account name as
+            // the username. When the user enables AAD without typing
+            // it, derive it from the contact point so that worker-side
+            // sessions (PageReader) get an authenticator just like the
+            // control-plane Job-based CreateSourceSession overload does.
+            string? user = SourceUsername;
+            if (string.IsNullOrWhiteSpace(user)
+                && SourceUseAad
+                && !string.IsNullOrEmpty(SourceContactPoint))
+            {
+                user = SourceContactPoint.Split('.')[0];
+            }
+            return new(
+                SourceContactPoint ?? "", SourcePort,
+                user, SourcePassword, true);
+        }
+    }
 
     [JsonIgnore]
     public ConnectionOptions TargetConnection => new(
