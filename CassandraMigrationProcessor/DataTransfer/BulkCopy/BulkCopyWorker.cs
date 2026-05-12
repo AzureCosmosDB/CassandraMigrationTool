@@ -35,8 +35,8 @@ internal class BulkCopyWorker
         {
             try
             {
-                reader = new PageReader(_log, ctx.Worker, _pageSize, _workerId, _ct);
-                writer = new PageWriter(_log, ctx.Worker, _pageSize, _workerId, _ct);
+                reader = await PageReader.CreateAsync(_log, ctx.Worker, _pageSize, _workerId, _ct);
+                writer = await PageWriter.CreateAsync(_log, ctx.Worker, _pageSize, _workerId, _ct);
             }
             catch (OperationCanceledException)
             {

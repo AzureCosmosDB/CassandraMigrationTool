@@ -102,7 +102,7 @@ public class MigrationWorker
         CancellationToken cancellationToken)
     {
         _log.WriteLine("All tables copied. Resuming change feed processors.", LogType.Info);
-        _activeProcessor = new TableMigrationEngine(_log, config, job, _tokenRefreshManager);
+        _activeProcessor = await TableMigrationEngine.CreateAsync(_log, config, job, _tokenRefreshManager);
 
         foreach (var mub in job.Tables)
         {
@@ -197,6 +197,14 @@ public class MigrationWorker
 
     private async Task SetupTargetSchemaAsync(Job job, TableMigration mu)
     {
+        if (job.SkipSchemaSync)
+        {
+            _log.WriteLine(
+                $"Skipping schema sync for {mu.KeyspaceName}.{mu.TableName} (job.SkipSchemaSync is enabled — target schema is assumed to already exist).",
+                LogType.Info);
+            return;
+        }
+
         using var targetSession = await CassandraClientFactory.CreateTargetSessionAsync(_log, job, string.Empty);
         var sourceSession = CassandraClientFactory.CreateSourceSession(_log, job, mu.KeyspaceName, _tokenRefreshManager);
         try
@@ -226,7 +234,7 @@ public class MigrationWorker
     private async Task RunCopyForUnitAsync(Job job, AppSettings config,
         TableMigration mu, CancellationToken ct)
     {
-        var processor = new TableMigrationEngine(_log, config, job, _tokenRefreshManager, ct);
+        var processor = await TableMigrationEngine.CreateAsync(_log, config, job, _tokenRefreshManager, ct);
         _activeProcessors[mu.Id] = processor;
         ct.ThrowIfCancellationRequested();
 

@@ -1,6 +1,7 @@
 using Cassandra;
 using CassandraMigrationProcessor.Models;
 using CassandraMigrationProcessor.Infrastructure;
+using System.Threading.Tasks;
 
 namespace CassandraMigrationProcessor.CassandraDriver;
 
@@ -19,6 +20,6 @@ public class CassandraSessionFactory : ICassandraSessionFactory
     public ISession CreateSourceSession(MigrationLog log, Job job, string keyspace, TokenRefreshManager? tokenRefreshManager = null)
         => CassandraClientFactory.CreateSourceSession(log, job, keyspace, tokenRefreshManager);
 
-    public ISession CreateTargetSession(MigrationLog log, Job job, string keyspace)
-        => CassandraClientFactory.CreateTargetSession(log, job, keyspace);
+    public Task<ISession> CreateTargetSessionAsync(MigrationLog log, Job job, string keyspace)
+        => CassandraClientFactory.CreateTargetSessionAsync(log, job, keyspace);
 }
