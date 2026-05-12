@@ -45,7 +45,32 @@ internal class WorkerPool : IDisposable
         {
             _log.WriteLine("Workers cancelled — graceful shutdown", LogType.Info);
         }
-        catch (AggregateException) { }
+        catch
+        {
+            // await Task.WhenAll only re-throws the FIRST faulted task's
+            // inner exception, not AggregateException. Inspect each task
+            // directly to surface every worker fault.
+        }
+        finally
+        {
+            foreach (var t in _workers)
+            {
+                if (!t.IsFaulted || t.Exception == null) continue;
+                foreach (var inner in t.Exception.Flatten().InnerExceptions)
+                {
+                    if (inner is OperationCanceledException) continue;
+                    _log.WriteLine(
+                        $"Worker faulted: {inner.GetType().FullName}: {inner.Message}",
+                        LogType.Error);
+                    if (inner.StackTrace != null)
+                        _log.WriteLine($"  at {inner.StackTrace}", LogType.Error);
+                    if (inner.InnerException != null)
+                        _log.WriteLine(
+                            $"  Inner: {inner.InnerException.GetType().FullName}: {inner.InnerException.Message}",
+                            LogType.Error);
+                }
+            }
+        }
     }
 
     /// <summary>

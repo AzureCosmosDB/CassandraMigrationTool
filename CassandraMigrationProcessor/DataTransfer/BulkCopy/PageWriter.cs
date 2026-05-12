@@ -21,6 +21,7 @@ internal class PageWriter : IDisposable
     private readonly CancellationToken _ct;
     private readonly ISession _targetSession;
     private readonly PreparedStatement _preparedInsert;
+    private readonly int[] _bindOrderToSourceIndex;
     private readonly int _workerId;
     private readonly int _pageSize;
 
@@ -29,7 +30,7 @@ internal class PageWriter : IDisposable
     private const int RetryDelayMs = 500;
 
     private PageWriter(MigrationLog log, ISession targetSession, PreparedStatement preparedInsert,
-        int pageSize, int workerId, CancellationToken cancellationToken)
+        int[] bindOrderToSourceIndex, int pageSize, int workerId, CancellationToken cancellationToken)
     {
         _log = log;
         _ct = cancellationToken;
@@ -37,6 +38,7 @@ internal class PageWriter : IDisposable
         _pageSize = pageSize;
         _targetSession = targetSession;
         _preparedInsert = preparedInsert;
+        _bindOrderToSourceIndex = bindOrderToSourceIndex;
     }
 
     /// <summary>
@@ -50,9 +52,17 @@ internal class PageWriter : IDisposable
     public static async Task<PageWriter> CreateAsync(MigrationLog log, WorkerConfig config, int pageSize, int workerId, CancellationToken cancellationToken)
     {
         var targetSession = CassandraClientFactory.CreateTargetSession(log, config.TargetConnection, "");
-        var (ps, _) = await CassandraQueries.PrepareInsertAsync(
+        var (ps, bindOrder) = await CassandraQueries.PrepareInsertAsync(
             targetSession, config.Context.TargetKeyspaceName, config.Context.TargetTableName, config.Columns);
-        var writer = new PageWriter(log, targetSession, ps, pageSize, workerId, cancellationToken);
+
+        var sourceIndexByName = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        for (int i = 0; i < config.Columns.Count; i++)
+            sourceIndexByName[config.Columns[i].Name] = i;
+        var bindOrderToSourceIndex = new int[bindOrder.Count];
+        for (int i = 0; i < bindOrder.Count; i++)
+            bindOrderToSourceIndex[i] = sourceIndexByName[bindOrder[i]];
+
+        var writer = new PageWriter(log, targetSession, ps, bindOrderToSourceIndex, pageSize, workerId, cancellationToken);
 
         ISession? sourceSession = null;
         try
@@ -76,6 +86,13 @@ internal class PageWriter : IDisposable
     }
 
     public void Dispose() => MigrationUtilities.SafeDispose(_targetSession, "PageWriter target session");
+
+    private static bool IsIdentityMap(int[] map)
+    {
+        for (int i = 0; i < map.Length; i++)
+            if (map[i] != i) return false;
+        return true;
+    }
 
     private class WriteCounters
     {
@@ -152,7 +169,21 @@ internal class PageWriter : IDisposable
                 || Volatile.Read(ref ctx.Counters.FatalErrorFlag) != 0)
                 break;
 
-            var bound = _preparedInsert.Bind(rows[i]);
+            var sourceRow = rows[i];
+            object[] bindValues;
+            if (_bindOrderToSourceIndex.Length == sourceRow.Length
+                && IsIdentityMap(_bindOrderToSourceIndex))
+            {
+                bindValues = sourceRow;
+            }
+            else
+            {
+                bindValues = new object[_bindOrderToSourceIndex.Length];
+                for (int b = 0; b < _bindOrderToSourceIndex.Length; b++)
+                    bindValues[b] = sourceRow[_bindOrderToSourceIndex[b]];
+            }
+
+            var bound = _preparedInsert.Bind(bindValues);
             bound.SetReadTimeoutMillis(WriteTimeoutMs);
             bound.SetConsistencyLevel(ConsistencyLevel.LocalOne);
 

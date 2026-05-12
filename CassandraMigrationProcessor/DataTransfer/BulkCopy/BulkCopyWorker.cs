@@ -33,8 +33,29 @@ internal class BulkCopyWorker
         PageWriter? writer = null;
         try
         {
-            reader = await PageReader.CreateAsync(_log, ctx.Worker, _pageSize, _workerId, _ct);
-            writer = await PageWriter.CreateAsync(_log, ctx.Worker, _pageSize, _workerId, _ct);
+            try
+            {
+                reader = await PageReader.CreateAsync(_log, ctx.Worker, _pageSize, _workerId, _ct);
+                writer = await PageWriter.CreateAsync(_log, ctx.Worker, _pageSize, _workerId, _ct);
+            }
+            catch (OperationCanceledException)
+            {
+                ctx.Counters.WorkerErrors.Add(TaskResult.Canceled);
+                ctx.PartitionPool.Writer.TryComplete();
+                return;
+            }
+            catch (Exception ex)
+            {
+                // Reader/writer construction failures (e.g., source/target
+                // session auth failure) leave the worker with no way to do
+                // any work. Treat as fatal so the job is marked Failed
+                // instead of silently completing with 0 rows copied.
+                _log.WriteLine($"[W{_workerId}] FATAL: worker init failed: {ex.GetType().Name}: {ex.Message}", LogType.Error);
+                Interlocked.Exchange(ref ctx.Counters.FatalErrorFlag, 1);
+                ctx.Counters.WorkerErrors.Add(TaskResult.Abort);
+                ctx.PartitionPool.Writer.TryComplete();
+                return;
+            }
 
             while (!_ct.IsCancellationRequested
                 && Volatile.Read(ref ctx.Counters.FatalErrorFlag) == 0
@@ -103,6 +124,23 @@ internal class BulkCopyWorker
                     ctx.Tracker.UpdateMigrationUnit();
                 }
             }
+        }
+        catch (OperationCanceledException)
+        {
+            // Cancellation propagated out of the loop body itself
+            // (e.g. while awaiting partition pool). Record graceful exit.
+            ctx.Counters.WorkerErrors.Add(TaskResult.Canceled);
+            ctx.PartitionPool.Writer.TryComplete();
+        }
+        catch (Exception ex)
+        {
+            // Backstop for any exception that escapes the per-partition
+            // try/catch above. Without this, a worker task could fault
+            // silently and DetermineOutcome would still return Success.
+            _log.WriteLine($"[W{_workerId}] FATAL: unhandled worker exception: {ex.GetType().Name}: {ex.Message}", LogType.Error);
+            Interlocked.Exchange(ref ctx.Counters.FatalErrorFlag, 1);
+            ctx.Counters.WorkerErrors.Add(TaskResult.Abort);
+            ctx.PartitionPool.Writer.TryComplete();
         }
         finally
         {
