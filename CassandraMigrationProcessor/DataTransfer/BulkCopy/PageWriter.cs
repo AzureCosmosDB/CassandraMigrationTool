@@ -5,6 +5,7 @@ using CassandraMigrationProcessor.Models;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -28,22 +29,60 @@ internal class PageWriter : IDisposable
     private const int MaxRowRetries = 5;
     private const int RetryDelayMs = 500;
 
-    public PageWriter(MigrationLog log, WorkerConfig config, int pageSize, int workerId, CancellationToken cancellationToken)
+    private PageWriter(MigrationLog log, ISession targetSession, PreparedStatement preparedInsert,
+        int[] bindOrderToSourceIndex, int pageSize, int workerId, CancellationToken cancellationToken)
     {
         _log = log;
         _ct = cancellationToken;
         _workerId = workerId;
         _pageSize = pageSize;
-        _targetSession = CassandraClientFactory.CreateTargetSession(log, config.TargetConnection, "");
-        var (ps, bindOrder) = CassandraQueries.PrepareInsert(_targetSession, config.Context.TargetKeyspaceName, config.Context.TargetTableName, config.Columns);
-        _preparedInsert = ps;
+        _targetSession = targetSession;
+        _preparedInsert = preparedInsert;
+        _bindOrderToSourceIndex = bindOrderToSourceIndex;
+    }
+
+    /// <summary>
+    /// Async factory. Creates the target session, prepares the insert
+    /// statement, and registers dynamic UDT mappings against the target
+    /// using the source keyspace's UDT definitions — those are the shapes
+    /// the reader produces and what the target needs to be able to bind.
+    /// Source and target UDTs are identical because
+    /// <see cref="SchemaManager.SyncSchemaAsync"/> replicated them.
+    /// </summary>
+    public static async Task<PageWriter> CreateAsync(MigrationLog log, WorkerConfig config, int pageSize, int workerId, CancellationToken cancellationToken)
+    {
+        var targetSession = CassandraClientFactory.CreateTargetSession(log, config.TargetConnection, "");
+        var (ps, bindOrder) = await CassandraQueries.PrepareInsertAsync(
+            targetSession, config.Context.TargetKeyspaceName, config.Context.TargetTableName, config.Columns);
 
         var sourceIndexByName = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         for (int i = 0; i < config.Columns.Count; i++)
             sourceIndexByName[config.Columns[i].Name] = i;
-        _bindOrderToSourceIndex = new int[bindOrder.Count];
+        var bindOrderToSourceIndex = new int[bindOrder.Count];
         for (int i = 0; i < bindOrder.Count; i++)
-            _bindOrderToSourceIndex[i] = sourceIndexByName[bindOrder[i]];
+            bindOrderToSourceIndex[i] = sourceIndexByName[bindOrder[i]];
+
+        var writer = new PageWriter(log, targetSession, ps, bindOrderToSourceIndex, pageSize, workerId, cancellationToken);
+
+        ISession? sourceSession = null;
+        try
+        {
+            sourceSession = CassandraClientFactory.CreateSourceSession(log, config.SourceConnection, config.Context.KeyspaceName);
+            var allUdts = await SchemaManager.GetUserDefinedTypesAsync(sourceSession, config.Context.KeyspaceName);
+            var requiredUdts = SchemaManager.FilterUdtsReferencedByTable(
+                allUdts, config.Columns.Select(c => c.Type));
+            await DynamicUdtRegistrar.RegisterAsync(targetSession, config.Context.TargetKeyspaceName, requiredUdts);
+        }
+        catch (Exception ex)
+        {
+            log.WriteLine($"[W{workerId}] UDT mapping registration on target failed: {ex.Message}", LogType.Warning);
+        }
+        finally
+        {
+            if (sourceSession != null)
+                MigrationUtilities.SafeDispose(sourceSession, "PageWriter UDT discovery session");
+        }
+        return writer;
     }
 
     public void Dispose() => MigrationUtilities.SafeDispose(_targetSession, "PageWriter target session");

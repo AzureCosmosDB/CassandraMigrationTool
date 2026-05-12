@@ -363,21 +363,6 @@ public static class CassandraClientFactory
     }
 
     /// <summary>
-    /// Create target session from a Job's properties (sync).
-    /// If target password is empty, tries ARM auto-discovery:
-    /// 1. For MI clusters with authenticationMethod=None → no credentials needed
-    /// 2. For Cosmos DB Cassandra accounts → fetch keys via listKeys ARM API
-    /// Falls back to no-auth connection if ARM discovery fails.
-    /// </summary>
-    public static ISession CreateTargetSession(
-        MigrationLog MigrationLog, Job job, string keyspace)
-    {
-        // Sync required: constructor context (TableMigrationEngine)
-        return CreateTargetSessionAsync(MigrationLog, job, keyspace)
-            .GetAwaiter().GetResult();
-    }
-
-    /// <summary>
     /// Create source session from ConnectionOptions.
     /// </summary>
     public static ISession CreateSourceSession(
