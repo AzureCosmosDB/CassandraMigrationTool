@@ -77,6 +77,19 @@ public class Job
     public bool DropTargetTableBeforeStart { get; set; }
 
     /// <summary>
+    /// When true, the migration tool does NOT create or modify schema
+    /// (keyspaces, tables, or User-Defined Types) on the target. An
+    /// identical schema is expected to have been provisioned on the
+    /// target before the job starts. Use this when target schema
+    /// management is owned by another process or when it must be
+    /// customised (e.g. different replication settings, table options,
+    /// or a subset of UDTs) and the tool's automatic replication is
+    /// not appropriate. Default is false (the tool replicates schema
+    /// automatically — see <see cref="CassandraDriver.SchemaManager.SyncSchemaAsync"/>).
+    /// </summary>
+    public bool SkipSchemaSync { get; set; }
+
+    /// <summary>
     /// Minimum log level. Default is Info.
     /// </summary>
     public LogType LogLevel { get; set; } = LogType.Info;

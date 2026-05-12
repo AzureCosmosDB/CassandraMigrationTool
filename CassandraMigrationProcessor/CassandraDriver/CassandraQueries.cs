@@ -207,17 +207,6 @@ public static class CassandraQueries
         return (ps, bindOrder);
     }
 
-    /// <summary>
-    /// Build a prepared write statement for a table.
-    /// </summary>
-    // Sync required: called from constructor (PageWriter)
-    public static (PreparedStatement Ps, List<string> ColumnNames)
-        PrepareInsert(ISession session, string keyspace, string table,
-            List<(string Name, string Type, string Kind, string ClusteringOrder, int Position)> columns)
-    {
-        return PrepareInsertAsync(session, keyspace, table, columns).GetAwaiter().GetResult();
-    }
-
     private static bool IsCounterColumn(
         (string Name, string Type, string Kind, string ClusteringOrder, int Position) c)
     {

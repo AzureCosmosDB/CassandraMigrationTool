@@ -31,21 +31,42 @@ public class TableMigrationEngine : IDisposable
 
     public ChangeFeedManager ChangeFeed => _changeFeedManager;
 
-    public TableMigrationEngine(MigrationLog log, AppSettings config, Job job,
-        TokenRefreshManager? tokenRefreshManager = null,
-        CancellationToken externalToken = default)
+    private TableMigrationEngine(MigrationLog log, AppSettings config, Job job,
+        ISession source, ISession target,
+        TokenRefreshManager? tokenRefreshManager,
+        CancellationToken externalToken)
     {
-        _migrationLog = log ?? throw new ArgumentNullException(nameof(log));
-        _migrationJob = job ?? throw new ArgumentNullException(nameof(job));
-        _pipelineConfig = PipelineConfig.Resolve(job, config ?? throw new ArgumentNullException(nameof(config)));
+        _migrationLog = log;
+        _migrationJob = job;
+        _pipelineConfig = PipelineConfig.Resolve(job, config);
         _cts = externalToken.CanBeCanceled
             ? CancellationTokenSource.CreateLinkedTokenSource(externalToken)
             : new CancellationTokenSource();
-        _source = CassandraClientFactory.CreateSourceSession(log, job, string.Empty, tokenRefreshManager);
-        _target = job.IsSimulatedRun
-            ? new NullSession()
-            : CassandraClientFactory.CreateTargetSession(log, job, string.Empty);
+        _source = source;
+        _target = target;
         _changeFeedManager = new ChangeFeedManager(log, job, config, _target, tokenRefreshManager);
+    }
+
+    /// <summary>
+    /// Async factory. Performs the source/target session establishment —
+    /// target session creation can require an ARM credential-discovery
+    /// round-trip, which is genuinely asynchronous and must not be blocked
+    /// on with sync-over-async.
+    /// </summary>
+    public static async Task<TableMigrationEngine> CreateAsync(
+        MigrationLog log, AppSettings config, Job job,
+        TokenRefreshManager? tokenRefreshManager = null,
+        CancellationToken externalToken = default)
+    {
+        if (log == null) throw new ArgumentNullException(nameof(log));
+        if (job == null) throw new ArgumentNullException(nameof(job));
+        if (config == null) throw new ArgumentNullException(nameof(config));
+
+        var source = CassandraClientFactory.CreateSourceSession(log, job, string.Empty, tokenRefreshManager);
+        ISession target = job.IsSimulatedRun
+            ? new NullSession()
+            : await CassandraClientFactory.CreateTargetSessionAsync(log, job, string.Empty);
+        return new TableMigrationEngine(log, config, job, source, target, tokenRefreshManager, externalToken);
     }
 
     // ── Lifecycle ──
