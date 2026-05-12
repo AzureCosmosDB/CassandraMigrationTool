@@ -102,7 +102,7 @@ public class MigrationWorker
         CancellationToken cancellationToken)
     {
         _log.WriteLine("All tables copied. Resuming change feed processors.", LogType.Info);
-        _activeProcessor = new TableMigrationEngine(_log, config, job, _tokenRefreshManager);
+        _activeProcessor = await TableMigrationEngine.CreateAsync(_log, config, job, _tokenRefreshManager);
 
         foreach (var mub in job.Tables)
         {
@@ -234,7 +234,7 @@ public class MigrationWorker
     private async Task RunCopyForUnitAsync(Job job, AppSettings config,
         TableMigration mu, CancellationToken ct)
     {
-        var processor = new TableMigrationEngine(_log, config, job, _tokenRefreshManager, ct);
+        var processor = await TableMigrationEngine.CreateAsync(_log, config, job, _tokenRefreshManager, ct);
         _activeProcessors[mu.Id] = processor;
         ct.ThrowIfCancellationRequested();
 

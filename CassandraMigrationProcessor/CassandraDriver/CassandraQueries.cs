@@ -169,15 +169,4 @@ public static class CassandraQueries
         return (ps, columns.Select(c => c.Name).ToList());
     }
 
-    /// <summary>
-    /// Build a prepared INSERT statement for a table.
-    /// </summary>
-    // Sync required: called from constructor (PageWriter)
-    public static (PreparedStatement Ps, List<string> ColumnNames)
-        PrepareInsert(ISession session, string keyspace, string table,
-            List<(string Name, string Type, string Kind, string ClusteringOrder, int Position)> columns)
-    {
-        return PrepareInsertAsync(session, keyspace, table, columns).GetAwaiter().GetResult();
-    }
-
 }

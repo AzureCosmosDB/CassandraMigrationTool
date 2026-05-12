@@ -27,7 +27,7 @@ internal class PageReader : IDisposable
     private const int MaxReadRetries = 3;
     private const int RetryDelayMs = 5000;
 
-    public PageReader(MigrationLog log,
+    private PageReader(MigrationLog log,
         WorkerConfig config, int pageSize,
         int workerId,
         CancellationToken cancellationToken)
@@ -38,24 +38,32 @@ internal class PageReader : IDisposable
         _columnNames = config.Columns.Select(c => c.Name).ToList();
         _pageSize = pageSize;
         _sourceSession = CassandraClientFactory.CreateSourceSession(log, config.SourceConnection, config.Context.KeyspaceName);
-        // Register dynamic UDT mappings so that UDT-typed columns are decoded
-        // into real CLR instances (instead of raw byte[]) and can be bound
-        // back into the target's prepared insert without serialization errors.
-        // Only the UDTs actually referenced by this table's columns are
-        // registered.
+    }
+
+    /// <summary>
+    /// Async factory. Creates the source session, then registers dynamic UDT
+    /// mappings so UDT-typed columns decode into real CLR instances (instead
+    /// of raw byte[]) and can be bound back into the target's prepared insert
+    /// without serialization errors. Only the UDTs actually referenced by
+    /// this table's columns are registered.
+    /// </summary>
+    public static async Task<PageReader> CreateAsync(MigrationLog log,
+        WorkerConfig config, int pageSize, int workerId,
+        CancellationToken cancellationToken)
+    {
+        var reader = new PageReader(log, config, pageSize, workerId, cancellationToken);
         try
         {
-            var allUdts = SchemaManager.GetUserDefinedTypesAsync(_sourceSession, config.Context.KeyspaceName)
-                .GetAwaiter().GetResult();
+            var allUdts = await SchemaManager.GetUserDefinedTypesAsync(reader._sourceSession, config.Context.KeyspaceName);
             var requiredUdts = SchemaManager.FilterUdtsReferencedByTable(
                 allUdts, config.Columns.Select(c => c.Type));
-            DynamicUdtRegistrar.RegisterAsync(_sourceSession, config.Context.KeyspaceName, requiredUdts)
-                .GetAwaiter().GetResult();
+            await DynamicUdtRegistrar.RegisterAsync(reader._sourceSession, config.Context.KeyspaceName, requiredUdts);
         }
         catch (Exception ex)
         {
-            _log.WriteLine($"[W{_workerId}] UDT mapping registration on source failed: {ex.Message}", LogType.Warning);
+            log.WriteLine($"[W{workerId}] UDT mapping registration on source failed: {ex.Message}", LogType.Warning);
         }
+        return reader;
     }
 
     public void Dispose() => MigrationUtilities.SafeDispose(_sourceSession, "PageReader source session");

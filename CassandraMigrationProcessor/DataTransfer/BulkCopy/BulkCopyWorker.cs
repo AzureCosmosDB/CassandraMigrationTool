@@ -33,8 +33,8 @@ internal class BulkCopyWorker
         PageWriter? writer = null;
         try
         {
-            reader = new PageReader(_log, ctx.Worker, _pageSize, _workerId, _ct);
-            writer = new PageWriter(_log, ctx.Worker, _pageSize, _workerId, _ct);
+            reader = await PageReader.CreateAsync(_log, ctx.Worker, _pageSize, _workerId, _ct);
+            writer = await PageWriter.CreateAsync(_log, ctx.Worker, _pageSize, _workerId, _ct);
 
             while (!_ct.IsCancellationRequested
                 && Volatile.Read(ref ctx.Counters.FatalErrorFlag) == 0
