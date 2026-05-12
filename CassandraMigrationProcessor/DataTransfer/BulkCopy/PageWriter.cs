@@ -20,6 +20,7 @@ internal class PageWriter : IDisposable
     private readonly CancellationToken _ct;
     private readonly ISession _targetSession;
     private readonly PreparedStatement _preparedInsert;
+    private readonly int[] _bindOrderToSourceIndex;
     private readonly int _workerId;
     private readonly int _pageSize;
 
@@ -34,11 +35,25 @@ internal class PageWriter : IDisposable
         _workerId = workerId;
         _pageSize = pageSize;
         _targetSession = CassandraClientFactory.CreateTargetSession(log, config.TargetConnection, "");
-        var (ps, _) = CassandraQueries.PrepareInsert(_targetSession, config.Context.TargetKeyspaceName, config.Context.TargetTableName, config.Columns);
+        var (ps, bindOrder) = CassandraQueries.PrepareInsert(_targetSession, config.Context.TargetKeyspaceName, config.Context.TargetTableName, config.Columns);
         _preparedInsert = ps;
+
+        var sourceIndexByName = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        for (int i = 0; i < config.Columns.Count; i++)
+            sourceIndexByName[config.Columns[i].Name] = i;
+        _bindOrderToSourceIndex = new int[bindOrder.Count];
+        for (int i = 0; i < bindOrder.Count; i++)
+            _bindOrderToSourceIndex[i] = sourceIndexByName[bindOrder[i]];
     }
 
     public void Dispose() => MigrationUtilities.SafeDispose(_targetSession, "PageWriter target session");
+
+    private static bool IsIdentityMap(int[] map)
+    {
+        for (int i = 0; i < map.Length; i++)
+            if (map[i] != i) return false;
+        return true;
+    }
 
     private class WriteCounters
     {
@@ -115,7 +130,21 @@ internal class PageWriter : IDisposable
                 || Volatile.Read(ref ctx.Counters.FatalErrorFlag) != 0)
                 break;
 
-            var bound = _preparedInsert.Bind(rows[i]);
+            var sourceRow = rows[i];
+            object[] bindValues;
+            if (_bindOrderToSourceIndex.Length == sourceRow.Length
+                && IsIdentityMap(_bindOrderToSourceIndex))
+            {
+                bindValues = sourceRow;
+            }
+            else
+            {
+                bindValues = new object[_bindOrderToSourceIndex.Length];
+                for (int b = 0; b < _bindOrderToSourceIndex.Length; b++)
+                    bindValues[b] = sourceRow[_bindOrderToSourceIndex[b]];
+            }
+
+            var bound = _preparedInsert.Bind(bindValues);
             bound.SetReadTimeoutMillis(WriteTimeoutMs);
             bound.SetConsistencyLevel(ConsistencyLevel.LocalOne);
 

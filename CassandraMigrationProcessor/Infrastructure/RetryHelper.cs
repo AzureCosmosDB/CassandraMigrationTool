@@ -53,6 +53,15 @@ public class RetryHelper
             {
                 attempt++;
                 int currentBackoffSeconds = delay / 1000;
+                MigrationLog.WriteLine(
+                    $"Retry attempt {attempt} caught {ex.GetType().FullName}: {ex.Message}",
+                    LogType.Error);
+                if (ex.StackTrace != null)
+                    MigrationLog.WriteLine($"  at {ex.StackTrace}", LogType.Error);
+                if (ex.InnerException != null)
+                    MigrationLog.WriteLine(
+                        $"  Inner: {ex.InnerException.GetType().FullName}: {ex.InnerException.Message}",
+                        LogType.Error);
                 var shouldRetry = await exceptionHandler(ex, attempt, currentBackoffSeconds);
                 if (shouldRetry == TaskResult.Canceled)
                     return TaskResult.Canceled;
