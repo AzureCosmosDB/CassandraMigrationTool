@@ -901,6 +901,7 @@ else if (@_showLogBackupFile)
             // Add new units that don’t exist in existingUnits
             // foreach (var mu in migrationUnits)
             // {
+            //     if (!CurrentlyLoadedMigrationJob.Tables.Any(x => x.DatabaseName == mu.DatabaseName && x.CollectionName == mu.CollectionName))
             //     {
             //         MigrationContext.SaveUnit(mu,false);
             //         //CurrentlyLoadedMigrationJob.Tables.Add(mu.GetBasic());
@@ -1094,3 +1095,4 @@ else if (@_showLogBackupFile)
         PageSize="@_config.LogPageSize"
         OnClose="ClosePaginatedDownloadDialog" />
 }
+
