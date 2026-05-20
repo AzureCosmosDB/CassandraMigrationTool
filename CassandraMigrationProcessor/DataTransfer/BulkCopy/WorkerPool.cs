@@ -53,12 +53,10 @@ internal class WorkerPool : IDisposable
         }
         finally
         {
-            foreach (var t in _workers)
+            foreach (var t in _workers.Where(t => t.IsFaulted && t.Exception != null))
             {
-                if (!t.IsFaulted || t.Exception == null) continue;
-                foreach (var inner in t.Exception.Flatten().InnerExceptions)
+                foreach (var inner in t.Exception!.Flatten().InnerExceptions.Where(inner => inner is not OperationCanceledException))
                 {
-                    if (inner is OperationCanceledException) continue;
                     _log.WriteLine(
                         $"Worker faulted: {inner.GetType().FullName}: {inner.Message}",
                         LogType.Error);
