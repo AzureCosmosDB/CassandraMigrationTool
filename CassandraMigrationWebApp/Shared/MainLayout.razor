@@ -1,6 +1,7 @@
 ﻿@inherits LayoutComponentBase
 @inject AuthenticationService AuthService
 @inject NavigationManager Navigation
+@using System.Reflection
 
 <AuthenticationGuard>
     <PageTitle>Cassandra Migration Utility</PageTitle>
@@ -20,7 +21,7 @@
                 <AuthorizeView>
                     <Authorized>
                         <div class="d-flex align-items-center gap-2">
-                            <span class="small">v0.9.7</span>
+                            <span class="small">@DisplayVersion</span>
                             <button class="btn btn-sm btn-outline-secondary" @onclick="@(() => Navigation.NavigateTo("/change-password"))">
                                 <i class="bi bi-key"></i>
                             </button>
@@ -30,7 +31,7 @@
                         </div>
                     </Authorized>
                     <NotAuthorized>
-                        <span class="small">v0.9.7</span>
+                        <span class="small">@DisplayVersion</span>
                     </NotAuthorized>
                 </AuthorizeView>
             </div>
@@ -43,6 +44,28 @@
 </AuthenticationGuard>
 
 @code {
+    // Single source of truth: derived from the assembly's
+    // <Version>/<AssemblyInformationalVersion> at build time, so future
+    // releases update by bumping the csproj only.
+    private static readonly string DisplayVersion = ResolveDisplayVersion();
+
+    private static string ResolveDisplayVersion()
+    {
+        var assembly = typeof(MainLayout).Assembly;
+        var info = assembly
+            .GetCustomAttribute<AssemblyInformationalVersionAttribute>()
+            ?.InformationalVersion;
+        if (!string.IsNullOrWhiteSpace(info))
+        {
+            // Strip any '+<git-sha>' build metadata SemVer suffix.
+            int plus = info.IndexOf('+');
+            if (plus > 0) info = info.Substring(0, plus);
+            return "v" + info;
+        }
+        var v = assembly.GetName().Version;
+        return v != null ? $"v{v.Major}.{v.Minor}.{v.Build}" : "v?";
+    }
+
     private async Task HandleLogout()
     {
         await AuthService.LogoutAsync();
