@@ -22,14 +22,14 @@ internal class PageReader : IDisposable
     private readonly int _workerId;
     private readonly List<string> _columnNames;
     private readonly int _pageSize;
+    private readonly int _maxReadRetries;
 
     private const int ReadTimeoutMs = 60_000;
-    private const int MaxReadRetries = 3;
     private const int RetryDelayMs = 5000;
 
     private PageReader(MigrationLog log,
         WorkerConfig config, int pageSize,
-        int workerId,
+        int workerId, int maxReadRetries,
         CancellationToken cancellationToken)
     {
         _log = log;
@@ -37,6 +37,7 @@ internal class PageReader : IDisposable
         _workerId = workerId;
         _columnNames = config.Columns.Select(c => c.Name).ToList();
         _pageSize = pageSize;
+        _maxReadRetries = maxReadRetries;
         _sourceSession = CassandraClientFactory.CreateSourceSession(log, config.SourceConnection, config.Context.KeyspaceName);
     }
 
@@ -48,10 +49,10 @@ internal class PageReader : IDisposable
     /// this table's columns are registered.
     /// </summary>
     public static async Task<PageReader> CreateAsync(MigrationLog log,
-        WorkerConfig config, int pageSize, int workerId,
+        WorkerConfig config, int pageSize, int workerId, int maxReadRetries,
         CancellationToken cancellationToken)
     {
-        var reader = new PageReader(log, config, pageSize, workerId, cancellationToken);
+        var reader = new PageReader(log, config, pageSize, workerId, maxReadRetries, cancellationToken);
         try
         {
             var allUdts = await SchemaManager.GetUserDefinedTypesAsync(reader._sourceSession, config.Context.KeyspaceName);
@@ -88,17 +89,17 @@ internal class PageReader : IDisposable
             stmt.SetPagingState(partition.LastPagingState);
 
         RowSet? resultSet = null;
-        for (int attempt = 1; attempt <= MaxReadRetries; attempt++)
+        for (int attempt = 1; attempt <= _maxReadRetries; attempt++)
         {
             try
             {
                 resultSet = await _sourceSession.ExecuteAsync(stmt);
                 break;
             }
-            catch (System.Exception ex) when (attempt < MaxReadRetries
+            catch (System.Exception ex) when (attempt < _maxReadRetries
                 && ExceptionClassifier.IsTransient(ex))
             {
-                _log.WriteLine($"[W{_workerId}] Read timeout (attempt {attempt}/{MaxReadRetries})",
+                _log.WriteLine($"[W{_workerId}] Read timeout (attempt {attempt}/{_maxReadRetries})",
                     LogType.Warning);
                 await Task.Delay(attempt * RetryDelayMs, _ct);
             }

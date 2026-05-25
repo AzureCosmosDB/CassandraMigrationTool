@@ -40,6 +40,8 @@ internal class WorkerExecutor
     {
         int workerCount = _pipelineConfig.WorkerCount;
         int pageSize = _pipelineConfig.PageSize;
+        int maxReadRetries = _pipelineConfig.MaxReadRetries;
+        int maxWriteRetries = _pipelineConfig.MaxWriteRetries;
         var ctx0 = request.Context;
         long priorCopied = request.TableMigration.CopyRowsCopied;
 
@@ -56,9 +58,9 @@ internal class WorkerExecutor
             new PipelineCounters(),
             tracker);
 
-        _log.WriteLine($"Launching {workerCount} workers for {ctx0.KeyspaceName}.{ctx0.TableName} ({seed.PendingCount} feed ranges, page size={pageSize})...", LogType.Info);
+        _log.WriteLine($"Launching {workerCount} workers for {ctx0.KeyspaceName}.{ctx0.TableName} ({seed.PendingCount} feed ranges, page size={pageSize}, max read retries={maxReadRetries}, max write retries={maxWriteRetries})...", LogType.Info);
         using var pool = new WorkerPool(_log, workerCount);
-        pool.Start(workerId => new BulkCopyWorker(_log, _ct, workerId, pageSize).RunAsync(ctx));
+        pool.Start(workerId => new BulkCopyWorker(_log, _ct, workerId, pageSize, maxReadRetries, maxWriteRetries).RunAsync(ctx));
         await pool.WaitForCompletionAsync();
         ctx.PartitionPool.Writer.TryComplete();
 
