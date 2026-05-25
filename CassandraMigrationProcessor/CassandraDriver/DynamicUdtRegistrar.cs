@@ -116,7 +116,12 @@ internal static class DynamicUdtRegistrar
 
         for (int i = 0; i < udt.FieldNames.Count; i++)
         {
-            var clrType = MapCqlTypeToClr(udt.FieldTypes[i], known);
+            // UDT fields are individually nullable in CQL. Map scalar value
+            // types to Nullable<T> so a null source cell deserializes as
+            // null on the generated property rather than as default(T) —
+            // otherwise an unset int field would silently materialize as 0
+            // and be re-bound as 0 on the target write.
+            var clrType = MapCqlTypeToClr(udt.FieldTypes[i], known, nullable: true);
             DefineAutoProperty(typeBuilder, udt.FieldNames[i], clrType);
         }
 
@@ -156,7 +161,16 @@ internal static class DynamicUdtRegistrar
     /// <see cref="object"/>, which the driver accepts for collection-of-UDT
     /// values that are bound back positionally.
     /// </summary>
-    private static Type MapCqlTypeToClr(string cqlType, IReadOnlyDictionary<string, Type> known)
+    /// <param name="cqlType">The CQL type string.</param>
+    /// <param name="known">Previously-generated UDT CLR types in this batch.</param>
+    /// <param name="nullable">
+    /// When true, scalar CQL value types (int, bigint, boolean, …) are
+    /// returned as <see cref="Nullable{T}"/> so a null source cell can
+    /// deserialize as null instead of <c>default(T)</c>. Reference types
+    /// and generated UDT class types are unaffected.
+    /// </param>
+    private static Type MapCqlTypeToClr(string cqlType, IReadOnlyDictionary<string, Type> known,
+        bool nullable = false)
     {
         var t = cqlType.Trim();
 
@@ -179,11 +193,14 @@ internal static class DynamicUdtRegistrar
         {
             var inner = t.Substring(6, t.Length - 7);
             var parts = SplitTopLevel(inner);
+            // Tuple element nullability is independent of the UDT field's
+            // outer nullability; keep tuple elements non-nullable to match
+            // the driver's current System.Tuple<...> binding semantics.
             var argTypes = parts.Select(p => MapCqlTypeToClr(p, known)).ToArray();
             return BuildSystemTupleType(argTypes);
         }
 
-        return t.ToLowerInvariant() switch
+        Type baseType = t.ToLowerInvariant() switch
         {
             "ascii" or "text" or "varchar" => typeof(string),
             "inet" => typeof(System.Net.IPAddress),
@@ -204,6 +221,10 @@ internal static class DynamicUdtRegistrar
             "varint" => typeof(System.Numerics.BigInteger),
             _ => typeof(object)
         };
+
+        if (nullable && baseType.IsValueType)
+            return typeof(Nullable<>).MakeGenericType(baseType);
+        return baseType;
     }
 
     private static bool StartsWithCi(string s, string prefix)
