@@ -17,13 +17,18 @@ internal class BulkCopyWorker
     private readonly CancellationToken _ct;
     private readonly int _workerId;
     private readonly int _pageSize;
+    private readonly int _maxReadRetries;
+    private readonly int _maxWriteRetries;
 
-    public BulkCopyWorker(MigrationLog log, CancellationToken cancellationToken, int workerId, int pageSize)
+    public BulkCopyWorker(MigrationLog log, CancellationToken cancellationToken, int workerId,
+        int pageSize, int maxReadRetries, int maxWriteRetries)
     {
         _log = log ?? throw new ArgumentNullException(nameof(log));
         _ct = cancellationToken;
         _workerId = workerId;
         _pageSize = pageSize;
+        _maxReadRetries = maxReadRetries;
+        _maxWriteRetries = maxWriteRetries;
     }
 
     public async Task RunAsync(PipelineContext ctx)
@@ -35,8 +40,8 @@ internal class BulkCopyWorker
         {
             try
             {
-                reader = await PageReader.CreateAsync(_log, ctx.Worker, _pageSize, _workerId, _ct);
-                writer = await PageWriter.CreateAsync(_log, ctx.Worker, _pageSize, _workerId, _ct);
+                reader = await PageReader.CreateAsync(_log, ctx.Worker, _pageSize, _workerId, _maxReadRetries, _ct);
+                writer = await PageWriter.CreateAsync(_log, ctx.Worker, _pageSize, _workerId, _maxWriteRetries, _ct);
             }
             catch (OperationCanceledException)
             {
