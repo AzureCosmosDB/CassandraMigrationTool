@@ -205,6 +205,7 @@ public class TableMigrationEngine : IDisposable
             if (allChunksSucceeded)
             {
                 tableMigration.BulkCopyEndedOn = DateTime.UtcNow;
+                tableMigration.BulkCopyPhase = BulkCopyPhase.Completed;
                 tableMigration.CopyPercent = 100;
                 tableMigration.CopyComplete = true;
                 TableMigrationMapper.UpdateParentJob(tableMigration);
