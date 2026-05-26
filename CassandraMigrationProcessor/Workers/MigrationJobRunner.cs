@@ -16,7 +16,7 @@ namespace CassandraMigrationProcessor.DataTransfer;
 /// Orchestrates a Cassandra-to-Cassandra migration with table-level
 /// parallelism and optional change-feed replication.
 /// </summary>
-public class MigrationWorker
+public class MigrationJobRunner
 {
     private readonly MigrationLog _log;
     private TableMigrationEngine? _activeProcessor;
@@ -24,7 +24,7 @@ public class MigrationWorker
     private readonly ConcurrentDictionary<string, TableMigrationEngine> _activeProcessors = new();
     private readonly TokenRefreshManager _tokenRefreshManager;
 
-    public MigrationWorker(MigrationLog migrationLog)
+    public MigrationJobRunner(MigrationLog migrationLog)
     {
         _log = migrationLog;
         _tokenRefreshManager = new TokenRefreshManager(migrationLog);
@@ -194,7 +194,7 @@ public class MigrationWorker
         finally
         {
             _activeProcessors.TryRemove(mu.Id, out var removed);
-            MigrationUtilities.SafeDispose(removed as IDisposable, "MigrationWorker processor");
+            MigrationUtilities.SafeDispose(removed as IDisposable, "MigrationJobRunner processor");
         }
     }
 

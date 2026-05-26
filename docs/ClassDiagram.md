@@ -8,7 +8,7 @@ Program.cs (DI setup)
  ├─► ICassandraSessionFactory → CassandraSessionFactory [DI singleton]
  ├─► JobManager(IConfiguration, MigrationContextService)
  │    ├─► MigrationLog()                         [creates per job]
- │    ├─► MigrationWorker(MigrationLog)          [creates per job]
+ │    ├─► MigrationJobRunner(MigrationLog)          [creates per job]
  │    │    └─► TableMigrationEngine(log, sourceSession, config, job, worker)
  │    │         │
  │    │         ├─► CopyProgressTracker(log, keyspace, table, workerCount, ...)
@@ -111,7 +111,7 @@ JobIndex
 
 ```
 JobManager.StartMigration(jobId)
-  └─► MigrationWorker.ExecuteAsync(job)
+  └─► MigrationJobRunner.ExecuteAsync(job)
        └─► [parallel per table] TableMigrationEngine.StartProcessAsync(unitId)
             └─► ProcessChunkAsync(tableMigration, chunkIndex, context)
                  ├── CassandraQueries.GetRowCountAsync()
