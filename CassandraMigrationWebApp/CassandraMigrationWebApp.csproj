@@ -7,7 +7,6 @@
     <RootNamespace>CassandraMigrationWebApp</RootNamespace>
     <UserSecretsId>cassandra-migration-tool</UserSecretsId>
     <DockerDefaultTargetOS>Linux</DockerDefaultTargetOS>
-    <Version>1.1.0</Version>
     <NoWarn>CS8602;CS8603;CS8604;CS8618;CS1998;CS0219;CS0618;CS0105;CS8600;CS8625;CS8619;CS0168;CS8629;CS0472</NoWarn>
   </PropertyGroup>
 
