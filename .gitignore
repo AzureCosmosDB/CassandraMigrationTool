@@ -62,24 +62,5 @@ AutoStartLog.txt
 app.keyfile
 app.password
 
-## Test screenshots and scripts (not source code)
-SESSION_LOG.md
-bb2-*.png
-bb2-*.js
-bb3-*.png
-bb3-*.js
-bb3v2-*.png
-bb3v2-*.js
-bb4-*.png
-bb4-*.js
-
-## Legacy Mongo migration code (not part of Cassandra tool)
-OnPremise/
-SchemaMigration/
-WebApp/
-ResumeTokenProbeExe/
-ACA/
-CollectionInfoFormat.JSON
-
 ## 1ES inventory
 .inventory/
