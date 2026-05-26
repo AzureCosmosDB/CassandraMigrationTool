@@ -20,7 +20,7 @@
                 <AuthorizeView>
                     <Authorized>
                         <div class="d-flex align-items-center gap-2">
-                            <span class="small">v0.9.7</span>
+                            <span class="small">@AppVersion.Display</span>
                             <button class="btn btn-sm btn-outline-secondary" @onclick="@(() => Navigation.NavigateTo("/change-password"))">
                                 <i class="bi bi-key"></i>
                             </button>
@@ -30,7 +30,7 @@
                         </div>
                     </Authorized>
                     <NotAuthorized>
-                        <span class="small">v0.9.7</span>
+                        <span class="small">@AppVersion.Display</span>
                     </NotAuthorized>
                 </AuthorizeView>
             </div>
