@@ -24,18 +24,20 @@ internal class PageWriter : IDisposable
     private readonly int[] _bindOrderToSourceIndex;
     private readonly int _workerId;
     private readonly int _pageSize;
+    private readonly int _maxWriteRetries;
 
     private const int WriteTimeoutMs = 60_000;
-    private const int MaxRowRetries = 5;
     private const int RetryDelayMs = 500;
 
     private PageWriter(MigrationLog log, ISession targetSession, PreparedStatement preparedInsert,
-        int[] bindOrderToSourceIndex, int pageSize, int workerId, CancellationToken cancellationToken)
+        int[] bindOrderToSourceIndex, int pageSize, int workerId, int maxWriteRetries,
+        CancellationToken cancellationToken)
     {
         _log = log;
         _ct = cancellationToken;
         _workerId = workerId;
         _pageSize = pageSize;
+        _maxWriteRetries = maxWriteRetries;
         _targetSession = targetSession;
         _preparedInsert = preparedInsert;
         _bindOrderToSourceIndex = bindOrderToSourceIndex;
@@ -49,7 +51,7 @@ internal class PageWriter : IDisposable
     /// Source and target UDTs are identical because
     /// <see cref="SchemaManager.SyncSchemaAsync"/> replicated them.
     /// </summary>
-    public static async Task<PageWriter> CreateAsync(MigrationLog log, WorkerConfig config, int pageSize, int workerId, CancellationToken cancellationToken)
+    public static async Task<PageWriter> CreateAsync(MigrationLog log, WorkerConfig config, int pageSize, int workerId, int maxWriteRetries, CancellationToken cancellationToken)
     {
         var targetSession = CassandraClientFactory.CreateTargetSession(log, config.TargetConnection, "");
         var (ps, bindOrder) = await CassandraQueries.PrepareInsertAsync(
@@ -62,7 +64,7 @@ internal class PageWriter : IDisposable
         for (int i = 0; i < bindOrder.Count; i++)
             bindOrderToSourceIndex[i] = sourceIndexByName[bindOrder[i]];
 
-        var writer = new PageWriter(log, targetSession, ps, bindOrderToSourceIndex, pageSize, workerId, cancellationToken);
+        var writer = new PageWriter(log, targetSession, ps, bindOrderToSourceIndex, pageSize, workerId, maxWriteRetries, cancellationToken);
 
         ISession? sourceSession = null;
         try
@@ -103,7 +105,7 @@ internal class PageWriter : IDisposable
 
     private async Task WriteRowAsync(BoundStatement bound, PipelineContext ctx, WriteCounters counters, int rowIndex)
     {
-        for (int attempt = 1; attempt <= MaxRowRetries; attempt++)
+        for (int attempt = 1; attempt <= _maxWriteRetries; attempt++)
         {
             var writeStart = Stopwatch.GetTimestamp();
             try
@@ -125,7 +127,7 @@ internal class PageWriter : IDisposable
                     return;
                 }
 
-                if (ExceptionClassifier.IsTransient(ex) && attempt < MaxRowRetries)
+                if (ExceptionClassifier.IsTransient(ex) && attempt < _maxWriteRetries)
                 {
                     await Task.Delay(RetryDelayMs * attempt);
                     continue; // retry
