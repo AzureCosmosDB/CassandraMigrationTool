@@ -57,6 +57,8 @@ public class TableMigration : TableMigrationSummary
 {
     // ── Bulk Copy State ──
 
+    public BulkCopyPhase BulkCopyPhase { get; set; } = BulkCopyPhase.NotStarted;
+
     public DateTime? BulkCopyStartedOn { get; set; }
     public DateTime? BulkCopyEndedOn { get; set; }
 
