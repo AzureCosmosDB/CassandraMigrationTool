@@ -222,12 +222,6 @@ public class MigrationWorker
         bool shouldDrop = mu.BulkCopyPhase == BulkCopyPhase.NotStarted
                        && job.DropTargetTableBeforeStart;
 
-        if (mu.BulkCopyPhase == BulkCopyPhase.NotStarted)
-        {
-            mu.BulkCopyPhase = BulkCopyPhase.InitializingDestination;
-            MigrationJobContext.Instance.SaveMigrationUnit(mu, true);
-        }
-
         using var targetSession = await CassandraClientFactory.CreateTargetSessionAsync(_log, job, string.Empty);
         var sourceSession = CassandraClientFactory.CreateSourceSession(_log, job, mu.KeyspaceName, _tokenRefreshManager);
         try
@@ -238,6 +232,12 @@ public class MigrationWorker
                 _log.WriteLine($"Dropping target table {mu.KeyspaceName}.{mu.TableName} (DropTargetTableBeforeStart)", LogType.Info);
                 await targetSession.ExecuteAsync(new SimpleStatement(
                     $"DROP TABLE \"{mu.KeyspaceName}\".\"{mu.TableName}\""));
+            }
+
+            if (mu.BulkCopyPhase == BulkCopyPhase.NotStarted)
+            {
+                mu.BulkCopyPhase = BulkCopyPhase.InitializingDestination;
+                MigrationJobContext.Instance.SaveMigrationUnit(mu, true);
             }
 
             bool existed = await SchemaManager.TableExistsAsync(targetSession, mu.KeyspaceName, mu.TableName);
