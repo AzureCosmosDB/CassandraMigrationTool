@@ -13,7 +13,7 @@ using CassandraMigrationProcessor.Context;
 namespace CassandraMigrationWebApp.Service;
 public class JobManager
 {
-    private MigrationWorker? MigrationWorker { get; set; }
+    private MigrationJobRunner? MigrationJobRunner { get; set; }
     private MigrationLog _log;
     private CancellationTokenSource? _migrationCts;
     private string _runningJobId = string.Empty;
@@ -173,14 +173,14 @@ public class JobManager
 
     #endregion
 
-    #region Migration Worker Management
+    #region Migration Job Runner Management
 
     public void StopMigration()
     {
         lock (_stateLock)
         {
             _migrationCts?.Cancel();
-            MigrationWorker?.Stop();
+            MigrationJobRunner?.Stop();
             _runningJobId = string.Empty;
         }
     }
@@ -229,7 +229,7 @@ public class JobManager
             _log = CreateLog();
             _log.Initialize(job.Id);
             _log.SetJob(job);
-            MigrationWorker = new MigrationWorker(_log);
+            MigrationJobRunner = new MigrationJobRunner(_log);
             _migrationCts = new CancellationTokenSource();
             _runningJobId = job.Id;
         }
@@ -273,9 +273,9 @@ public class JobManager
                     MigrationUtilities.LogToFile($"After expand: {job.Tables.Count} units");
                 }
 
-                MigrationUtilities.LogToFile($"Calling MigrationWorker.StartAsync for job {job.Id}");
-                await MigrationWorker.StartAsync(job, config, _migrationCts.Token);
-                MigrationUtilities.LogToFile($"MigrationWorker.StartAsync completed for job {job.Id}");
+                MigrationUtilities.LogToFile($"Calling MigrationJobRunner.StartAsync for job {job.Id}");
+                await MigrationJobRunner.StartAsync(job, config, _migrationCts.Token);
+                MigrationUtilities.LogToFile($"MigrationJobRunner.StartAsync completed for job {job.Id}");
             }
             catch (Exception ex)
             {

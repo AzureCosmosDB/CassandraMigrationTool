@@ -115,7 +115,7 @@ CassandraMigration.sln
 
 | File | Purpose |
 |------|---------|
-| `MigrationWorker.cs` | Per-job worker: creates `TableMigrationEngine`, manages parallel table execution |
+| `MigrationJobRunner.cs` | Per-job worker: creates `TableMigrationEngine`, manages parallel table execution |
 
 ---
 
