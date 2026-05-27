@@ -1,4 +1,5 @@
 using Cassandra;
+using CassandraMigrationProcessor.CassandraDriver;
 using CassandraMigrationProcessor.Infrastructure;
 using System;
 using System.Collections.Generic;
@@ -58,19 +59,22 @@ internal sealed class CounterRowWriteStrategy : IRowWriteStrategy
     }
 
     /// <summary>
-    /// Async factory. Computes how many leading bind slots are counter
-    /// columns (PrepareInsertAsync emits them first by contract) and
-    /// prepares the SELECT-by-PK used for read-modify-write.
+    /// Async factory. Prepares the counter UPDATE on the target via
+    /// <see cref="CassandraQueries.PrepareCounterUpdateAsync"/>, builds
+    /// the bind-order → source-index map, and prepares the SELECT-by-PK
+    /// used for read-modify-write.
     /// </summary>
     public static async Task<CounterRowWriteStrategy> CreateAsync(
-        WorkerLog log, ISession targetSession, PreparedStatement preparedInsert,
-        int[] bindOrderToSourceIndex, IReadOnlyList<string> bindOrder,
-        string targetKeyspace, string targetTable,
-        IEnumerable<string> counterColumnNames,
-        RetryPolicy retryPolicy)
+        WorkerLog log, ISession targetSession, WorkerConfig config, RetryPolicy retryPolicy)
     {
-        var counterNames = new HashSet<string>(counterColumnNames, StringComparer.OrdinalIgnoreCase);
+        var (ps, bindOrder, counterColumnNames) = await CassandraQueries.PrepareCounterUpdateAsync(
+            targetSession, config.Context.TargetKeyspaceName, config.Context.TargetTableName, config.Columns);
+        var bindOrderToSourceIndex = RowWriteStrategyFactory.BuildBindOrderToSourceIndex(bindOrder, config.Columns);
 
+        // PrepareCounterUpdateAsync emits counter columns first in
+        // bindOrder; the length of CounterColumns is exactly the
+        // counter-bind prefix length we need for RMW.
+        var counterNames = new HashSet<string>(counterColumnNames, StringComparer.OrdinalIgnoreCase);
         int counterBindCount = 0;
         for (int i = 0; i < bindOrder.Count; i++)
         {
@@ -84,11 +88,11 @@ internal sealed class CounterRowWriteStrategy : IRowWriteStrategy
             bindOrder.Skip(counterBindCount).Select(n => $"\"{n}\" = ?"));
         var selectCql =
             $"SELECT {selectCounterCols} " +
-            $"FROM \"{targetKeyspace}\".\"{targetTable}\" " +
+            $"FROM \"{config.Context.TargetKeyspaceName}\".\"{config.Context.TargetTableName}\" " +
             $"WHERE {whereKeyCols}";
         var targetSelectByPk = await targetSession.PrepareAsync(selectCql);
 
-        return new CounterRowWriteStrategy(log, targetSession, preparedInsert, bindOrderToSourceIndex,
+        return new CounterRowWriteStrategy(log, targetSession, ps, bindOrderToSourceIndex,
             retryPolicy, counterBindCount, targetSelectByPk);
     }
 

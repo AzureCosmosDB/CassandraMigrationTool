@@ -1,5 +1,5 @@
 using Cassandra;
-using CassandraMigrationProcessor.Infrastructure;
+using CassandraMigrationProcessor.CassandraDriver;
 using System.Threading.Tasks;
 
 namespace CassandraMigrationProcessor.DataTransfer.BulkCopy;
@@ -22,7 +22,7 @@ internal sealed class RegularRowWriteStrategy : IRowWriteStrategy
     private readonly RetryPolicy _retryPolicy;
     private readonly bool _bindOrderIsIdentity;
 
-    public RegularRowWriteStrategy(WorkerLog log, ISession targetSession, PreparedStatement preparedInsert,
+    private RegularRowWriteStrategy(WorkerLog log, ISession targetSession, PreparedStatement preparedInsert,
         int[] bindOrderToSourceIndex, RetryPolicy retryPolicy)
     {
         _log = log;
@@ -31,6 +31,21 @@ internal sealed class RegularRowWriteStrategy : IRowWriteStrategy
         _bindOrderToSourceIndex = bindOrderToSourceIndex;
         _retryPolicy = retryPolicy;
         _bindOrderIsIdentity = IsIdentityMap(bindOrderToSourceIndex);
+    }
+
+    /// <summary>
+    /// Async factory. Prepares the INSERT statement against the target
+    /// and builds the bind-order → source-index map. The factory shape
+    /// mirrors <see cref="CounterRowWriteStrategy.CreateAsync"/> so
+    /// <see cref="RowWriteStrategyFactory"/> can dispatch generically.
+    /// </summary>
+    public static async Task<RegularRowWriteStrategy> CreateAsync(
+        WorkerLog log, ISession targetSession, WorkerConfig config, RetryPolicy retryPolicy)
+    {
+        var (ps, bindOrder) = await CassandraQueries.PrepareInsertAsync(
+            targetSession, config.Context.TargetKeyspaceName, config.Context.TargetTableName, config.Columns);
+        var bindOrderToSourceIndex = RowWriteStrategyFactory.BuildBindOrderToSourceIndex(bindOrder, config.Columns);
+        return new RegularRowWriteStrategy(log, targetSession, ps, bindOrderToSourceIndex, retryPolicy);
     }
 
     private static bool IsIdentityMap(int[] map)

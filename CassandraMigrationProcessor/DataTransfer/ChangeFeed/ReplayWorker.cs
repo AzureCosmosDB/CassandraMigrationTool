@@ -145,7 +145,17 @@ public class ReplayWorker
             .Where(c => !c.Name.StartsWith("system_", StringComparison.OrdinalIgnoreCase))
             .ToList();
 
-        var (ps, bindOrder, _, _) = await CassandraQueries.PrepareInsertAsync(
+        if (CassandraQueries.IsCounterTable(userColumns))
+        {
+            var (cps, cBindOrder, _) = await CassandraQueries.PrepareCounterUpdateAsync(
+                targetSession,
+                mu.GetEffectiveTargetKeyspaceName(),
+                mu.GetEffectiveTargetTableName(),
+                userColumns);
+            return (cps, cBindOrder);
+        }
+
+        var (ps, bindOrder) = await CassandraQueries.PrepareInsertAsync(
             targetSession,
             mu.GetEffectiveTargetKeyspaceName(),
             mu.GetEffectiveTargetTableName(),
