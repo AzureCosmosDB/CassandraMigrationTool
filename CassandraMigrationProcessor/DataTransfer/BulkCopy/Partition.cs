@@ -20,15 +20,23 @@ internal class Partition
     public bool IsExhausted { get; private set; }
     public byte[]? LastPagingState { get; private set; }
     public PartitionPhase Phase { get; private set; }
+    /// <summary>
+    /// Per-table state for the table that owns this partition. Workers
+    /// resolve all per-table data (Tracker, Ranges, identifiers, columns,
+    /// drain signal) through this reference so a single shared worker
+    /// pool can service partitions from any table.
+    /// </summary>
+    public TableResources Resources { get; }
 
     private readonly LinkedList<WorkChunk> _chunks = new();
     private readonly object _lock = new();
 
-    public Partition(string feedRange, byte[]? initialPagingState, PartitionPhase phase = PartitionPhase.Bulk)
+    public Partition(string feedRange, byte[]? initialPagingState, TableResources resources, PartitionPhase phase = PartitionPhase.Bulk)
     {
         FeedRange = feedRange;
         LastPagingState = initialPagingState;
         Phase = phase;
+        Resources = resources;
 
         if (initialPagingState != null)
             _chunks.AddLast(new WorkChunk { ContinuationToken = initialPagingState, IsCompleted = true });

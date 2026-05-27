@@ -20,25 +20,21 @@ internal class PartitionSeeder
     }
 
     public record SeedResult(
-        Channel<Partition> Pool,
-        HashSet<string> Completed,
-        Dictionary<string, string?> Checkpoints,
-        List<string> FeedRanges,
-        int PendingCount);
+        TableResources Resources,
+        int PendingCount,
+        bool AllRangesComplete);
 
     /// <summary>
-    /// Discovers feed ranges, restores per-range checkpoints, and seeds
-    /// the partition pool. When <paramref name="enableReplay"/> is true
-    /// (online jobs), ranges previously recorded in
-    /// <see cref="TableMigration.CompletedCopyFeedRanges"/> are NOT
-    /// skipped — they are re-seeded in <see cref="PartitionPhase.Replay"/>
-    /// with the continuation token from
-    /// <see cref="TableMigration.FeedRangeContinuationTokens"/>, so the
-    /// merged DataCopyWorker can resume tailing the change feed from
-    /// where the previous run left off.
+    /// Discovers feed ranges, restores per-range checkpoints, builds the
+    /// table's <see cref="TableResources"/>, and seeds the resulting
+    /// partitions into the job-shared <paramref name="sharedPool"/>.
     /// </summary>
-    public async Task<(SeedResult? Result, bool AllRangesComplete)> DiscoverAndSeedAsync(
-        ISession sourceSession, TableMigration mu, TableContext context, bool enableReplay)
+    public async Task<SeedResult> DiscoverAndSeedAsync(
+        ISession sourceSession, TableMigration mu, TableContext context,
+        List<(string Name, string Type, string Kind, string ClusteringOrder, int Position)> columns,
+        CopyProgressTracker tracker,
+        Channel<Partition> sharedPool,
+        bool enableReplay)
     {
         var feedRanges = await CassandraQueries.GetFeedRangesAsync(
             sourceSession, context.KeyspaceName, context.TableName);
@@ -47,6 +43,8 @@ internal class PartitionSeeder
 
         var completed = mu.CompletedCopyFeedRanges;
         var checkpoints = mu.CopyFeedRangeCheckpoints;
+        var ranges = new RangeState(completed, checkpoints, feedRanges);
+        var resources = new TableResources(context, columns, tracker, ranges);
 
         List<(string Range, PartitionPhase Phase)> pendingRanges;
         lock (checkpoints)
@@ -61,7 +59,9 @@ internal class PartitionSeeder
         if (pendingRanges.Count == 0)
         {
             _log.WriteLine($"All {feedRanges.Count} ranges already completed for {context.KeyspaceName}.{context.TableName}", LogType.Info);
-            return (null, AllRangesComplete: true);
+            // Mark drain immediately so callers don't wait.
+            resources.BulkDrainSignal.TrySetResult();
+            return new SeedResult(resources, 0, AllRangesComplete: true);
         }
 
         int bulkCount = pendingRanges.Count(p => p.Phase == PartitionPhase.Bulk);
@@ -71,19 +71,12 @@ internal class PartitionSeeder
             $"({completed.Count} previously bulk-completed)",
             LogType.Info);
 
-        var pool = Channel.CreateBounded<Partition>(new BoundedChannelOptions(pendingRanges.Count)
-            { FullMode = BoundedChannelFullMode.Wait });
-
         int resumedCount = 0;
         foreach (var (range, phase) in pendingRanges)
         {
             byte[]? pagingState = null;
             if (phase == PartitionPhase.Replay)
             {
-                // Resume replay from the per-range CF token persisted on
-                // the MU; falls back to whatever was last saved in the
-                // bulk-copy checkpoints dict (same value at the drain
-                // handoff moment).
                 lock (mu.FeedRangeContinuationTokens)
                 {
                     if (mu.FeedRangeContinuationTokens.TryGetValue(range, out var cfToken)
@@ -105,12 +98,11 @@ internal class PartitionSeeder
                 pagingState = Convert.FromBase64String(base64Token);
                 resumedCount++;
             }
-            await pool.Writer.WriteAsync(new Partition(range, pagingState, phase));
+            await sharedPool.Writer.WriteAsync(new Partition(range, pagingState, resources, phase));
         }
         if (resumedCount > 0)
-            _log.WriteLine($"Resuming {resumedCount}/{pendingRanges.Count} ranges from checkpoint", LogType.Info);
+            _log.WriteLine($"Resuming {resumedCount}/{pendingRanges.Count} ranges from checkpoint for {context.KeyspaceName}.{context.TableName}", LogType.Info);
 
-        return (new SeedResult(pool, completed, checkpoints,
-            feedRanges, pendingRanges.Count), AllRangesComplete: false);
+        return new SeedResult(resources, pendingRanges.Count, AllRangesComplete: false);
     }
 }

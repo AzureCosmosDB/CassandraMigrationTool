@@ -19,14 +19,11 @@ public class CopyProgressTracker
     private readonly MigrationLog _log;
     private readonly string _keyspace;
     private readonly string _table;
-    private readonly int _workerCount;
     private readonly Stopwatch _stopwatch;
 
     // Atomic counters (delegated)
     private readonly ProgressCounters _counters;
 
-    private int _activeWorkers;
-    private int _peakActiveWorkers;
     private long _lastLogTicks = 0;
 
     // Sliding window for recent speed
@@ -55,27 +52,6 @@ public class CopyProgressTracker
     public long TotalSkipped => _counters.TotalSkipped;
     internal TableMigration MigrationUnit => _migrationUnit;
 
-    /// <summary>
-    /// Call once when a worker thread starts.
-    /// </summary>
-    public void WorkerStarted()
-    {
-        int active = Interlocked.Increment(ref _activeWorkers);
-        // Track peak
-        int peak = _peakActiveWorkers;
-        while (active > peak)
-        {
-            int old = Interlocked.CompareExchange(ref _peakActiveWorkers, active, peak);
-            if (old == peak) break;
-            peak = old;
-        }
-    }
-
-    /// <summary>
-    /// Call once when a worker thread exits.
-    /// </summary>
-    public void WorkerExited() => Interlocked.Decrement(ref _activeWorkers);
-
     public double RecentSpeed
     {
         get
@@ -86,14 +62,13 @@ public class CopyProgressTracker
         }
     }
 
-    public CopyProgressTracker(MigrationLog log, int workerCount,
+    public CopyProgressTracker(MigrationLog log,
         long initialCopied,
         TableMigration migration, ProgressConfig progressConfig)
     {
         _log = log;
         _keyspace = migration.KeyspaceName;
         _table = migration.TableName;
-        _workerCount = workerCount;
         _counters = new ProgressCounters(initialCopied);
         _windowCopied = initialCopied;
         _migrationUnit = migration;
@@ -275,7 +250,7 @@ public class CopyProgressTracker
                 ? "WRITE-BOUND" :
                   "BALANCED";
 
-        _log.WriteLine($"Progress: {_keyspace}.{_table} [{_activeWorkers}/{_workerCount} workers, {ranges} ranges, pg={pageSize}] {copied:N0} rows ({speedStr}, {throughput}), " + $"{failed:N0} failed ({elapsed:F1}s) | read={avgRead}/page, write={avgWrite}/page | {bottleneck}", LogType.Debug);
+        _log.WriteLine($"Progress: {_keyspace}.{_table} [{ranges} ranges, pg={pageSize}] {copied:N0} rows ({speedStr}, {throughput}), " + $"{failed:N0} failed ({elapsed:F1}s) | read={avgRead}/page, write={avgWrite}/page | {bottleneck}", LogType.Debug);
     }
 
     /// <summary>
@@ -291,6 +266,6 @@ public class CopyProgressTracker
             ? copied / elapsed : 0;
         string speedStr = rps >= 1000
             ? $"{rps / 1000:F1}k/s" : $"{rps:F0}/s";
-        _log.WriteLine($"Bulk copy done: {_keyspace}.{_table} [{_workerCount} workers] - {copied:N0} copied, " + $"{failed:N0} failed, {skipped:N0} skipped ({elapsed:F1}s, {speedStr}), peak active: {_peakActiveWorkers}", LogType.Info);
+        _log.WriteLine($"Bulk copy done: {_keyspace}.{_table} - {copied:N0} copied, " + $"{failed:N0} failed, {skipped:N0} skipped ({elapsed:F1}s, {speedStr})", LogType.Info);
     }
 }

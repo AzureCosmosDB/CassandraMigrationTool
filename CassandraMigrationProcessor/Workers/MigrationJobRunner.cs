@@ -3,18 +3,23 @@ using CassandraMigrationProcessor.Context;
 using CassandraMigrationProcessor.Infrastructure;
 using CassandraMigrationProcessor.CassandraDriver;
 using CassandraMigrationProcessor.Models;
-using CassandraMigrationProcessor.DataTransfer;
+using CassandraMigrationProcessor.DataTransfer.BulkCopy;
 using System;
-using System.Collections.Generic;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 
 namespace CassandraMigrationProcessor.DataTransfer;
+
 /// <summary>
-/// Orchestrates a Cassandra-to-Cassandra migration with table-level
-/// parallelism and optional change-feed replication.
+/// Orchestrates a Cassandra-to-Cassandra migration with a single
+/// job-wide worker pool. All tables share the same pool of
+/// <see cref="PipelineConfig.WorkerCount"/> workers; there is no
+/// table-level worker parallelism. <see cref="Job.ParallelThreads"/>
+/// only caps the parallelism of cheap setup work (schema sync round
+/// trips), not steady-state workers.
 /// </summary>
 public class MigrationJobRunner
 {
@@ -22,6 +27,7 @@ public class MigrationJobRunner
     private int _consecutiveAuthErrors;
     private readonly ConcurrentDictionary<string, TableMigrationEngine> _activeProcessors = new();
     private readonly TokenRefreshManager _tokenRefreshManager;
+    private JobPipeline? _pipeline;
 
     public MigrationJobRunner(MigrationLog migrationLog)
     {
@@ -38,21 +44,25 @@ public class MigrationJobRunner
         try
         {
             var units = UnitStore.GetMigrationUnitsToMigrate(job);
-
             if (units == null || units.Count == 0)
             {
                 _log.WriteLine("No remaining migration units.", LogType.Warning);
                 return TaskResult.Success;
             }
 
-            int maxParallel = Math.Max(1, Math.Min(job.ParallelThreads, units.Count));
-            _log.WriteLine($"Migrating {units.Count} tables with max parallelism={maxParallel}", LogType.Info);
+            var pipelineConfig = PipelineConfig.Resolve(job, config);
+            int setupParallelism = Math.Max(1, Math.Min(job.ParallelThreads, units.Count));
+            _log.WriteLine(
+                $"Migrating {units.Count} tables with {pipelineConfig.WorkerCount} shared workers " +
+                $"(setup parallelism={setupParallelism})", LogType.Info);
+
+            _pipeline = new JobPipeline(_log, job, pipelineConfig, cancellationToken);
+            _pipeline.Start();
 
             var abortRequested = false;
-
             await Parallel.ForEachAsync(units, new ParallelOptions
                 {
-                    MaxDegreeOfParallelism = maxParallel,
+                    MaxDegreeOfParallelism = setupParallelism,
                     CancellationToken = cancellationToken
                 },
                 async (mu, token) =>
@@ -73,7 +83,23 @@ public class MigrationJobRunner
                 return TaskResult.Abort;
             }
 
-            await HandleCompletionAsync(job, cancellationToken);
+            // All tables have either drained or completed. Online jobs
+            // keep the shared pool alive for change-feed tailing; offline
+            // jobs close the channel so workers exit.
+            if (MigrationUtilities.IsOnline(job))
+            {
+                _log.WriteLine("All tables drained. Change feed replaying on shared worker pool.", LogType.Info);
+                while (!cancellationToken.IsCancellationRequested
+                    && !MigrationJobContext.Instance.ControlledPauseRequested)
+                    await Task.Delay(2000, cancellationToken);
+            }
+            else
+            {
+                _pipeline.CompletePartitionChannel();
+                await _pipeline.WaitForCompletionAsync();
+                await HandleOfflineCompletionAsync(job);
+            }
+
             return TaskResult.Success;
         }
         catch (OperationCanceledException)
@@ -89,6 +115,8 @@ public class MigrationJobRunner
         finally
         {
             _tokenRefreshManager.StopTokenRefreshTimer();
+            MigrationUtilities.SafeDispose(_pipeline, "JobPipeline");
+            _pipeline = null;
         }
     }
 
@@ -112,15 +140,9 @@ public class MigrationJobRunner
         }
     }
 
-    private async Task HandleCompletionAsync(Job job, CancellationToken cancellationToken)
+    private async Task HandleOfflineCompletionAsync(Job job)
     {
-        if (MigrationUtilities.IsOnline(job))
-        {
-            _log.WriteLine("All tables copied. Change feed replaying.", LogType.Info);
-            while (!cancellationToken.IsCancellationRequested && !MigrationJobContext.Instance.ControlledPauseRequested)
-                await Task.Delay(2000, cancellationToken);
-        }
-        else if (MigrationUtilities.IsOfflineJobCompleted(job)
+        if (MigrationUtilities.IsOfflineJobCompleted(job)
             && !MigrationJobContext.Instance.ControlledPauseRequested
             && job.Status != JobStatus.Cancelled
             && job.Status != JobStatus.Paused)
@@ -129,6 +151,7 @@ public class MigrationJobRunner
             job.Status = JobStatus.Completed;
             MigrationJobContext.Instance.SaveMigrationJob(job);
         }
+        await Task.CompletedTask;
     }
 
     private async Task ProcessMigrationUnitAsync(Job job, AppSettings config,
@@ -148,7 +171,6 @@ public class MigrationJobRunner
                 mu.BulkCopyPhase = BulkCopyPhase.Copying;
 
             mu.BulkCopyStartedOn ??= DateTime.UtcNow;
-
             if (MigrationUtilities.IsOnline(job))
             {
                 mu.ChangeFeedStartToken ??= DateTime.UtcNow.ToString(
@@ -166,15 +188,11 @@ public class MigrationJobRunner
         }
         finally
         {
-            // Online: leave the engine in _activeProcessors so its
-            // long-lived DataCopyWorker pool keeps tailing the change
-            // feed. Stop() will dispose it on shutdown. Offline:
-            // dispose immediately — the table is done.
-            if (!MigrationUtilities.IsOnline(job))
-            {
-                _activeProcessors.TryRemove(mu.Id, out var removed);
-                MigrationUtilities.SafeDispose(removed as IDisposable, "MigrationJobRunner processor");
-            }
+            // All tables can release their engines once MigrateTableAsync
+            // returns — the worker pool is owned by the JobPipeline now,
+            // not by the engine.
+            _activeProcessors.TryRemove(mu.Id, out var removed);
+            MigrationUtilities.SafeDispose(removed as IDisposable, "MigrationJobRunner processor");
         }
     }
 
@@ -183,21 +201,13 @@ public class MigrationJobRunner
         if (job.SkipSchemaSync)
         {
             _log.WriteLine(
-                $"Skipping schema sync for {mu.KeyspaceName}.{mu.TableName} (job.SkipSchemaSync is enabled — target schema is assumed to already exist).",
+                $"Skipping schema sync for {mu.KeyspaceName}.{mu.TableName} (job.SkipSchemaSync is enabled).",
                 LogType.Info);
             return;
         }
 
         if (mu.BulkCopyPhase >= BulkCopyPhase.Copying)
-        {
-            if (job.DropTargetTableBeforeStart)
-            {
-                _log.WriteLine(
-                    $"Skipping DropTargetTableBeforeStart for {mu.KeyspaceName}.{mu.TableName} on resume (phase={mu.BulkCopyPhase})",
-                    LogType.Debug);
-            }
             return;
-        }
 
         bool shouldDrop = mu.BulkCopyPhase == BulkCopyPhase.NotStarted
                        && job.DropTargetTableBeforeStart;
@@ -215,16 +225,14 @@ public class MigrationJobRunner
             if (shouldDrop
                 && await SchemaManager.TableExistsAsync(targetSession, mu.KeyspaceName, mu.TableName))
             {
-                _log.WriteLine($"Dropping target table {mu.KeyspaceName}.{mu.TableName} (DropTargetTableBeforeStart)", LogType.Info);
+                _log.WriteLine($"Dropping target table {mu.KeyspaceName}.{mu.TableName}", LogType.Info);
                 await targetSession.ExecuteAsync(new SimpleStatement(
                     $"DROP TABLE \"{mu.KeyspaceName}\".\"{mu.TableName}\""));
             }
 
             bool existed = await SchemaManager.TableExistsAsync(targetSession, mu.KeyspaceName, mu.TableName);
-
             await SchemaManager.SyncSchemaAsync(sourceSession, targetSession,
                 mu.KeyspaceName, mu.TableName, mu.KeyspaceName, mu.TableName);
-
             if (!existed)
                 _log.WriteLine($"Created target table {mu.KeyspaceName}.{mu.TableName}", LogType.Info);
         }
@@ -237,12 +245,11 @@ public class MigrationJobRunner
     private async Task RunCopyForUnitAsync(Job job, AppSettings config,
         TableMigration mu, CancellationToken ct)
     {
-        var processor = await TableMigrationEngine.CreateAsync(_log, config, job, _tokenRefreshManager, ct);
+        var processor = await TableMigrationEngine.CreateAsync(_log, config, job, _pipeline!, _tokenRefreshManager, ct);
         _activeProcessors[mu.Id] = processor;
         ct.ThrowIfCancellationRequested();
 
         TaskResult result = await processor.MigrateTableAsync(mu.Id);
-
         if (result == TaskResult.Success)
             _log.WriteLine($"Copy succeeded for {mu.KeyspaceName}.{mu.TableName}", LogType.Info);
         else if (result == TaskResult.Canceled)
@@ -287,7 +294,9 @@ public class MigrationJobRunner
         foreach (var kvp in _activeProcessors)
             MigrationUtilities.SafeDispose(kvp.Value, "MigrationJobRunner processor (Stop)");
         _activeProcessors.Clear();
+        _pipeline?.Stop();
+        MigrationUtilities.SafeDispose(_pipeline, "JobPipeline (Stop)");
+        _pipeline = null;
         _tokenRefreshManager.StopTokenRefreshTimer();
     }
-
 }

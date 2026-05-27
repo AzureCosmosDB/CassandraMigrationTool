@@ -3,6 +3,7 @@ using CassandraMigrationProcessor.Infrastructure;
 using CassandraMigrationProcessor.CassandraDriver;
 using CassandraMigrationProcessor.Models;
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
@@ -11,76 +12,71 @@ using System.Threading.Tasks;
 
 namespace CassandraMigrationProcessor.DataTransfer.BulkCopy;
 /// <summary>
-/// Reads a single page from the source Cassandra cluster,
-/// extracting row values for downstream writing.
+/// Reads a single page from the source Cassandra cluster. The reader's
+/// source session is keyspace-agnostic; per-table state (columns,
+/// identifiers, UDT registrations) is resolved from
+/// <see cref="Partition.Resources"/> at read time. UDT registration is
+/// cached per keyspace so the first partition for each table pays the
+/// cost and subsequent partitions reuse it.
 /// </summary>
 internal class PageReader : IDisposable
 {
     private readonly WorkerLog _log;
     private readonly CancellationToken _ct;
     private readonly ISession _sourceSession;
-    private readonly List<string> _columnNames;
     private readonly int _pageSize;
     private readonly int _maxReadRetries;
+    private readonly ConcurrentDictionary<string, Task> _udtRegistrations = new();
 
     private const int ReadTimeoutMs = 60_000;
     private const int RetryDelayMs = 5000;
 
-    private PageReader(WorkerLog log,
-        WorkerConfig config, int pageSize,
-        int maxReadRetries,
-        CancellationToken cancellationToken)
+    private PageReader(WorkerLog log, WorkerConfig config, int pageSize, int maxReadRetries, CancellationToken cancellationToken)
     {
         _log = log;
         _ct = cancellationToken;
-        _columnNames = config.Columns.Select(c => c.Name).ToList();
         _pageSize = pageSize;
         _maxReadRetries = maxReadRetries;
-        _sourceSession = CassandraClientFactory.CreateSourceSession(log.Inner, config.SourceConnection, config.Context.KeyspaceName);
+        _sourceSession = CassandraClientFactory.CreateSourceSession(log.Inner, config.SourceConnection, string.Empty);
     }
 
-    /// <summary>
-    /// Async factory. Creates the source session, then registers dynamic UDT
-    /// mappings so UDT-typed columns decode into real CLR instances (instead
-    /// of raw byte[]) and can be bound back into the target's prepared insert
-    /// without serialization errors. Only the UDTs actually referenced by
-    /// this table's columns are registered.
-    /// </summary>
-    public static async Task<PageReader> CreateAsync(WorkerLog log,
+    public static Task<PageReader> CreateAsync(WorkerLog log,
         WorkerConfig config, int pageSize, int maxReadRetries,
         CancellationToken cancellationToken)
     {
-        var reader = new PageReader(log, config, pageSize, maxReadRetries, cancellationToken);
-        try
-        {
-            var allUdts = await SchemaManager.GetUserDefinedTypesAsync(reader._sourceSession, config.Context.KeyspaceName);
-            var requiredUdts = SchemaManager.FilterUdtsReferencedByTable(
-                allUdts, config.Columns.Select(c => c.Type));
-            await DynamicUdtRegistrar.RegisterAsync(reader._sourceSession, config.Context.KeyspaceName, requiredUdts);
-        }
-        catch (Exception ex)
-        {
-            log.WriteLine($"UDT mapping registration on source failed: {ex.Message}", LogType.Warning);
-        }
-        return reader;
+        return Task.FromResult(new PageReader(log, config, pageSize, maxReadRetries, cancellationToken));
     }
 
     public void Dispose() => MigrationUtilities.SafeDispose(_sourceSession, "PageReader source session");
 
-    /// <summary>Result of a page read attempt. IsEmptyPage=true means
-    /// rows.Count==0 (no new data this poll). Cosmos still returns a
-    /// non-null PagingState which is stored on the partition as the
-    /// forward anchor for the next poll.</summary>
+    /// <summary>Lazy, idempotent UDT registration for a table's keyspace.</summary>
+    private Task EnsureUdtsRegisteredAsync(TableResources resources)
+    {
+        return _udtRegistrations.GetOrAdd(resources.Context.KeyspaceName, async ks =>
+        {
+            try
+            {
+                var allUdts = await SchemaManager.GetUserDefinedTypesAsync(_sourceSession, ks);
+                var requiredUdts = SchemaManager.FilterUdtsReferencedByTable(
+                    allUdts, resources.Columns.Select(c => c.Type));
+                await DynamicUdtRegistrar.RegisterAsync(_sourceSession, ks, requiredUdts);
+            }
+            catch (Exception ex)
+            {
+                _log.WriteLine($"UDT mapping registration on source failed for {ks}: {ex.Message}", LogType.Warning);
+            }
+        });
+    }
+
     internal record ReadResult(List<object[]> Rows, WorkChunk WorkChunk, bool IsEmptyPage);
 
-    /// <summary>
-    /// Reads a single page, updates partition state and tracker.
-    /// </summary>
-    public async Task<ReadResult?>
-        ReadAsync(Partition partition, PipelineContext ctx)
+    public async Task<ReadResult?> ReadAsync(Partition partition, PipelineContext ctx)
     {
+        var resources = partition.Resources;
+        await EnsureUdtsRegisteredAsync(resources);
+
         var stopwatch = Stopwatch.StartNew();
-        var stmt = new SimpleStatement(BuildSelectCql(ctx.Worker.Context, partition.FeedRange));
+        var stmt = new SimpleStatement(BuildSelectCql(resources.Context, partition.FeedRange));
         stmt.SetPageSize(_pageSize);
         stmt.SetAutoPage(false);
         stmt.SetReadTimeoutMillis(ReadTimeoutMs);
@@ -100,7 +96,7 @@ internal class PageReader : IDisposable
             catch (System.Exception ex) when (attempt < _maxReadRetries
                 && ExceptionClassifier.IsTransient(ex))
             {
-                _log.WriteLine($"Read timeout (attempt {attempt}/{_maxReadRetries})",
+                _log.WriteLine($"Read timeout for {resources.TableId} (attempt {attempt}/{_maxReadRetries})",
                     LogType.Warning);
                 await Task.Delay(attempt * RetryDelayMs, _ct);
             }
@@ -113,6 +109,7 @@ internal class PageReader : IDisposable
         }
 
         byte[]? nextPaging = resultSet.PagingState;
+        var columnNames = resources.Columns.Select(c => c.Name).ToList();
         var rows = new List<object[]>();
         int available = resultSet.GetAvailableWithoutFetching();
         int consumed = 0;
@@ -120,28 +117,17 @@ internal class PageReader : IDisposable
         {
             if (consumed >= available) break;
             consumed++;
-            var rowValues = new object[_columnNames.Count];
-            for (int i = 0; i < _columnNames.Count; i++)
-                rowValues[i] = row[_columnNames[i]];
+            var rowValues = new object[columnNames.Count];
+            for (int i = 0; i < columnNames.Count; i++)
+                rowValues[i] = row[columnNames[i]];
             rows.Add(rowValues);
         }
 
         stopwatch.Stop();
-        // Cosmos's change-feed query (FROM_START + feed range) always
-        // returns a non-null PagingState — even on empty pages — so
-        // "no more new rows right now" is signalled by rows.Count==0
-        // alone. The same query reissued with the returned PagingState
-        // returns either new events (when they arrive) or another empty
-        // page. Bulk and replay differ only in what the worker does
-        // with an empty page (transition vs cooldown vs complete).
         bool isEmptyPage = rows.Count == 0;
 
-        // Update partition and tracker — caller doesn't need to.
-        // In Replay phase, a partition is NEVER exhausted (the change
-        // feed is open-ended); IsExhausted=true is reserved for the
-        // bulk-phase drain trigger.
-        ctx.Tracker.AddRead(rows.Count);
-        ctx.Tracker.AddReadTime(stopwatch.ElapsedMilliseconds);
+        resources.Tracker.AddRead(rows.Count);
+        resources.Tracker.AddReadTime(stopwatch.ElapsedMilliseconds);
         var workChunk = partition.AddChunkAndTrim(nextPaging);
         bool markExhausted = isEmptyPage && partition.Phase == PartitionPhase.Bulk;
         partition.SetPageState(nextPaging, markExhausted);
@@ -153,7 +139,6 @@ internal class PageReader : IDisposable
     {
         MigrationUtilities.ValidateCqlIdentifier(context.KeyspaceName);
         MigrationUtilities.ValidateCqlIdentifier(context.TableName);
-        // range is a Cosmos DB feed range token (JSON), not a CQL identifier
         return
             $"SELECT * FROM \"{context.KeyspaceName}\".\"{context.TableName}\"" +
             $" WHERE COSMOS_CHANGEFEED_FROM_START() = true AND COSMOS_FEEDRANGE() = '{range}'";

@@ -3,6 +3,7 @@ using CassandraMigrationProcessor.Infrastructure;
 using CassandraMigrationProcessor.CassandraDriver;
 using CassandraMigrationProcessor.Models;
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
@@ -12,75 +13,80 @@ using System.Threading.Tasks;
 namespace CassandraMigrationProcessor.DataTransfer.BulkCopy;
 
 /// <summary>
-/// Writes extracted rows to the target Cassandra cluster concurrently,
-/// tracking latency and errors. The per-row write strategy is delegated
-/// to an <see cref="IRowWriteStrategy"/> chosen at construction time
-/// (regular INSERT vs. counter read-modify-write UPDATE), so this class
-/// only owns the shared orchestration: row fan-out, byte accounting,
-/// tracker updates, and session disposal.
+/// Writes extracted rows to the target cluster. The target session is
+/// keyspace-agnostic; per-table prepared statements and write strategies
+/// are lazily built and cached per table on first encounter. A single
+/// worker can therefore service partitions from any table without
+/// rebuilding state per page.
 /// </summary>
 internal sealed class PageWriter : IDisposable
 {
     private readonly WorkerLog _log;
     private readonly CancellationToken _ct;
     private readonly ISession _targetSession;
-    private readonly IRowWriteStrategy _rowStrategy;
     private readonly int _pageSize;
+    private readonly int _maxWriteRetries;
+    private readonly WorkerConfig _config;
 
-    private PageWriter(WorkerLog log, ISession targetSession, IRowWriteStrategy rowStrategy,
-        int pageSize, CancellationToken cancellationToken)
+    private readonly ConcurrentDictionary<string, Task<IRowWriteStrategy>> _strategyCache = new();
+    private readonly ConcurrentDictionary<string, Task> _udtRegistrations = new();
+
+    private PageWriter(WorkerLog log, WorkerConfig config, ISession targetSession,
+        int pageSize, int maxWriteRetries, CancellationToken cancellationToken)
     {
         _log = log;
         _ct = cancellationToken;
+        _config = config;
         _pageSize = pageSize;
+        _maxWriteRetries = maxWriteRetries;
         _targetSession = targetSession;
-        _rowStrategy = rowStrategy;
     }
 
-    /// <summary>
-    /// Async factory. Creates the target session, prepares the
-    /// insert/update statement, registers UDT mappings against the target,
-    /// and selects the right <see cref="IRowWriteStrategy"/> for the
-    /// table shape.
-    /// </summary>
-    public static async Task<PageWriter> CreateAsync(WorkerLog log, WorkerConfig config, int pageSize, int maxWriteRetries, CancellationToken cancellationToken)
+    public static Task<PageWriter> CreateAsync(WorkerLog log, WorkerConfig config, int pageSize, int maxWriteRetries, CancellationToken cancellationToken)
     {
-        var targetSession = CassandraClientFactory.CreateTargetSession(log.Inner, config.TargetConnection, "");
-        var strategy = await RowWriteStrategyFactory.CreateAsync(
-            log, targetSession, config.Columns,
-            config.Context.TargetKeyspaceName, config.Context.TargetTableName,
-            maxWriteRetries);
-        var writer = new PageWriter(log, targetSession, strategy, pageSize, cancellationToken);
-
-        ISession? sourceSession = null;
-        try
-        {
-            sourceSession = CassandraClientFactory.CreateSourceSession(log.Inner, config.SourceConnection, config.Context.KeyspaceName);
-            var allUdts = await SchemaManager.GetUserDefinedTypesAsync(sourceSession, config.Context.KeyspaceName);
-            var requiredUdts = SchemaManager.FilterUdtsReferencedByTable(
-                allUdts, config.Columns.Select(c => c.Type));
-            await DynamicUdtRegistrar.RegisterAsync(targetSession, config.Context.TargetKeyspaceName, requiredUdts);
-        }
-        catch (Exception ex)
-        {
-            log.WriteLine($"UDT mapping registration on target failed: {ex.Message}", LogType.Warning);
-        }
-        finally
-        {
-            if (sourceSession != null)
-                MigrationUtilities.SafeDispose(sourceSession, "PageWriter UDT discovery session");
-        }
-        return writer;
+        var targetSession = CassandraClientFactory.CreateTargetSession(log.Inner, config.TargetConnection, string.Empty);
+        return Task.FromResult(new PageWriter(log, config, targetSession, pageSize, maxWriteRetries, cancellationToken));
     }
 
     public void Dispose() => MigrationUtilities.SafeDispose(_targetSession, "PageWriter target session");
 
-    /// <summary>
-    /// Writes extracted rows to the target cluster in parallel,
-    /// tracking progress and handling errors. Routes counters to
-    /// either bulk-copy or change-feed metrics based on the partition's
-    /// current phase.
-    /// </summary>
+    private Task<IRowWriteStrategy> GetStrategyAsync(TableResources resources)
+    {
+        return _strategyCache.GetOrAdd(resources.TableId, async _ =>
+        {
+            await EnsureTargetUdtsRegisteredAsync(resources);
+            return await RowWriteStrategyFactory.CreateAsync(
+                _log, _targetSession, resources.Columns,
+                resources.Context.TargetKeyspaceName, resources.Context.TargetTableName,
+                _maxWriteRetries);
+        });
+    }
+
+    private Task EnsureTargetUdtsRegisteredAsync(TableResources resources)
+    {
+        return _udtRegistrations.GetOrAdd(resources.Context.TargetKeyspaceName, async ks =>
+        {
+            ISession? sourceSession = null;
+            try
+            {
+                sourceSession = CassandraClientFactory.CreateSourceSession(_log.Inner, _config.SourceConnection, resources.Context.KeyspaceName);
+                var allUdts = await SchemaManager.GetUserDefinedTypesAsync(sourceSession, resources.Context.KeyspaceName);
+                var requiredUdts = SchemaManager.FilterUdtsReferencedByTable(
+                    allUdts, resources.Columns.Select(c => c.Type));
+                await DynamicUdtRegistrar.RegisterAsync(_targetSession, ks, requiredUdts);
+            }
+            catch (Exception ex)
+            {
+                _log.WriteLine($"UDT mapping registration on target failed for {ks}: {ex.Message}", LogType.Warning);
+            }
+            finally
+            {
+                if (sourceSession != null)
+                    MigrationUtilities.SafeDispose(sourceSession, "PageWriter UDT discovery session");
+            }
+        });
+    }
+
     public async Task WriteAsync(List<object[]> rows,
         WorkChunk workChunk,
         Partition partition,
@@ -91,6 +97,9 @@ internal sealed class PageWriter : IDisposable
             workChunk.IsCompleted = true;
             return;
         }
+
+        var resources = partition.Resources;
+        var strategy = await GetStrategyAsync(resources);
 
         var stopwatch = Stopwatch.StartNew();
         var counters = new WriteCounters();
@@ -103,38 +112,34 @@ internal sealed class PageWriter : IDisposable
                 || Volatile.Read(ref ctx.Counters.FatalErrorFlag) != 0)
                 break;
 
-            writeTasks.Add(_rowStrategy.WriteRowAsync(rows[i], onFatal, counters, i));
+            writeTasks.Add(strategy.WriteRowAsync(rows[i], onFatal, counters, i));
         }
 
-        ctx.Tracker.SetPipelineState(ctx.Ranges.FeedRanges.Count
-                - ctx.Ranges.Completed.Count,
+        resources.Tracker.SetPipelineState(resources.Ranges.FeedRanges.Count
+                - resources.Ranges.Completed.Count,
             _pageSize);
         await Task.WhenAll(writeTasks);
 
-        // Only mark chunk completed if ALL rows succeeded.
-        // Failed rows mean this page must be retried on resume.
         if (counters.Failed == 0) workChunk.IsCompleted = true;
         else
         {
-            _log.WriteLine($"{counters.Failed}/{rows.Count} writes failed — checkpoint NOT advanced (will retry on resume)",
+            _log.WriteLine($"{counters.Failed}/{rows.Count} writes failed for {resources.TableId} — checkpoint NOT advanced (will retry on resume)",
                 LogType.Warning);
         }
 
         stopwatch.Stop();
-        ctx.Tracker.AddWriteTime(counters.LatencySum, rows.Count);
+        resources.Tracker.AddWriteTime(counters.LatencySum, rows.Count);
 
         if (partition.Phase == PartitionPhase.Replay)
         {
-            // Change-feed phase: route success/failure to CF counters,
-            // force per-page MU flush. Don't bump bulk-copy totals.
-            ctx.Tracker.AddReplayApplied(counters.Done, counters.LatencySum);
+            resources.Tracker.AddReplayApplied(counters.Done, counters.LatencySum);
             if (counters.Failed > 0)
-                ctx.Tracker.AddReplayErrors(counters.Failed);
+                resources.Tracker.AddReplayErrors(counters.Failed);
         }
         else
         {
-            ctx.Tracker.AddCopied(counters.Done);
-            ctx.Tracker.AddFailed(counters.Failed);
+            resources.Tracker.AddCopied(counters.Done);
+            resources.Tracker.AddFailed(counters.Failed);
         }
 
         long pageBytes = 0;
@@ -148,6 +153,6 @@ internal sealed class PageWriter : IDisposable
                 else if (v != null)
                     pageBytes += 8;
             }
-        ctx.Tracker.AddBytes(pageBytes);
+        resources.Tracker.AddBytes(pageBytes);
     }
 }
