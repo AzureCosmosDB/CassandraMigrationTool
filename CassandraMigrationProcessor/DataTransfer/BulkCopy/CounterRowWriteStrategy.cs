@@ -48,7 +48,7 @@ internal sealed class CounterRowWriteStrategy : IRowWriteStrategy
     private readonly int _counterBindCount;
     private readonly PreparedStatement _targetSelectByPk;
 
-    public CounterRowWriteStrategy(MigrationLog log, ISession targetSession, PreparedStatement preparedInsert,
+    private CounterRowWriteStrategy(MigrationLog log, ISession targetSession, PreparedStatement preparedInsert,
         int[] bindOrderToSourceIndex, int workerId, int maxWriteRetries,
         int counterBindCount, PreparedStatement targetSelectByPk)
     {
@@ -60,6 +60,44 @@ internal sealed class CounterRowWriteStrategy : IRowWriteStrategy
         _maxWriteRetries = maxWriteRetries;
         _counterBindCount = counterBindCount;
         _targetSelectByPk = targetSelectByPk;
+    }
+
+    /// <summary>
+    /// Async factory. Computes how many leading bind slots are counter
+    /// columns (PrepareInsertAsync emits them first by contract) and
+    /// prepares the SELECT-by-PK used for read-modify-write.
+    /// </summary>
+    public static async Task<CounterRowWriteStrategy> CreateAsync(
+        MigrationLog log, ISession targetSession, PreparedStatement preparedInsert,
+        int[] bindOrderToSourceIndex, System.Collections.Generic.IReadOnlyList<string> bindOrder,
+        string targetKeyspace, string targetTable,
+        System.Collections.Generic.IEnumerable<string> counterColumnNames,
+        int workerId, int maxWriteRetries)
+    {
+        var counterNames = new System.Collections.Generic.HashSet<string>(counterColumnNames, StringComparer.OrdinalIgnoreCase);
+
+        // Bind order from PrepareInsertAsync for counters is
+        // (counter cols ..., key cols ...), so we split by counting the
+        // leading counter columns.
+        int counterBindCount = 0;
+        for (int i = 0; i < bindOrder.Count; i++)
+        {
+            if (counterNames.Contains(bindOrder[i])) counterBindCount++;
+            else break;
+        }
+
+        var selectCounterCols = string.Join(", ",
+            System.Linq.Enumerable.Select(System.Linq.Enumerable.Take(bindOrder, counterBindCount), n => $"\"{n}\""));
+        var whereKeyCols = string.Join(" AND ",
+            System.Linq.Enumerable.Select(System.Linq.Enumerable.Skip(bindOrder, counterBindCount), n => $"\"{n}\" = ?"));
+        var selectCql =
+            $"SELECT {selectCounterCols} " +
+            $"FROM \"{targetKeyspace}\".\"{targetTable}\" " +
+            $"WHERE {whereKeyCols}";
+        var targetSelectByPk = await targetSession.PrepareAsync(selectCql);
+
+        return new CounterRowWriteStrategy(log, targetSession, preparedInsert, bindOrderToSourceIndex,
+            workerId, maxWriteRetries, counterBindCount, targetSelectByPk);
     }
 
     public async Task WriteRowAsync(object[] sourceRow, PipelineContext ctx, WriteCounters counters, int rowIndex)

@@ -62,45 +62,19 @@ internal sealed class PageWriter : IDisposable
         // non-counter regular columns in the same table, so the presence
         // of any single counter column means every non-PK column is a
         // counter and we need the UPDATE-shaped path with read-modify-write.
-        bool isCounterTable = config.Columns.Any(c =>
-            string.Equals(c.Type, "counter", StringComparison.OrdinalIgnoreCase));
+        // Each strategy owns its own prep work; PageWriter only routes.
+        var counterColumns = config.Columns
+            .Where(c => string.Equals(c.Type, "counter", StringComparison.OrdinalIgnoreCase))
+            .Select(c => c.Name)
+            .ToList();
+        bool isCounterTable = counterColumns.Count > 0;
 
-        IRowWriteStrategy strategy;
-        if (isCounterTable)
-        {
-            // Bind order from PrepareInsertAsync for counters is
-            // (counter cols ..., key cols ...), so we can compute the
-            // split by counting the leading counter columns.
-            var counterNames = new HashSet<string>(
-                config.Columns
-                    .Where(c => string.Equals(c.Type, "counter", StringComparison.OrdinalIgnoreCase))
-                    .Select(c => c.Name),
-                StringComparer.OrdinalIgnoreCase);
-            int counterBindCount = 0;
-            for (int i = 0; i < bindOrder.Count; i++)
-            {
-                if (counterNames.Contains(bindOrder[i])) counterBindCount++;
-                else break;
-            }
-
-            var selectCounterCols = string.Join(", ",
-                bindOrder.Take(counterBindCount).Select(n => $"\"{n}\""));
-            var whereKeyCols = string.Join(" AND ",
-                bindOrder.Skip(counterBindCount).Select(n => $"\"{n}\" = ?"));
-            var selectCql =
-                $"SELECT {selectCounterCols} " +
-                $"FROM \"{config.Context.TargetKeyspaceName}\".\"{config.Context.TargetTableName}\" " +
-                $"WHERE {whereKeyCols}";
-            var targetSelectByPk = await targetSession.PrepareAsync(selectCql);
-
-            strategy = new CounterRowWriteStrategy(log, targetSession, ps, bindOrderToSourceIndex,
-                workerId, maxWriteRetries, counterBindCount, targetSelectByPk);
-        }
-        else
-        {
-            strategy = new RegularRowWriteStrategy(log, targetSession, ps, bindOrderToSourceIndex,
+        IRowWriteStrategy strategy = isCounterTable
+            ? await CounterRowWriteStrategy.CreateAsync(log, targetSession, ps, bindOrderToSourceIndex,
+                bindOrder, config.Context.TargetKeyspaceName, config.Context.TargetTableName,
+                counterColumns, workerId, maxWriteRetries)
+            : new RegularRowWriteStrategy(log, targetSession, ps, bindOrderToSourceIndex,
                 workerId, maxWriteRetries);
-        }
 
         var writer = new PageWriter(log, targetSession, strategy, pageSize, workerId, cancellationToken);
 
