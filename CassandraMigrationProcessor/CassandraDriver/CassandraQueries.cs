@@ -191,12 +191,11 @@ public static class CassandraQueries
     /// Build a prepared UPDATE for a counter table:
     /// <c>UPDATE ks.t SET c = c + ?, ... WHERE pk = ? AND ck = ?</c>.
     /// Bind order is counter columns first (in schema order), then the
-    /// partition-key + clustering columns in key order. The
-    /// <c>CounterColumns</c> list is returned in that same leading-bind
-    /// order, so callers can use its length as the counter-bind prefix
-    /// length for read-modify-write logic.
+    /// partition-key + clustering columns in key order. Callers can derive
+    /// the counter-bind prefix length by counting counter columns in the
+    /// source column list.
     /// </summary>
-    public static async Task<(PreparedStatement Ps, List<string> BindOrder, IReadOnlyList<string> CounterColumns)>
+    public static async Task<(PreparedStatement Ps, List<string> BindOrder)>
         PrepareCounterUpdateAsync(ISession session, string keyspace, string table,
             List<(string Name, string Type, string Kind, string ClusteringOrder, int Position)> columns)
     {
@@ -224,10 +223,9 @@ public static class CassandraQueries
         var bindOrder = counterCols.Select(c => c.Name)
             .Concat(keyCols.Select(c => c.Name))
             .ToList();
-        var counterColumnNames = counterCols.Select(c => c.Name).ToList();
 
         var ps = await session.PrepareAsync(cql);
-        return (ps, bindOrder, counterColumnNames);
+        return (ps, bindOrder);
     }
 
     private static bool IsCounterColumn(

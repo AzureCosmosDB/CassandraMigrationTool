@@ -67,20 +67,15 @@ internal sealed class CounterRowWriteStrategy : IRowWriteStrategy
     public static async Task<CounterRowWriteStrategy> CreateAsync(
         WorkerLog log, ISession targetSession, WorkerConfig config, RetryPolicy retryPolicy)
     {
-        var (ps, bindOrder, counterColumnNames) = await CassandraQueries.PrepareCounterUpdateAsync(
+        var (ps, bindOrder) = await CassandraQueries.PrepareCounterUpdateAsync(
             targetSession, config.Context.TargetKeyspaceName, config.Context.TargetTableName, config.Columns);
         var bindOrderToSourceIndex = RowWriteStrategyFactory.BuildBindOrderToSourceIndex(bindOrder, config.Columns);
 
         // PrepareCounterUpdateAsync emits counter columns first in
-        // bindOrder; the length of CounterColumns is exactly the
-        // counter-bind prefix length we need for RMW.
-        var counterNames = new HashSet<string>(counterColumnNames, StringComparer.OrdinalIgnoreCase);
-        int counterBindCount = 0;
-        for (int i = 0; i < bindOrder.Count; i++)
-        {
-            if (counterNames.Contains(bindOrder[i])) counterBindCount++;
-            else break;
-        }
+        // bindOrder, so the count of counter columns in the schema is
+        // exactly the counter-bind prefix length we need for RMW.
+        int counterBindCount = config.Columns.Count(c =>
+            string.Equals(c.Type, "counter", StringComparison.OrdinalIgnoreCase));
 
         var selectCounterCols = string.Join(", ",
             bindOrder.Take(counterBindCount).Select(n => $"\"{n}\""));

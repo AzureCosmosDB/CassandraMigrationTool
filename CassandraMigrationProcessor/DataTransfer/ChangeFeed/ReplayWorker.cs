@@ -147,7 +147,7 @@ public class ReplayWorker
 
         if (CassandraQueries.IsCounterTable(userColumns))
         {
-            var (cps, cBindOrder, _) = await CassandraQueries.PrepareCounterUpdateAsync(
+            var (cps, cBindOrder) = await CassandraQueries.PrepareCounterUpdateAsync(
                 targetSession,
                 mu.GetEffectiveTargetKeyspaceName(),
                 mu.GetEffectiveTargetTableName(),
