@@ -9,10 +9,10 @@ using System.Threading.Tasks;
 namespace CassandraMigrationProcessor.DataTransfer.BulkCopy;
 
 /// <summary>
-/// Writer for counter target tables. Counter UPDATEs in Cassandra are
-/// NOT idempotent — a transient timeout may have applied the increment
-/// server-side or not, and a naive retry produces double-counts. To get
-/// idempotency we use read-modify-write per row:
+/// Row-write strategy for counter target tables. Counter UPDATEs in
+/// Cassandra are NOT idempotent — a transient timeout may have applied
+/// the increment server-side or not, and a naive retry produces
+/// double-counts. To get idempotency we use read-modify-write per row:
 /// <list type="number">
 ///   <item>SELECT current target counter values for this row's PK.</item>
 ///   <item>Compute delta = origin − target for each counter column.</item>
@@ -34,22 +34,35 @@ namespace CassandraMigrationProcessor.DataTransfer.BulkCopy;
 /// replicas. This is more expensive than the LocalOne used for regular
 /// tables but is the only safe choice for counter idempotency.
 /// </summary>
-internal sealed class CounterPageWriter : PageWriter
+internal sealed class CounterRowWriteStrategy : IRowWriteStrategy
 {
+    private const int WriteTimeoutMs = 60_000;
+    private const int RetryDelayMs = 500;
+
+    private readonly MigrationLog _log;
+    private readonly ISession _targetSession;
+    private readonly PreparedStatement _preparedInsert;
+    private readonly int[] _bindOrderToSourceIndex;
+    private readonly int _workerId;
+    private readonly int _maxWriteRetries;
     private readonly int _counterBindCount;
     private readonly PreparedStatement _targetSelectByPk;
 
-    public CounterPageWriter(MigrationLog log, ISession targetSession, PreparedStatement preparedInsert,
-        int[] bindOrderToSourceIndex, int pageSize, int workerId, int maxWriteRetries,
-        int counterBindCount, PreparedStatement targetSelectByPk,
-        CancellationToken cancellationToken)
-        : base(log, targetSession, preparedInsert, bindOrderToSourceIndex, pageSize, workerId, maxWriteRetries, cancellationToken)
+    public CounterRowWriteStrategy(MigrationLog log, ISession targetSession, PreparedStatement preparedInsert,
+        int[] bindOrderToSourceIndex, int workerId, int maxWriteRetries,
+        int counterBindCount, PreparedStatement targetSelectByPk)
     {
+        _log = log;
+        _targetSession = targetSession;
+        _preparedInsert = preparedInsert;
+        _bindOrderToSourceIndex = bindOrderToSourceIndex;
+        _workerId = workerId;
+        _maxWriteRetries = maxWriteRetries;
         _counterBindCount = counterBindCount;
         _targetSelectByPk = targetSelectByPk;
     }
 
-    protected override async Task WriteRowAsync(object[] sourceRow, PipelineContext ctx, WriteCounters counters, int rowIndex)
+    public async Task WriteRowAsync(object[] sourceRow, PipelineContext ctx, WriteCounters counters, int rowIndex)
     {
         for (int attempt = 1; attempt <= _maxWriteRetries; attempt++)
         {

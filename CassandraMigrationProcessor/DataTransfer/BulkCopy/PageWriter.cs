@@ -13,48 +13,37 @@ namespace CassandraMigrationProcessor.DataTransfer.BulkCopy;
 
 /// <summary>
 /// Writes extracted rows to the target Cassandra cluster concurrently,
-/// tracking latency and errors. Abstract base; <see cref="CreateAsync"/>
-/// returns the appropriate concrete writer for the target table shape:
-/// <see cref="RegularPageWriter"/> for normal tables (INSERT-shaped path)
-/// or <see cref="CounterPageWriter"/> for counter tables (read-modify-write
-/// UPDATE-shaped path). The two paths differ in prepared statements,
-/// per-row work (counter rows need a SELECT first), and consistency
-/// level, so separating them keeps each implementation small and the
-/// branchy "is this a counter row?" check out of the hot loop.
+/// tracking latency and errors. The per-row write strategy is delegated
+/// to an <see cref="IRowWriteStrategy"/> chosen at construction time
+/// (regular INSERT vs. counter read-modify-write UPDATE), so this class
+/// only owns the shared orchestration: row fan-out, byte accounting,
+/// tracker updates, and session disposal.
 /// </summary>
-internal abstract class PageWriter : IDisposable
+internal sealed class PageWriter : IDisposable
 {
-    protected readonly MigrationLog _log;
-    protected readonly CancellationToken _ct;
-    protected readonly ISession _targetSession;
-    protected readonly PreparedStatement _preparedInsert;
-    protected readonly int[] _bindOrderToSourceIndex;
-    protected readonly int _workerId;
+    private readonly MigrationLog _log;
+    private readonly CancellationToken _ct;
+    private readonly ISession _targetSession;
+    private readonly IRowWriteStrategy _rowStrategy;
+    private readonly int _workerId;
     private readonly int _pageSize;
-    protected readonly int _maxWriteRetries;
 
-    protected const int WriteTimeoutMs = 60_000;
-    protected const int RetryDelayMs = 500;
-
-    protected PageWriter(MigrationLog log, ISession targetSession, PreparedStatement preparedInsert,
-        int[] bindOrderToSourceIndex, int pageSize, int workerId, int maxWriteRetries,
-        CancellationToken cancellationToken)
+    private PageWriter(MigrationLog log, ISession targetSession, IRowWriteStrategy rowStrategy,
+        int pageSize, int workerId, CancellationToken cancellationToken)
     {
         _log = log;
         _ct = cancellationToken;
         _workerId = workerId;
         _pageSize = pageSize;
-        _maxWriteRetries = maxWriteRetries;
         _targetSession = targetSession;
-        _preparedInsert = preparedInsert;
-        _bindOrderToSourceIndex = bindOrderToSourceIndex;
+        _rowStrategy = rowStrategy;
     }
 
     /// <summary>
     /// Async factory. Creates the target session, prepares the
     /// insert/update statement, registers UDT mappings against the target,
-    /// and returns the appropriate concrete <see cref="PageWriter"/> for
-    /// the table shape.
+    /// and selects the right <see cref="IRowWriteStrategy"/> for the
+    /// table shape.
     /// </summary>
     public static async Task<PageWriter> CreateAsync(MigrationLog log, WorkerConfig config, int pageSize, int workerId, int maxWriteRetries, CancellationToken cancellationToken)
     {
@@ -76,7 +65,7 @@ internal abstract class PageWriter : IDisposable
         bool isCounterTable = config.Columns.Any(c =>
             string.Equals(c.Type, "counter", StringComparison.OrdinalIgnoreCase));
 
-        PageWriter writer;
+        IRowWriteStrategy strategy;
         if (isCounterTable)
         {
             // Bind order from PrepareInsertAsync for counters is
@@ -104,15 +93,16 @@ internal abstract class PageWriter : IDisposable
                 $"WHERE {whereKeyCols}";
             var targetSelectByPk = await targetSession.PrepareAsync(selectCql);
 
-            writer = new CounterPageWriter(log, targetSession, ps, bindOrderToSourceIndex,
-                pageSize, workerId, maxWriteRetries,
-                counterBindCount, targetSelectByPk, cancellationToken);
+            strategy = new CounterRowWriteStrategy(log, targetSession, ps, bindOrderToSourceIndex,
+                workerId, maxWriteRetries, counterBindCount, targetSelectByPk);
         }
         else
         {
-            writer = new RegularPageWriter(log, targetSession, ps, bindOrderToSourceIndex,
-                pageSize, workerId, maxWriteRetries, cancellationToken);
+            strategy = new RegularRowWriteStrategy(log, targetSession, ps, bindOrderToSourceIndex,
+                workerId, maxWriteRetries);
         }
+
+        var writer = new PageWriter(log, targetSession, strategy, pageSize, workerId, cancellationToken);
 
         ISession? sourceSession = null;
         try
@@ -136,29 +126,6 @@ internal abstract class PageWriter : IDisposable
     }
 
     public void Dispose() => MigrationUtilities.SafeDispose(_targetSession, "PageWriter target session");
-
-    protected static bool IsIdentityMap(int[] map)
-    {
-        for (int i = 0; i < map.Length; i++)
-            if (map[i] != i) return false;
-        return true;
-    }
-
-    protected class WriteCounters
-    {
-        public int Done;
-        public int Failed;
-        public long LatencySum;
-    }
-
-    /// <summary>
-    /// Implements the per-row write strategy for this writer's table
-    /// shape (plain INSERT vs. counter read-modify-write UPDATE).
-    /// Implementations are responsible for their own retry loop and
-    /// for updating <paramref name="counters"/> via
-    /// <see cref="Interlocked"/>.
-    /// </summary>
-    protected abstract Task WriteRowAsync(object[] sourceRow, PipelineContext ctx, WriteCounters counters, int rowIndex);
 
     /// <summary>
     /// Writes extracted rows to the target cluster in parallel,
@@ -184,7 +151,7 @@ internal abstract class PageWriter : IDisposable
                 || Volatile.Read(ref ctx.Counters.FatalErrorFlag) != 0)
                 break;
 
-            writeTasks.Add(WriteRowAsync(rows[i], ctx, counters, i));
+            writeTasks.Add(_rowStrategy.WriteRowAsync(rows[i], ctx, counters, i));
         }
 
         ctx.Tracker.SetPipelineState(ctx.Ranges.FeedRanges.Count

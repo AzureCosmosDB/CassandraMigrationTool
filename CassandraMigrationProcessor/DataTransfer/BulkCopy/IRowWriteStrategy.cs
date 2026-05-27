@@ -1,0 +1,31 @@
+using System.Threading.Tasks;
+
+namespace CassandraMigrationProcessor.DataTransfer.BulkCopy;
+
+/// <summary>
+/// Per-row write strategy used by <see cref="PageWriter"/>. Implementations
+/// own the bind-and-execute logic for one source row, including retry
+/// behaviour and the consistency level appropriate for the target table
+/// shape (plain INSERT vs. counter read-modify-write UPDATE).
+/// <para>
+/// The orchestrator (<see cref="PageWriter.WriteAsync"/>) handles row
+/// fan-out, byte accounting, and tracker updates; the strategy handles
+/// "how do I correctly write this one row?". Implementations are
+/// stateless across calls and must use <see cref="System.Threading.Interlocked"/>
+/// when updating the shared <see cref="WriteCounters"/>.
+/// </para>
+/// </summary>
+internal interface IRowWriteStrategy
+{
+    Task WriteRowAsync(object[] sourceRow, PipelineContext ctx, WriteCounters counters, int rowIndex);
+}
+
+/// <summary>
+/// Per-page accumulator updated atomically by strategy implementations.
+/// </summary>
+internal sealed class WriteCounters
+{
+    public int Done;
+    public int Failed;
+    public long LatencySum;
+}

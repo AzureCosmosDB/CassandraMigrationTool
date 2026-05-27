@@ -1,6 +1,7 @@
 using Cassandra;
 using CassandraMigrationProcessor.Infrastructure;
 using CassandraMigrationProcessor.Models;
+using System;
 using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
@@ -8,27 +9,49 @@ using System.Threading.Tasks;
 namespace CassandraMigrationProcessor.DataTransfer.BulkCopy;
 
 /// <summary>
-/// Writer for non-counter (regular) target tables. Per-row work is a
-/// single token-aware INSERT bound from the source row, executed at
-/// <see cref="ConsistencyLevel.LocalOne"/> with a bounded retry loop on
-/// transient errors. Null source values are bound as <c>null</c> so the
-/// target faithfully mirrors the source — including the tombstone
-/// semantics needed for resume/online catch-up correctness.
+/// Row-write strategy for non-counter (regular) target tables. Per-row
+/// work is a single token-aware INSERT bound from the source row,
+/// executed at <see cref="ConsistencyLevel.LocalOne"/> with a bounded
+/// retry loop on transient errors. Null source values are bound as
+/// <c>null</c> so the target faithfully mirrors the source — including
+/// the tombstone semantics needed for resume/online catch-up correctness.
 /// </summary>
-internal sealed class RegularPageWriter : PageWriter
+internal sealed class RegularRowWriteStrategy : IRowWriteStrategy
 {
-    public RegularPageWriter(MigrationLog log, ISession targetSession, PreparedStatement preparedInsert,
-        int[] bindOrderToSourceIndex, int pageSize, int workerId, int maxWriteRetries,
-        CancellationToken cancellationToken)
-        : base(log, targetSession, preparedInsert, bindOrderToSourceIndex, pageSize, workerId, maxWriteRetries, cancellationToken)
+    private const int WriteTimeoutMs = 60_000;
+    private const int RetryDelayMs = 500;
+
+    private readonly MigrationLog _log;
+    private readonly ISession _targetSession;
+    private readonly PreparedStatement _preparedInsert;
+    private readonly int[] _bindOrderToSourceIndex;
+    private readonly int _workerId;
+    private readonly int _maxWriteRetries;
+    private readonly bool _bindOrderIsIdentity;
+
+    public RegularRowWriteStrategy(MigrationLog log, ISession targetSession, PreparedStatement preparedInsert,
+        int[] bindOrderToSourceIndex, int workerId, int maxWriteRetries)
     {
+        _log = log;
+        _targetSession = targetSession;
+        _preparedInsert = preparedInsert;
+        _bindOrderToSourceIndex = bindOrderToSourceIndex;
+        _workerId = workerId;
+        _maxWriteRetries = maxWriteRetries;
+        _bindOrderIsIdentity = IsIdentityMap(bindOrderToSourceIndex);
+    }
+
+    private static bool IsIdentityMap(int[] map)
+    {
+        for (int i = 0; i < map.Length; i++)
+            if (map[i] != i) return false;
+        return true;
     }
 
     private BoundStatement BindRow(object[] sourceRow)
     {
         object[] bindValues;
-        if (_bindOrderToSourceIndex.Length == sourceRow.Length
-            && IsIdentityMap(_bindOrderToSourceIndex))
+        if (_bindOrderToSourceIndex.Length == sourceRow.Length && _bindOrderIsIdentity)
         {
             bindValues = sourceRow;
         }
@@ -41,7 +64,7 @@ internal sealed class RegularPageWriter : PageWriter
         return _preparedInsert.Bind(bindValues);
     }
 
-    protected override async Task WriteRowAsync(object[] sourceRow, PipelineContext ctx, WriteCounters counters, int rowIndex)
+    public async Task WriteRowAsync(object[] sourceRow, PipelineContext ctx, WriteCounters counters, int rowIndex)
     {
         var bound = BindRow(sourceRow);
         bound.SetReadTimeoutMillis(WriteTimeoutMs);
@@ -58,7 +81,7 @@ internal sealed class RegularPageWriter : PageWriter
                 Interlocked.Increment(ref counters.Done);
                 return;
             }
-            catch (System.Exception ex)
+            catch (Exception ex)
             {
                 if (ExceptionClassifier.IsFatal(ex))
                 {
