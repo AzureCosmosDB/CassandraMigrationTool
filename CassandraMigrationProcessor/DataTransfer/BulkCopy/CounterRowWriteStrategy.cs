@@ -36,24 +36,22 @@ namespace CassandraMigrationProcessor.DataTransfer.BulkCopy;
 /// </summary>
 internal sealed class CounterRowWriteStrategy : IRowWriteStrategy
 {
-    private readonly MigrationLog _log;
+    private readonly WorkerLog _log;
     private readonly ISession _targetSession;
     private readonly PreparedStatement _preparedInsert;
     private readonly int[] _bindOrderToSourceIndex;
-    private readonly int _workerId;
     private readonly RetryPolicy _retryPolicy;
     private readonly int _counterBindCount;
     private readonly PreparedStatement _targetSelectByPk;
 
-    private CounterRowWriteStrategy(MigrationLog log, ISession targetSession, PreparedStatement preparedInsert,
-        int[] bindOrderToSourceIndex, int workerId, int maxWriteRetries,
+    private CounterRowWriteStrategy(WorkerLog log, ISession targetSession, PreparedStatement preparedInsert,
+        int[] bindOrderToSourceIndex, int maxWriteRetries,
         int counterBindCount, PreparedStatement targetSelectByPk)
     {
         _log = log;
         _targetSession = targetSession;
         _preparedInsert = preparedInsert;
         _bindOrderToSourceIndex = bindOrderToSourceIndex;
-        _workerId = workerId;
         _retryPolicy = RetryPolicy.Linear(maxWriteRetries, TimeSpan.FromMilliseconds(500));
         _counterBindCount = counterBindCount;
         _targetSelectByPk = targetSelectByPk;
@@ -65,11 +63,11 @@ internal sealed class CounterRowWriteStrategy : IRowWriteStrategy
     /// prepares the SELECT-by-PK used for read-modify-write.
     /// </summary>
     public static async Task<CounterRowWriteStrategy> CreateAsync(
-        MigrationLog log, ISession targetSession, PreparedStatement preparedInsert,
+        WorkerLog log, ISession targetSession, PreparedStatement preparedInsert,
         int[] bindOrderToSourceIndex, IReadOnlyList<string> bindOrder,
         string targetKeyspace, string targetTable,
         IEnumerable<string> counterColumnNames,
-        int workerId, int maxWriteRetries)
+        int maxWriteRetries)
     {
         var counterNames = new HashSet<string>(counterColumnNames, StringComparer.OrdinalIgnoreCase);
 
@@ -91,7 +89,7 @@ internal sealed class CounterRowWriteStrategy : IRowWriteStrategy
         var targetSelectByPk = await targetSession.PrepareAsync(selectCql);
 
         return new CounterRowWriteStrategy(log, targetSession, preparedInsert, bindOrderToSourceIndex,
-            workerId, maxWriteRetries, counterBindCount, targetSelectByPk);
+            maxWriteRetries, counterBindCount, targetSelectByPk);
     }
 
     public Task WriteRowAsync(object[] sourceRow, PipelineContext ctx, WriteCounters counters, int rowIndex)
@@ -99,7 +97,7 @@ internal sealed class CounterRowWriteStrategy : IRowWriteStrategy
         return RowWriteRetry.ExecuteAsync(
             attempt: () => ReadModifyWriteAsync(sourceRow),
             policy: _retryPolicy,
-            log: _log, workerId: _workerId, rowIndex: rowIndex, rowKind: "Counter row",
+            log: _log, rowIndex: rowIndex, rowKind: "Counter row",
             ctx: ctx, counters: counters);
     }
 

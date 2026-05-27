@@ -15,22 +15,20 @@ namespace CassandraMigrationProcessor.DataTransfer.BulkCopy;
 /// </summary>
 internal sealed class RegularRowWriteStrategy : IRowWriteStrategy
 {
-    private readonly MigrationLog _log;
+    private readonly WorkerLog _log;
     private readonly ISession _targetSession;
     private readonly PreparedStatement _preparedInsert;
     private readonly int[] _bindOrderToSourceIndex;
-    private readonly int _workerId;
     private readonly RetryPolicy _retryPolicy;
     private readonly bool _bindOrderIsIdentity;
 
-    public RegularRowWriteStrategy(MigrationLog log, ISession targetSession, PreparedStatement preparedInsert,
-        int[] bindOrderToSourceIndex, int workerId, int maxWriteRetries)
+    public RegularRowWriteStrategy(WorkerLog log, ISession targetSession, PreparedStatement preparedInsert,
+        int[] bindOrderToSourceIndex, int maxWriteRetries)
     {
         _log = log;
         _targetSession = targetSession;
         _preparedInsert = preparedInsert;
         _bindOrderToSourceIndex = bindOrderToSourceIndex;
-        _workerId = workerId;
         _retryPolicy = RetryPolicy.Linear(maxWriteRetries, System.TimeSpan.FromMilliseconds(500));
         _bindOrderIsIdentity = IsIdentityMap(bindOrderToSourceIndex);
     }
@@ -67,7 +65,7 @@ internal sealed class RegularRowWriteStrategy : IRowWriteStrategy
         return RowWriteRetry.ExecuteAsync(
             attempt: () => _targetSession.ExecuteAsync(bound),
             policy: _retryPolicy,
-            log: _log, workerId: _workerId, rowIndex: rowIndex, rowKind: "Row",
+            log: _log, rowIndex: rowIndex, rowKind: "Row",
             ctx: ctx, counters: counters);
     }
 }

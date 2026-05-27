@@ -26,8 +26,7 @@ internal static class RowWriteRetry
     public static async Task ExecuteAsync(
         Func<Task> attempt,
         RetryPolicy policy,
-        MigrationLog log,
-        int workerId,
+        WorkerLog log,
         int rowIndex,
         string rowKind,
         PipelineContext ctx,
@@ -48,7 +47,7 @@ internal static class RowWriteRetry
             {
                 if (ExceptionClassifier.IsFatal(ex))
                 {
-                    log.WriteLine($"[W{workerId}] FATAL {rowKind} {rowIndex}: {ex.GetType().Name}: {ex.Message}",
+                    log.WriteLine($"FATAL {rowKind} {rowIndex}: {ex.GetType().Name}: {ex.Message}",
                         LogType.Error);
                     Interlocked.Exchange(ref ctx.Counters.FatalErrorFlag, 1);
                     Interlocked.Increment(ref counters.Failed);
@@ -62,7 +61,7 @@ internal static class RowWriteRetry
                 }
 
                 Interlocked.Increment(ref counters.Failed);
-                log.WriteLine($"[W{workerId}] {rowKind} {rowIndex} FAILED after {n} attempt(s): {ex.GetType().Name}: {ex.Message}",
+                log.WriteLine($"{rowKind} {rowIndex} FAILED after {n} attempt(s): {ex.GetType().Name}: {ex.Message}",
                     LogType.Error);
 
                 if (!ExceptionClassifier.IsTransient(ex))

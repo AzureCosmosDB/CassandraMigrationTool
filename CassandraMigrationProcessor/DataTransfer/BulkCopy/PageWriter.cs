@@ -21,19 +21,17 @@ namespace CassandraMigrationProcessor.DataTransfer.BulkCopy;
 /// </summary>
 internal sealed class PageWriter : IDisposable
 {
-    private readonly MigrationLog _log;
+    private readonly WorkerLog _log;
     private readonly CancellationToken _ct;
     private readonly ISession _targetSession;
     private readonly IRowWriteStrategy _rowStrategy;
-    private readonly int _workerId;
     private readonly int _pageSize;
 
-    private PageWriter(MigrationLog log, ISession targetSession, IRowWriteStrategy rowStrategy,
-        int pageSize, int workerId, CancellationToken cancellationToken)
+    private PageWriter(WorkerLog log, ISession targetSession, IRowWriteStrategy rowStrategy,
+        int pageSize, CancellationToken cancellationToken)
     {
         _log = log;
         _ct = cancellationToken;
-        _workerId = workerId;
         _pageSize = pageSize;
         _targetSession = targetSession;
         _rowStrategy = rowStrategy;
@@ -45,9 +43,9 @@ internal sealed class PageWriter : IDisposable
     /// and selects the right <see cref="IRowWriteStrategy"/> for the
     /// table shape.
     /// </summary>
-    public static async Task<PageWriter> CreateAsync(MigrationLog log, WorkerConfig config, int pageSize, int workerId, int maxWriteRetries, CancellationToken cancellationToken)
+    public static async Task<PageWriter> CreateAsync(WorkerLog log, WorkerConfig config, int pageSize, int maxWriteRetries, CancellationToken cancellationToken)
     {
-        var targetSession = CassandraClientFactory.CreateTargetSession(log, config.TargetConnection, "");
+        var targetSession = CassandraClientFactory.CreateTargetSession(log.Inner, config.TargetConnection, "");
         var (ps, bindOrder) = await CassandraQueries.PrepareInsertAsync(
             targetSession, config.Context.TargetKeyspaceName, config.Context.TargetTableName, config.Columns);
 
@@ -72,16 +70,16 @@ internal sealed class PageWriter : IDisposable
         IRowWriteStrategy strategy = isCounterTable
             ? await CounterRowWriteStrategy.CreateAsync(log, targetSession, ps, bindOrderToSourceIndex,
                 bindOrder, config.Context.TargetKeyspaceName, config.Context.TargetTableName,
-                counterColumns, workerId, maxWriteRetries)
+                counterColumns, maxWriteRetries)
             : new RegularRowWriteStrategy(log, targetSession, ps, bindOrderToSourceIndex,
-                workerId, maxWriteRetries);
+                maxWriteRetries);
 
-        var writer = new PageWriter(log, targetSession, strategy, pageSize, workerId, cancellationToken);
+        var writer = new PageWriter(log, targetSession, strategy, pageSize, cancellationToken);
 
         ISession? sourceSession = null;
         try
         {
-            sourceSession = CassandraClientFactory.CreateSourceSession(log, config.SourceConnection, config.Context.KeyspaceName);
+            sourceSession = CassandraClientFactory.CreateSourceSession(log.Inner, config.SourceConnection, config.Context.KeyspaceName);
             var allUdts = await SchemaManager.GetUserDefinedTypesAsync(sourceSession, config.Context.KeyspaceName);
             var requiredUdts = SchemaManager.FilterUdtsReferencedByTable(
                 allUdts, config.Columns.Select(c => c.Type));
@@ -89,7 +87,7 @@ internal sealed class PageWriter : IDisposable
         }
         catch (Exception ex)
         {
-            log.WriteLine($"[W{workerId}] UDT mapping registration on target failed: {ex.Message}", LogType.Warning);
+            log.WriteLine($"UDT mapping registration on target failed: {ex.Message}", LogType.Warning);
         }
         finally
         {
@@ -138,7 +136,7 @@ internal sealed class PageWriter : IDisposable
         if (counters.Failed == 0) workChunk.IsCompleted = true;
         else
         {
-            _log.WriteLine($"[W{_workerId}] {counters.Failed}/{rows.Count} writes failed — checkpoint NOT advanced (will retry on resume)",
+            _log.WriteLine($"{counters.Failed}/{rows.Count} writes failed — checkpoint NOT advanced (will retry on resume)",
                 LogType.Warning);
         }
 

@@ -13,9 +13,8 @@ namespace CassandraMigrationProcessor.DataTransfer.BulkCopy;
 /// </summary>
 internal class BulkCopyWorker
 {
-    private readonly MigrationLog _log;
     private readonly CancellationToken _ct;
-    private readonly int _workerId;
+    private readonly WorkerLog _workerLog;
     private readonly int _pageSize;
     private readonly int _maxReadRetries;
     private readonly int _maxWriteRetries;
@@ -23,9 +22,9 @@ internal class BulkCopyWorker
     public BulkCopyWorker(MigrationLog log, CancellationToken cancellationToken, int workerId,
         int pageSize, int maxReadRetries, int maxWriteRetries)
     {
-        _log = log ?? throw new ArgumentNullException(nameof(log));
+        if (log == null) throw new ArgumentNullException(nameof(log));
         _ct = cancellationToken;
-        _workerId = workerId;
+        _workerLog = new WorkerLog(log, workerId);
         _pageSize = pageSize;
         _maxReadRetries = maxReadRetries;
         _maxWriteRetries = maxWriteRetries;
@@ -40,8 +39,8 @@ internal class BulkCopyWorker
         {
             try
             {
-                reader = await PageReader.CreateAsync(_log, ctx.Worker, _pageSize, _workerId, _maxReadRetries, _ct);
-                writer = await PageWriter.CreateAsync(_log, ctx.Worker, _pageSize, _workerId, _maxWriteRetries, _ct);
+                reader = await PageReader.CreateAsync(_workerLog, ctx.Worker, _pageSize, _maxReadRetries, _ct);
+                writer = await PageWriter.CreateAsync(_workerLog, ctx.Worker, _pageSize, _maxWriteRetries, _ct);
             }
             catch (OperationCanceledException)
             {
@@ -55,7 +54,7 @@ internal class BulkCopyWorker
                 // session auth failure) leave the worker with no way to do
                 // any work. Treat as fatal so the job is marked Failed
                 // instead of silently completing with 0 rows copied.
-                _log.WriteLine($"[W{_workerId}] FATAL: worker init failed: {ex.GetType().Name}: {ex.Message}", LogType.Error);
+                _workerLog.WriteLine($"FATAL: worker init failed: {ex.GetType().Name}: {ex.Message}", LogType.Error);
                 Interlocked.Exchange(ref ctx.Counters.FatalErrorFlag, 1);
                 ctx.Counters.WorkerErrors.Add(TaskResult.Abort);
                 ctx.PartitionPool.Writer.TryComplete();
@@ -76,7 +75,7 @@ internal class BulkCopyWorker
                         var result = await reader.ReadAsync(partition, ctx);
                         if (result == null)
                         {
-                            _log.WriteLine($"[W{_workerId}] FATAL: Read failed — failing job", LogType.Error);
+                            _workerLog.WriteLine($"FATAL: Read failed — failing job", LogType.Error);
                             Interlocked.Exchange(ref ctx.Counters.FatalErrorFlag, 1);
                             break;
                         }
@@ -92,7 +91,7 @@ internal class BulkCopyWorker
                         if (result.WorkChunk.IsCompleted)
                             SaveCheckpoint(partition, ctx);
                         else
-                            _log.WriteLine($"[W{_workerId}] Checkpoint NOT advanced — page had failures", LogType.Warning);
+                            _workerLog.WriteLine($"Checkpoint NOT advanced — page had failures", LogType.Warning);
                     }
 
                     if (partition.IsExhausted) MarkCompleted(partition, ctx);
@@ -107,11 +106,11 @@ internal class BulkCopyWorker
                 }
                 catch (Exception ex)
                 {
-                    _log.WriteLine($"[W{_workerId}] Error: {ex.GetType().Name}: {ex.Message}", LogType.Error);
+                    _workerLog.WriteLine($"Error: {ex.GetType().Name}: {ex.Message}", LogType.Error);
 
                     if (ExceptionClassifier.IsFatal(ex))
                     {
-                        _log.WriteLine($"[W{_workerId}] FATAL — failing job", LogType.Error);
+                        _workerLog.WriteLine($"FATAL — failing job", LogType.Error);
                         Interlocked.Exchange(ref ctx.Counters.FatalErrorFlag, 1);
                         ctx.Counters.WorkerErrors.Add(TaskResult.Abort);
                     }
@@ -142,7 +141,7 @@ internal class BulkCopyWorker
             // Backstop for any exception that escapes the per-partition
             // try/catch above. Without this, a worker task could fault
             // silently and DetermineOutcome would still return Success.
-            _log.WriteLine($"[W{_workerId}] FATAL: unhandled worker exception: {ex.GetType().Name}: {ex.Message}", LogType.Error);
+            _workerLog.WriteLine($"FATAL: unhandled worker exception: {ex.GetType().Name}: {ex.Message}", LogType.Error);
             Interlocked.Exchange(ref ctx.Counters.FatalErrorFlag, 1);
             ctx.Counters.WorkerErrors.Add(TaskResult.Abort);
             ctx.PartitionPool.Writer.TryComplete();

@@ -16,10 +16,9 @@ namespace CassandraMigrationProcessor.DataTransfer.BulkCopy;
 /// </summary>
 internal class PageReader : IDisposable
 {
-    private readonly MigrationLog _log;
+    private readonly WorkerLog _log;
     private readonly CancellationToken _ct;
     private readonly ISession _sourceSession;
-    private readonly int _workerId;
     private readonly List<string> _columnNames;
     private readonly int _pageSize;
     private readonly int _maxReadRetries;
@@ -27,18 +26,17 @@ internal class PageReader : IDisposable
     private const int ReadTimeoutMs = 60_000;
     private const int RetryDelayMs = 5000;
 
-    private PageReader(MigrationLog log,
+    private PageReader(WorkerLog log,
         WorkerConfig config, int pageSize,
-        int workerId, int maxReadRetries,
+        int maxReadRetries,
         CancellationToken cancellationToken)
     {
         _log = log;
         _ct = cancellationToken;
-        _workerId = workerId;
         _columnNames = config.Columns.Select(c => c.Name).ToList();
         _pageSize = pageSize;
         _maxReadRetries = maxReadRetries;
-        _sourceSession = CassandraClientFactory.CreateSourceSession(log, config.SourceConnection, config.Context.KeyspaceName);
+        _sourceSession = CassandraClientFactory.CreateSourceSession(log.Inner, config.SourceConnection, config.Context.KeyspaceName);
     }
 
     /// <summary>
@@ -48,11 +46,11 @@ internal class PageReader : IDisposable
     /// without serialization errors. Only the UDTs actually referenced by
     /// this table's columns are registered.
     /// </summary>
-    public static async Task<PageReader> CreateAsync(MigrationLog log,
-        WorkerConfig config, int pageSize, int workerId, int maxReadRetries,
+    public static async Task<PageReader> CreateAsync(WorkerLog log,
+        WorkerConfig config, int pageSize, int maxReadRetries,
         CancellationToken cancellationToken)
     {
-        var reader = new PageReader(log, config, pageSize, workerId, maxReadRetries, cancellationToken);
+        var reader = new PageReader(log, config, pageSize, maxReadRetries, cancellationToken);
         try
         {
             var allUdts = await SchemaManager.GetUserDefinedTypesAsync(reader._sourceSession, config.Context.KeyspaceName);
@@ -62,7 +60,7 @@ internal class PageReader : IDisposable
         }
         catch (Exception ex)
         {
-            log.WriteLine($"[W{workerId}] UDT mapping registration on source failed: {ex.Message}", LogType.Warning);
+            log.WriteLine($"UDT mapping registration on source failed: {ex.Message}", LogType.Warning);
         }
         return reader;
     }
@@ -99,7 +97,7 @@ internal class PageReader : IDisposable
             catch (System.Exception ex) when (attempt < _maxReadRetries
                 && ExceptionClassifier.IsTransient(ex))
             {
-                _log.WriteLine($"[W{_workerId}] Read timeout (attempt {attempt}/{_maxReadRetries})",
+                _log.WriteLine($"Read timeout (attempt {attempt}/{_maxReadRetries})",
                     LogType.Warning);
                 await Task.Delay(attempt * RetryDelayMs, _ct);
             }
