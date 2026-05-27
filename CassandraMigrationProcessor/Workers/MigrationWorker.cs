@@ -236,7 +236,7 @@ public class MigrationWorker
 
             if (mu.BulkCopyPhase == BulkCopyPhase.NotStarted)
             {
-                mu.BulkCopyPhase = BulkCopyPhase.InitializingDestination;
+                mu.BulkCopyPhase = BulkCopyPhase.PreparingSchema;
                 MigrationJobContext.Instance.SaveMigrationUnit(mu, true);
             }
 
