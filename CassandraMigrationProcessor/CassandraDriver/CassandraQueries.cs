@@ -158,11 +158,12 @@ public static class CassandraQueries
     /// rather than relying on positional alignment with the source
     /// schema.
     /// </summary>
-    public static async Task<(PreparedStatement Ps, List<string> ColumnNames)>
+    public static async Task<(PreparedStatement Ps, List<string> ColumnNames, bool IsCounterTable, IReadOnlyList<string> CounterColumns)>
         PrepareInsertAsync(ISession session, string keyspace, string table,
             List<(string Name, string Type, string Kind, string ClusteringOrder, int Position)> columns)
     {
         bool isCounterTable = columns.Any(IsCounterColumn);
+        IReadOnlyList<string> counterColumnNames;
 
         string cql;
         List<string> bindOrder;
@@ -187,6 +188,7 @@ public static class CassandraQueries
             bindOrder = counterCols.Select(c => c.Name)
                 .Concat(keyCols.Select(c => c.Name))
                 .ToList();
+            counterColumnNames = counterCols.Select(c => c.Name).ToList();
         }
         else
         {
@@ -201,10 +203,11 @@ public static class CassandraQueries
                 $"VALUES ({string.Join(", ", placeholders)})";
 
             bindOrder = columns.Select(c => c.Name).ToList();
+            counterColumnNames = Array.Empty<string>();
         }
 
         var ps = await session.PrepareAsync(cql);
-        return (ps, bindOrder);
+        return (ps, bindOrder, isCounterTable, counterColumnNames);
     }
 
     private static bool IsCounterColumn(

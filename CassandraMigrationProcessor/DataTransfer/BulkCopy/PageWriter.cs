@@ -46,34 +46,7 @@ internal sealed class PageWriter : IDisposable
     public static async Task<PageWriter> CreateAsync(WorkerLog log, WorkerConfig config, int pageSize, int maxWriteRetries, CancellationToken cancellationToken)
     {
         var targetSession = CassandraClientFactory.CreateTargetSession(log.Inner, config.TargetConnection, "");
-        var (ps, bindOrder) = await CassandraQueries.PrepareInsertAsync(
-            targetSession, config.Context.TargetKeyspaceName, config.Context.TargetTableName, config.Columns);
-
-        var sourceIndexByName = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-        for (int i = 0; i < config.Columns.Count; i++)
-            sourceIndexByName[config.Columns[i].Name] = i;
-        var bindOrderToSourceIndex = new int[bindOrder.Count];
-        for (int i = 0; i < bindOrder.Count; i++)
-            bindOrderToSourceIndex[i] = sourceIndexByName[bindOrder[i]];
-
-        // Counter detection: Cassandra forbids mixing counter and
-        // non-counter regular columns in the same table, so the presence
-        // of any single counter column means every non-PK column is a
-        // counter and we need the UPDATE-shaped path with read-modify-write.
-        // Each strategy owns its own prep work; PageWriter only routes.
-        var counterColumns = config.Columns
-            .Where(c => string.Equals(c.Type, "counter", StringComparison.OrdinalIgnoreCase))
-            .Select(c => c.Name)
-            .ToList();
-        bool isCounterTable = counterColumns.Count > 0;
-
-        IRowWriteStrategy strategy = isCounterTable
-            ? await CounterRowWriteStrategy.CreateAsync(log, targetSession, ps, bindOrderToSourceIndex,
-                bindOrder, config.Context.TargetKeyspaceName, config.Context.TargetTableName,
-                counterColumns, maxWriteRetries)
-            : new RegularRowWriteStrategy(log, targetSession, ps, bindOrderToSourceIndex,
-                maxWriteRetries);
-
+        var strategy = await RowWriteStrategyFactory.CreateAsync(log, targetSession, config, maxWriteRetries);
         var writer = new PageWriter(log, targetSession, strategy, pageSize, cancellationToken);
 
         ISession? sourceSession = null;

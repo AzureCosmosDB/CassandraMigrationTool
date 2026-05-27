@@ -145,11 +145,12 @@ public class ReplayWorker
             .Where(c => !c.Name.StartsWith("system_", StringComparison.OrdinalIgnoreCase))
             .ToList();
 
-        return await CassandraQueries.PrepareInsertAsync(
+        var (ps, bindOrder, _, _) = await CassandraQueries.PrepareInsertAsync(
             targetSession,
             mu.GetEffectiveTargetKeyspaceName(),
             mu.GetEffectiveTargetTableName(),
             userColumns);
+        return (ps, bindOrder);
     }
 
     // ─── poll loop ──────────────────────────────────────────
