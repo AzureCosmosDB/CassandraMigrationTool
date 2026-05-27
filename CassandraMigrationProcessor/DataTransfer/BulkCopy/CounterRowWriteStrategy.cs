@@ -41,7 +41,7 @@ internal sealed class CounterRowWriteStrategy : IRowWriteStrategy
     private readonly PreparedStatement _preparedInsert;
     private readonly int[] _bindOrderToSourceIndex;
     private readonly int _workerId;
-    private readonly int _maxWriteRetries;
+    private readonly RetryPolicy _retryPolicy;
     private readonly int _counterBindCount;
     private readonly PreparedStatement _targetSelectByPk;
 
@@ -54,7 +54,7 @@ internal sealed class CounterRowWriteStrategy : IRowWriteStrategy
         _preparedInsert = preparedInsert;
         _bindOrderToSourceIndex = bindOrderToSourceIndex;
         _workerId = workerId;
-        _maxWriteRetries = maxWriteRetries;
+        _retryPolicy = RetryPolicy.Linear(maxWriteRetries, TimeSpan.FromMilliseconds(500));
         _counterBindCount = counterBindCount;
         _targetSelectByPk = targetSelectByPk;
     }
@@ -98,7 +98,7 @@ internal sealed class CounterRowWriteStrategy : IRowWriteStrategy
     {
         return RowWriteRetry.ExecuteAsync(
             attempt: () => ReadModifyWriteAsync(sourceRow),
-            maxAttempts: _maxWriteRetries,
+            policy: _retryPolicy,
             log: _log, workerId: _workerId, rowIndex: rowIndex, rowKind: "Counter row",
             ctx: ctx, counters: counters);
     }

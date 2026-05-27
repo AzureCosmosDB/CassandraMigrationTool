@@ -20,7 +20,7 @@ internal sealed class RegularRowWriteStrategy : IRowWriteStrategy
     private readonly PreparedStatement _preparedInsert;
     private readonly int[] _bindOrderToSourceIndex;
     private readonly int _workerId;
-    private readonly int _maxWriteRetries;
+    private readonly RetryPolicy _retryPolicy;
     private readonly bool _bindOrderIsIdentity;
 
     public RegularRowWriteStrategy(MigrationLog log, ISession targetSession, PreparedStatement preparedInsert,
@@ -31,7 +31,7 @@ internal sealed class RegularRowWriteStrategy : IRowWriteStrategy
         _preparedInsert = preparedInsert;
         _bindOrderToSourceIndex = bindOrderToSourceIndex;
         _workerId = workerId;
-        _maxWriteRetries = maxWriteRetries;
+        _retryPolicy = RetryPolicy.Linear(maxWriteRetries, System.TimeSpan.FromMilliseconds(500));
         _bindOrderIsIdentity = IsIdentityMap(bindOrderToSourceIndex);
     }
 
@@ -66,7 +66,7 @@ internal sealed class RegularRowWriteStrategy : IRowWriteStrategy
 
         return RowWriteRetry.ExecuteAsync(
             attempt: () => _targetSession.ExecuteAsync(bound),
-            maxAttempts: _maxWriteRetries,
+            policy: _retryPolicy,
             log: _log, workerId: _workerId, rowIndex: rowIndex, rowKind: "Row",
             ctx: ctx, counters: counters);
     }

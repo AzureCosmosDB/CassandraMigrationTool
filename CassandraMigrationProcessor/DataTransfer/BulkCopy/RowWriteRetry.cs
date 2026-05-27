@@ -13,18 +13,19 @@ namespace CassandraMigrationProcessor.DataTransfer.BulkCopy;
 /// timing, fatal/transient exception classification, error logging,
 /// fatal-flag propagation, and <see cref="WriteCounters"/> accounting.
 /// Strategies provide only the per-attempt body via
-/// <paramref name="attempt"/> — that callback is re-invoked on every
-/// retry, which is what makes counter read-modify-write idempotent
-/// (each attempt re-reads the current target before writing).
+/// <paramref name="attempt"/> and a <see cref="RetryPolicy"/> that
+/// controls max attempts and inter-attempt backoff — that callback is
+/// re-invoked on every retry, which is what makes counter
+/// read-modify-write idempotent (each attempt re-reads the current
+/// target before writing).
 /// </summary>
 internal static class RowWriteRetry
 {
     public const int WriteTimeoutMs = 60_000;
-    private const int RetryDelayMs = 500;
 
     public static async Task ExecuteAsync(
         Func<Task> attempt,
-        int maxAttempts,
+        RetryPolicy policy,
         MigrationLog log,
         int workerId,
         int rowIndex,
@@ -32,7 +33,7 @@ internal static class RowWriteRetry
         PipelineContext ctx,
         WriteCounters counters)
     {
-        for (int n = 1; n <= maxAttempts; n++)
+        for (int n = 1; n <= policy.MaxAttempts; n++)
         {
             var start = Stopwatch.GetTimestamp();
             try
@@ -54,9 +55,9 @@ internal static class RowWriteRetry
                     return;
                 }
 
-                if (ExceptionClassifier.IsTransient(ex) && n < maxAttempts)
+                if (ExceptionClassifier.IsTransient(ex) && n < policy.MaxAttempts)
                 {
-                    await Task.Delay(RetryDelayMs * n);
+                    await Task.Delay(policy.DelayBeforeRetry(n));
                     continue;
                 }
 
