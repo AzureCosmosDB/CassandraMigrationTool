@@ -4,8 +4,8 @@ using CassandraMigrationProcessor.Infrastructure;
 using CassandraMigrationProcessor.CassandraDriver;
 using CassandraMigrationProcessor.Models;
 using CassandraMigrationProcessor.DataTransfer.BulkCopy;
-using CassandraMigrationProcessor.DataTransfer.ChangeFeed;
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
@@ -16,6 +16,13 @@ namespace CassandraMigrationProcessor.DataTransfer;
 /// Orchestrates bulk copy for each table: session lifecycle,
 /// chunk retry loop, and the per-chunk pipeline
 /// (count → discover → seed → schema → execute → finalize).
+///
+/// For online jobs (CDCMode != Offline), the
+/// <see cref="DataCopyWorker"/> pool continues running past the
+/// bulk-drain handoff to tail the change feed indefinitely.
+/// Long-lived pools are retained on this engine and shut down when
+/// <see cref="StopProcessing"/>, <see cref="PauseProcessing"/>, or
+/// <see cref="Dispose"/> are called.
 /// </summary>
 public class TableMigrationEngine : IDisposable
 {
@@ -25,11 +32,9 @@ public class TableMigrationEngine : IDisposable
     private readonly ISession _source;
     private readonly ISession _target;
     private readonly CancellationTokenSource _cts;
-    private readonly ChangeFeedManager _changeFeedManager;
+    private readonly ConcurrentBag<WorkerPool> _longLivedPools = new();
 
     public volatile bool ProcessRunning;
-
-    public ChangeFeedManager ChangeFeed => _changeFeedManager;
 
     private TableMigrationEngine(MigrationLog log, AppSettings config, Job job,
         ISession source, ISession target,
@@ -44,7 +49,6 @@ public class TableMigrationEngine : IDisposable
             : new CancellationTokenSource();
         _source = source;
         _target = target;
-        _changeFeedManager = new ChangeFeedManager(log, job, config, _target, tokenRefreshManager);
     }
 
     /// <summary>
@@ -89,33 +93,12 @@ public class TableMigrationEngine : IDisposable
     private void Shutdown()
     {
         _cts?.Cancel();
-        _changeFeedManager.Stop();
+        // Cancellation flows into long-lived worker pools via the linked
+        // token; just dispose them so any leftover resources clean up.
+        foreach (var pool in _longLivedPools)
+            MigrationUtilities.SafeDispose(pool, "long-lived WorkerPool");
         MigrationJobContext.Instance.SaveMigrationJob(_migrationJob);
         ProcessRunning = false;
-    }
-
-    // ── Change Feed ──
-
-    public void FinalizeOrStartChangeFeed()
-    {
-        if (!MigrationUtilities.IsOnline(_migrationJob)
-            && MigrationUtilities.IsOfflineJobCompleted(_migrationJob))
-        {
-            if (!MigrationJobContext.Instance.ControlledPauseRequested
-                && _migrationJob.Status != JobStatus.Cancelled
-                && _migrationJob.Status != JobStatus.Paused)
-            {
-                _migrationLog.WriteLine($"Job {_migrationJob.Id} Completed", LogType.Info);
-                _migrationJob.Status = JobStatus.Completed;
-                MigrationJobContext.Instance.SaveMigrationJob(_migrationJob);
-            }
-            StopProcessing();
-        }
-        else if (!MigrationJobContext.Instance.ControlledPauseRequested)
-        {
-            _migrationLog.WriteLine("Invoke RunChangeFeedForAllTables.", LogType.Debug);
-            _changeFeedManager.StartAll(_cts.Token);
-        }
     }
 
     // ── Job Orchestration ──
@@ -140,7 +123,7 @@ public class TableMigrationEngine : IDisposable
             return TaskResult.Abort;
         }
 
-        if (tableMigration.CopyComplete)
+        if (tableMigration.CopyComplete && !MigrationUtilities.IsOnline(_migrationJob))
         {
             _migrationLog.WriteLine($"Copy for {context.KeyspaceName}.{context.TableName} already completed.", LogType.Debug);
             return TaskResult.Success;
@@ -148,7 +131,12 @@ public class TableMigrationEngine : IDisposable
 
         _migrationLog.WriteLine($"{context.KeyspaceName}.{context.TableName} Copy started", LogType.Info);
 
-        bool hasWorkRemaining = !tableMigration.CopyComplete && !_cts.Token.IsCancellationRequested;
+        bool isOnline = MigrationUtilities.IsOnline(_migrationJob);
+        // Online jobs always re-enter the pipeline so DataCopyWorker can
+        // resume tailing the change feed (replay phase) on any already-
+        // drained ranges.
+        bool hasWorkRemaining = (!tableMigration.CopyComplete || isOnline)
+            && !_cts.Token.IsCancellationRequested;
         if (hasWorkRemaining)
         {
             if (tableMigration.CopyChunks == null || tableMigration.CopyChunks.Count == 0)
@@ -167,7 +155,7 @@ public class TableMigrationEngine : IDisposable
                 double initialPercent = ((double)100 / tableMigration.CopyChunks.Count) * chunkIndex;
                 double contributionFactor = 1.0 / tableMigration.CopyChunks.Count;
 
-                if (tableMigration.CopyChunks[chunkIndex].IsDownloaded != true)
+                if (tableMigration.CopyChunks[chunkIndex].IsDownloaded != true || isOnline)
                 {
                     TaskResult result = await new RetryHelper().ExecuteWithRetryAsync(
                             () => ProcessChunkAsync(tableMigration, chunkIndex, context, initialPercent, contributionFactor),
@@ -210,13 +198,12 @@ public class TableMigrationEngine : IDisposable
                 tableMigration.CopyComplete = true;
                 TableMigrationMapper.UpdateParentJob(tableMigration);
 
-                await _changeFeedManager.AddTable(tableMigration, _cts.Token);
                 MigrationJobContext.Instance.SaveMigrationUnit(tableMigration, true);
 
-                if (!MigrationUtilities.IsOnline(_migrationJob))
+                if (!isOnline)
                     MigrationJobContext.Instance.MigrationUnitsCache.RemoveMigrationUnit(tableMigration.Id);
             }
-            else
+            else if (!isOnline)
             {
                 _migrationLog.WriteLine($"Copy for {context.KeyspaceName}.{context.TableName} had {failed} failed row(s). Job will retry on resume.", LogType.Error);
                 return TaskResult.Retry;
@@ -255,7 +242,8 @@ public class TableMigrationEngine : IDisposable
         // Discover + Seed → Schema → Execute → Finalize
         var seeder = new PartitionSeeder(_migrationLog);
         var (seedResult, allComplete) = await seeder.DiscoverAndSeedAsync(
-            context.SourceSession, tableMigration, context);
+            context.SourceSession, tableMigration, context,
+            enableReplay: MigrationUtilities.IsOnline(_migrationJob));
         if (allComplete)
         {
             MarkChunkComplete(tableMigration, chunkIndex);
@@ -278,6 +266,10 @@ public class TableMigrationEngine : IDisposable
 
         var executor = new WorkerExecutor(_migrationLog, _migrationJob, _pipelineConfig, _cts.Token);
         var execution = await executor.ExecuteAsync(request, seed, schema, _target);
+        // For online jobs, the worker pool is still tailing the change
+        // feed; retain it so engine teardown can cancel and dispose it.
+        if (execution.IsLongLived && execution.Pool != null)
+            _longLivedPools.Add(execution.Pool);
         var result = executor.Finalize(execution, request);
 
         // Post-pipeline bookkeeping
@@ -326,7 +318,8 @@ public class TableMigrationEngine : IDisposable
 
     public void Dispose()
     {
-        _changeFeedManager?.Dispose();
+        foreach (var pool in _longLivedPools)
+            MigrationUtilities.SafeDispose(pool, "long-lived WorkerPool");
         _cts?.Dispose();
         MigrationUtilities.SafeDispose(_target, "TableMigrationEngine target session");
         MigrationUtilities.SafeDispose(_source, "TableMigrationEngine source session");

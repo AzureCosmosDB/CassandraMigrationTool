@@ -77,10 +77,13 @@ internal sealed class PageWriter : IDisposable
 
     /// <summary>
     /// Writes extracted rows to the target cluster in parallel,
-    /// tracking progress and handling errors.
+    /// tracking progress and handling errors. Routes counters to
+    /// either bulk-copy or change-feed metrics based on the partition's
+    /// current phase.
     /// </summary>
     public async Task WriteAsync(List<object[]> rows,
         WorkChunk workChunk,
+        Partition partition,
         PipelineContext ctx)
     {
         if (rows.Count == 0)
@@ -119,8 +122,20 @@ internal sealed class PageWriter : IDisposable
 
         stopwatch.Stop();
         ctx.Tracker.AddWriteTime(counters.LatencySum, rows.Count);
-        ctx.Tracker.AddCopied(counters.Done);
-        ctx.Tracker.AddFailed(counters.Failed);
+
+        if (partition.Phase == PartitionPhase.Replay)
+        {
+            // Change-feed phase: route success/failure to CF counters,
+            // force per-page MU flush. Don't bump bulk-copy totals.
+            ctx.Tracker.AddReplayApplied(counters.Done, counters.LatencySum);
+            if (counters.Failed > 0)
+                ctx.Tracker.AddReplayErrors(counters.Failed);
+        }
+        else
+        {
+            ctx.Tracker.AddCopied(counters.Done);
+            ctx.Tracker.AddFailed(counters.Failed);
+        }
 
         long pageBytes = 0;
         foreach (var r in rows)

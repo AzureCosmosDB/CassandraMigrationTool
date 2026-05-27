@@ -46,12 +46,14 @@ public class CopyProgressTracker
     private readonly double _contributionFactor;
     private readonly long _totalRowCount;
     private long _lastCheckpointTicks;
+    private int _forceCheckpointFlush;
 
     private const int LogIntervalSeconds = 5;
 
     public long TotalCopied => _counters.TotalCopied;
     public long TotalFailed => _counters.TotalFailed;
     public long TotalSkipped => _counters.TotalSkipped;
+    internal TableMigration MigrationUnit => _migrationUnit;
 
     /// <summary>
     /// Call once when a worker thread starts.
@@ -112,6 +114,36 @@ public class CopyProgressTracker
     {
         _counters.AddCopied(count);
         LogIfDue();
+    }
+
+    /// <summary>
+    /// Called by each worker after applying a replay-phase page (post
+    /// bulk drain). Bumps the MU's change-feed counters and timestamps.
+    /// Always force-flushes the MU on the next UpdateMigrationUnit call
+    /// — CF pages are infrequent and each one is irreplaceable progress.
+    /// </summary>
+    public void AddReplayApplied(long count, long elapsedMs)
+    {
+        Interlocked.Add(ref _migrationUnit._changeFeedInsertEvents, count);
+        Interlocked.Add(ref _migrationUnit._changeFeedRowsInserted, count);
+        Interlocked.Add(ref _migrationUnit._changeFeedUpdatesInLastBatch, count);
+        _migrationUnit.ChangeFeedLastChecked = DateTime.UtcNow;
+
+        if (elapsedMs > 0 && count > 0)
+            _migrationUnit.ChangeFeedAvgWriteLatencyInMS = (double)elapsedMs / count;
+
+        // Force-flush on the next UpdateMigrationUnit call.
+        Volatile.Write(ref _forceCheckpointFlush, 1);
+    }
+
+    /// <summary>
+    /// Called by each worker after a replay-phase page returns errors.
+    /// Bumps the MU's change-feed error counter.
+    /// </summary>
+    public void AddReplayErrors(long count)
+    {
+        Interlocked.Add(ref _migrationUnit._changeFeedErrors, count);
+        Volatile.Write(ref _forceCheckpointFlush, 1);
     }
 
     /// <summary>Track data volume written.</summary>
@@ -176,7 +208,10 @@ public class CopyProgressTracker
 
         long prevTicks = Volatile.Read(ref _lastCheckpointTicks);
         long nowTicks = DateTime.UtcNow.Ticks;
-        if ((nowTicks - prevTicks) / TimeSpan.TicksPerSecond >= MigrationDefaults.CheckpointIntervalSeconds
+        bool forceFlush = Interlocked.Exchange(ref _forceCheckpointFlush, 0) != 0;
+        bool intervalElapsed =
+            (nowTicks - prevTicks) / TimeSpan.TicksPerSecond >= MigrationDefaults.CheckpointIntervalSeconds;
+        if ((forceFlush || intervalElapsed)
             && Interlocked.CompareExchange(ref _lastCheckpointTicks, nowTicks, prevTicks) == prevTicks)
         {
             MigrationJobContext.Instance.SaveMigrationUnit(_migrationUnit, true);

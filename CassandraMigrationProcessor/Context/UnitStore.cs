@@ -118,7 +118,10 @@ public static class UnitStore
         foreach (var summary in job.Tables)
         {
             if (!MigrationUtilities.IsMigrationUnitValid(summary)) continue;
-            if (summary.CopyComplete) continue;
+            // For online jobs, include CopyComplete tables too — the
+            // merged DataCopyWorker re-seeds their feed ranges in
+            // Replay phase to keep tailing the change feed.
+            if (summary.CopyComplete && !MigrationUtilities.IsOnline(job)) continue;
             if (summary.SkippedDueToMaxRetries) continue;
 
             var mu = MigrationJobContext.Instance.GetMigrationUnit(summary.Id);

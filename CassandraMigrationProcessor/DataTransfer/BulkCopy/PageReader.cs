@@ -67,8 +67,11 @@ internal class PageReader : IDisposable
 
     public void Dispose() => MigrationUtilities.SafeDispose(_sourceSession, "PageReader source session");
 
-    /// <summary>Result of a page read attempt.</summary>
-    internal record ReadResult(List<object[]> Rows, WorkChunk WorkChunk, bool IsLastPage);
+    /// <summary>Result of a page read attempt. IsEmptyPage=true means
+    /// rows.Count==0 (no new data this poll). Cosmos still returns a
+    /// non-null PagingState which is stored on the partition as the
+    /// forward anchor for the next poll.</summary>
+    internal record ReadResult(List<object[]> Rows, WorkChunk WorkChunk, bool IsEmptyPage);
 
     /// <summary>
     /// Reads a single page, updates partition state and tracker.
@@ -124,15 +127,26 @@ internal class PageReader : IDisposable
         }
 
         stopwatch.Stop();
-        bool isLastPage = rows.Count == 0 || nextPaging == null;
+        // Cosmos's change-feed query (FROM_START + feed range) always
+        // returns a non-null PagingState — even on empty pages — so
+        // "no more new rows right now" is signalled by rows.Count==0
+        // alone. The same query reissued with the returned PagingState
+        // returns either new events (when they arrive) or another empty
+        // page. Bulk and replay differ only in what the worker does
+        // with an empty page (transition vs cooldown vs complete).
+        bool isEmptyPage = rows.Count == 0;
 
-        // Update partition and tracker — caller doesn't need to
+        // Update partition and tracker — caller doesn't need to.
+        // In Replay phase, a partition is NEVER exhausted (the change
+        // feed is open-ended); IsExhausted=true is reserved for the
+        // bulk-phase drain trigger.
         ctx.Tracker.AddRead(rows.Count);
         ctx.Tracker.AddReadTime(stopwatch.ElapsedMilliseconds);
         var workChunk = partition.AddChunkAndTrim(nextPaging);
-        partition.SetPageState(nextPaging, isLastPage);
+        bool markExhausted = isEmptyPage && partition.Phase == PartitionPhase.Bulk;
+        partition.SetPageState(nextPaging, markExhausted);
 
-        return new ReadResult(rows, workChunk, isLastPage);
+        return new ReadResult(rows, workChunk, isEmptyPage);
     }
 
     internal static string BuildSelectCql(TableContext context, string range)

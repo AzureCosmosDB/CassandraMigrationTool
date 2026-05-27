@@ -1,6 +1,15 @@
 using System.Collections.Generic;
 
 namespace CassandraMigrationProcessor.DataTransfer.BulkCopy;
+
+/// <summary>
+/// Partition lifecycle phase. Bulk = draining the initial snapshot
+/// via COSMOS_CHANGEFEED_FROM_START(); Replay = tailing post-drain
+/// for ongoing changes using the same query + the last paging state
+/// returned by Cosmos. Phase only flips Bulk → Replay, never back.
+/// </summary>
+internal enum PartitionPhase { Bulk, Replay }
+
 /// <summary>
 /// Represents a feed range partition with its work chunk list.
 /// Uses LinkedList for clean node management.
@@ -10,14 +19,16 @@ internal class Partition
     public string FeedRange { get; }
     public bool IsExhausted { get; private set; }
     public byte[]? LastPagingState { get; private set; }
+    public PartitionPhase Phase { get; private set; }
 
     private readonly LinkedList<WorkChunk> _chunks = new();
     private readonly object _lock = new();
 
-    public Partition(string feedRange, byte[]? initialPagingState)
+    public Partition(string feedRange, byte[]? initialPagingState, PartitionPhase phase = PartitionPhase.Bulk)
     {
         FeedRange = feedRange;
         LastPagingState = initialPagingState;
+        Phase = phase;
 
         if (initialPagingState != null)
             _chunks.AddLast(new WorkChunk { ContinuationToken = initialPagingState, IsCompleted = true });
@@ -29,6 +40,20 @@ internal class Partition
         {
             LastPagingState = pagingState;
             if (isExhausted) IsExhausted = true;
+        }
+    }
+
+    /// <summary>
+    /// Transitions the partition from Bulk to Replay phase. Called by
+    /// the worker on the first empty page after the snapshot drains.
+    /// LastPagingState is preserved — it is the handoff anchor that
+    /// replay polls forward from.
+    /// </summary>
+    public void TransitionToReplay()
+    {
+        lock (_lock)
+        {
+            Phase = PartitionPhase.Replay;
         }
     }
 

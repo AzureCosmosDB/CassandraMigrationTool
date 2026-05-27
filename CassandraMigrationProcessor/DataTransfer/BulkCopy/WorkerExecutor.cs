@@ -32,7 +32,9 @@ internal class WorkerExecutor
     public record ExecutionResult(
         CopyProgressTracker Tracker,
         PipelineContext Context,
-        TimeSpan Elapsed);
+        TimeSpan Elapsed,
+        WorkerPool? Pool,
+        bool IsLongLived);
 
     public async Task<ExecutionResult> ExecuteAsync(
         PipelineRequest request, PartitionSeeder.SeedResult seed,
@@ -44,6 +46,7 @@ internal class WorkerExecutor
         int maxWriteRetries = _pipelineConfig.MaxWriteRetries;
         var ctx0 = request.Context;
         long priorCopied = request.TableMigration.CopyRowsCopied;
+        bool enableReplay = MigrationUtilities.IsOnline(_job);
 
         var tracker = new CopyProgressTracker(_log, workerCount, priorCopied,
             request.TableMigration,
@@ -53,18 +56,38 @@ internal class WorkerExecutor
 
         var ctx = new PipelineContext(
             seed.Pool,
-            new WorkerConfig(_job.SourceConnection, _job.TargetConnection, schema.Columns, ctx0),
+            new WorkerConfig(_job.SourceConnection, _job.TargetConnection, schema.Columns, ctx0,
+                EnableReplay: enableReplay,
+                ReplayCooldownMs: _pipelineConfig.ChangeFeedPollIntervalMs),
             new RangeState(seed.Completed, seed.Checkpoints, request.FeedRanges),
             new PipelineCounters(),
             tracker);
 
-        _log.WriteLine($"Launching {workerCount} workers for {ctx0.KeyspaceName}.{ctx0.TableName} ({seed.PendingCount} feed ranges, page size={pageSize}, max read retries={maxReadRetries}, max write retries={maxWriteRetries})...", LogType.Info);
-        using var pool = new WorkerPool(_log, workerCount);
-        pool.Start(workerId => new BulkCopyWorker(_log, _ct, workerId, pageSize, maxReadRetries, maxWriteRetries).RunAsync(ctx));
-        await pool.WaitForCompletionAsync();
-        ctx.PartitionPool.Writer.TryComplete();
+        _log.WriteLine($"Launching {workerCount} workers for {ctx0.KeyspaceName}.{ctx0.TableName} " +
+            $"({seed.PendingCount} feed ranges, page size={pageSize}, max read retries={maxReadRetries}, " +
+            $"max write retries={maxWriteRetries}, replay={(enableReplay ? "on" : "off")})...", LogType.Info);
 
-        return new ExecutionResult(tracker, ctx, stopwatch.Elapsed);
+        // Online jobs: workers tail forever. Keep the pool alive past
+        // this method's return so MigrationJobRunner can wait on the
+        // job-level cancellation. Offline jobs: pool completes when all
+        // partitions are drained.
+        var pool = new WorkerPool(_log, workerCount);
+        pool.Start(workerId => new DataCopyWorker(_log, _ct, workerId, pageSize, maxReadRetries, maxWriteRetries).RunAsync(ctx));
+
+        if (enableReplay)
+        {
+            // Return as soon as every partition has transitioned to
+            // Replay (bulk drain complete). Workers keep running.
+            await ctx.Counters.BulkDrainSignal.Task;
+            return new ExecutionResult(tracker, ctx, stopwatch.Elapsed, pool, IsLongLived: true);
+        }
+
+        using (pool)
+        {
+            await pool.WaitForCompletionAsync();
+            ctx.PartitionPool.Writer.TryComplete();
+            return new ExecutionResult(tracker, ctx, stopwatch.Elapsed, Pool: null, IsLongLived: false);
+        }
     }
 
     public TaskResult Finalize(ExecutionResult execution, PipelineRequest request)

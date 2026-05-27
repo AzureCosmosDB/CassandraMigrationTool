@@ -19,7 +19,6 @@ namespace CassandraMigrationProcessor.DataTransfer;
 public class MigrationJobRunner
 {
     private readonly MigrationLog _log;
-    private TableMigrationEngine? _activeProcessor;
     private int _consecutiveAuthErrors;
     private readonly ConcurrentDictionary<string, TableMigrationEngine> _activeProcessors = new();
     private readonly TokenRefreshManager _tokenRefreshManager;
@@ -42,11 +41,6 @@ public class MigrationJobRunner
 
             if (units == null || units.Count == 0)
             {
-                if (MigrationUtilities.IsOnline(job)
-                    && MigrationUtilities.IsOfflineJobCompleted(job)
-                    && MigrationUtilities.AnyValidTable(job))
-                    return await ResumeChangeFeedAsync(job, config, cancellationToken);
-
                 _log.WriteLine("No remaining migration units.", LogType.Warning);
                 return TaskResult.Success;
             }
@@ -96,27 +90,6 @@ public class MigrationJobRunner
         {
             _tokenRefreshManager.StopTokenRefreshTimer();
         }
-    }
-
-    private async Task<TaskResult> ResumeChangeFeedAsync(Job job, AppSettings config,
-        CancellationToken cancellationToken)
-    {
-        _log.WriteLine("All tables copied. Resuming change feed processors.", LogType.Info);
-        _activeProcessor = await TableMigrationEngine.CreateAsync(_log, config, job, _tokenRefreshManager);
-
-        foreach (var mub in job.Tables)
-        {
-            if (!MigrationUtilities.IsMigrationUnitValid(mub) || !mub.CopyComplete)
-                continue;
-            var mu = MigrationJobContext.Instance.GetMigrationUnit(mub.Id);
-            if (mu != null)
-                await _activeProcessor.ChangeFeed.AddTable(mu, CancellationToken.None);
-        }
-
-        while (!cancellationToken.IsCancellationRequested && !MigrationJobContext.Instance.ControlledPauseRequested)
-            await Task.Delay(2000, cancellationToken);
-
-        return cancellationToken.IsCancellationRequested ? TaskResult.Canceled : TaskResult.Success;
     }
 
     private async Task ProcessWithRetryAsync(Job job, AppSettings config,
@@ -193,8 +166,15 @@ public class MigrationJobRunner
         }
         finally
         {
-            _activeProcessors.TryRemove(mu.Id, out var removed);
-            MigrationUtilities.SafeDispose(removed as IDisposable, "MigrationJobRunner processor");
+            // Online: leave the engine in _activeProcessors so its
+            // long-lived DataCopyWorker pool keeps tailing the change
+            // feed. Stop() will dispose it on shutdown. Offline:
+            // dispose immediately — the table is done.
+            if (!MigrationUtilities.IsOnline(job))
+            {
+                _activeProcessors.TryRemove(mu.Id, out var removed);
+                MigrationUtilities.SafeDispose(removed as IDisposable, "MigrationJobRunner processor");
+            }
         }
     }
 
@@ -304,8 +284,9 @@ public class MigrationJobRunner
     {
         foreach (var kvp in _activeProcessors)
             kvp.Value?.StopProcessing();
+        foreach (var kvp in _activeProcessors)
+            MigrationUtilities.SafeDispose(kvp.Value, "MigrationJobRunner processor (Stop)");
         _activeProcessors.Clear();
-        _activeProcessor?.StopProcessing();
         _tokenRefreshManager.StopTokenRefreshTimer();
     }
 
