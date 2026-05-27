@@ -171,6 +171,9 @@ public class MigrationWorker
         {
             await SetupTargetSchemaAsync(job, mu);
 
+            if (mu.BulkCopyPhase < BulkCopyPhase.Copying)
+                mu.BulkCopyPhase = BulkCopyPhase.Copying;
+
             mu.BulkCopyStartedOn ??= DateTime.UtcNow;
 
             if (MigrationUtilities.IsOnline(job))
@@ -205,16 +208,36 @@ public class MigrationWorker
             return;
         }
 
+        if (mu.BulkCopyPhase >= BulkCopyPhase.Copying)
+        {
+            if (job.DropTargetTableBeforeStart)
+            {
+                _log.WriteLine(
+                    $"Skipping DropTargetTableBeforeStart for {mu.KeyspaceName}.{mu.TableName} on resume (phase={mu.BulkCopyPhase})",
+                    LogType.Debug);
+            }
+            return;
+        }
+
+        bool shouldDrop = mu.BulkCopyPhase == BulkCopyPhase.NotStarted
+                       && job.DropTargetTableBeforeStart;
+
         using var targetSession = await CassandraClientFactory.CreateTargetSessionAsync(_log, job, string.Empty);
         var sourceSession = CassandraClientFactory.CreateSourceSession(_log, job, mu.KeyspaceName, _tokenRefreshManager);
         try
         {
-            if (job.DropTargetTableBeforeStart
+            if (shouldDrop
                 && await SchemaManager.TableExistsAsync(targetSession, mu.KeyspaceName, mu.TableName))
             {
                 _log.WriteLine($"Dropping target table {mu.KeyspaceName}.{mu.TableName} (DropTargetTableBeforeStart)", LogType.Info);
                 await targetSession.ExecuteAsync(new SimpleStatement(
                     $"DROP TABLE \"{mu.KeyspaceName}\".\"{mu.TableName}\""));
+            }
+
+            if (mu.BulkCopyPhase == BulkCopyPhase.NotStarted)
+            {
+                mu.BulkCopyPhase = BulkCopyPhase.PreparingSchema;
+                MigrationJobContext.Instance.SaveMigrationUnit(mu, true);
             }
 
             bool existed = await SchemaManager.TableExistsAsync(targetSession, mu.KeyspaceName, mu.TableName);
