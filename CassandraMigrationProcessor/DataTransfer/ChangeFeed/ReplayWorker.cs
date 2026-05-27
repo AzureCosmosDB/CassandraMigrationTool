@@ -147,12 +147,13 @@ public class ReplayWorker
 
         if (CassandraQueries.IsCounterTable(userColumns))
         {
-            var (cps, cBindOrder) = await CassandraQueries.PrepareCounterUpdateAsync(
-                targetSession,
-                mu.GetEffectiveTargetKeyspaceName(),
-                mu.GetEffectiveTargetTableName(),
-                userColumns);
-            return (cps, cBindOrder);
+            // Change-feed replay against counter tables would require
+            // read-modify-write delta computation (see CounterRowWriteStrategy)
+            // which the replay loop does not implement. Fail loud rather than
+            // silently emitting wrong counter increments.
+            throw new NotSupportedException(
+                $"Change-feed replay is not supported for counter table " +
+                $"{mu.KeyspaceName}.{mu.TableName}.");
         }
 
         var (ps, bindOrder) = await CassandraQueries.PrepareInsertAsync(
