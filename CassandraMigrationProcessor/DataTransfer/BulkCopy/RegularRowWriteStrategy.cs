@@ -1,9 +1,5 @@
 using Cassandra;
 using CassandraMigrationProcessor.Infrastructure;
-using CassandraMigrationProcessor.Models;
-using System;
-using System.Diagnostics;
-using System.Threading;
 using System.Threading.Tasks;
 
 namespace CassandraMigrationProcessor.DataTransfer.BulkCopy;
@@ -11,16 +7,14 @@ namespace CassandraMigrationProcessor.DataTransfer.BulkCopy;
 /// <summary>
 /// Row-write strategy for non-counter (regular) target tables. Per-row
 /// work is a single token-aware INSERT bound from the source row,
-/// executed at <see cref="ConsistencyLevel.LocalOne"/> with a bounded
-/// retry loop on transient errors. Null source values are bound as
+/// executed at <see cref="ConsistencyLevel.LocalOne"/>. Retry, latency
+/// accounting, and error handling are delegated to
+/// <see cref="RowWriteRetry"/>. Null source values are bound as
 /// <c>null</c> so the target faithfully mirrors the source — including
 /// the tombstone semantics needed for resume/online catch-up correctness.
 /// </summary>
 internal sealed class RegularRowWriteStrategy : IRowWriteStrategy
 {
-    private const int WriteTimeoutMs = 60_000;
-    private const int RetryDelayMs = 500;
-
     private readonly MigrationLog _log;
     private readonly ISession _targetSession;
     private readonly PreparedStatement _preparedInsert;
@@ -64,50 +58,16 @@ internal sealed class RegularRowWriteStrategy : IRowWriteStrategy
         return _preparedInsert.Bind(bindValues);
     }
 
-    public async Task WriteRowAsync(object[] sourceRow, PipelineContext ctx, WriteCounters counters, int rowIndex)
+    public Task WriteRowAsync(object[] sourceRow, PipelineContext ctx, WriteCounters counters, int rowIndex)
     {
         var bound = BindRow(sourceRow);
-        bound.SetReadTimeoutMillis(WriteTimeoutMs);
+        bound.SetReadTimeoutMillis(RowWriteRetry.WriteTimeoutMs);
         bound.SetConsistencyLevel(ConsistencyLevel.LocalOne);
 
-        for (int attempt = 1; attempt <= _maxWriteRetries; attempt++)
-        {
-            var writeStart = Stopwatch.GetTimestamp();
-            try
-            {
-                await _targetSession.ExecuteAsync(bound);
-                long elapsed = (Stopwatch.GetTimestamp() - writeStart) * 1000 / Stopwatch.Frequency;
-                Interlocked.Add(ref counters.LatencySum, elapsed);
-                Interlocked.Increment(ref counters.Done);
-                return;
-            }
-            catch (Exception ex)
-            {
-                if (ExceptionClassifier.IsFatal(ex))
-                {
-                    _log.WriteLine($"[W{_workerId}] FATAL row {rowIndex}: {ex.GetType().Name}: {ex.Message}",
-                        LogType.Error);
-                    Interlocked.Exchange(ref ctx.Counters.FatalErrorFlag, 1);
-                    Interlocked.Increment(ref counters.Failed);
-                    return;
-                }
-
-                if (ExceptionClassifier.IsTransient(ex) && attempt < _maxWriteRetries)
-                {
-                    await Task.Delay(RetryDelayMs * attempt);
-                    continue;
-                }
-
-                Interlocked.Increment(ref counters.Failed);
-                _log.WriteLine($"[W{_workerId}] Row {rowIndex} FAILED after {attempt} attempt(s): {ex.GetType().Name}: {ex.Message}",
-                    LogType.Error);
-
-                if (!ExceptionClassifier.IsTransient(ex))
-                {
-                    Interlocked.Exchange(ref ctx.Counters.FatalErrorFlag, 1);
-                }
-                return;
-            }
-        }
+        return RowWriteRetry.ExecuteAsync(
+            attempt: () => _targetSession.ExecuteAsync(bound),
+            maxAttempts: _maxWriteRetries,
+            log: _log, workerId: _workerId, rowIndex: rowIndex, rowKind: "Row",
+            ctx: ctx, counters: counters);
     }
 }
