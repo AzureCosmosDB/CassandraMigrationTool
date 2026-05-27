@@ -60,6 +60,19 @@ public class Job
     /// </summary>
     public int PageSize { get; set; } = 0;
 
+    /// <summary>
+    /// Max retries for a transient source-side page read failure
+    /// (e.g. read timeout, no host available, overloaded).
+    /// 0 = default (3).
+    /// </summary>
+    public int MaxReadRetries { get; set; } = 0;
+
+    /// <summary>
+    /// Max retries for a transient target-side per-row write failure
+    /// (e.g. write timeout, overloaded). 0 = default (5).
+    /// </summary>
+    public int MaxWriteRetries { get; set; } = 0;
+
     // ── Job Settings ──
 
     public CDCMode CDCMode { get; set; } = CDCMode.Offline;

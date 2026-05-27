@@ -14,7 +14,9 @@ public record PipelineConfig(
     int PageSize,
     int MaxFeedRangeParallelism,
     int ChangeFeedPollIntervalMs,
-    int CheckpointIntervalSeconds)
+    int CheckpointIntervalSeconds,
+    int MaxReadRetries,
+    int MaxWriteRetries)
 {
     /// <summary>
     /// Resolves configuration from job overrides, app settings, and defaults.
@@ -37,12 +39,22 @@ public record PipelineConfig(
             ? settings.ChangeFeedPollIntervalMs
             : 5000;
 
+        int maxReadRetries = job.MaxReadRetries > 0
+            ? job.MaxReadRetries
+            : MigrationDefaults.DefaultMaxReadRetries;
+
+        int maxWriteRetries = job.MaxWriteRetries > 0
+            ? job.MaxWriteRetries
+            : MigrationDefaults.DefaultMaxWriteRetries;
+
         return new PipelineConfig(
             WorkerCount: workerCount,
             PageSize: pageSize,
             MaxFeedRangeParallelism: Math.Max(1, job.MaxFeedRangeParallelism),
             ChangeFeedPollIntervalMs: cfPollMs,
-            CheckpointIntervalSeconds: MigrationDefaults.CheckpointIntervalSeconds);
+            CheckpointIntervalSeconds: MigrationDefaults.CheckpointIntervalSeconds,
+            MaxReadRetries: maxReadRetries,
+            MaxWriteRetries: maxWriteRetries);
     }
 
     private static int AutoWorkerCount(int parallelTables)
