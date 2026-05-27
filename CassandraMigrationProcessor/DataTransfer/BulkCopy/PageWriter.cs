@@ -26,24 +26,32 @@ internal class PageWriter : IDisposable
     private readonly int _pageSize;
     private readonly int _maxWriteRetries;
 
-    // Counter-table specific state. _isCounterTable is true when the target
-    // table has any column of CQL type "counter". Counter columns are
-    // null-skippable per-row: a null counter cell on the source means that
-    // column was never incremented and binding it into "counter = counter
-    // + ?" is illegal (server returns "Invalid null value for counter
-    // increment"). We bind `Cassandra.Unset.Value` for null counter cells
-    // so the server skips that SET assignment, letting a single prepared
-    // UPDATE statement (the one returned by PrepareInsertAsync) handle
-    // every null-pattern.
+    // Counter-table specific state. Counter columns are migrated using a
+    // read-modify-write delta to make the operation idempotent under
+    // retries and resume (counter UPDATEs are NOT idempotent: a "transient"
+    // server timeout may have applied or not, and replaying produces
+    // double-counts). Approach:
+    //   1) SELECT current target counter values for this row's PK.
+    //   2) Compute delta = origin - target for each counter column.
+    //   3) UPDATE c = c + delta. Bind Cassandra.Unset.Value when origin is
+    //      null (column was never incremented on source — Cassandra
+    //      rejects null counter increments) or when delta is 0 (target
+    //      already correct — skip the cell, no-op).
+    //   4) Skip the row entirely when no counter has a non-zero delta.
+    // This matches the approach used by Datastax/cassandra-data-migrator
+    // (CopyJobSession.bind + TargetUpdateStatement.bind) and lets the
+    // migration tolerate page-level retries and resume after partial
+    // writes without producing double-counts.
     private readonly bool _isCounterTable;
-    private readonly bool[] _bindIsCounter;
+    private readonly int _counterBindCount;
+    private readonly PreparedStatement? _targetSelectByPk;
 
     private const int WriteTimeoutMs = 60_000;
     private const int RetryDelayMs = 500;
 
     private PageWriter(MigrationLog log, ISession targetSession, PreparedStatement preparedInsert,
         int[] bindOrderToSourceIndex, int pageSize, int workerId, int maxWriteRetries,
-        bool isCounterTable, bool[] bindIsCounter,
+        bool isCounterTable, int counterBindCount, PreparedStatement? targetSelectByPk,
         CancellationToken cancellationToken)
     {
         _log = log;
@@ -55,7 +63,8 @@ internal class PageWriter : IDisposable
         _preparedInsert = preparedInsert;
         _bindOrderToSourceIndex = bindOrderToSourceIndex;
         _isCounterTable = isCounterTable;
-        _bindIsCounter = bindIsCounter;
+        _counterBindCount = counterBindCount;
+        _targetSelectByPk = targetSelectByPk;
     }
 
     /// <summary>
@@ -80,13 +89,15 @@ internal class PageWriter : IDisposable
             bindOrderToSourceIndex[i] = sourceIndexByName[bindOrder[i]];
 
         // Counter-table detection: any column of CQL type "counter" forces
-        // the UPDATE-shaped write path produced by PrepareInsertAsync. We
-        // mark which bind positions correspond to counter columns so the
-        // row-binding step can substitute Cassandra.Unset.Value for any
-        // null counter cell (Cassandra rejects null counter increments).
+        // the UPDATE-shaped write path produced by PrepareInsertAsync. Bind
+        // order for counter tables is (counter cols ..., key cols ...), so
+        // we just need to know how many leading bind slots are counters.
+        // We also prepare a SELECT on the target by PK so we can compute
+        // origin-minus-target deltas per row (read-modify-write).
         bool isCounterTable = config.Columns.Any(c =>
             string.Equals(c.Type, "counter", StringComparison.OrdinalIgnoreCase));
-        var bindIsCounter = new bool[bindOrder.Count];
+        int counterBindCount = 0;
+        PreparedStatement? targetSelectByPk = null;
         if (isCounterTable)
         {
             var counterNames = new HashSet<string>(
@@ -95,11 +106,24 @@ internal class PageWriter : IDisposable
                     .Select(c => c.Name),
                 StringComparer.OrdinalIgnoreCase);
             for (int i = 0; i < bindOrder.Count; i++)
-                bindIsCounter[i] = counterNames.Contains(bindOrder[i]);
+            {
+                if (counterNames.Contains(bindOrder[i])) counterBindCount++;
+                else break; // counter cols always come first by PrepareInsertAsync contract
+            }
+
+            var selectCounterCols = string.Join(", ",
+                bindOrder.Take(counterBindCount).Select(n => $"\"{n}\""));
+            var whereKeyCols = string.Join(" AND ",
+                bindOrder.Skip(counterBindCount).Select(n => $"\"{n}\" = ?"));
+            var selectCql =
+                $"SELECT {selectCounterCols} " +
+                $"FROM \"{config.Context.TargetKeyspaceName}\".\"{config.Context.TargetTableName}\" " +
+                $"WHERE {whereKeyCols}";
+            targetSelectByPk = await targetSession.PrepareAsync(selectCql);
         }
 
         var writer = new PageWriter(log, targetSession, ps, bindOrderToSourceIndex, pageSize, workerId, maxWriteRetries,
-            isCounterTable, bindIsCounter,
+            isCounterTable, counterBindCount, targetSelectByPk,
             cancellationToken);
 
         ISession? sourceSession = null;
@@ -209,20 +233,17 @@ internal class PageWriter : IDisposable
 
             var sourceRow = rows[i];
 
-            BoundStatement? bound;
             if (_isCounterTable)
             {
-                bound = BindCounterRow(sourceRow, counters);
-                if (bound == null) continue; // row skipped (all counters null)
+                writeTasks.Add(WriteCounterRowAsync(sourceRow, ctx, counters, i));
             }
             else
             {
-                bound = BindRegularRow(sourceRow);
+                var bound = BindRegularRow(sourceRow);
+                bound.SetReadTimeoutMillis(WriteTimeoutMs);
+                bound.SetConsistencyLevel(ConsistencyLevel.LocalOne);
+                writeTasks.Add(WriteRowAsync(bound, ctx, counters, i));
             }
-            bound.SetReadTimeoutMillis(WriteTimeoutMs);
-            bound.SetConsistencyLevel(ConsistencyLevel.LocalOne);
-
-            writeTasks.Add(WriteRowAsync(bound, ctx, counters, i));
         }
 
         ctx.Tracker.SetPipelineState(ctx.Ranges.FeedRanges.Count
@@ -276,49 +297,126 @@ internal class PageWriter : IDisposable
     }
 
     /// <summary>
-    /// Per-row counter binding. Counter cells that are null on the source
-    /// (a counter column that was never incremented for this row) cannot
-    /// be re-bound as <c>counter = counter + null</c> — Cassandra rejects
-    /// that with <c>InvalidQueryException: Invalid null value for counter
-    /// increment</c>. We bind <see cref="Cassandra.Unset"/>.Value for any
-    /// such cell so the server skips that SET assignment entirely. This
-    /// lets a single prepared UPDATE statement (the one produced by
-    /// <see cref="CassandraQueries.PrepareInsertAsync"/> that includes
-    /// every counter column) handle every null-pattern.
+    /// Read-modify-write counter row migration. Counter UPDATEs in
+    /// Cassandra are NOT idempotent: a transient timeout may have applied
+    /// the increment server-side or not, and a naive retry produces
+    /// double-counts. To get idempotency we first SELECT the current
+    /// target counter values, then bind the per-column delta
+    /// <c>(origin - target)</c> into <c>counter = counter + ?</c>. After
+    /// the write the target equals the origin snapshot regardless of how
+    /// many times we retry (or whether the previous attempt partially
+    /// succeeded), because the delta is recomputed against the current
+    /// state on every attempt.
     ///
-    /// Returns <c>null</c> when every counter column on the row is null,
-    /// in which case there is no counter data to migrate (no Cassandra
-    /// counter row would exist on the source without at least one
-    /// increment) and an all-unset UPDATE would be a server-side no-op
-    /// or error. The skipped row counts toward the per-page success
-    /// total so checkpointing advances normally.
+    /// Cells are bound as <see cref="Cassandra.Unset"/>.Value when:
+    /// (a) the origin counter is null — never incremented on source;
+    ///     Cassandra rejects null counter increments, and we don't have
+    ///     a safe way to "unset" a target counter so we leave it as-is;
+    /// (b) the computed delta is 0 — target is already correct, skip the
+    ///     cell entirely.
+    /// When every counter column ends up unset (origin all-null OR all
+    /// deltas zero) the row is skipped without issuing the UPDATE.
     /// </summary>
-    private BoundStatement? BindCounterRow(object[] sourceRow, WriteCounters counters)
+    private async Task WriteCounterRowAsync(object[] sourceRow, PipelineContext ctx, WriteCounters counters, int rowIndex)
     {
-        var bindValues = new object[_bindOrderToSourceIndex.Length];
-        bool anyCounterNonNull = false;
-        for (int b = 0; b < _bindOrderToSourceIndex.Length; b++)
+        for (int attempt = 1; attempt <= _maxWriteRetries; attempt++)
         {
-            var v = sourceRow[_bindOrderToSourceIndex[b]];
-            if (_bindIsCounter[b])
+            var rowStart = Stopwatch.GetTimestamp();
+            try
             {
-                if (v == null)
+                // 1) SELECT current target counter values for this PK.
+                var keyValues = new object[_bindOrderToSourceIndex.Length - _counterBindCount];
+                for (int k = 0; k < keyValues.Length; k++)
+                    keyValues[k] = sourceRow[_bindOrderToSourceIndex[_counterBindCount + k]];
+
+                var selectBound = _targetSelectByPk!.Bind(keyValues);
+                selectBound.SetReadTimeoutMillis(WriteTimeoutMs);
+                selectBound.SetConsistencyLevel(ConsistencyLevel.LocalQuorum);
+                var rs = await _targetSession.ExecuteAsync(selectBound);
+                Row? targetRow = null;
+                foreach (var r in rs) { targetRow = r; break; }
+
+                // 2) Compute deltas. Unset on null-origin or zero-delta.
+                var bindValues = new object[_bindOrderToSourceIndex.Length];
+                bool anyDelta = false;
+                for (int b = 0; b < _counterBindCount; b++)
                 {
-                    bindValues[b] = Unset.Value;
+                    var originRaw = sourceRow[_bindOrderToSourceIndex[b]];
+                    if (originRaw == null)
+                    {
+                        bindValues[b] = Unset.Value;
+                        continue;
+                    }
+                    long origin = Convert.ToInt64(originRaw);
+                    long target = 0;
+                    if (targetRow != null)
+                    {
+                        var t = targetRow.GetValue<long?>(b);
+                        if (t.HasValue) target = t.Value;
+                    }
+                    long delta = origin - target;
+                    if (delta == 0)
+                    {
+                        bindValues[b] = Unset.Value;
+                        continue;
+                    }
+                    bindValues[b] = delta;
+                    anyDelta = true;
+                }
+                for (int b = _counterBindCount; b < bindValues.Length; b++)
+                    bindValues[b] = sourceRow[_bindOrderToSourceIndex[b]];
+
+                if (!anyDelta)
+                {
+                    // Target is already correct (or origin had no counter
+                    // increments to migrate). Skip the UPDATE.
+                    long elapsedNoop = (Stopwatch.GetTimestamp() - rowStart) * 1000 / Stopwatch.Frequency;
+                    Interlocked.Add(ref counters.LatencySum, elapsedNoop);
+                    Interlocked.Increment(ref counters.Done);
+                    return;
+                }
+
+                // 3) Apply UPDATE c = c + delta.
+                var bound = _preparedInsert.Bind(bindValues);
+                bound.SetReadTimeoutMillis(WriteTimeoutMs);
+                bound.SetConsistencyLevel(ConsistencyLevel.LocalQuorum);
+                await _targetSession.ExecuteAsync(bound);
+
+                long elapsed = (Stopwatch.GetTimestamp() - rowStart) * 1000 / Stopwatch.Frequency;
+                Interlocked.Add(ref counters.LatencySum, elapsed);
+                Interlocked.Increment(ref counters.Done);
+                return;
+            }
+            catch (Exception ex)
+            {
+                if (ExceptionClassifier.IsFatal(ex))
+                {
+                    _log.WriteLine($"[W{_workerId}] FATAL counter row {rowIndex}: {ex.GetType().Name}: {ex.Message}",
+                        LogType.Error);
+                    Interlocked.Exchange(ref ctx.Counters.FatalErrorFlag, 1);
+                    Interlocked.Increment(ref counters.Failed);
+                    return;
+                }
+
+                if (ExceptionClassifier.IsTransient(ex) && attempt < _maxWriteRetries)
+                {
+                    // The read-modify-write loop re-reads the target on
+                    // every retry, so a partial apply from the previous
+                    // attempt is reconciled by the next delta.
+                    await Task.Delay(RetryDelayMs * attempt);
                     continue;
                 }
-                anyCounterNonNull = true;
+
+                Interlocked.Increment(ref counters.Failed);
+                _log.WriteLine($"[W{_workerId}] Counter row {rowIndex} FAILED after {attempt} attempt(s): {ex.GetType().Name}: {ex.Message}",
+                    LogType.Error);
+
+                if (!ExceptionClassifier.IsTransient(ex))
+                {
+                    Interlocked.Exchange(ref ctx.Counters.FatalErrorFlag, 1);
+                }
+                return;
             }
-            bindValues[b] = v;
         }
-
-        if (!anyCounterNonNull)
-        {
-            // No non-null counters — nothing to migrate for this row.
-            Interlocked.Increment(ref counters.Done);
-            return null;
-        }
-
-        return _preparedInsert.Bind(bindValues);
     }
 }
