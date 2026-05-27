@@ -26,6 +26,7 @@ public class ReplayWorker
     private readonly PipelineConfig _pipelineConfig;
     private readonly Func<bool> _isCancelled;
     private readonly TokenRefreshManager? _tokenRefreshManager;
+    private int _fatalFlag;
 
     public ReplayWorker(
         MigrationLog log,
@@ -44,8 +45,8 @@ public class ReplayWorker
     }
 
     /// <summary>
-    /// Entry point: discovers feed ranges and dispatches to
-    /// parallel or single-range processing.
+    /// Entry point: discovers feed ranges and dispatches to the
+    /// partition-pool poll loop.
     /// </summary>
     public async Task ReplayTableAsync(TableMigration mu, CancellationToken ct)
     {
@@ -57,60 +58,54 @@ public class ReplayWorker
             $"Feed ranges discovered: {feedRanges.Count} for {mu.KeyspaceName}.{mu.TableName}",
             LogType.Debug);
 
-        if (feedRanges.Count > 1
-            && mu.FeedRangeContinuationTokens.Count > 0)
-        {
-            _log.WriteLine(
-                $"Change feed PARALLEL mode: {feedRanges.Count} ranges for {mu.KeyspaceName}.{mu.TableName}",
-                LogType.Debug);
-
-            await RunParallelAsync(mu, feedRanges, ct);
-        }
-        else
-        {
-            await RunSingleAsync(mu, ct);
-        }
-    }
-
-    /// <summary>
-    /// Run parallel change feed readers, one per feed range.
-    /// Each range reader has its own paging state and poll loop.
-    /// </summary>
-    private async Task RunParallelAsync(
-        TableMigration mu, List<string> feedRanges, CancellationToken ct)
-    {
-        mu.ChangeFeedStartedOn ??= DateTime.UtcNow;
-
-        var (strategy, userColumns) = await PrepareReplayAsync(mu);
-
-        int maxConcurrent = _pipelineConfig.MaxFeedRangeParallelism;
-        using var semaphore = new SemaphoreSlim(maxConcurrent);
-
-        var rangeTasks = feedRanges.Select(async range =>
-        {
-            await semaphore.WaitAsync(ct);
-            try
-            {
-                await PollLoopAsync(mu, range, strategy, userColumns, ct);
-            }
-            finally { semaphore.Release(); }
-        }).ToArray();
-
-        await Task.WhenAll(rangeTasks);
+        bool parallel = feedRanges.Count > 1
+            && mu.FeedRangeContinuationTokens.Count > 0;
 
         _log.WriteLine(
-            $"Change feed PARALLEL stopped for {mu.KeyspaceName}.{mu.TableName}, ranges={feedRanges.Count}",
+            $"Change feed {(parallel ? "PARALLEL" : "SINGLE")} mode: " +
+            $"{(parallel ? feedRanges.Count : 1)} range(s) for " +
+            $"{mu.KeyspaceName}.{mu.TableName}",
+            LogType.Debug);
+
+        await RunPoolAsync(
+            mu,
+            parallel ? feedRanges : new List<string?> { null }!,
+            parallel ? _pipelineConfig.MaxFeedRangeParallelism : 1,
+            ct);
+
+        long total = Interlocked.Read(ref mu._changeFeedRowsInserted);
+        _log.WriteLine(
+            $"Change feed stopped for {mu.KeyspaceName}.{mu.TableName}, total applied={total}",
             LogType.Info);
     }
 
     /// <summary>
-    /// Prepare insert statement and run the single-range poll loop.
+    /// A single in-flight feed-range partition: the range token (or
+    /// null for single-range mode) and the paging state to resume from
+    /// on the next read.
     /// </summary>
-    private async Task RunSingleAsync(TableMigration mu, CancellationToken ct)
-    {
-        var (strategy, userColumns) = await PrepareReplayAsync(mu);
+    private sealed record CfPartition(string? FeedRange, byte[]? State);
 
+    /// <summary>
+    /// Run N worker tasks against a shared partition pool channel.
+    /// Mirrors the BulkCopy <see cref="WorkerPool"/> + partition-pool
+    /// pattern: workers pull a partition, read one page, write rows,
+    /// then re-enqueue the partition — immediately if the page returned
+    /// rows (hot range), or after a cooldown if the page was empty
+    /// (cold range). Any failure flips <see cref="_fatalFlag"/> and
+    /// completes the channel so all workers exit cleanly. Continuation
+    /// is never advanced on a failing page (matches BulkCopyWorker
+    /// page-atomicity).
+    /// </summary>
+    private async Task RunPoolAsync(
+        TableMigration mu,
+        IReadOnlyList<string?> ranges,
+        int workerCount,
+        CancellationToken ct)
+    {
         mu.ChangeFeedStartedOn ??= DateTime.UtcNow;
+
+        var (strategy, userColumns) = await PrepareReplayAsync(mu);
 
         string startTime = !string.IsNullOrEmpty(mu.ChangeFeedStartToken)
             ? mu.ChangeFeedStartToken
@@ -118,15 +113,186 @@ public class ReplayWorker
                 System.Globalization.CultureInfo.InvariantCulture);
 
         _log.WriteLine(
-            $"Change feed started for {mu.KeyspaceName}.{mu.TableName} (startToken={startTime})",
+            $"Change feed started for {mu.KeyspaceName}.{mu.TableName} " +
+            $"(startToken={startTime}, ranges={ranges.Count}, workers={workerCount})",
             LogType.Info);
 
-        await PollLoopAsync(mu, null, strategy, userColumns, ct);
+        var pool = System.Threading.Channels.Channel
+            .CreateUnbounded<CfPartition>(
+                new System.Threading.Channels.UnboundedChannelOptions
+                {
+                    SingleReader = false,
+                    SingleWriter = false,
+                });
 
-        long total = Interlocked.Read(ref mu._changeFeedRowsInserted);
-        _log.WriteLine(
-            $"Change feed stopped for {mu.KeyspaceName}.{mu.TableName}, total applied={total}",
-            LogType.Info);
+        foreach (var range in ranges)
+            await pool.Writer.WriteAsync(
+                new CfPartition(range, LoadContinuation(mu, range)), ct);
+
+        int actualWorkers = Math.Min(workerCount, ranges.Count);
+        var workers = Enumerable.Range(0, actualWorkers)
+            .Select(_ => Task.Run(() =>
+                WorkerLoopAsync(mu, strategy, userColumns, pool, startTime, ct), ct))
+            .ToArray();
+
+        try { await Task.WhenAll(workers); }
+        catch (OperationCanceledException) { /* graceful */ }
+        catch (Exception ex)
+        {
+            // Task.WhenAll only rethrows the first faulted task's
+            // exception; log each so we don't lose visibility.
+            _log.WriteLine(
+                $"CF worker faulted: {ex.GetType().Name}: {ex.Message}",
+                LogType.Error);
+            foreach (var t in workers.Where(t => t.IsFaulted && t.Exception != null))
+                foreach (var inner in t.Exception!.Flatten().InnerExceptions
+                             .Where(i => i is not OperationCanceledException))
+                    _log.WriteLine(
+                        $"CF worker inner: {inner.GetType().Name}: {inner.Message}",
+                        LogType.Error);
+        }
+
+        // Final persist on exit — every successful page already
+        // persisted its own continuation via UpdateStats; this is
+        // belt-and-braces for the parent-job/MU rollup.
+        TableMigrationMapper.UpdateParentJob(mu);
+        MigrationJobContext.Instance.SaveMigrationUnit(mu, true);
+    }
+
+    /// <summary>
+    /// One worker iteration of the change-feed partition pool. Pulls
+    /// the next partition, reads a page, writes rows, then either
+    /// re-enqueues immediately (rows found) or schedules a cooldown
+    /// re-enqueue (empty page). Errors short-circuit the whole pool.
+    /// </summary>
+    private async Task WorkerLoopAsync(
+        TableMigration mu,
+        IRowWriteStrategy strategy,
+        List<(string Name, string Type, string Kind, string ClusteringOrder, int Position)> userColumns,
+        System.Threading.Channels.Channel<CfPartition> pool,
+        string startTime,
+        CancellationToken ct)
+    {
+        int intervalMs = _pipelineConfig.ChangeFeedPollIntervalMs;
+
+        try
+        {
+            while (!ct.IsCancellationRequested
+                && !_isCancelled()
+                && Volatile.Read(ref _fatalFlag) == 0)
+            {
+                CfPartition partition;
+                try
+                {
+                    if (!await pool.Reader.WaitToReadAsync(ct)) break;
+                    if (!pool.Reader.TryRead(out partition!)) continue;
+                }
+                catch (OperationCanceledException) { break; }
+
+                string cql = BuildCql(mu, startTime, partition.FeedRange);
+
+                RowSet rs;
+                byte[]? newState;
+                try
+                {
+                    (rs, newState) = await ReadPage(cql, partition.State);
+                }
+                catch (OperationCanceledException)
+                {
+                    // Re-enqueue so resume can retry this range later.
+                    pool.Writer.TryWrite(partition);
+                    break;
+                }
+                catch (Exception ex)
+                {
+                    _log.WriteLine(
+                        $"CF FATAL read error in {mu.KeyspaceName}.{mu.TableName}" +
+                        (partition.FeedRange != null ? $" range" : string.Empty) +
+                        $": {ex.GetType().Name}: {ex.Message} — failing job",
+                        LogType.Error);
+                    Interlocked.Increment(ref mu._changeFeedErrors);
+                    mu.SourceStatus = TableStatus.Failed;
+                    Interlocked.Exchange(ref _fatalFlag, 1);
+                    pool.Writer.TryComplete();
+                    break;
+                }
+
+                var sw = Stopwatch.StartNew();
+                var (insertCount, errorCount) =
+                    await ReplayRows(rs, strategy, userColumns, mu, ct);
+                sw.Stop();
+
+                if (errorCount > 0)
+                {
+                    // ReplayRows already set _fatalFlag via onFatal.
+                    // Don't advance the continuation — resume re-reads
+                    // this page (mirrors BulkCopyWorker page-atomicity).
+                    _log.WriteLine(
+                        $"CF {errorCount}/{insertCount + errorCount} writes failed in " +
+                        $"{mu.KeyspaceName}.{mu.TableName} — continuation NOT advanced, failing job",
+                        LogType.Error);
+                    pool.Writer.TryComplete();
+                    break;
+                }
+
+                UpdateStats(mu, partition.FeedRange, insertCount, errorCount,
+                    sw.ElapsedMilliseconds, newState);
+
+                var next = partition with { State = newState };
+
+                if (insertCount > 0)
+                {
+                    // Hot range: page returned rows, poll again
+                    // immediately. No artificial delay — keeps up with
+                    // bursty workloads.
+                    if (!pool.Writer.TryWrite(next)) break;
+                }
+                else
+                {
+                    // Cold range: empty page. Sit on cooldown so we
+                    // don't hammer the source. Fire-and-forget delayed
+                    // re-enqueue lets the worker grab another partition
+                    // from the pool in the meantime.
+                    _ = ScheduleCooldownAsync(pool, next, intervalMs, ct);
+                }
+            }
+        }
+        catch (OperationCanceledException) { /* graceful */ }
+        catch (Exception ex)
+        {
+            _log.WriteLine(
+                $"CF worker FATAL in {mu.KeyspaceName}.{mu.TableName}: " +
+                $"{ex.GetType().Name}: {ex.Message}",
+                LogType.Error);
+            Interlocked.Exchange(ref _fatalFlag, 1);
+            pool.Writer.TryComplete();
+        }
+    }
+
+    /// <summary>
+    /// Fire-and-forget delayed re-enqueue used for cold partitions
+    /// (empty pages). Drops the partition silently on cancellation or
+    /// fatal shutdown — both cases already persist the last known
+    /// continuation, so the next run resumes correctly.
+    /// </summary>
+    private async Task ScheduleCooldownAsync(
+        System.Threading.Channels.Channel<CfPartition> pool,
+        CfPartition partition,
+        int intervalMs,
+        CancellationToken ct)
+    {
+        try
+        {
+            await Task.Delay(intervalMs, ct);
+        }
+        catch (OperationCanceledException) { return; }
+
+        if (ct.IsCancellationRequested
+            || _isCancelled()
+            || Volatile.Read(ref _fatalFlag) != 0)
+            return;
+
+        pool.Writer.TryWrite(partition);
     }
 
     // ─── shared schema setup ────────────────────────────────
@@ -172,119 +338,7 @@ public class ReplayWorker
         return (strategy, userColumns);
     }
 
-    // ─── poll loop ──────────────────────────────────────────
-
-    /// <summary>
-    /// Unified poll loop. When <paramref name="feedRange"/> is
-    /// non-null the query includes a COSMOS_FEEDRANGE() clause
-    /// and the continuation token is stored per-range; otherwise
-    /// single-range semantics apply.
-    /// All stats use Interlocked for thread safety in both modes.
-    /// </summary>
-    private async Task PollLoopAsync(
-        TableMigration mu,
-        string? feedRange,
-        IRowWriteStrategy strategy,
-        List<(string Name, string Type, string Kind, string ClusteringOrder, int Position)> userColumns,
-        CancellationToken ct)
-    {
-        try
-        {
-            int intervalMs = _pipelineConfig.ChangeFeedPollIntervalMs;
-            int consecutiveErrors = 0;
-
-            byte[]? continuationState = LoadContinuation(mu, feedRange);
-
-            string startTime = !string.IsNullOrEmpty(mu.ChangeFeedStartToken)
-                ? mu.ChangeFeedStartToken
-                : DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffZ",
-                    System.Globalization.CultureInfo.InvariantCulture);
-
-            string cql = BuildCql(mu, startTime, feedRange);
-
-            while (!ct.IsCancellationRequested && !_isCancelled())
-            {
-                try
-                {
-                    var (rs, newState) = await ReadPage(cql, continuationState);
-                    continuationState = newState;
-
-                    var sw = Stopwatch.StartNew();
-                    var (insertCount, errorCount) =
-                        await ReplayRows(rs, strategy, userColumns, mu, ct);
-                    sw.Stop();
-
-                    UpdateStats(mu, feedRange, insertCount, errorCount,
-                        sw.ElapsedMilliseconds, continuationState);
-
-                    consecutiveErrors = 0;
-                }
-                catch (OperationCanceledException) // Expected: graceful cancellation
-                {
-                    // Save continuation token before exiting so resume
-                    // starts from the correct position (no duplicates)
-                    SaveContinuation(mu, feedRange, continuationState);
-                    TableMigrationMapper.UpdateParentJob(mu);
-                    MigrationJobContext.Instance.SaveMigrationUnit(mu, true);
-                    break;
-                }
-                catch (Exception ex)
-                {
-                    consecutiveErrors++;
-
-                    if (ExceptionClassifier.IsFatal(ex))
-                    {
-                        _log.WriteLine(
-                            $"Change feed FATAL error: {ex.GetType().Name}: {ex.Message} — stopping",
-                            LogType.Error);
-                        break;
-                    }
-
-                    _log.WriteLine(
-                        $"Change feed error ({consecutiveErrors}): {ex.GetType().Name}: {ex.Message}",
-                        LogType.Warning);
-
-                    if (feedRange == null
-                        && consecutiveErrors <= MigrationDefaults.MaxReconnectAttempts
-                        && ExceptionClassifier.IsTransient(ex))
-                    {
-                        var reconnect = await TryReconnectSourceAsync(mu, strategy, userColumns);
-                        strategy = reconnect.Strategy;
-                        userColumns = reconnect.UserColumns;
-                    }
-
-                    if (consecutiveErrors > MigrationDefaults.MaxReconnectAttempts)
-                    {
-                        _log.WriteLine(
-                            $"Change feed giving up after {consecutiveErrors} errors",
-                            LogType.Error);
-                        break;
-                    }
-
-                    int errorDelay = Math.Min(
-                        intervalMs * consecutiveErrors, 60_000);
-                    if (!await DelayOrBreak(errorDelay, ct)) break;
-                    continue;
-                }
-
-                if (!await DelayOrBreak(intervalMs, ct)) break;
-            }
-
-            // Always persist final continuation state when exiting
-            // the loop (pause, cancel, or isCancelled flag)
-            SaveContinuation(mu, feedRange, continuationState);
-            TableMigrationMapper.UpdateParentJob(mu);
-            MigrationJobContext.Instance.SaveMigrationUnit(mu, true);
-        }
-        catch (Exception ex)
-        {
-            string label = feedRange != null
-                ? $"range {mu.KeyspaceName}.{mu.TableName}"
-                : $"{mu.KeyspaceName}.{mu.TableName}";
-            _log.WriteLine(
-                $"CF {label}: {ex.GetType().Name}: {ex.Message}", LogType.Error);
-        }
-    }
+    // ─── page I/O ───────────────────────────────────────────
 
     /// <summary>
     /// Execute a single paged query against the source session.
@@ -324,6 +378,7 @@ public class ReplayWorker
         {
             Interlocked.Increment(ref mu._changeFeedErrors);
             mu.SourceStatus = TableStatus.Failed;
+            Interlocked.Exchange(ref _fatalFlag, 1);
         };
 
         int rowIndex = 0;
@@ -437,47 +492,6 @@ public class ReplayWorker
         {
             mu.ChangeFeedContinuationToken =
                 Convert.ToBase64String(state);
-        }
-    }
-
-    private static async Task<bool> DelayOrBreak(
-        int ms, CancellationToken ct)
-    {
-        try { await Task.Delay(ms, ct); return true; }
-        catch (OperationCanceledException) { return false; } // Expected: graceful cancellation
-    }
-
-    private async Task<(bool Success, IRowWriteStrategy Strategy,
-            List<(string Name, string Type, string Kind, string ClusteringOrder, int Position)> UserColumns)>
-        TryReconnectSourceAsync(
-            TableMigration mu,
-            IRowWriteStrategy strategy,
-            List<(string Name, string Type, string Kind, string ClusteringOrder, int Position)> userColumns)
-    {
-        try
-        {
-            var job = MigrationJobContext.Instance.CurrentlyActiveJob;
-            ISession newSource;
-            if (_tokenRefreshManager != null
-                && TokenRefreshManager.IsLikelyAadToken(job.SourcePassword))
-                newSource = _tokenRefreshManager
-                    .ReconnectSourceWithFreshToken();
-            else
-                newSource = CassandraClientFactory
-                    .CreateSourceSession(_log, job, string.Empty);
-
-            MigrationUtilities.SafeDispose(
-                _sourceSession, "CF old source session");
-            _sourceSession = newSource;
-
-            var (newStrategy, newUserColumns) = await PrepareReplayAsync(mu);
-            return (true, newStrategy, newUserColumns);
-        }
-        catch (Exception rex)
-        {
-            _log.WriteLine(
-                $"CF reconnect failed: {rex.Message}", LogType.Warning);
-            return (false, strategy, userColumns);
         }
     }
 }
