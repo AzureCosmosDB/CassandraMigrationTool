@@ -39,14 +39,18 @@ internal static class RowWriteStrategyFactory
         for (int i = 0; i < bindOrder.Count; i++)
             bindOrderToSourceIndex[i] = sourceIndexByName[bindOrder[i]];
 
+        // One policy per worker, shared across rows and across strategy
+        // variants. Linear 500ms × attempt matches the historical schedule.
+        var retryPolicy = RetryPolicy.Linear(maxWriteRetries, TimeSpan.FromMilliseconds(500));
+
         if (isCounterTable)
         {
             return await CounterRowWriteStrategy.CreateAsync(log, targetSession, ps, bindOrderToSourceIndex,
                 bindOrder, config.Context.TargetKeyspaceName, config.Context.TargetTableName,
-                counterColumns, maxWriteRetries);
+                counterColumns, retryPolicy);
         }
 
         return new RegularRowWriteStrategy(log, targetSession, ps, bindOrderToSourceIndex,
-            maxWriteRetries);
+            retryPolicy);
     }
 }

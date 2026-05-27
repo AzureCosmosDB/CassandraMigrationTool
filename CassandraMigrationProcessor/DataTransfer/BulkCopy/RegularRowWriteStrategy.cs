@@ -23,13 +23,13 @@ internal sealed class RegularRowWriteStrategy : IRowWriteStrategy
     private readonly bool _bindOrderIsIdentity;
 
     public RegularRowWriteStrategy(WorkerLog log, ISession targetSession, PreparedStatement preparedInsert,
-        int[] bindOrderToSourceIndex, int maxWriteRetries)
+        int[] bindOrderToSourceIndex, RetryPolicy retryPolicy)
     {
         _log = log;
         _targetSession = targetSession;
         _preparedInsert = preparedInsert;
         _bindOrderToSourceIndex = bindOrderToSourceIndex;
-        _retryPolicy = RetryPolicy.Linear(maxWriteRetries, System.TimeSpan.FromMilliseconds(500));
+        _retryPolicy = retryPolicy;
         _bindOrderIsIdentity = IsIdentityMap(bindOrderToSourceIndex);
     }
 

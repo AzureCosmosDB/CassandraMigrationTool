@@ -45,14 +45,14 @@ internal sealed class CounterRowWriteStrategy : IRowWriteStrategy
     private readonly PreparedStatement _targetSelectByPk;
 
     private CounterRowWriteStrategy(WorkerLog log, ISession targetSession, PreparedStatement preparedInsert,
-        int[] bindOrderToSourceIndex, int maxWriteRetries,
+        int[] bindOrderToSourceIndex, RetryPolicy retryPolicy,
         int counterBindCount, PreparedStatement targetSelectByPk)
     {
         _log = log;
         _targetSession = targetSession;
         _preparedInsert = preparedInsert;
         _bindOrderToSourceIndex = bindOrderToSourceIndex;
-        _retryPolicy = RetryPolicy.Linear(maxWriteRetries, TimeSpan.FromMilliseconds(500));
+        _retryPolicy = retryPolicy;
         _counterBindCount = counterBindCount;
         _targetSelectByPk = targetSelectByPk;
     }
@@ -67,7 +67,7 @@ internal sealed class CounterRowWriteStrategy : IRowWriteStrategy
         int[] bindOrderToSourceIndex, IReadOnlyList<string> bindOrder,
         string targetKeyspace, string targetTable,
         IEnumerable<string> counterColumnNames,
-        int maxWriteRetries)
+        RetryPolicy retryPolicy)
     {
         var counterNames = new HashSet<string>(counterColumnNames, StringComparer.OrdinalIgnoreCase);
 
@@ -89,7 +89,7 @@ internal sealed class CounterRowWriteStrategy : IRowWriteStrategy
         var targetSelectByPk = await targetSession.PrepareAsync(selectCql);
 
         return new CounterRowWriteStrategy(log, targetSession, preparedInsert, bindOrderToSourceIndex,
-            maxWriteRetries, counterBindCount, targetSelectByPk);
+            retryPolicy, counterBindCount, targetSelectByPk);
     }
 
     public Task WriteRowAsync(object[] sourceRow, PipelineContext ctx, WriteCounters counters, int rowIndex)
