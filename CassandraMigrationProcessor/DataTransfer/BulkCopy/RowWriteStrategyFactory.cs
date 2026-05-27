@@ -21,17 +21,24 @@ namespace CassandraMigrationProcessor.DataTransfer.BulkCopy;
 /// </summary>
 internal static class RowWriteStrategyFactory
 {
+    /// <summary>
+    /// Picks and constructs the right strategy for the table shape. Used
+    /// by both bulk copy (<see cref="PageWriter"/>) and change-feed
+    /// replay so both paths share identical per-row write semantics.
+    /// </summary>
     public static async Task<IRowWriteStrategy> CreateAsync(
-        WorkerLog log, ISession targetSession, WorkerConfig config, int maxWriteRetries)
+        WorkerLog log, ISession targetSession,
+        List<(string Name, string Type, string Kind, string ClusteringOrder, int Position)> columns,
+        string targetKeyspace, string targetTable, int maxWriteRetries)
     {
         // One policy per worker, shared across rows and across strategy
         // variants. Linear 500ms × attempt matches the historical schedule.
         var retryPolicy = RetryPolicy.Linear(maxWriteRetries, TimeSpan.FromMilliseconds(500));
 
-        if (CassandraQueries.IsCounterTable(config.Columns))
-            return await CounterRowWriteStrategy.CreateAsync(log, targetSession, config, retryPolicy);
+        if (CassandraQueries.IsCounterTable(columns))
+            return await CounterRowWriteStrategy.CreateAsync(log, targetSession, columns, targetKeyspace, targetTable, retryPolicy);
 
-        return await RegularRowWriteStrategy.CreateAsync(log, targetSession, config, retryPolicy);
+        return await RegularRowWriteStrategy.CreateAsync(log, targetSession, columns, targetKeyspace, targetTable, retryPolicy);
     }
 
     /// <summary>

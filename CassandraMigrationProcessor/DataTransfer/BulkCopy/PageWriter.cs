@@ -46,7 +46,10 @@ internal sealed class PageWriter : IDisposable
     public static async Task<PageWriter> CreateAsync(WorkerLog log, WorkerConfig config, int pageSize, int maxWriteRetries, CancellationToken cancellationToken)
     {
         var targetSession = CassandraClientFactory.CreateTargetSession(log.Inner, config.TargetConnection, "");
-        var strategy = await RowWriteStrategyFactory.CreateAsync(log, targetSession, config, maxWriteRetries);
+        var strategy = await RowWriteStrategyFactory.CreateAsync(
+            log, targetSession, config.Columns,
+            config.Context.TargetKeyspaceName, config.Context.TargetTableName,
+            maxWriteRetries);
         var writer = new PageWriter(log, targetSession, strategy, pageSize, cancellationToken);
 
         ISession? sourceSession = null;
@@ -89,6 +92,7 @@ internal sealed class PageWriter : IDisposable
         var stopwatch = Stopwatch.StartNew();
         var counters = new WriteCounters();
         var writeTasks = new List<Task>(rows.Count);
+        Action onFatal = () => Interlocked.Exchange(ref ctx.Counters.FatalErrorFlag, 1);
 
         for (int i = 0; i < rows.Count; i++)
         {
@@ -96,7 +100,7 @@ internal sealed class PageWriter : IDisposable
                 || Volatile.Read(ref ctx.Counters.FatalErrorFlag) != 0)
                 break;
 
-            writeTasks.Add(_rowStrategy.WriteRowAsync(rows[i], ctx, counters, i));
+            writeTasks.Add(_rowStrategy.WriteRowAsync(rows[i], onFatal, counters, i));
         }
 
         ctx.Tracker.SetPipelineState(ctx.Ranges.FeedRanges.Count

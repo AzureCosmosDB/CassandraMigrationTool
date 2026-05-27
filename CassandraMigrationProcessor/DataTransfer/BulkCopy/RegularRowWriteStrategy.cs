@@ -40,11 +40,13 @@ internal sealed class RegularRowWriteStrategy : IRowWriteStrategy
     /// <see cref="RowWriteStrategyFactory"/> can dispatch generically.
     /// </summary>
     public static async Task<RegularRowWriteStrategy> CreateAsync(
-        WorkerLog log, ISession targetSession, WorkerConfig config, RetryPolicy retryPolicy)
+        WorkerLog log, ISession targetSession,
+        List<(string Name, string Type, string Kind, string ClusteringOrder, int Position)> columns,
+        string targetKeyspace, string targetTable, RetryPolicy retryPolicy)
     {
         var (ps, bindOrder) = await CassandraQueries.PrepareInsertAsync(
-            targetSession, config.Context.TargetKeyspaceName, config.Context.TargetTableName, config.Columns);
-        var bindOrderToSourceIndex = RowWriteStrategyFactory.BuildBindOrderToSourceIndex(bindOrder, config.Columns);
+            targetSession, targetKeyspace, targetTable, columns);
+        var bindOrderToSourceIndex = RowWriteStrategyFactory.BuildBindOrderToSourceIndex(bindOrder, columns);
         return new RegularRowWriteStrategy(log, targetSession, ps, bindOrderToSourceIndex, retryPolicy);
     }
 
@@ -71,7 +73,7 @@ internal sealed class RegularRowWriteStrategy : IRowWriteStrategy
         return _preparedInsert.Bind(bindValues);
     }
 
-    public Task WriteRowAsync(object[] sourceRow, PipelineContext ctx, WriteCounters counters, int rowIndex)
+    public Task WriteRowAsync(object[] sourceRow, Action onFatal, WriteCounters counters, int rowIndex)
     {
         var bound = BindRow(sourceRow);
         bound.SetReadTimeoutMillis(RowWriteRetry.WriteTimeoutMs);
@@ -81,6 +83,6 @@ internal sealed class RegularRowWriteStrategy : IRowWriteStrategy
             attempt: () => _targetSession.ExecuteAsync(bound),
             policy: _retryPolicy,
             log: _log, rowIndex: rowIndex, rowKind: "Row",
-            ctx: ctx, counters: counters);
+            onFatal: onFatal, counters: counters);
     }
 }

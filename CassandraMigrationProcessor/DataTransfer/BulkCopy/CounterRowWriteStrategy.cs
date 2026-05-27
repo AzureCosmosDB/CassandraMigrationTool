@@ -65,16 +65,18 @@ internal sealed class CounterRowWriteStrategy : IRowWriteStrategy
     /// used for read-modify-write.
     /// </summary>
     public static async Task<CounterRowWriteStrategy> CreateAsync(
-        WorkerLog log, ISession targetSession, WorkerConfig config, RetryPolicy retryPolicy)
+        WorkerLog log, ISession targetSession,
+        List<(string Name, string Type, string Kind, string ClusteringOrder, int Position)> columns,
+        string targetKeyspace, string targetTable, RetryPolicy retryPolicy)
     {
         var (ps, bindOrder) = await CassandraQueries.PrepareCounterUpdateAsync(
-            targetSession, config.Context.TargetKeyspaceName, config.Context.TargetTableName, config.Columns);
-        var bindOrderToSourceIndex = RowWriteStrategyFactory.BuildBindOrderToSourceIndex(bindOrder, config.Columns);
+            targetSession, targetKeyspace, targetTable, columns);
+        var bindOrderToSourceIndex = RowWriteStrategyFactory.BuildBindOrderToSourceIndex(bindOrder, columns);
 
         // PrepareCounterUpdateAsync emits counter columns first in
         // bindOrder, so the count of counter columns in the schema is
         // exactly the counter-bind prefix length we need for RMW.
-        int counterBindCount = config.Columns.Count(c =>
+        int counterBindCount = columns.Count(c =>
             string.Equals(c.Type, "counter", StringComparison.OrdinalIgnoreCase));
 
         var selectCounterCols = string.Join(", ",
@@ -83,7 +85,7 @@ internal sealed class CounterRowWriteStrategy : IRowWriteStrategy
             bindOrder.Skip(counterBindCount).Select(n => $"\"{n}\" = ?"));
         var selectCql =
             $"SELECT {selectCounterCols} " +
-            $"FROM \"{config.Context.TargetKeyspaceName}\".\"{config.Context.TargetTableName}\" " +
+            $"FROM \"{targetKeyspace}\".\"{targetTable}\" " +
             $"WHERE {whereKeyCols}";
         var targetSelectByPk = await targetSession.PrepareAsync(selectCql);
 
@@ -91,13 +93,13 @@ internal sealed class CounterRowWriteStrategy : IRowWriteStrategy
             retryPolicy, counterBindCount, targetSelectByPk);
     }
 
-    public Task WriteRowAsync(object[] sourceRow, PipelineContext ctx, WriteCounters counters, int rowIndex)
+    public Task WriteRowAsync(object[] sourceRow, Action onFatal, WriteCounters counters, int rowIndex)
     {
         return RowWriteRetry.ExecuteAsync(
             attempt: () => ReadModifyWriteAsync(sourceRow),
             policy: _retryPolicy,
             log: _log, rowIndex: rowIndex, rowKind: "Counter row",
-            ctx: ctx, counters: counters);
+            onFatal: onFatal, counters: counters);
     }
 
     private async Task ReadModifyWriteAsync(object[] sourceRow)

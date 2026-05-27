@@ -29,7 +29,7 @@ internal static class RowWriteRetry
         WorkerLog log,
         int rowIndex,
         string rowKind,
-        PipelineContext ctx,
+        Action onFatal,
         WriteCounters counters)
     {
         for (int n = 1; n <= policy.MaxAttempts; n++)
@@ -49,7 +49,7 @@ internal static class RowWriteRetry
                 {
                     log.WriteLine($"FATAL {rowKind} {rowIndex}: {ex.GetType().Name}: {ex.Message}",
                         LogType.Error);
-                    Interlocked.Exchange(ref ctx.Counters.FatalErrorFlag, 1);
+                    onFatal();
                     Interlocked.Increment(ref counters.Failed);
                     return;
                 }
@@ -66,7 +66,7 @@ internal static class RowWriteRetry
 
                 if (!ExceptionClassifier.IsTransient(ex))
                 {
-                    Interlocked.Exchange(ref ctx.Counters.FatalErrorFlag, 1);
+                    onFatal();
                 }
                 return;
             }

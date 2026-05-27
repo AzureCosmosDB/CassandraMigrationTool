@@ -4,6 +4,7 @@ using CassandraMigrationProcessor.Infrastructure;
 using CassandraMigrationProcessor.CassandraDriver;
 using CassandraMigrationProcessor.Models;
 using CassandraMigrationProcessor.DataTransfer;
+using CassandraMigrationProcessor.DataTransfer.BulkCopy;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -80,7 +81,7 @@ public class ReplayWorker
     {
         mu.ChangeFeedStartedOn ??= DateTime.UtcNow;
 
-        var (ps, colNames) = await PrepareReplayAsync(mu);
+        var (strategy, userColumns) = await PrepareReplayAsync(mu);
 
         int maxConcurrent = _pipelineConfig.MaxFeedRangeParallelism;
         using var semaphore = new SemaphoreSlim(maxConcurrent);
@@ -90,7 +91,7 @@ public class ReplayWorker
             await semaphore.WaitAsync(ct);
             try
             {
-                await PollLoopAsync(mu, range, ps, colNames, ct);
+                await PollLoopAsync(mu, range, strategy, userColumns, ct);
             }
             finally { semaphore.Release(); }
         }).ToArray();
@@ -107,7 +108,7 @@ public class ReplayWorker
     /// </summary>
     private async Task RunSingleAsync(TableMigration mu, CancellationToken ct)
     {
-        var (ps, colNames) = await PrepareReplayAsync(mu);
+        var (strategy, userColumns) = await PrepareReplayAsync(mu);
 
         mu.ChangeFeedStartedOn ??= DateTime.UtcNow;
 
@@ -120,7 +121,7 @@ public class ReplayWorker
             $"Change feed started for {mu.KeyspaceName}.{mu.TableName} (startToken={startTime})",
             LogType.Info);
 
-        await PollLoopAsync(mu, null, ps, colNames, ct);
+        await PollLoopAsync(mu, null, strategy, userColumns, ct);
 
         long total = Interlocked.Read(ref mu._changeFeedRowsInserted);
         _log.WriteLine(
@@ -131,10 +132,14 @@ public class ReplayWorker
     // ─── shared schema setup ────────────────────────────────
 
     /// <summary>
-    /// Reads table columns from the source, filters out system
-    /// columns, and prepares the INSERT statement on the target.
+    /// Reads table columns from the source, filters out system columns,
+    /// and constructs the per-row write strategy on the target via
+    /// <see cref="RowWriteStrategyFactory"/>. Counter tables are rejected
+    /// at this layer (see comment in the throw).
     /// </summary>
-    private async Task<(PreparedStatement Ps, List<string> ColumnNames)> PrepareReplayAsync(TableMigration mu)
+    private async Task<(IRowWriteStrategy Strategy,
+            List<(string Name, string Type, string Kind, string ClusteringOrder, int Position)> UserColumns)>
+        PrepareReplayAsync(TableMigration mu)
     {
         var targetSession = _targetSession ?? throw new InvalidOperationException(
             "Target session is required for replay but was not provided");
@@ -147,21 +152,24 @@ public class ReplayWorker
 
         if (CassandraQueries.IsCounterTable(userColumns))
         {
-            // Change-feed replay against counter tables would require
-            // read-modify-write delta computation (see CounterRowWriteStrategy)
-            // which the replay loop does not implement. Fail loud rather than
-            // silently emitting wrong counter increments.
+            // Read-modify-write counter migration is implemented for bulk
+            // copy (see CounterRowWriteStrategy) but the change-feed
+            // delta semantics on a counter column are ambiguous — a CF
+            // event for a counter table reports the post-update value,
+            // not the delta — so we'd silently produce wrong totals.
+            // Fail loud until that semantic question is resolved.
             throw new NotSupportedException(
                 $"Change-feed replay is not supported for counter table " +
                 $"{mu.KeyspaceName}.{mu.TableName}.");
         }
 
-        var (ps, bindOrder) = await CassandraQueries.PrepareInsertAsync(
-            targetSession,
+        var workerLog = new WorkerLog(_log, 0);
+        var strategy = await RowWriteStrategyFactory.CreateAsync(
+            workerLog, targetSession, userColumns,
             mu.GetEffectiveTargetKeyspaceName(),
             mu.GetEffectiveTargetTableName(),
-            userColumns);
-        return (ps, bindOrder);
+            _pipelineConfig.MaxWriteRetries);
+        return (strategy, userColumns);
     }
 
     // ─── poll loop ──────────────────────────────────────────
@@ -176,8 +184,8 @@ public class ReplayWorker
     private async Task PollLoopAsync(
         TableMigration mu,
         string? feedRange,
-        PreparedStatement ps,
-        List<string> colNames,
+        IRowWriteStrategy strategy,
+        List<(string Name, string Type, string Kind, string ClusteringOrder, int Position)> userColumns,
         CancellationToken ct)
     {
         try
@@ -203,7 +211,7 @@ public class ReplayWorker
 
                     var sw = Stopwatch.StartNew();
                     var (insertCount, errorCount) =
-                        await ReplayRows(rs, ps, colNames, mu, ct);
+                        await ReplayRows(rs, strategy, userColumns, mu, ct);
                     sw.Stop();
 
                     UpdateStats(mu, feedRange, insertCount, errorCount,
@@ -240,9 +248,9 @@ public class ReplayWorker
                         && consecutiveErrors <= MigrationDefaults.MaxReconnectAttempts
                         && ExceptionClassifier.IsTransient(ex))
                     {
-                        var reconnect = await TryReconnectSourceAsync(mu, ps, colNames);
-                        ps = reconnect.Ps;
-                        colNames = reconnect.ColNames;
+                        var reconnect = await TryReconnectSourceAsync(mu, strategy, userColumns);
+                        strategy = reconnect.Strategy;
+                        userColumns = reconnect.UserColumns;
                     }
 
                     if (consecutiveErrors > MigrationDefaults.MaxReconnectAttempts)
@@ -296,75 +304,45 @@ public class ReplayWorker
     }
 
     /// <summary>
-    /// Replay each row from the page to the target cluster.
-    /// Returns (inserted, errors) counts.
+    /// Replay each row from the page to the target cluster via the
+    /// shared <see cref="IRowWriteStrategy"/>. Returns (inserted, errors)
+    /// counts derived from the strategy's <see cref="WriteCounters"/>.
     /// </summary>
     private async Task<(int InsertCount, int ErrorCount)> ReplayRows(
         RowSet rs,
-        PreparedStatement ps,
-        List<string> colNames,
+        IRowWriteStrategy strategy,
+        List<(string Name, string Type, string Kind, string ClusteringOrder, int Position)> userColumns,
         TableMigration mu,
         CancellationToken ct)
     {
-        var targetSession = _targetSession ?? throw new InvalidOperationException(
-            "Target session is required for replay but was not provided");
-
-        int insertCount = 0;
-        int errorCount = 0;
         int available = rs.GetAvailableWithoutFetching();
         int consumed = 0;
-        const int maxRetries = 5;
+        var counters = new WriteCounters();
+        var writeTasks = new List<Task>(available);
 
+        Action onFatal = () =>
+        {
+            Interlocked.Increment(ref mu._changeFeedErrors);
+            mu.SourceStatus = TableStatus.Failed;
+        };
+
+        int rowIndex = 0;
         foreach (var row in rs)
         {
             if (consumed >= available) break;
             consumed++;
             if (ct.IsCancellationRequested || _isCancelled()) break;
 
-            bool written = false;
-            for (int attempt = 1; attempt <= maxRetries; attempt++)
-            {
-                try
-                {
-                    var values = new object[colNames.Count];
-                    for (int i = 0; i < colNames.Count; i++)
-                        values[i] = row[colNames[i]];
-                    await targetSession.ExecuteAsync(ps.Bind(values));
-                    insertCount++;
-                    written = true;
-                    break;
-                }
-                catch (Exception ex)
-                {
-                    if (ExceptionClassifier.IsFatal(ex))
-                    {
-                        _log.WriteLine(
-                            $"CF FATAL row in {mu.KeyspaceName}.{mu.TableName}: {ex.GetType().Name}: {ex.Message}",
-                            LogType.Error);
-                        errorCount++;
-                        Interlocked.Increment(ref mu._changeFeedErrors);
-                        break; // don't retry fatal
-                    }
+            var sourceRow = new object[userColumns.Count];
+            for (int i = 0; i < userColumns.Count; i++)
+                sourceRow[i] = row[userColumns[i].Name];
 
-                    if (ExceptionClassifier.IsTransient(ex) && attempt < maxRetries)
-                    {
-                        await Task.Delay(500 * attempt);
-                        continue;
-                    }
-
-                    // Final failure — mark as fatal to fail the job
-                    errorCount++;
-                    Interlocked.Increment(ref mu._changeFeedErrors);
-                    _log.WriteLine(
-                        $"CF row FAILED in {mu.KeyspaceName}.{mu.TableName} after {attempt} attempt(s): {ex.GetType().Name}: {ex.Message}",
-                        LogType.Error);
-                    mu.SourceStatus = TableStatus.Failed;
-                    break;
-                }
-            }
+            writeTasks.Add(strategy.WriteRowAsync(sourceRow, onFatal, counters, rowIndex++));
         }
 
-        return (insertCount, errorCount);
+        await Task.WhenAll(writeTasks);
+
+        return (counters.Done, counters.Failed);
     }
 
     /// <summary>
@@ -469,10 +447,12 @@ public class ReplayWorker
         catch (OperationCanceledException) { return false; } // Expected: graceful cancellation
     }
 
-    private async Task<(bool Success, PreparedStatement Ps, List<string> ColNames)> TryReconnectSourceAsync(
-        TableMigration mu,
-        PreparedStatement ps,
-        List<string> colNames)
+    private async Task<(bool Success, IRowWriteStrategy Strategy,
+            List<(string Name, string Type, string Kind, string ClusteringOrder, int Position)> UserColumns)>
+        TryReconnectSourceAsync(
+            TableMigration mu,
+            IRowWriteStrategy strategy,
+            List<(string Name, string Type, string Kind, string ClusteringOrder, int Position)> userColumns)
     {
         try
         {
@@ -490,14 +470,14 @@ public class ReplayWorker
                 _sourceSession, "CF old source session");
             _sourceSession = newSource;
 
-            var (newPs, newColNames) = await PrepareReplayAsync(mu);
-            return (true, newPs, newColNames);
+            var (newStrategy, newUserColumns) = await PrepareReplayAsync(mu);
+            return (true, newStrategy, newUserColumns);
         }
         catch (Exception rex)
         {
             _log.WriteLine(
                 $"CF reconnect failed: {rex.Message}", LogType.Warning);
-            return (false, ps, colNames);
+            return (false, strategy, userColumns);
         }
     }
 }
