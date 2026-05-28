@@ -1,15 +1,19 @@
-using Cassandra;
-using CassandraMigrationProcessor.CassandraDriver;
 using CassandraMigrationProcessor.Infrastructure;
 using CassandraMigrationProcessor.Models;
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Threading.Channels;
 using System.Threading.Tasks;
 
 namespace CassandraMigrationProcessor.DataTransfer;
 
+/// <summary>
+/// Slices a table's feed-range list into <see cref="Partition"/>s and
+/// seeds them into the job-shared <see cref="PartitionManager"/>. Owns
+/// no per-table state — the caller supplies a fully-built
+/// <see cref="TableResources"/>; the Partitioner only decides which
+/// ranges are still pending and what paging state to resume from.
+/// </summary>
 internal class Partitioner
 {
     private readonly MigrationLog _log;
@@ -19,31 +23,24 @@ internal class Partitioner
         _log = log;
     }
 
-    public record SeedResult(
-        TableResources Resources,
-        bool AllRangesComplete);
-
     /// <summary>
-    /// Discovers feed ranges, restores per-range checkpoints, builds the
-    /// table's <see cref="TableResources"/>, and seeds the resulting
-    /// partitions into the job-shared <paramref name="partitions"/>.
+    /// Seed every still-pending range from <paramref name="resources"/>
+    /// into <paramref name="partitions"/>. Returns <c>true</c> if there
+    /// was nothing to seed (every range already completed) — in that
+    /// case the caller can short-circuit. The table's
+    /// <see cref="TableResources.BulkDrainSignal"/> is tripped here
+    /// when there is no bulk work to do.
     /// </summary>
-    public async Task<SeedResult> DiscoverAndSeedAsync(
-        ISession sourceSession, TableMigration mu, TableCopySpec context,
-        List<CassandraColumn> columns,
-        CopyProgressTracker tracker,
+    public async Task<bool> SeedAsync(
+        TableResources resources,
+        TableMigration mu,
         PartitionManager partitions,
         bool enableReplay)
     {
-        var feedRanges = await CassandraQueries.GetFeedRangesAsync(
-            sourceSession, context.KeyspaceName, context.TableName);
-
-        _log.WriteLine($"{context.KeyspaceName}.{context.TableName}: {feedRanges.Count} feed range(s)", LogType.Info);
-
+        var spec = resources.Spec;
+        var feedRanges = resources.Ranges.FeedRanges;
         var completed = mu.CompletedCopyFeedRanges;
         var checkpoints = mu.CopyFeedRangeCheckpoints;
-        var ranges = new RangeState(completed, checkpoints, feedRanges);
-        var resources = new TableResources(context, columns, tracker, ranges);
 
         List<(string Range, PartitionPhase Phase)> pendingRanges;
         lock (checkpoints)
@@ -57,16 +54,15 @@ internal class Partitioner
 
         if (pendingRanges.Count == 0)
         {
-            _log.WriteLine($"All {feedRanges.Count} ranges already completed for {context.KeyspaceName}.{context.TableName}", LogType.Info);
-            // Mark drain immediately so callers don't wait.
+            _log.WriteLine($"All {feedRanges.Count} ranges already completed for {spec.KeyspaceName}.{spec.TableName}", LogType.Info);
             resources.BulkDrainSignal.TrySetResult();
-            return new SeedResult(resources, AllRangesComplete: true);
+            return true;
         }
 
         int bulkCount = pendingRanges.Count(p => p.Phase == PartitionPhase.Bulk);
         int replayCount = pendingRanges.Count - bulkCount;
         _log.WriteLine(
-            $"Pipeline: {bulkCount} bulk + {replayCount} replay range(s) for {context.KeyspaceName}.{context.TableName} " +
+            $"Pipeline: {bulkCount} bulk + {replayCount} replay range(s) for {spec.KeyspaceName}.{spec.TableName} " +
             $"({completed.Count} previously bulk-completed)",
             LogType.Info);
 
@@ -100,8 +96,8 @@ internal class Partitioner
             await partitions.SeedAsync(new Partition(range, pagingState, resources, phase));
         }
         if (resumedCount > 0)
-            _log.WriteLine($"Resuming {resumedCount}/{pendingRanges.Count} ranges from checkpoint for {context.KeyspaceName}.{context.TableName}", LogType.Info);
+            _log.WriteLine($"Resuming {resumedCount}/{pendingRanges.Count} ranges from checkpoint for {spec.KeyspaceName}.{spec.TableName}", LogType.Info);
 
-        return new SeedResult(resources, AllRangesComplete: false);
+        return false;
     }
 }

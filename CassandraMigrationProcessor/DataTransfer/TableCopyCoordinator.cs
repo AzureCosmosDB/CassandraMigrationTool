@@ -215,12 +215,22 @@ internal sealed class TableCopyCoordinator : IDisposable
             new ProgressConfig(chunkIndex, initialPercent, contributionFactor, rowCount));
 
         var partitioner = new Partitioner(_migrationLog);
-        var seed = await partitioner.DiscoverAndSeedAsync(
-            context.SourceSession, tableMigration, context,
-            columns, tracker, _pipeline.Context.Partitions,
+        var feedRanges = await CassandraQueries.GetFeedRangesAsync(
+            context.SourceSession, context.KeyspaceName, context.TableName);
+        _migrationLog.WriteLine(
+            $"{context.KeyspaceName}.{context.TableName}: {feedRanges.Count} feed range(s)",
+            LogType.Info);
+
+        var ranges = new RangeState(
+            tableMigration.CompletedCopyFeedRanges,
+            tableMigration.CopyFeedRangeCheckpoints,
+            feedRanges);
+        var resources = new TableResources(context, columns, tracker, ranges);
+        bool allRangesComplete = await partitioner.SeedAsync(
+            resources, tableMigration, _pipeline.Context.Partitions,
             enableReplay: isOnline);
 
-        if (seed.AllRangesComplete)
+        if (allRangesComplete)
         {
             MarkChunkComplete(tableMigration, chunkIndex);
             tracker.UpdateMigrationUnit();
@@ -229,14 +239,14 @@ internal sealed class TableCopyCoordinator : IDisposable
 
         _migrationLog.WriteLine($"{context.KeyspaceName}.{context.TableName}: " +
             $"{(rowCount >= 0 ? $"{rowCount:N0} rows" : "count unavailable")}, " +
-            $"{seed.Resources.Ranges.FeedRanges.Count} feed range(s) seeded", LogType.Info);
+            $"{resources.Ranges.FeedRanges.Count} feed range(s) seeded", LogType.Info);
 
         var stopwatch = Stopwatch.StartNew();
 
         // Wait for this table's bulk drain.
         try
         {
-            await seed.Resources.BulkDrainSignal.Task.WaitAsync(_cts.Token);
+            await resources.BulkDrainSignal.Task.WaitAsync(_cts.Token);
         }
         catch (OperationCanceledException)
         {

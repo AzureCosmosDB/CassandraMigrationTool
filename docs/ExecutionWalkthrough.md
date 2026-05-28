@@ -72,7 +72,7 @@ Stage 1: SeedAsync(request)
   ├── Restores checkpoints (base64 → paging state)
   ├── Creates Channel<Partition>(pendingRanges.Count)
   ├── Seeds partitions into channel
-  └── Returns (SeedResult, allComplete)
+  └── Returns allComplete (bool)
 
 Stage 2: SyncSchemaAsync(TableCopySpec, targetSession)
   ├── SchemaManager.SyncSchemaAsync(source, target, keyspace, table)

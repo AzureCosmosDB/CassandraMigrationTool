@@ -75,7 +75,7 @@ WorkerConfig(SourceConnection, TargetConnection, Columns, Context)
 RangeState(Completed, Checkpoints, FeedRanges)
 PipelineContext(PartitionPool, Worker, Ranges, Counters, Tracker)
 ReadResult(Rows, WorkChunk, IsLastPage)                          [nested in PageReader]
-SeedResult(Resources, AllRangesComplete)
+[Partitioner.SeedAsync returns bool allRangesComplete]
 ```
 
 ## Models (mutable POCOs, JSON-serialized)
