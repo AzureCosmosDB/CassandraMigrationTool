@@ -40,7 +40,7 @@ On completion: engine.StopOfflineOrInvokeChangeFeed()
 ### `TableMigrationEngine.StartProcessAsync(migrationUnitId)`
 ```
 Loads: TableMigration from MigrationJobContext
-Creates: TableContext(keyspace, table, targetKeyspace, targetTable, sourceSession)
+Creates: TableCopySpec(keyspace, table, targetKeyspace, targetTable, sourceSession)
 Ensures: at least one CopyChunk exists
 
 FOR EACH chunk (typically 1):
@@ -74,7 +74,7 @@ Stage 1: SeedAsync(request)
   ├── Seeds partitions into channel
   └── Returns (SeedResult, allComplete)
 
-Stage 2: SyncSchemaAsync(tableContext, targetSession)
+Stage 2: SyncSchemaAsync(TableCopySpec, targetSession)
   ├── SchemaManager.SyncSchemaAsync(source, target, keyspace, table)
   ├── Creates/alters target table to match source schema
   └── Returns column list

@@ -32,7 +32,7 @@ public static class SchemaManager
     /// ensure keyspace → check table exists → create or
     /// alter → return source column list.
     /// </summary>
-    public static async Task<List<(string Name, string Type, string Kind, string ClusteringOrder, int Position)>>
+    public static async Task<List<CassandraColumn>>
         SyncSchemaAsync(ISession sourceSession, ISession targetSession,
             string sourceKeyspace, string sourceTable,
             string targetKeyspace, string targetTable)
@@ -341,7 +341,7 @@ public static class SchemaManager
     /// clusteringOrder = "asc", "desc", or "none"
     /// position = ordinal within key group
     /// </summary>
-    public static async Task<List<(string Name, string Type, string Kind, string ClusteringOrder, int Position)>>
+    public static async Task<List<CassandraColumn>>
         GetTableColumnsAsync(ISession session, string keyspace, string table)
     {
         var statement = new SimpleStatement(
@@ -352,7 +352,9 @@ public static class SchemaManager
 
         var resultSet = await ExecuteWithTimeoutRetryAsync(() => session.ExecuteAsync(statement));
 
-        return resultSet.Select(r => (Name: r.GetValue<string>("column_name"), Type: r.GetValue<string>("type"),
+        return resultSet.Select(r => new CassandraColumn(
+            Name: r.GetValue<string>("column_name"),
+            Type: r.GetValue<string>("type"),
             Kind: r.GetValue<string>("kind"),
             ClusteringOrder: r.GetValue<string>("clustering_order") ?? "none",
             Position: r.GetValue<int>("position")
@@ -461,8 +463,8 @@ public static class SchemaManager
     /// </summary>
     public static async Task AlterTableAddMissingColumnsAsync(ISession targetSession, string targetKeyspace,
         string targetTable,
-        List<(string Name, string Type, string Kind, string ClusteringOrder, int Position)> sourceColumns,
-        List<(string Name, string Type, string Kind, string ClusteringOrder, int Position)> targetColumns)
+        List<CassandraColumn> sourceColumns,
+        List<CassandraColumn> targetColumns)
     {
         MigrationUtilities.ValidateCqlIdentifier(targetKeyspace);
         MigrationUtilities.ValidateCqlIdentifier(targetTable);
@@ -505,9 +507,7 @@ public static class SchemaManager
     /// column metadata. Returns empty string if no
     /// clustering columns or all are default (ASC).
     /// </summary>
-    private static string BuildClusteringOrderClause(List<(string Name, string Type,
-        string Kind, string ClusteringOrder,
-        int Position)> columns)
+    private static string BuildClusteringOrderClause(List<CassandraColumn> columns)
     {
         var clusteringCols = columns
             .Where(c => c.Kind == "clustering")

@@ -30,8 +30,8 @@ internal class Partitioner
     /// partitions into the job-shared <paramref name="partitions"/>.
     /// </summary>
     public async Task<SeedResult> DiscoverAndSeedAsync(
-        ISession sourceSession, TableMigration mu, TableContext context,
-        List<(string Name, string Type, string Kind, string ClusteringOrder, int Position)> columns,
+        ISession sourceSession, TableMigration mu, TableCopySpec context,
+        List<CassandraColumn> columns,
         CopyProgressTracker tracker,
         PartitionManager partitions,
         bool enableReplay)

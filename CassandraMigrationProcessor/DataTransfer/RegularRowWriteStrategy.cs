@@ -41,7 +41,7 @@ internal sealed class RegularRowWriteStrategy : IRowWriteStrategy
     /// </summary>
     public static async Task<RegularRowWriteStrategy> CreateAsync(
         WorkerLog log, ISession targetSession,
-        List<(string Name, string Type, string Kind, string ClusteringOrder, int Position)> columns,
+        List<CassandraColumn> columns,
         string targetKeyspace, string targetTable, RetryPolicy retryPolicy)
     {
         var (ps, bindOrder) = await CassandraQueries.PrepareInsertAsync(

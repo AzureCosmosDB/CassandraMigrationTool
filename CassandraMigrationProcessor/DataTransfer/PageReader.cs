@@ -52,7 +52,7 @@ internal class PageReader : IDisposable
     /// <summary>Lazy, idempotent UDT registration for a table's keyspace.</summary>
     private Task EnsureUdtsRegisteredAsync(TableResources resources)
     {
-        return _udtRegistrations.GetOrAdd(resources.Context.KeyspaceName, async ks =>
+        return _udtRegistrations.GetOrAdd(resources.Spec.KeyspaceName, async ks =>
         {
             try
             {
@@ -76,7 +76,7 @@ internal class PageReader : IDisposable
         await EnsureUdtsRegisteredAsync(resources);
 
         var stopwatch = Stopwatch.StartNew();
-        var stmt = new SimpleStatement(BuildSelectCql(resources.Context, partition.FeedRange));
+        var stmt = new SimpleStatement(BuildSelectCql(resources.Spec, partition.FeedRange));
         stmt.SetPageSize(_pageSize);
         stmt.SetAutoPage(false);
         stmt.SetReadTimeoutMillis(ReadTimeoutMs);
@@ -135,7 +135,7 @@ internal class PageReader : IDisposable
         return new ReadResult(rows, workChunk, isEmptyPage);
     }
 
-    internal static string BuildSelectCql(TableContext context, string range)
+    internal static string BuildSelectCql(TableCopySpec context, string range)
     {
         MigrationUtilities.ValidateCqlIdentifier(context.KeyspaceName);
         MigrationUtilities.ValidateCqlIdentifier(context.TableName);

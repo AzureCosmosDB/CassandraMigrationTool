@@ -7,5 +7,5 @@ public record PipelineRequest(
     double InitialPercent,
     double ContributionFactor,
     long TotalRowCount,
-    TableContext Context,
+    TableCopySpec Spec,
     List<string> FeedRanges);

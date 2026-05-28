@@ -98,7 +98,7 @@ TableMigration : TableMigrationSummary
 AppSettings : ICloneable
  └── Pipeline defaults: PageSize, WorkerMultiplier, MaxParallelTables, etc.
 
-TableContext
+TableCopySpec
  ├── TableMigrationId, JobId
  ├── KeyspaceName, TableName, TargetKeyspaceName, TargetTableName
  └── SourceSession: ISession

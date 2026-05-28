@@ -100,7 +100,7 @@ internal sealed class TableCopyCoordinator : IDisposable
         tableMigration.ParentJob = _migrationJob;
         ProcessRunning = true;
 
-        var context = CreateTableContext(tableMigration);
+        var context = CreateTableCopySpec(tableMigration);
 
         if (!await SchemaManager.TableExistsAsync(_source, context.KeyspaceName, context.TableName))
         {
@@ -181,7 +181,7 @@ internal sealed class TableCopyCoordinator : IDisposable
     }
 
     private async Task<TaskResult> ProcessChunkAsync(TableMigration tableMigration, int chunkIndex,
-        TableContext context, double initialPercent, double contributionFactor)
+        TableCopySpec context, double initialPercent, double contributionFactor)
     {
         long rowCount = await CassandraQueries.GetRowCountAsync(context.SourceSession, context.KeyspaceName, context.TableName);
         if (rowCount > 0)
@@ -282,9 +282,9 @@ internal sealed class TableCopyCoordinator : IDisposable
         MigrationJobContext.Instance.SaveMigrationUnit(tableMigration, false);
     }
 
-    private TableContext CreateTableContext(TableMigration mu)
+    private TableCopySpec CreateTableCopySpec(TableMigration mu)
     {
-        return new TableContext(
+        return new TableCopySpec(
             mu.KeyspaceName,
             mu.TableName,
             mu.GetEffectiveTargetKeyspaceName(),

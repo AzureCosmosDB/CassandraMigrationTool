@@ -1,7 +1,7 @@
 using Cassandra;
 
 namespace CassandraMigrationProcessor.Models;
-public record TableContext(
+public record TableCopySpec(
     string KeyspaceName,
     string TableName,
     string TargetKeyspaceName,

@@ -154,7 +154,7 @@ public static class CassandraQueries
     /// write path must use UPDATE c = c + ? instead of INSERT.
     /// </summary>
     public static bool IsCounterTable(
-        IEnumerable<(string Name, string Type, string Kind, string ClusteringOrder, int Position)> columns)
+        IEnumerable<CassandraColumn> columns)
         => columns.Any(IsCounterColumn);
 
     /// <summary>
@@ -167,7 +167,7 @@ public static class CassandraQueries
     /// </summary>
     public static async Task<(PreparedStatement Ps, List<string> ColumnNames)>
         PrepareInsertAsync(ISession session, string keyspace, string table,
-            List<(string Name, string Type, string Kind, string ClusteringOrder, int Position)> columns)
+            List<CassandraColumn> columns)
     {
         if (IsCounterTable(columns))
             throw new InvalidOperationException(
@@ -197,7 +197,7 @@ public static class CassandraQueries
     /// </summary>
     public static async Task<(PreparedStatement Ps, List<string> BindOrder)>
         PrepareCounterUpdateAsync(ISession session, string keyspace, string table,
-            List<(string Name, string Type, string Kind, string ClusteringOrder, int Position)> columns)
+            List<CassandraColumn> columns)
     {
         var counterCols = columns.Where(IsCounterColumn).ToList();
         if (counterCols.Count == 0)
@@ -229,7 +229,7 @@ public static class CassandraQueries
     }
 
     private static bool IsCounterColumn(
-        (string Name, string Type, string Kind, string ClusteringOrder, int Position) c)
+        CassandraColumn c)
     {
         return string.Equals(c.Type, "counter", StringComparison.OrdinalIgnoreCase);
     }

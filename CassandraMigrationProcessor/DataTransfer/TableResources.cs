@@ -2,6 +2,7 @@ using CassandraMigrationProcessor.Context;
 using CassandraMigrationProcessor.Models;
 using System.Collections.Generic;
 using System.Threading.Tasks;
+using CassandraMigrationProcessor.CassandraDriver;
 
 namespace CassandraMigrationProcessor.DataTransfer;
 
@@ -13,8 +14,8 @@ namespace CassandraMigrationProcessor.DataTransfer;
 /// </summary>
 internal sealed class TableResources
 {
-    public TableContext Context { get; }
-    public List<(string Name, string Type, string Kind, string ClusteringOrder, int Position)> Columns { get; }
+    public TableCopySpec Spec { get; }
+    public List<CassandraColumn> Columns { get; }
     public CopyProgressTracker Tracker { get; }
     public RangeState Ranges { get; }
     /// <summary>
@@ -32,15 +33,15 @@ internal sealed class TableResources
     public TaskCompletionSource BulkDrainSignal { get; } =
         new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 
-    public string TableId => $"{Context.KeyspaceName}.{Context.TableName}";
+    public string TableId => $"{Spec.KeyspaceName}.{Spec.TableName}";
 
     public TableResources(
-        TableContext context,
-        List<(string Name, string Type, string Kind, string ClusteringOrder, int Position)> columns,
+        TableCopySpec spec,
+        List<CassandraColumn> columns,
         CopyProgressTracker tracker,
         RangeState ranges)
     {
-        Context = context;
+        Spec = spec;
         Columns = columns;
         Tracker = tracker;
         Ranges = ranges;

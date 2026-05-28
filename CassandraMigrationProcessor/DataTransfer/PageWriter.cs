@@ -57,20 +57,20 @@ internal sealed class PageWriter : IDisposable
             await EnsureTargetUdtsRegisteredAsync(resources);
             return await RowWriteStrategyFactory.CreateAsync(
                 _log, _targetSession, resources.Columns,
-                resources.Context.TargetKeyspaceName, resources.Context.TargetTableName,
+                resources.Spec.TargetKeyspaceName, resources.Spec.TargetTableName,
                 _maxWriteRetries);
         });
     }
 
     private Task EnsureTargetUdtsRegisteredAsync(TableResources resources)
     {
-        return _udtRegistrations.GetOrAdd(resources.Context.TargetKeyspaceName, async ks =>
+        return _udtRegistrations.GetOrAdd(resources.Spec.TargetKeyspaceName, async ks =>
         {
             ISession? sourceSession = null;
             try
             {
                 sourceSession = CassandraClientFactory.CreateSourceSession(_log.Inner, _config.Job, string.Empty, _config.TokenRefreshManager);
-                var allUdts = await SchemaManager.GetUserDefinedTypesAsync(sourceSession, resources.Context.KeyspaceName);
+                var allUdts = await SchemaManager.GetUserDefinedTypesAsync(sourceSession, resources.Spec.KeyspaceName);
                 var requiredUdts = SchemaManager.FilterUdtsReferencedByTable(
                     allUdts, resources.Columns.Select(c => c.Type));
                 await DynamicUdtRegistrar.RegisterAsync(_targetSession, ks, requiredUdts);

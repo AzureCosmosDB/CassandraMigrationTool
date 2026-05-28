@@ -28,7 +28,7 @@ internal static class RowWriteStrategyFactory
     /// </summary>
     public static async Task<IRowWriteStrategy> CreateAsync(
         WorkerLog log, ISession targetSession,
-        List<(string Name, string Type, string Kind, string ClusteringOrder, int Position)> columns,
+        List<CassandraColumn> columns,
         string targetKeyspace, string targetTable, int maxWriteRetries)
     {
         // One policy per worker, shared across rows and across strategy
@@ -49,7 +49,7 @@ internal static class RowWriteStrategyFactory
     /// </summary>
     public static int[] BuildBindOrderToSourceIndex(
         IReadOnlyList<string> bindOrder,
-        IReadOnlyList<(string Name, string Type, string Kind, string ClusteringOrder, int Position)> sourceColumns)
+        IReadOnlyList<CassandraColumn> sourceColumns)
     {
         var sourceIndexByName = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         for (int i = 0; i < sourceColumns.Count; i++)
