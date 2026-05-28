@@ -63,9 +63,9 @@ internal static class RowWriteRetry
                 log.WriteLine($"{rowKind} FAILED after {n} attempt(s): {ex.GetType().Name}: {ex.Message}",
                     LogType.Error);
 
-                return ExceptionClassifier.IsTransient(ex)
-                    ? WriteOutcome.Failed
-                    : WriteOutcome.Fatal;
+                return ExceptionClassifier.IsFatal(ex)
+                    ? WriteOutcome.Fatal
+                    : WriteOutcome.Failed;
             }
         }
         return WriteOutcome.Failed;

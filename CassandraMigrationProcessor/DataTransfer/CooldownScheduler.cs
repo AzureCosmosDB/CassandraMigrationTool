@@ -18,6 +18,7 @@ internal sealed class CooldownScheduler : IAsyncDisposable
     private readonly MigrationLog _log;
     private readonly PartitionManager _partitions;
     private readonly int _cooldownMs;
+    private readonly CancellationTokenSource _stopCts;
     private readonly CancellationToken _ct;
     private readonly PriorityQueue<Partition, long> _queue = new();
     private readonly object _lock = new();
@@ -33,7 +34,13 @@ internal sealed class CooldownScheduler : IAsyncDisposable
         _log = log;
         _partitions = partitions;
         _cooldownMs = cooldownMs;
-        _ct = cancellationToken;
+        // Link the caller's cancellation with our own so StopAsync is
+        // self-sufficient: the loop's only exit is _ct cancellation, and
+        // we don't want DisposeAsync to deadlock waiting on the loop
+        // when the caller's token never fires (e.g. offline jobs with an
+        // empty cooldown queue completing cleanly).
+        _stopCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        _ct = _stopCts.Token;
         _loop = Task.Run(RunAsync);
     }
 
@@ -124,6 +131,12 @@ internal sealed class CooldownScheduler : IAsyncDisposable
     /// </summary>
     public async Task StopAsync()
     {
+        // Cancel the loop's wait FIRST. The loop's only natural exit is
+        // _ct cancellation; without this, an empty queue causes the
+        // loop to park on Timeout.Infinite and StopAsync would await
+        // forever (the deadlock that bit offline-only jobs).
+        try { _stopCts.Cancel(); }
+        catch (ObjectDisposedException) { /* already disposed */ }
         _wake.Release();
         try { await _loop.ConfigureAwait(false); }
         catch { /* surfaced via log inside RunAsync */ }
@@ -144,5 +157,6 @@ internal sealed class CooldownScheduler : IAsyncDisposable
     {
         await StopAsync().ConfigureAwait(false);
         _wake.Dispose();
+        _stopCts.Dispose();
     }
 }

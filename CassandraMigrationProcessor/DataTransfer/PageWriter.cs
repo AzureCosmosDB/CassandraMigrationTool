@@ -115,11 +115,15 @@ internal sealed class PageWriter : IDisposable
         var counters = new WriteCounters();
         var writeTasks = new List<Task<WriteOutcome>>(rows.Count);
 
+        bool aborted = false;
         for (int i = 0; i < rows.Count; i++)
         {
             if (_ct.IsCancellationRequested
                 || Volatile.Read(ref ctx.Flags.FatalErrorFlag) != 0)
+            {
+                aborted = true;
                 break;
+            }
 
             writeTasks.Add(strategy.WriteRowAsync(rows[i], counters, _ct));
         }
@@ -128,10 +132,22 @@ internal sealed class PageWriter : IDisposable
         if (Array.IndexOf(outcomes, WriteOutcome.Fatal) >= 0)
             ctx.Flags.TripFatal();
 
-        if (counters.Failed == 0) workChunk.IsCompleted = true;
+        // Only advance checkpoint if EVERY row in this page was successfully
+        // written. Gating on counters.Failed == 0 was unsafe: an early break
+        // (cancellation or fatal flag tripped mid-loop) leaves un-enqueued
+        // rows that never fail and never succeed — Failed stays 0 but Done
+        // < rows.Count, and marking IsCompleted=true would advance the
+        // continuation token past unwritten rows = silent data loss on
+        // resume.
+        if (!aborted && counters.Done == rows.Count && counters.Failed == 0)
+        {
+            workChunk.IsCompleted = true;
+        }
         else
         {
-            _log.WriteLine($"{counters.Failed}/{rows.Count} writes failed for {partition.FullTableName} — checkpoint NOT advanced (will retry on resume)",
+            int unwritten = rows.Count - (int)counters.Done;
+            _log.WriteLine(
+                $"{counters.Failed} failed / {unwritten - counters.Failed} unattempted / {rows.Count} total writes for {partition.FullTableName} — checkpoint NOT advanced (will retry on resume)",
                 LogType.Warning);
         }
 
