@@ -8,7 +8,7 @@ namespace CassandraMigrationProcessor.DataTransfer;
 /// Orchestrator for copy-pipeline progress: delegates atomic
 /// counting to <see cref="ProgressCounters"/> and owns speed
 /// calculation, logging, TableMigration updates, and checkpoint
-/// saves. Workers call AddCopied / AddFailed / AddRead and
+/// saves. Workers call AddCopied / AddFailed and
 /// UpdateMigrationUnit; no other class should maintain
 /// parallel counters.
 /// </summary>
@@ -134,12 +134,6 @@ public class CopyProgressTracker
     public void AddFailed(long count)
     {
         _counters.AddFailed(count);
-    }
-
-    /// <summary>Track source rows read.</summary>
-    public void AddRead(long count)
-    {
-        _counters.AddRead(count);
     }
 
     /// <summary>

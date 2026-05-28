@@ -7,7 +7,6 @@ internal class ProgressCounters
 {
     private long _totalCopied;
     private long _totalFailed;
-    private long _totalRead;
     private long _totalBytes;
 
     // Pipeline diagnostics (accumulated ms)
@@ -23,7 +22,6 @@ internal class ProgressCounters
 
     public long TotalCopied => Volatile.Read(ref _totalCopied);
     public long TotalFailed => Volatile.Read(ref _totalFailed);
-    public long TotalRead => Volatile.Read(ref _totalRead);
     public long TotalBytes => Volatile.Read(ref _totalBytes);
     public long ReadTimeMs => Volatile.Read(ref _readTimeMs);
     public long WriteTimeMs => Volatile.Read(ref _writeTimeMs);
@@ -32,7 +30,6 @@ internal class ProgressCounters
 
     public void AddCopied(long count) => Interlocked.Add(ref _totalCopied, count);
     public void AddFailed(long count) => Interlocked.Add(ref _totalFailed, count);
-    public void AddRead(long count) => Interlocked.Add(ref _totalRead, count);
     public void AddBytes(long bytes) => Interlocked.Add(ref _totalBytes, bytes);
 
     public void AddReadTime(long ms)

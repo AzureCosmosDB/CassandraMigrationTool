@@ -134,7 +134,6 @@ internal class PageReader : IDisposable
         stopwatch.Stop();
         bool isEmptyPage = rows.Count == 0;
 
-        partition.Tracker.AddRead(rows.Count);
         partition.Tracker.AddReadTime(stopwatch.ElapsedMilliseconds);
         var workChunk = partition.AddChunkAndTrim(nextPaging);
         bool markExhausted = isEmptyPage && partition.Phase == PartitionPhase.Bulk;
