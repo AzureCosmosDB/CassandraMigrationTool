@@ -21,7 +21,6 @@ public class AppSettings : ICloneable
     public int LogPageSize { get; set; }
     public int CqlCopyPageSize { get; set; }
     public int ChangeFeedPollIntervalMs { get; set; }
-    public int MaxFeedRangeParallelism { get; set; }
 
     public AppSettings()
     {
@@ -37,14 +36,10 @@ public class AppSettings : ICloneable
     private static int DefaultOrValue(int loaded, int defaultVal)
         => loaded == 0 ? defaultVal : loaded;
 
-    internal static int DefaultParallelism()
-        => Math.Max(4, Environment.ProcessorCount * 2);
-
     internal void ApplyDefaults()
     {
         CqlCopyPageSize = DefaultCqlCopyPageSize;
         ChangeFeedPollIntervalMs = DefaultChangeFeedPollIntervalMs;
-        MaxFeedRangeParallelism = DefaultParallelism();
         LogPageSize = DefaultLogPageSize;
     }
 
@@ -61,7 +56,6 @@ public class AppSettings : ICloneable
         CqlCopyPageSize = DefaultOrValue(loaded.CqlCopyPageSize, DefaultCqlCopyPageSize);
         LogPageSize = DefaultOrValue(loaded.LogPageSize, DefaultLogPageSize);
         ChangeFeedPollIntervalMs = DefaultOrValue(loaded.ChangeFeedPollIntervalMs, DefaultChangeFeedPollIntervalMs);
-        MaxFeedRangeParallelism = DefaultOrValue(loaded.MaxFeedRangeParallelism, DefaultParallelism());
         ClampValues();
     }
 }

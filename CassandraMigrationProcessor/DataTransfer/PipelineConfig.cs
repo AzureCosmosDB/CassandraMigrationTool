@@ -20,13 +20,17 @@ public record PipelineConfig(
     /// Priority: Job > Settings > Defaults.
     /// </summary>
     public static PipelineConfig Resolve(Job job, AppSettings settings)
-    {
-        ArgumentNullException.ThrowIfNull(job);
+    {        ArgumentNullException.ThrowIfNull(job);
         ArgumentNullException.ThrowIfNull(settings);
 
+        // No job-level override: size the shared worker pool to the host's
+        // compute budget. Intentionally independent of job.ParallelThreads —
+        // the pool is shared across all tables, so dividing by table-fanout
+        // would shrink total throughput rather than partition it.
         int workerCount = job.MaxFeedRangeParallelism > 0
             ? job.MaxFeedRangeParallelism
-            : AutoWorkerCount();
+            : Math.Max(MigrationDefaults.MinWorkers,
+                Environment.ProcessorCount * MigrationDefaults.WorkerMultiplier);
 
         int pageSize = job.PageSize > 0
             ? job.PageSize
@@ -50,19 +54,5 @@ public record PipelineConfig(
             ChangeFeedPollIntervalMs: cfPollMs,
             MaxReadRetries: maxReadRetries,
             MaxWriteRetries: maxWriteRetries);
-    }
-
-    /// <summary>
-    /// Auto-sizes the shared worker pool. The pool is shared across all
-    /// tables in the job, so its size is bounded by the host's compute
-    /// budget — <see cref="Job.ParallelThreads"/> (max concurrent tables
-    /// in orchestration) is intentionally not a factor here, because
-    /// scaling the pool down as more tables run concurrently would
-    /// reduce total throughput rather than divide it.
-    /// </summary>
-    private static int AutoWorkerCount()
-    {
-        int totalBudget = Environment.ProcessorCount * MigrationDefaults.WorkerMultiplier;
-        return Math.Max(MigrationDefaults.MinWorkers, totalBudget);
     }
 }
