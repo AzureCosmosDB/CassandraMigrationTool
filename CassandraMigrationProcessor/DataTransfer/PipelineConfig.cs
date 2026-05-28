@@ -26,7 +26,7 @@ public record PipelineConfig(
 
         int workerCount = job.MaxFeedRangeParallelism > 0
             ? job.MaxFeedRangeParallelism
-            : AutoWorkerCount(job.ParallelThreads);
+            : AutoWorkerCount();
 
         int pageSize = job.PageSize > 0
             ? job.PageSize
@@ -52,10 +52,17 @@ public record PipelineConfig(
             MaxWriteRetries: maxWriteRetries);
     }
 
-    private static int AutoWorkerCount(int parallelTables)
+    /// <summary>
+    /// Auto-sizes the shared worker pool. The pool is shared across all
+    /// tables in the job, so its size is bounded by the host's compute
+    /// budget — <see cref="Job.ParallelThreads"/> (max concurrent tables
+    /// in orchestration) is intentionally not a factor here, because
+    /// scaling the pool down as more tables run concurrently would
+    /// reduce total throughput rather than divide it.
+    /// </summary>
+    private static int AutoWorkerCount()
     {
         int totalBudget = Environment.ProcessorCount * MigrationDefaults.WorkerMultiplier;
-        int tables = Math.Max(1, parallelTables);
-        return Math.Max(MigrationDefaults.MinWorkers, totalBudget / tables);
+        return Math.Max(MigrationDefaults.MinWorkers, totalBudget);
     }
 }
