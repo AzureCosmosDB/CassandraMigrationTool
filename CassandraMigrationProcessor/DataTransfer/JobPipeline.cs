@@ -44,10 +44,23 @@ internal sealed class JobPipeline : IDisposable
 
         // Wire fatal trip into our CTS so coordinators waiting on
         // per-table BulkDrainSignal under this token unblock as soon
-        // as any worker raises a fatal error.
+        // as any worker raises a fatal error. If the pipeline has
+        // already been disposed the CTS is gone and cancellation is
+        // moot — we explicitly check IsCancellationRequested-style
+        // disposal via try/catch so we can log it instead of leaving
+        // a silent empty catch that could hide unrelated bugs.
         Context.Flags.TriggerFatalShutdown = () =>
         {
-            try { _cts.Cancel(); } catch (ObjectDisposedException) { }
+            try
+            {
+                _cts.Cancel();
+            }
+            catch (ObjectDisposedException)
+            {
+                _log.WriteLine(
+                    "Fatal shutdown trigger fired after pipeline disposal — cancellation already moot.",
+                    LogType.Info);
+            }
         };
 
         _pool = new WorkerPool(_log, pipelineConfig.WorkerCount);
@@ -81,7 +94,14 @@ internal sealed class JobPipeline : IDisposable
 
     public void Dispose()
     {
-        try { _cts.Cancel(); } catch { }
+        // Dispose can race with the fatal-shutdown wiring above. Only
+        // ObjectDisposedException is expected here (double-dispose);
+        // anything else should surface.
+        try
+        {
+            _cts.Cancel();
+        }
+        catch (ObjectDisposedException) { /* already disposed */ }
         MigrationUtilities.SafeDispose(_pool, "JobPipeline WorkerPool");
         _cts.Dispose();
     }

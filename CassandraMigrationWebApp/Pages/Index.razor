@@ -296,7 +296,11 @@
                     {
                         JobManager.ClearJobFiles(jobId);
                     }
-                    catch { }
+                    catch (Exception ex)
+                    {
+                        Console.Error.WriteLine(
+                            $"ClearJobFiles({jobId}) failed: {ex.GetType().Name}: {ex.Message}");
+                    }
                 }
 
             }

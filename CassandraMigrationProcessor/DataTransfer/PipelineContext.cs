@@ -52,7 +52,22 @@ internal class JobControlFlags
     public void TripFatal()
     {
         Interlocked.Exchange(ref FatalErrorFlag, 1);
-        try { TriggerFatalShutdown?.Invoke(); } catch { }
+        // The shutdown callback is owned by JobPipeline and only throws
+        // ObjectDisposedException during teardown races. Anything else
+        // is a real bug and we want it visible, but TripFatal must remain
+        // safe to call from arbitrary worker paths, so we surface it via
+        // the console rather than re-raising into the caller (which may
+        // itself be in a catch block reacting to the original fault).
+        try
+        {
+            TriggerFatalShutdown?.Invoke();
+        }
+        catch (ObjectDisposedException) { /* shutdown already torn down */ }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine(
+                $"TripFatal: shutdown callback threw {ex.GetType().Name}: {ex.Message}");
+        }
     }
 }
 
@@ -74,6 +89,5 @@ internal record PipelineContext(
     WorkerConfig Worker,
     JobControlFlags Flags)
 {
-    public Job Job => Worker.Job;
     public bool EnableReplay => Worker.EnableReplay;
 }

@@ -477,7 +477,11 @@ else if (@_showLogBackupFile)
 
             return JobManager.GetLogCount(jobId);
         }
-        catch { }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine(
+                $"GetLogCount({jobId}) failed: {ex.GetType().Name}: {ex.Message}");
+        }
 
         return 0;
     }

@@ -76,12 +76,18 @@ internal static class DynamicUdtRegistrar
             }
             catch (ArgumentException)
             {
-                // The driver throws if the same UdtMap is registered twice on
-                // a session; idempotent re-registration is intended.
+                // The driver throws ArgumentException with a "already added"
+                // message when the same (keyspace, typeName) pair is defined
+                // twice on a session. Idempotent re-registration is intended
+                // (source + target registrars can both touch the same map),
+                // so this specific case is benign.
             }
-            catch (InvalidOperationException)
-            {
-            }
+            // NOTE: we deliberately do NOT catch InvalidOperationException
+            // here. The driver raises IOE for real misconfigurations — e.g.
+            // a CLR type that does not match the on-server UDT shape — and
+            // swallowing it would let column binds silently produce wrong
+            // data downstream. Let it propagate so the job fails fast at
+            // setup rather than corrupting rows mid-migration.
         }
     }
 

@@ -36,7 +36,7 @@ internal class DataCopyWorker
     public DataCopyWorker(MigrationLog log, CancellationToken cancellationToken, int workerId,
         int pageSize, int maxReadRetries, int maxWriteRetries)
     {
-        if (log == null) throw new ArgumentNullException(nameof(log));
+        ArgumentNullException.ThrowIfNull(log);
         _ct = cancellationToken;
         _workerLog = new WorkerLog(log, workerId);
         _pageSize = pageSize;
@@ -156,7 +156,7 @@ internal class DataCopyWorker
             }
             else
             {
-                MarkCompleted(partition, ctx);
+                MarkCompleted(partition);
             }
             return;
         }
@@ -189,10 +189,14 @@ internal class DataCopyWorker
             // Cooldown is best-effort: if the pool was completed between the
             // delay starting and ending (clean shutdown or fatal cascade),
             // dropping the deferred recycle is the correct behaviour — the
-            // job is winding down anyway.
-            try { ctx.Partitions.Recycle(partition); }
-            catch (InvalidOperationException) { }
-        });
+            // job is winding down anyway. TryRecycle returns false on a
+            // closed channel so we don't need to swallow an exception just
+            // to express "expected during shutdown".
+            if (!ctx.Partitions.TryRecycle(partition))
+                _workerLog.WriteLine(
+                    $"Cooldown recycle skipped for {partition.Resources.TableId}/{partition.FeedRange}: pool closed (shutdown).",
+                    LogType.Info);
+        }, _ct);
     }
 
     private static void SaveCheckpoint(Partition partition)
@@ -201,7 +205,7 @@ internal class DataCopyWorker
             partition.GetResumeToken() ?? partition.LastPagingState);
     }
 
-    private static void MarkCompleted(Partition partition, PipelineContext ctx)
+    private static void MarkCompleted(Partition partition)
     {
         // Offline final: partition clears its token + notifies
         // TableResources. Worker stays out of table-level state.

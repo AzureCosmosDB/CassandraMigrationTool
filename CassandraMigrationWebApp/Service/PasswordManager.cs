@@ -99,9 +99,19 @@ public class PasswordManager
         }
         catch
         {
-            // Password file exists but is unreadable (key changed, container restarted)
-            // Delete the corrupt file so user can set a new password
-            try { File.Delete(_passwordFilePath); } catch { }
+            // Password file exists but is unreadable (key changed, container restarted).
+            // Delete the corrupt file so the user can set a new password. The delete
+            // itself can fail if the file is held open by another process — surface
+            // that to stderr so it shows up in container logs rather than vanishing.
+            try
+            {
+                File.Delete(_passwordFilePath);
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine(
+                    $"PasswordManager: failed to delete corrupt password file '{_passwordFilePath}': {ex.GetType().Name}: {ex.Message}");
+            }
             return Task.FromResult(false);
         }
     }
