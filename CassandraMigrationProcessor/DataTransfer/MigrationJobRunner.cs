@@ -198,6 +198,12 @@ public class MigrationJobRunner
         int copyParallelism,
         CancellationToken cancellationToken)
     {
+        // Parallel.ForEachAsync re-throws only the first iteration fault
+        // and cancels its internal CTS so siblings observe OCE. That hides
+        // independent per-table failures and corrupts the post-loop view of
+        // "which tables succeeded". Catch and log each table's fault here
+        // so every table either completes, is observably faulted, or is
+        // observably cancelled — never silently elided by a sibling.
         return Parallel.ForEachAsync(units, new ParallelOptions
             {
                 MaxDegreeOfParallelism = copyParallelism,
@@ -211,15 +217,25 @@ public class MigrationJobRunner
                     return;
                 if (Volatile.Read(ref _consecutiveAuthErrors) >= MigrationDefaults.MaxConsecutiveAuthErrors)
                 {
-                    // Stop scheduling new tables and unblock any sibling
-                    // coordinator waiting on a BulkDrainSignal. Tables
-                    // already running ProcessChunkAsync see the pipeline
-                    // cancellation immediately rather than draining to
-                    // completion against an already-failed cluster.
                     _pipeline?.Stop();
                     return;
                 }
-                await ProcessWithRetryAsync(job, mu, partitioning, token);
+                try
+                {
+                    await ProcessWithRetryAsync(job, mu, partitioning, token);
+                }
+                catch (OperationCanceledException) when (token.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    _log.WriteLine(
+                        $"Table {mu.KeyspaceName}.{mu.TableName} faulted: {ex.GetType().FullName}: {ex.Message}",
+                        LogType.Error);
+                    if (ex.StackTrace != null)
+                        _log.WriteLine($"  at {ex.StackTrace}", LogType.Error);
+                }
             });
     }
 
