@@ -59,29 +59,29 @@ internal sealed class PageWriter : IDisposable
 
     public void Dispose() => MigrationUtilities.SafeDisposeSession(_targetSession, "PageWriter target session");
 
-    private Task<IRowWriteStrategy> GetStrategyAsync(TableResources resources)
+    private Task<IRowWriteStrategy> GetStrategyAsync(Partition partition)
     {
-        return _strategyCache.GetOrAdd(resources.TableId, async _ =>
+        return _strategyCache.GetOrAdd(partition.TableId, async _ =>
         {
-            await EnsureTargetUdtsRegisteredAsync(resources);
+            await EnsureTargetUdtsRegisteredAsync(partition);
             return await RowWriteStrategyFactory.CreateAsync(
-                _log, _targetSession, resources.Columns,
-                resources.Spec.TargetKeyspaceName, resources.Spec.TargetTableName,
+                _log, _targetSession, partition.Columns,
+                partition.Spec.TargetKeyspaceName, partition.Spec.TargetTableName,
                 _maxWriteRetries);
         });
     }
 
-    private Task EnsureTargetUdtsRegisteredAsync(TableResources resources)
+    private Task EnsureTargetUdtsRegisteredAsync(Partition partition)
     {
-        return _udtRegistrations.GetOrAdd(resources.Spec.TargetKeyspaceName, async ks =>
+        return _udtRegistrations.GetOrAdd(partition.Spec.TargetKeyspaceName, async ks =>
         {
             ISession? sourceSession = null;
             try
             {
                 sourceSession = _sessionFactory.CreateSourceSession();
-                var allUdts = await SchemaManager.GetUserDefinedTypesAsync(sourceSession, resources.Spec.KeyspaceName);
+                var allUdts = await SchemaManager.GetUserDefinedTypesAsync(sourceSession, partition.Spec.KeyspaceName);
                 var requiredUdts = SchemaManager.FilterUdtsReferencedByTable(
-                    allUdts, resources.Columns.Select(c => c.Type));
+                    allUdts, partition.Columns.Select(c => c.Type));
                 await DynamicUdtRegistrar.RegisterAsync(_targetSession, ks, requiredUdts);
             }
             catch (Exception ex)
@@ -111,8 +111,7 @@ internal sealed class PageWriter : IDisposable
             return;
         }
 
-        var resources = partition.Resources;
-        var strategy = await GetStrategyAsync(resources);
+        var strategy = await GetStrategyAsync(partition);
 
         var stopwatch = Stopwatch.StartNew();
         var counters = new WriteCounters();
@@ -128,31 +127,31 @@ internal sealed class PageWriter : IDisposable
             writeTasks.Add(strategy.WriteRowAsync(rows[i], onFatal, counters, i, _ct));
         }
 
-        resources.Tracker.SetPipelineState(resources.TotalFeedRanges
-                - resources.BulkCompletedCount,
+        partition.Tracker.SetPipelineState(partition.TotalFeedRanges
+                - partition.BulkCompletedCount,
             _pageSize);
         await Task.WhenAll(writeTasks);
 
         if (counters.Failed == 0) workChunk.IsCompleted = true;
         else
         {
-            _log.WriteLine($"{counters.Failed}/{rows.Count} writes failed for {resources.TableId} — checkpoint NOT advanced (will retry on resume)",
+            _log.WriteLine($"{counters.Failed}/{rows.Count} writes failed for {partition.TableId} — checkpoint NOT advanced (will retry on resume)",
                 LogType.Warning);
         }
 
         stopwatch.Stop();
-        resources.Tracker.AddWriteTime(counters.LatencySum, rows.Count);
+        partition.Tracker.AddWriteTime(counters.LatencySum, rows.Count);
 
         if (partition.Phase == PartitionPhase.Replay)
         {
-            resources.Tracker.AddReplayApplied(counters.Done, counters.LatencySum);
+            partition.Tracker.AddReplayApplied(counters.Done, counters.LatencySum);
             if (counters.Failed > 0)
-                resources.Tracker.AddReplayErrors(counters.Failed);
+                partition.Tracker.AddReplayErrors(counters.Failed);
         }
         else
         {
-            resources.Tracker.AddCopied(counters.Done);
-            resources.Tracker.AddFailed(counters.Failed);
+            partition.Tracker.AddCopied(counters.Done);
+            partition.Tracker.AddFailed(counters.Failed);
         }
 
         long pageBytes = 0;
@@ -166,6 +165,6 @@ internal sealed class PageWriter : IDisposable
                 else if (v != null)
                     pageBytes += 8;
             }
-        resources.Tracker.AddBytes(pageBytes);
+        partition.Tracker.AddBytes(pageBytes);
     }
 }

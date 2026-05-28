@@ -24,7 +24,7 @@ internal record ReaderConfig(int PageSize, int MaxReadRetries);
 /// Reads a single page from the source Cassandra cluster. The reader's
 /// source session is keyspace-agnostic; per-table state (columns,
 /// identifiers, UDT registrations) is resolved from
-/// <see cref="Partition.Resources"/> at read time. UDT registration is
+/// <see cref="Partition"/> at read time. UDT registration is
 /// cached per keyspace so the first partition for each table pays the
 /// cost and subsequent partitions reuse it.
 /// </summary>
@@ -59,15 +59,15 @@ internal class PageReader : IDisposable
     public void Dispose() => MigrationUtilities.SafeDisposeSession(_sourceSession, "PageReader source session");
 
     /// <summary>Lazy, idempotent UDT registration for a table's keyspace.</summary>
-    private Task EnsureUdtsRegisteredAsync(TableResources resources)
+    private Task EnsureUdtsRegisteredAsync(Partition partition)
     {
-        return _udtRegistrations.GetOrAdd(resources.Spec.KeyspaceName, async ks =>
+        return _udtRegistrations.GetOrAdd(partition.Spec.KeyspaceName, async ks =>
         {
             try
             {
                 var allUdts = await SchemaManager.GetUserDefinedTypesAsync(_sourceSession, ks);
                 var requiredUdts = SchemaManager.FilterUdtsReferencedByTable(
-                    allUdts, resources.Columns.Select(c => c.Type));
+                    allUdts, partition.Columns.Select(c => c.Type));
                 await DynamicUdtRegistrar.RegisterAsync(_sourceSession, ks, requiredUdts);
             }
             catch (Exception ex)
@@ -86,11 +86,10 @@ internal class PageReader : IDisposable
 
     public async Task<ReadResult?> ReadAsync(Partition partition, PipelineContext ctx)
     {
-        var resources = partition.Resources;
-        await EnsureUdtsRegisteredAsync(resources);
+        await EnsureUdtsRegisteredAsync(partition);
 
         var stopwatch = Stopwatch.StartNew();
-        var stmt = new SimpleStatement(BuildSelectCql(resources.Spec, partition.FeedRange));
+        var stmt = new SimpleStatement(BuildSelectCql(partition.Spec, partition.FeedRange));
         stmt.SetPageSize(_pageSize);
         stmt.SetAutoPage(false);
         stmt.SetReadTimeoutMillis(ReadTimeoutMs);
@@ -110,7 +109,7 @@ internal class PageReader : IDisposable
             catch (System.Exception ex) when (attempt < _maxReadRetries
                 && ExceptionClassifier.IsTransient(ex))
             {
-                _log.WriteLine($"Read timeout for {resources.TableId} (attempt {attempt}/{_maxReadRetries})",
+                _log.WriteLine($"Read timeout for {partition.TableId} (attempt {attempt}/{_maxReadRetries})",
                     LogType.Warning);
                 await Task.Delay(attempt * RetryDelayMs, _ct);
             }
@@ -123,7 +122,7 @@ internal class PageReader : IDisposable
         }
 
         byte[]? nextPaging = resultSet.PagingState;
-        var columnNames = resources.Columns.Select(c => c.Name).ToList();
+        var columnNames = partition.Columns.Select(c => c.Name).ToList();
         var rows = new List<object[]>();
         int available = resultSet.GetAvailableWithoutFetching();
         int consumed = 0;
@@ -140,8 +139,8 @@ internal class PageReader : IDisposable
         stopwatch.Stop();
         bool isEmptyPage = rows.Count == 0;
 
-        resources.Tracker.AddRead(rows.Count);
-        resources.Tracker.AddReadTime(stopwatch.ElapsedMilliseconds);
+        partition.Tracker.AddRead(rows.Count);
+        partition.Tracker.AddReadTime(stopwatch.ElapsedMilliseconds);
         var workChunk = partition.AddChunkAndTrim(nextPaging);
         bool markExhausted = isEmptyPage && partition.Phase == PartitionPhase.Bulk;
         partition.SetPageState(nextPaging, markExhausted);

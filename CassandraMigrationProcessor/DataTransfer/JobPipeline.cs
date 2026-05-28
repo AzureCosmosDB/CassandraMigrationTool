@@ -34,10 +34,14 @@ internal sealed class JobPipeline : IDisposable
 
         bool enableReplay = MigrationUtilities.IsOnline(job);
         var partitions = new PartitionManager();
+        var readerConfig = new ReaderConfig(pipelineConfig.PageSize, pipelineConfig.MaxReadRetries);
+        var writerConfig = new WriterConfig(pipelineConfig.PageSize, pipelineConfig.MaxWriteRetries);
 
         Context = new PipelineContext(
             partitions,
             new JobSessionFactory(log, job, tokenRefreshManager),
+            readerConfig,
+            writerConfig,
             EnableReplay: enableReplay,
             ReplayCooldownMs: pipelineConfig.ChangeFeedPollIntervalMs,
             new JobControlFlags());
@@ -68,13 +72,11 @@ internal sealed class JobPipeline : IDisposable
 
     public void Start()
     {
-        var readerConfig = new ReaderConfig(_pipelineConfig.PageSize, _pipelineConfig.MaxReadRetries);
-        var writerConfig = new WriterConfig(_pipelineConfig.PageSize, _pipelineConfig.MaxWriteRetries);
         _log.WriteLine(
             $"Job pipeline: {_pipelineConfig.WorkerCount} shared workers " +
-            $"(replay={Context.EnableReplay}, page size={readerConfig.PageSize})",
+            $"(replay={Context.EnableReplay}, page size={Context.ReaderConfig.PageSize})",
             LogType.Info);
-        _pool.Start(workerId => new DataCopyWorker(_log, _cts.Token, workerId, readerConfig, writerConfig).RunAsync(Context));
+        _pool.Start(workerId => new DataCopyWorker(_log, _cts.Token, workerId).RunAsync(Context));
     }
 
     /// <summary>Completes the partition pool; workers will drain and exit.</summary>

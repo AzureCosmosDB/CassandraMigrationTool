@@ -11,9 +11,9 @@ namespace CassandraMigrationProcessor.DataTransfer;
 /// Job-shared worker. Takes a partition (from any table) off the shared
 /// channel, reads one page, writes rows, saves checkpoint, re-enqueues
 /// or completes. All per-table state (tracker, ranges, drain signal,
-/// columns, identifiers) is resolved through
-/// <see cref="Partition.Resources"/> so a single pool can service many
-/// tables concurrently.
+/// columns, identifiers) is resolved through <see cref="Partition"/>'s
+/// own pass-through accessors so a single pool can service many tables
+/// concurrently.
 ///
 /// Phase behaviour:
 /// <list type="bullet">
@@ -29,17 +29,12 @@ internal class DataCopyWorker
 {
     private readonly CancellationToken _ct;
     private readonly WorkerLog _workerLog;
-    private readonly ReaderConfig _readerConfig;
-    private readonly WriterConfig _writerConfig;
 
-    public DataCopyWorker(MigrationLog log, CancellationToken cancellationToken, int workerId,
-        ReaderConfig readerConfig, WriterConfig writerConfig)
+    public DataCopyWorker(MigrationLog log, CancellationToken cancellationToken, int workerId)
     {
         ArgumentNullException.ThrowIfNull(log);
         _ct = cancellationToken;
         _workerLog = new WorkerLog(log, workerId);
-        _readerConfig = readerConfig;
-        _writerConfig = writerConfig;
     }
 
     public async Task RunAsync(PipelineContext ctx)
@@ -49,8 +44,8 @@ internal class DataCopyWorker
         Partition? current = null;
         try
         {
-            reader = await PageReader.CreateAsync(_workerLog, ctx.SessionFactory, _readerConfig, _ct);
-            writer = await PageWriter.CreateAsync(_workerLog, ctx.SessionFactory, _writerConfig, _ct);
+            reader = await PageReader.CreateAsync(_workerLog, ctx.SessionFactory, ctx.ReaderConfig, _ct);
+            writer = await PageWriter.CreateAsync(_workerLog, ctx.SessionFactory, ctx.WriterConfig, _ct);
 
             while (!_ct.IsCancellationRequested
                 && Volatile.Read(ref ctx.Flags.FatalErrorFlag) == 0
@@ -62,7 +57,7 @@ internal class DataCopyWorker
                 var result = await reader.ReadAsync(current, ctx);
                 if (result == null)
                 {
-                    _workerLog.WriteLine($"FATAL: Read failed for {current.Resources.TableId} — failing job", LogType.Error);
+                    _workerLog.WriteLine($"FATAL: Read failed for {current.TableId} — failing job", LogType.Error);
                     ctx.Flags.TripFatal();
                     break;
                 }
@@ -72,10 +67,10 @@ internal class DataCopyWorker
                 if (result.WorkChunk.IsCompleted)
                     SaveCheckpoint(current);
                 else
-                    _workerLog.WriteLine($"Checkpoint NOT advanced for {current.Resources.TableId} — page had failures", LogType.Warning);
+                    _workerLog.WriteLine($"Checkpoint NOT advanced for {current.TableId} — page had failures", LogType.Warning);
 
                 DispatchAfterPage(current, result, ctx);
-                current.Resources.Tracker.UpdateMigrationUnit();
+                current.Tracker.UpdateMigrationUnit();
                 current = null;
             }
         }
@@ -85,7 +80,7 @@ internal class DataCopyWorker
         }
         catch (Exception ex)
         {
-            string tag = current?.Resources.TableId ?? "init";
+            string tag = current?.TableId ?? "init";
             _workerLog.WriteLine($"Error on {tag}: {ex.GetType().Name}: {ex.Message}", LogType.Error);
 
             // Any escaped exception here means the inner retry layers
@@ -106,7 +101,7 @@ internal class DataCopyWorker
         }
         finally
         {
-            if (current != null) current.Resources.Tracker.UpdateMigrationUnit();
+            if (current != null) current.Tracker.UpdateMigrationUnit();
             // Do NOT call ctx.Partitions.Complete() here. The shared
             // partition channel is owned by JobPipeline; closing it from
             // one worker's finally would cut off every other worker
@@ -192,7 +187,7 @@ internal class DataCopyWorker
             // to express "expected during shutdown".
             if (!ctx.Partitions.TryRecycle(partition))
                 _workerLog.WriteLine(
-                    $"Cooldown recycle skipped for {partition.Resources.TableId}/{partition.FeedRange}: pool closed (shutdown).",
+                    $"Cooldown recycle skipped for {partition.TableId}/{partition.FeedRange}: pool closed (shutdown).",
                     LogType.Info);
         }, _ct);
     }

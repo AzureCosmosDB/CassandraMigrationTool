@@ -64,12 +64,15 @@ public record ProgressConfig(
 /// Shared (job-wide) state passed to every worker. Holds the
 /// <see cref="DataTransfer.PartitionManager"/> that all tables seed into and
 /// every worker pulls from, the connection capability used by readers and
-/// writers, the replay configuration knobs, and global control flags.
-/// Per-table state is resolved via <see cref="Partition.Resources"/>.
+/// writers, reader / writer tunables, the replay configuration knobs, and
+/// global control flags. Per-table state is resolved through
+/// <see cref="Partition"/> pass-through accessors.
 /// </summary>
 internal record PipelineContext(
     PartitionManager Partitions,
     ISessionFactory SessionFactory,
+    ReaderConfig ReaderConfig,
+    WriterConfig WriterConfig,
     bool EnableReplay,
     int ReplayCooldownMs,
     JobControlFlags Flags);

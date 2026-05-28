@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using CassandraMigrationProcessor.CassandraDriver;
 using CassandraMigrationProcessor.Models;
 
 namespace CassandraMigrationProcessor.DataTransfer;
@@ -35,12 +36,33 @@ internal class Partition
     public PartitionState State { get; }
 
     /// <summary>
-    /// Per-table state for the table that owns this partition. Workers
-    /// resolve all per-table data (Tracker, identifiers, columns,
-    /// drain signal) through this reference so a single shared worker
-    /// pool can service partitions from any table.
+    /// Per-table state for the table that owns this partition. Kept
+    /// private so workers go through typed pass-through accessors
+    /// (<see cref="Spec"/>, <see cref="Columns"/>, <see cref="Tracker"/>,
+    /// <see cref="TableId"/>, <see cref="TotalFeedRanges"/>,
+    /// <see cref="BulkCompletedCount"/>) rather than reaching into a
+    /// shared bag. This keeps the worker → table coupling explicit and
+    /// stops new code from grabbing the whole resources object.
     /// </summary>
-    public TableResources Resources { get; }
+    private readonly TableResources _resources;
+
+    /// <summary>Source/target table identifiers and column metadata.</summary>
+    public TableCopySpec Spec => _resources.Spec;
+
+    /// <summary>Ordered column list used to materialize rows and bind writes.</summary>
+    public List<CassandraColumn> Columns => _resources.Columns;
+
+    /// <summary>Per-table progress / metrics sink.</summary>
+    public CopyProgressTracker Tracker => _resources.Tracker;
+
+    /// <summary>Human-readable "keyspace.table" identifier for logs.</summary>
+    public string TableId => _resources.TableId;
+
+    /// <summary>Total feed ranges across the owning table.</summary>
+    public int TotalFeedRanges => _resources.TotalFeedRanges;
+
+    /// <summary>Feed ranges in the owning table whose bulk phase has completed.</summary>
+    public int BulkCompletedCount => _resources.BulkCompletedCount;
 
     private readonly LinkedList<WorkChunk> _chunks = new();
     private readonly object _lock = new();
@@ -50,7 +72,7 @@ internal class Partition
         State = state ?? throw new ArgumentNullException(nameof(state));
         LastPagingState = initialPagingState;
         Phase = phase;
-        Resources = resources;
+        _resources = resources;
 
         if (initialPagingState != null)
             _chunks.AddLast(new WorkChunk { ContinuationToken = initialPagingState, IsCompleted = true });
@@ -122,27 +144,27 @@ internal class Partition
     /// Online bulk → replay handoff. Sets <see cref="PartitionState.BulkCompleted"/>
     /// while preserving the current <see cref="PartitionState.ContinuationToken"/>
     /// as the replay anchor. On the first writer the partition notifies
-    /// <see cref="Resources"/> so the table-level counter and drain
+    /// <see cref="_resources"/> so the table-level counter and drain
     /// signal advance — workers never touch table-level state directly.
     /// </summary>
     public void HandoffToReplay()
     {
         if (State.BulkCompleted) return;
         State.BulkCompleted = true;
-        Resources.OnPartitionBulkCompleted();
+        _resources.OnPartitionBulkCompleted();
     }
 
     /// <summary>
     /// Offline final completion. Sets <see cref="PartitionState.BulkCompleted"/>
     /// and clears <see cref="PartitionState.ContinuationToken"/> so resume
     /// skips the range entirely. On the first writer the partition
-    /// notifies <see cref="Resources"/>.
+    /// notifies <see cref="_resources"/>.
     /// </summary>
     public void CompleteOffline()
     {
         if (State.BulkCompleted) return;
         State.BulkCompleted = true;
         State.ContinuationToken = null;
-        Resources.OnPartitionBulkCompleted();
+        _resources.OnPartitionBulkCompleted();
     }
 }
