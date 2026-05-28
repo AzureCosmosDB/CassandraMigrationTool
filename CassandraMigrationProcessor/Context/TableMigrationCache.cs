@@ -1,5 +1,3 @@
-using CassandraMigrationProcessor.Context;
-using System;
 using System.Collections.Concurrent;
 using CassandraMigrationProcessor.Models;
 

@@ -1,8 +1,5 @@
 using Cassandra;
 using CassandraMigrationProcessor.CassandraDriver;
-using System;
-using System.Collections.Generic;
-using System.Threading.Tasks;
 
 namespace CassandraMigrationProcessor.DataTransfer;
 

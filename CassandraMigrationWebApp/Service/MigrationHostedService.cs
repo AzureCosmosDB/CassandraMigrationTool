@@ -1,9 +1,3 @@
-using Microsoft.Extensions.Hosting;
-using CassandraMigrationProcessor;
-using CassandraMigrationProcessor.Models;
-using CassandraMigrationProcessor.Context;
-using CassandraMigrationProcessor.Infrastructure;
-
 namespace CassandraMigrationWebApp.Service;
 /// <summary>
 /// Background service placeholder. Auto-resume has been

@@ -1,14 +1,8 @@
 using Microsoft.Extensions.Configuration;
 using Newtonsoft.Json;
 using CassandraMigrationProcessor.Infrastructure;
-using CassandraMigrationProcessor.Context;
 using CassandraMigrationProcessor.Persistence;
-using System;
 using System.Collections.Concurrent;
-using System.Collections.Generic;
-using System.IO;
-using System.Threading;
-using System.Threading.Tasks;
 using CassandraMigrationProcessor.Models;
 
 namespace CassandraMigrationProcessor.Context;

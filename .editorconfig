@@ -5,4 +5,5 @@ root = true
 dotnet_diagnostic.IDE0051.severity = warning  # unused private members
 dotnet_diagnostic.IDE0052.severity = warning  # unread private members
 dotnet_diagnostic.IDE0060.severity = warning  # unused parameters
+dotnet_diagnostic.IDE0005.severity = warning  # unnecessary using directives
 dotnet_diagnostic.CS8321.severity  = warning  # local function declared but never used

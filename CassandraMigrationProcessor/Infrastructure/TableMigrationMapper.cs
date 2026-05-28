@@ -1,6 +1,4 @@
 using CassandraMigrationProcessor.Models;
-using System;
-using System.Threading;
 
 namespace CassandraMigrationProcessor.Infrastructure;
 

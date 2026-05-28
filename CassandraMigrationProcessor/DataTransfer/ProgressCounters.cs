@@ -1,5 +1,3 @@
-using System.Threading;
-
 namespace CassandraMigrationProcessor.DataTransfer;
 /// <summary>
 /// Thread-safe atomic counters for copy-pipeline progress.

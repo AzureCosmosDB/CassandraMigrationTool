@@ -1,8 +1,4 @@
-using CassandraMigrationProcessor.Context;
 using CassandraMigrationProcessor.Models;
-using System.Collections.Generic;
-using System.Threading;
-using System.Threading.Tasks;
 using CassandraMigrationProcessor.CassandraDriver;
 
 namespace CassandraMigrationProcessor.DataTransfer;

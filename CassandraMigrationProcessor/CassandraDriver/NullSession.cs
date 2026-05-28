@@ -1,10 +1,7 @@
 using Cassandra;
 using Cassandra.DataStax.Graph;
 using Cassandra.Metrics;
-using System;
-using System.Collections.Generic;
 using System.Net;
-using System.Threading.Tasks;
 
 namespace CassandraMigrationProcessor.CassandraDriver;
 

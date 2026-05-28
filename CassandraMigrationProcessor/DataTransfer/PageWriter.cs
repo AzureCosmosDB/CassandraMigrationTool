@@ -2,13 +2,8 @@ using Cassandra;
 using CassandraMigrationProcessor.Infrastructure;
 using CassandraMigrationProcessor.CassandraDriver;
 using CassandraMigrationProcessor.Models;
-using System;
 using System.Collections.Concurrent;
-using System.Collections.Generic;
 using System.Diagnostics;
-using System.Linq;
-using System.Threading;
-using System.Threading.Tasks;
 
 namespace CassandraMigrationProcessor.DataTransfer;
 

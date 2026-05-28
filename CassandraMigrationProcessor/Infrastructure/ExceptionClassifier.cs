@@ -1,7 +1,4 @@
 using Cassandra;
-using System;
-using System.Collections.Generic;
-using System.Linq;
 
 namespace CassandraMigrationProcessor.Infrastructure;
 /// <summary>

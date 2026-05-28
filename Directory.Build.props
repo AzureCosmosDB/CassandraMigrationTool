@@ -1,0 +1,22 @@
+<Project>
+  <PropertyGroup>
+    <!--
+      Run code-style analyzers (IDE0005, IDE0051, IDE0052, IDE0060, ...)
+      during every build, not just inside the IDE. Without this, IDE rules
+      are silently ignored at build time.
+    -->
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+    <!--
+      IDE0005 ("Using directive is unnecessary") requires
+      GenerateDocumentationFile=true to be reported by the build. This is a
+      known Roslyn quirk: https://github.com/dotnet/roslyn/issues/41640
+    -->
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <!--
+      The XML-docs warnings (CS1591 etc.) are noise for an internal app,
+      so silence them. We only enabled GenerateDocumentationFile to make
+      IDE0005 fire.
+    -->
+    <NoWarn>$(NoWarn);CS1591;CS1573;CS1572;CS1574;CS1587;CS1734</NoWarn>
+  </PropertyGroup>
+</Project>

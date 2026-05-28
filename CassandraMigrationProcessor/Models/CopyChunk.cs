@@ -1,5 +1,3 @@
-using System.Collections.Generic;
-
 namespace CassandraMigrationProcessor.Models;
 
 /// <summary>DTO: a single bulk-copy chunk for a table — row counts and the segments it covers.</summary>

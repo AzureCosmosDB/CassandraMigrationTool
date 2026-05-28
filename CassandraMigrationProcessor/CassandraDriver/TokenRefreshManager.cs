@@ -1,7 +1,5 @@
 using Cassandra;
-using System;
 using System.IdentityModel.Tokens.Jwt;
-using System.Threading;
 using CassandraMigrationProcessor.Infrastructure;
 using CassandraMigrationProcessor.Models;
 

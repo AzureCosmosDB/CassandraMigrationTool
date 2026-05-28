@@ -1,5 +1,3 @@
-using System.Collections.Generic;
-
 namespace CassandraMigrationProcessor.Models;
 
 /// <summary>DTO: persisted registry of known <see cref="Job"/> IDs (<c>JobRegistry.json</c>).</summary>
