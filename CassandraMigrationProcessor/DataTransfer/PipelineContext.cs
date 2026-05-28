@@ -9,16 +9,16 @@ using CassandraMigrationProcessor.Models;
 namespace CassandraMigrationProcessor.DataTransfer;
 
 /// <summary>
-/// Per-job worker configuration. Carries the <see cref="Job"/> so worker
-/// sessions are built via the Job-aware factory overloads — that path
-/// lazily fetches AAD tokens / ARM credentials and caches them onto the
-/// job before any session is opened. Snapshotting <c>ConnectionOptions</c>
-/// here would skip that step and crash workers with a null-password
-/// error when source AAD is enabled.
+/// Per-job worker configuration. The <see cref="ISessionFactory"/>
+/// encapsulates job credentials, logger, and the optional
+/// <see cref="TokenRefreshManager"/> so workers and the page reader/writer
+/// receive a single capability for opening sessions instead of being
+/// threaded the raw job and refresh manager separately. This keeps the
+/// Job-aware factory path (lazy AAD/ARM credential acquisition) intact
+/// while shrinking the surface area each data-movement class depends on.
 /// </summary>
 internal record WorkerConfig(
-    Job Job,
-    TokenRefreshManager? TokenRefreshManager,
+    ISessionFactory SessionFactory,
     bool EnableReplay,
     int ReplayCooldownMs);
 

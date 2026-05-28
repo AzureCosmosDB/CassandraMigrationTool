@@ -37,7 +37,8 @@ internal sealed class JobPipeline : IDisposable
 
         Context = new PipelineContext(
             partitions,
-            new WorkerConfig(job, tokenRefreshManager,
+            new WorkerConfig(
+                new JobSessionFactory(log, job, tokenRefreshManager),
                 EnableReplay: enableReplay,
                 ReplayCooldownMs: pipelineConfig.ChangeFeedPollIntervalMs),
             new JobControlFlags());

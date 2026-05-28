@@ -31,20 +31,20 @@ internal class PageReader : IDisposable
     private const int ReadTimeoutMs = 60_000;
     private const int RetryDelayMs = 5000;
 
-    private PageReader(WorkerLog log, WorkerConfig config, int pageSize, int maxReadRetries, CancellationToken cancellationToken)
+    private PageReader(WorkerLog log, ISessionFactory sessionFactory, int pageSize, int maxReadRetries, CancellationToken cancellationToken)
     {
         _log = log;
         _ct = cancellationToken;
         _pageSize = pageSize;
         _maxReadRetries = maxReadRetries;
-        _sourceSession = CassandraClientFactory.CreateSourceSession(log.Inner, config.Job, string.Empty, config.TokenRefreshManager);
+        _sourceSession = sessionFactory.CreateSourceSession();
     }
 
     public static Task<PageReader> CreateAsync(WorkerLog log,
-        WorkerConfig config, int pageSize, int maxReadRetries,
+        ISessionFactory sessionFactory, int pageSize, int maxReadRetries,
         CancellationToken cancellationToken)
     {
-        return Task.FromResult(new PageReader(log, config, pageSize, maxReadRetries, cancellationToken));
+        return Task.FromResult(new PageReader(log, sessionFactory, pageSize, maxReadRetries, cancellationToken));
     }
 
     public void Dispose() => MigrationUtilities.SafeDisposeSession(_sourceSession, "PageReader source session");

@@ -51,8 +51,8 @@ internal class DataCopyWorker
         Partition? current = null;
         try
         {
-            reader = await PageReader.CreateAsync(_workerLog, ctx.Worker, _pageSize, _maxReadRetries, _ct);
-            writer = await PageWriter.CreateAsync(_workerLog, ctx.Worker, _pageSize, _maxWriteRetries, _ct);
+            reader = await PageReader.CreateAsync(_workerLog, ctx.Worker.SessionFactory, _pageSize, _maxReadRetries, _ct);
+            writer = await PageWriter.CreateAsync(_workerLog, ctx.Worker.SessionFactory, _pageSize, _maxWriteRetries, _ct);
 
             while (!_ct.IsCancellationRequested
                 && Volatile.Read(ref ctx.Flags.FatalErrorFlag) == 0

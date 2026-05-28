@@ -26,26 +26,26 @@ internal sealed class PageWriter : IDisposable
     private readonly ISession _targetSession;
     private readonly int _pageSize;
     private readonly int _maxWriteRetries;
-    private readonly WorkerConfig _config;
+    private readonly ISessionFactory _sessionFactory;
 
     private readonly ConcurrentDictionary<string, Task<IRowWriteStrategy>> _strategyCache = new();
     private readonly ConcurrentDictionary<string, Task> _udtRegistrations = new();
 
-    private PageWriter(WorkerLog log, WorkerConfig config, ISession targetSession,
+    private PageWriter(WorkerLog log, ISessionFactory sessionFactory, ISession targetSession,
         int pageSize, int maxWriteRetries, CancellationToken cancellationToken)
     {
         _log = log;
         _ct = cancellationToken;
-        _config = config;
+        _sessionFactory = sessionFactory;
         _pageSize = pageSize;
         _maxWriteRetries = maxWriteRetries;
         _targetSession = targetSession;
     }
 
-    public static async Task<PageWriter> CreateAsync(WorkerLog log, WorkerConfig config, int pageSize, int maxWriteRetries, CancellationToken cancellationToken)
+    public static async Task<PageWriter> CreateAsync(WorkerLog log, ISessionFactory sessionFactory, int pageSize, int maxWriteRetries, CancellationToken cancellationToken)
     {
-        var targetSession = await CassandraClientFactory.CreateTargetSessionAsync(log.Inner, config.Job, string.Empty);
-        return new PageWriter(log, config, targetSession, pageSize, maxWriteRetries, cancellationToken);
+        var targetSession = await sessionFactory.CreateTargetSessionAsync();
+        return new PageWriter(log, sessionFactory, targetSession, pageSize, maxWriteRetries, cancellationToken);
     }
 
     public void Dispose() => MigrationUtilities.SafeDisposeSession(_targetSession, "PageWriter target session");
@@ -69,7 +69,7 @@ internal sealed class PageWriter : IDisposable
             ISession? sourceSession = null;
             try
             {
-                sourceSession = CassandraClientFactory.CreateSourceSession(_log.Inner, _config.Job, string.Empty, _config.TokenRefreshManager);
+                sourceSession = _sessionFactory.CreateSourceSession();
                 var allUdts = await SchemaManager.GetUserDefinedTypesAsync(sourceSession, resources.Spec.KeyspaceName);
                 var requiredUdts = SchemaManager.FilterUdtsReferencedByTable(
                     allUdts, resources.Columns.Select(c => c.Type));
