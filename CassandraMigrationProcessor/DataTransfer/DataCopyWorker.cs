@@ -61,19 +61,32 @@ internal class DataCopyWorker
                 await writer.WriteAsync(result.Rows, result.WorkChunk, current, ctx);
 
                 if (result.WorkChunk.IsCompleted)
+                {
                     SaveCheckpoint(current);
+                }
+                else if (_ct.IsCancellationRequested
+                    || Volatile.Read(ref ctx.Flags.FatalErrorFlag) != 0)
+                {
+                    // Graceful shutdown mid-page (cancellation or another
+                    // worker already tripped fatal). The page wasn't fully
+                    // written but we're tearing down anyway; outer loop
+                    // will exit on the next iteration.
+                    break;
+                }
                 else
                 {
-                    // Record on the persisted snapshot that this range
-                    // has unresolved write failures. The flag blocks
-                    // CompleteOffline / HandoffToReplay from advertising
-                    // the range as completed; Resume will then re-read
-                    // the failed page from the last good checkpoint and
-                    // re-attempt the rows. Without this the next empty
-                    // page silently flips BulkCompleted=true and the
-                    // failed rows are dropped (silent data loss).
-                    current.RecordPageFailures();
-                    _workerLog.WriteLine($"Checkpoint NOT advanced for {current.FullTableName} — page had failures (range marked HadFailures; will re-read on resume)", LogType.Warning);
+                    // Per-row retries were exhausted with real failures.
+                    // Symmetric with the thrown-exception path below: any
+                    // page we can't fully write is fatal for the job,
+                    // because continuing would let a subsequent empty-page
+                    // read flip BulkCompleted=true and silently mark the
+                    // table done with the failed rows missing. Resume from
+                    // the last persisted checkpoint will re-read this page.
+                    _workerLog.WriteLine(
+                        $"FATAL: write retries exhausted on {current.FullTableName} — aborting job to preserve data integrity (resume to re-attempt)",
+                        LogType.Error);
+                    ctx.Flags.TripFatal();
+                    break;
                 }
 
                 DispatchAfterPage(current, result, ctx);

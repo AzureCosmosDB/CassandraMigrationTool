@@ -80,7 +80,7 @@ public class MigrationJobRunner
             if (job.IsOnline)
                 await RunOnlineTailLoopAsync(cancellationToken);
             else
-                await RunOfflineFinalizeAsync(job, units);
+                await RunOfflineFinalizeAsync(job);
         }
         catch (OperationCanceledException)
         {
@@ -295,38 +295,10 @@ public class MigrationJobRunner
     /// drain and exit, await pool completion, then mark the job
     /// completed if the run reached the terminal state cleanly.
     /// </summary>
-    private async Task RunOfflineFinalizeAsync(Job job, IReadOnlyList<TableMigration> units)
+    private async Task RunOfflineFinalizeAsync(Job job)
     {
         _pipeline!.CompletePartitionChannel();
         await _pipeline.WaitForCompletionAsync();
-
-        // Safety net: never mark a job Completed when there is
-        // evidence of unresolved write failures. The per-table
-        // BulkCopyPhase / CopyComplete path normally catches this,
-        // but defensive validation here closes the gap (e.g. resume
-        // paths that incorrectly mark all ranges complete despite
-        // unresolved failures — see issue #32).
-        var stalledTables = new List<string>();
-        foreach (var mu in units)
-        {
-            bool anyFailedRange = mu.Partitions?.Values
-                .Any(p => p.HadFailures) ?? false;
-            if (anyFailedRange)
-            {
-                stalledTables.Add($"{mu.KeyspaceName}.{mu.TableName}");
-            }
-        }
-        if (stalledTables.Count > 0)
-        {
-            _log.WriteLine(
-                $"Job {job.Id} has tables with unresolved write failures; " +
-                $"refusing to mark Completed: {string.Join(", ", stalledTables)}. " +
-                "Resume the job to re-attempt the failed rows.",
-                LogType.Error);
-            job.Status = JobStatus.Faulted;
-            MigrationJobContext.Instance.SaveMigrationJob(job);
-            return;
-        }
 
         if (job.IsOfflineCompleted
             && !MigrationJobContext.Instance.ControlledPauseRequested
