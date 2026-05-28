@@ -986,7 +986,7 @@ else if (@_showLogBackupFile)
         _errorMessage = string.Empty;
         try
         {
-            MigrationContext.RequestControlledPause();
+            JobManager.RequestControlledPause();
             MigrationContext.SaveJob(CurrentlyLoadedMigrationJob);
         }
         catch (Exception ex)

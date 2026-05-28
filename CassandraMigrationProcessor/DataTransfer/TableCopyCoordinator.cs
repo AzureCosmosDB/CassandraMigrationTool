@@ -22,6 +22,7 @@ internal sealed class TableCopyCoordinator : IDisposable
     private readonly CancellationTokenSource _cts;
     private readonly JobPipeline _jobPipeline;
     private readonly IReadOnlyList<TablePartitioning> _chunks;
+    private readonly Action _pauseHandler;
 
     public volatile bool ProcessRunning;
 
@@ -44,6 +45,17 @@ internal sealed class TableCopyCoordinator : IDisposable
         _cts = externalToken.CanBeCanceled
             ? CancellationTokenSource.CreateLinkedTokenSource(externalToken)
             : new CancellationTokenSource();
+
+        // Pause must unblock our BulkDrainSignal wait or the table
+        // hangs until external cancellation. Workers stop pulling on
+        // pause, so the drain signal would never trip naturally.
+        var cts = _cts;
+        _pauseHandler = () =>
+        {
+            try { cts.Cancel(); }
+            catch (ObjectDisposedException) { /* already disposed */ }
+        };
+        MigrationJobContext.Instance.PauseRequested += _pauseHandler;
     }
 
     public void Cancel() => _cts?.Cancel();
@@ -222,6 +234,7 @@ internal sealed class TableCopyCoordinator : IDisposable
 
     public void Dispose()
     {
+        MigrationJobContext.Instance.PauseRequested -= _pauseHandler;
         _cts?.Dispose();
     }
 }

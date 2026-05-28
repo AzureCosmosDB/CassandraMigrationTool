@@ -1,4 +1,5 @@
 using CassandraMigrationProcessor.CassandraDriver;
+using CassandraMigrationProcessor.Context;
 using CassandraMigrationProcessor.Infrastructure;
 using CassandraMigrationProcessor.Models;
 
@@ -18,6 +19,7 @@ internal sealed class JobPipeline : IDisposable, IAsyncDisposable
     private readonly CancellationTokenSource _cts;
     private readonly WorkerPool _workerPool;
     private readonly CooldownScheduler _cooldown;
+    private readonly Action _pauseHandler;
     public PipelineContext Context { get; }
 
     public JobPipeline(MigrationLog log, Job job, PipelineConfig pipelineConfig, JobPartitioning partitioning, TokenRefreshManager? tokenRefreshManager, CancellationToken externalToken)
@@ -27,6 +29,21 @@ internal sealed class JobPipeline : IDisposable, IAsyncDisposable
         _cts = externalToken.CanBeCanceled
             ? CancellationTokenSource.CreateLinkedTokenSource(externalToken)
             : new CancellationTokenSource();
+
+        // Pause is a soft flag, so coordinators blocked on
+        // BulkDrainSignal.Task.WaitAsync(_cts.Token) would hang until
+        // the external cancellation token fires (i.e. forever, in
+        // practice). Cancel the pipeline CTS the moment a pause is
+        // requested so those waits unblock and the worker pool tears
+        // down promptly. JobManager already maps "cancelled while
+        // pause flag is set" to JobStatus.Paused.
+        var pipelineCts = _cts;
+        _pauseHandler = () =>
+        {
+            try { pipelineCts.Cancel(); }
+            catch (ObjectDisposedException) { /* job already torn down */ }
+        };
+        MigrationJobContext.Instance.PauseRequested += _pauseHandler;
 
         bool enableReplay = job.IsOnline;
         var partitions = new PartitionManager(partitioning.AllPartitions);
@@ -93,6 +110,8 @@ internal sealed class JobPipeline : IDisposable, IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
+        MigrationJobContext.Instance.PauseRequested -= _pauseHandler;
+
         // Stop the cooldown scheduler BEFORE we cancel/dispose so any
         // queued partitions are surfaced (logged) rather than vanishing
         // inside a torn-down task.

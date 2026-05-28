@@ -235,6 +235,11 @@ public class MigrationJobRunner
             {
                 throw;
             }
+            catch (OperationCanceledException)
+            {
+                // Pause-driven cancel propagated from the coordinator;
+                // not a fault, just a graceful early exit.
+            }
             catch (Exception ex)
             {
                 _log.WriteLine(
