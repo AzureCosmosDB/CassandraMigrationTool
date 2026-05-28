@@ -55,7 +55,7 @@ internal class DataCopyWorker
             writer = await PageWriter.CreateAsync(_workerLog, ctx.Worker, _pageSize, _maxWriteRetries, _ct);
 
             while (!_ct.IsCancellationRequested
-                && Volatile.Read(ref ctx.Counters.FatalErrorFlag) == 0
+                && Volatile.Read(ref ctx.Flags.FatalErrorFlag) == 0
                 && !MigrationJobContext.Instance.ControlledPauseRequested)
             {
                 current = await ctx.Partitions.TakeAsync(_ct);
@@ -65,7 +65,7 @@ internal class DataCopyWorker
                 if (result == null)
                 {
                     _workerLog.WriteLine($"FATAL: Read failed for {current.Resources.TableId} — failing job", LogType.Error);
-                    Interlocked.Exchange(ref ctx.Counters.FatalErrorFlag, 1);
+                    Interlocked.Exchange(ref ctx.Flags.FatalErrorFlag, 1);
                     break;
                 }
 
@@ -83,7 +83,7 @@ internal class DataCopyWorker
         }
         catch (OperationCanceledException)
         {
-            ctx.Counters.WorkerErrors.Add(TaskResult.Canceled);
+            ctx.Flags.WorkerErrors.Add(TaskResult.Canceled);
         }
         catch (Exception ex)
         {
@@ -93,12 +93,12 @@ internal class DataCopyWorker
             if (current == null || ExceptionClassifier.IsFatal(ex))
             {
                 _workerLog.WriteLine("FATAL — failing job", LogType.Error);
-                Interlocked.Exchange(ref ctx.Counters.FatalErrorFlag, 1);
-                ctx.Counters.WorkerErrors.Add(TaskResult.Abort);
+                Interlocked.Exchange(ref ctx.Flags.FatalErrorFlag, 1);
+                ctx.Flags.WorkerErrors.Add(TaskResult.Abort);
             }
             else
             {
-                ctx.Counters.WorkerErrors.Add(TaskResult.Retry);
+                ctx.Flags.WorkerErrors.Add(TaskResult.Retry);
             }
         }
         finally
@@ -173,7 +173,7 @@ internal class DataCopyWorker
             catch (OperationCanceledException) { return; }
 
             if (_ct.IsCancellationRequested
-                || Volatile.Read(ref ctx.Counters.FatalErrorFlag) != 0
+                || Volatile.Read(ref ctx.Flags.FatalErrorFlag) != 0
                 || MigrationJobContext.Instance.ControlledPauseRequested)
                 return;
 

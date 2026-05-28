@@ -104,7 +104,7 @@ internal class PageReader : IDisposable
 
         if (resultSet == null)
         {
-            ctx.Counters.WorkerErrors.Add(TaskResult.Retry);
+            ctx.Flags.WorkerErrors.Add(TaskResult.Retry);
             return null;
         }
 

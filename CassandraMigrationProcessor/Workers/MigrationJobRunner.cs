@@ -27,7 +27,7 @@ public class MigrationJobRunner
 {
     private readonly MigrationLog _log;
     private int _consecutiveAuthErrors;
-    private readonly ConcurrentDictionary<string, TableMigrationEngine> _activeProcessors = new();
+    private readonly ConcurrentDictionary<string, TableCopyCoordinator> _activeProcessors = new();
     private readonly TokenRefreshManager _tokenRefreshManager;
     private JobPipeline? _pipeline;
 
@@ -233,9 +233,9 @@ public class MigrationJobRunner
         }
         finally
         {
-            // All tables can release their engines once MigrateTableAsync
+            // All tables can release their coordinators once MigrateTableAsync
             // returns — the worker pool is owned by the JobPipeline now,
-            // not by the engine.
+            // not by the coordinator.
             _activeProcessors.TryRemove(mu.Id, out var removed);
             MigrationUtilities.SafeDispose(removed as IDisposable, "MigrationJobRunner processor");
         }
@@ -245,8 +245,8 @@ public class MigrationJobRunner
     /// Owns destination schema provisioning for a single table:
     /// optional drop, then keyspace + UDTs + table creation via
     /// <see cref="SchemaManager.SyncSchemaAsync"/>. Runs exactly once
-    /// per table, before <see cref="TableMigrationEngine"/> is invoked.
-    /// The engine fetches the source column list it needs to build
+    /// per table, before <see cref="TableCopyCoordinator"/> is invoked.
+    /// The coordinator fetches the source column list it needs to build
     /// writers via the cheap <see cref="SchemaManager.GetTableColumnsAsync"/>
     /// path and does no DDL of its own.
     /// </summary>
@@ -302,7 +302,7 @@ public class MigrationJobRunner
     private async Task RunCopyForUnitAsync(Job job, AppSettings config,
         TableMigration mu, CancellationToken ct)
     {
-        var processor = await TableMigrationEngine.CreateAsync(_log, config, job, _pipeline!, _tokenRefreshManager, ct);
+        var processor = await TableCopyCoordinator.CreateAsync(_log, config, job, _pipeline!, _tokenRefreshManager, ct);
         _activeProcessors[mu.Id] = processor;
         ct.ThrowIfCancellationRequested();
 

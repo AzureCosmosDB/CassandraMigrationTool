@@ -14,15 +14,19 @@ using System.Threading.Tasks;
 namespace CassandraMigrationProcessor.DataTransfer;
 
 /// <summary>
-/// Runs the copy phase for a single table on top of the job-shared
-/// <see cref="JobPipeline"/>: validates the source, fetches the column
-/// list, discovers feed ranges, builds <see cref="TableResources"/>,
-/// seeds partitions, and awaits the drain signal. Destination schema
-/// provisioning (keyspace + UDTs + table creation, drop-if-requested)
-/// is owned by <c>MigrationJobRunner</c> and has completed before
+/// Coordinates the copy of a single table on top of the job-shared
+/// <see cref="JobPipeline"/>. Does no copying itself: workers in the
+/// shared pool drain partitions. Per-table responsibilities are
+/// opening per-table sessions, fetching the source column list,
+/// slicing the source token range into <see cref="Partition"/>
+/// work items (<see cref="Partitioner"/>), seeding them into the
+/// shared <see cref="PartitionManager"/>, waiting for the table's
+/// own slice to drain, and marking the table CopyComplete.
+/// Destination schema provisioning is owned by
+/// <see cref="Workers.MigrationJobRunner"/> and has completed before
 /// <see cref="MigrateTableAsync"/> is invoked.
 /// </summary>
-public class TableMigrationEngine : IDisposable
+internal sealed class TableCopyCoordinator : IDisposable
 {
     private readonly MigrationLog _migrationLog;
     private readonly Job _migrationJob;
@@ -30,13 +34,13 @@ public class TableMigrationEngine : IDisposable
     private readonly ISession _source;
     private readonly ISession _target;
     private readonly CancellationTokenSource _cts;
-    private readonly object _pipelineRef;  // JobPipeline (internal type)
+    private readonly JobPipeline _pipeline;
 
     public volatile bool ProcessRunning;
 
-    private TableMigrationEngine(MigrationLog log, AppSettings config, Job job,
+    private TableCopyCoordinator(MigrationLog log, AppSettings config, Job job,
         ISession source, ISession target,
-        object pipeline,
+        JobPipeline pipeline,
         CancellationToken externalToken)
     {
         _migrationLog = log;
@@ -47,10 +51,10 @@ public class TableMigrationEngine : IDisposable
             : new CancellationTokenSource();
         _source = source;
         _target = target;
-        _pipelineRef = pipeline;
+        _pipeline = pipeline;
     }
 
-    internal static async Task<TableMigrationEngine> CreateAsync(
+    internal static async Task<TableCopyCoordinator> CreateAsync(
         MigrationLog log, AppSettings config, Job job,
         JobPipeline pipeline,
         TokenRefreshManager? tokenRefreshManager = null,
@@ -64,7 +68,7 @@ public class TableMigrationEngine : IDisposable
         ISession target = job.IsSimulatedRun
             ? new NullSession()
             : await CassandraClientFactory.CreateTargetSessionAsync(log, job, string.Empty);
-        return new TableMigrationEngine(log, config, job, source, target, pipeline, externalToken);
+        return new TableCopyCoordinator(log, config, job, source, target, pipeline, externalToken);
     }
 
     public void StopProcessing()
@@ -204,7 +208,6 @@ public class TableMigrationEngine : IDisposable
             return TaskResult.Abort;
         }
 
-        var pipeline = (JobPipeline)_pipelineRef;
         bool isOnline = MigrationUtilities.IsOnline(_migrationJob);
 
         var tracker = new CopyProgressTracker(_migrationLog,
@@ -214,7 +217,7 @@ public class TableMigrationEngine : IDisposable
         var partitioner = new Partitioner(_migrationLog);
         var seed = await partitioner.DiscoverAndSeedAsync(
             context.SourceSession, tableMigration, context,
-            columns, tracker, pipeline.Context.Partitions,
+            columns, tracker, _pipeline.Context.Partitions,
             enableReplay: isOnline);
 
         if (seed.AllRangesComplete)
@@ -251,19 +254,19 @@ public class TableMigrationEngine : IDisposable
             $"session={sessionWritten:N0} written, {tracker.TotalFailed:N0} failed " +
             $"({stopwatch.Elapsed.TotalSeconds:F1}s)", LogType.Info);
 
-        var result = DetermineOutcome(pipeline.Context.Counters, tracker.TotalFailed);
+        var result = DetermineOutcome(_pipeline.Context.Flags, tracker.TotalFailed);
         if (result == TaskResult.Success)
             MarkChunkComplete(tableMigration, chunkIndex);
         return result;
     }
 
-    private static TaskResult DetermineOutcome(PipelineCounters counters, long failedCount)
+    private static TaskResult DetermineOutcome(JobControlFlags flags, long failedCount)
     {
-        if (Volatile.Read(ref counters.FatalErrorFlag) != 0)
+        if (Volatile.Read(ref flags.FatalErrorFlag) != 0)
             return TaskResult.Abort;
-        if (counters.WorkerErrors.Any(r => r == TaskResult.Abort))
+        if (flags.WorkerErrors.Any(r => r == TaskResult.Abort))
             return TaskResult.Abort;
-        if (counters.WorkerErrors.Any(r => r == TaskResult.Canceled))
+        if (flags.WorkerErrors.Any(r => r == TaskResult.Canceled))
             return TaskResult.Canceled;
         return failedCount > 0 ? TaskResult.Retry : TaskResult.Success;
     }
@@ -292,7 +295,7 @@ public class TableMigrationEngine : IDisposable
     public void Dispose()
     {
         _cts?.Dispose();
-        MigrationUtilities.SafeDispose(_target, "TableMigrationEngine target session");
-        MigrationUtilities.SafeDispose(_source, "TableMigrationEngine source session");
+        MigrationUtilities.SafeDispose(_target, "TableCopyCoordinator target session");
+        MigrationUtilities.SafeDispose(_source, "TableCopyCoordinator source session");
     }
 }

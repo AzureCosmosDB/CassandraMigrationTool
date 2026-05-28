@@ -40,7 +40,7 @@ internal sealed class JobPipeline : IDisposable
             new WorkerConfig(job, tokenRefreshManager,
                 EnableReplay: enableReplay,
                 ReplayCooldownMs: pipelineConfig.ChangeFeedPollIntervalMs),
-            new PipelineCounters());
+            new JobControlFlags());
 
         _pool = new WorkerPool(_log, pipelineConfig.WorkerCount);
     }

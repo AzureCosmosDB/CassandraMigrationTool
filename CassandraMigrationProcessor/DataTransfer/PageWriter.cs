@@ -104,12 +104,12 @@ internal sealed class PageWriter : IDisposable
         var stopwatch = Stopwatch.StartNew();
         var counters = new WriteCounters();
         var writeTasks = new List<Task>(rows.Count);
-        Action onFatal = () => Interlocked.Exchange(ref ctx.Counters.FatalErrorFlag, 1);
+        Action onFatal = () => Interlocked.Exchange(ref ctx.Flags.FatalErrorFlag, 1);
 
         for (int i = 0; i < rows.Count; i++)
         {
             if (_ct.IsCancellationRequested
-                || Volatile.Read(ref ctx.Counters.FatalErrorFlag) != 0)
+                || Volatile.Read(ref ctx.Flags.FatalErrorFlag) != 0)
                 break;
 
             writeTasks.Add(strategy.WriteRowAsync(rows[i], onFatal, counters, i));

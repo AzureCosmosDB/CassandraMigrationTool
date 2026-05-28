@@ -28,10 +28,11 @@ internal record RangeState(
     List<string> FeedRanges);
 
 /// <summary>
-/// Job-level pipeline flags. Per-table progress lives on
-/// <see cref="TableResources.Tracker"/>.
+/// Job-level control flags shared by every worker: a fatal-error
+/// latch and the collected per-worker outcomes. Per-table progress
+/// counters live on <see cref="TableResources.Tracker"/>.
 /// </summary>
-internal class PipelineCounters
+internal class JobControlFlags
 {
     public int FatalErrorFlag;
     public ConcurrentBag<TaskResult> WorkerErrors { get; } = new();
@@ -47,13 +48,13 @@ public record ProgressConfig(
 /// Shared (job-wide) state passed to every worker. Holds the
 /// <see cref="DataTransfer.PartitionManager"/> that all tables seed into and
 /// every worker pulls from, plus the connection/replay configuration and
-/// global counters. Per-table state is resolved via
+/// global control flags. Per-table state is resolved via
 /// <see cref="Partition.Resources"/>.
 /// </summary>
 internal record PipelineContext(
     PartitionManager Partitions,
     WorkerConfig Worker,
-    PipelineCounters Counters)
+    JobControlFlags Flags)
 {
     public Job Job => Worker.Job;
     public bool EnableReplay => Worker.EnableReplay;

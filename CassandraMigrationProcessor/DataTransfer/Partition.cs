@@ -11,8 +11,8 @@ namespace CassandraMigrationProcessor.DataTransfer;
 internal enum PartitionPhase { Bulk, Replay }
 
 /// <summary>
-/// Represents a feed range partition with its work chunk list.
-/// Uses LinkedList for clean node management.
+/// Represents a feed range partition with its in-flight checkpoint
+/// list. Uses LinkedList for clean node management.
 /// </summary>
 internal class Partition
 {
@@ -70,7 +70,7 @@ internal class Partition
         var chunk = new WorkChunk { ContinuationToken = continuationToken };
         lock (_lock)
         {
-            // Trim completed chunks from the front
+            // Trim completed checkpoints from the front
             while (_chunks.First != null && _chunks.First.Value.IsCompleted)
                 _chunks.RemoveFirst();
 
