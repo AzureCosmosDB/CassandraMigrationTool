@@ -57,10 +57,10 @@ public static class CassandraClientFactory
                 return session;
             }
             catch (Exception ex) when (
-                IsRetryableException(ex)
+                ExceptionClassifier.IsTransient(ex)
                 && attempt < MaxRetries)
             {
-                int delayMs = GetRetryDelayMs(ex, attempt);
+                int delayMs = ExceptionClassifier.GetRetryDelayMs(ex, attempt);
                 MigrationLog.WriteLine(
                     $"Source connect retry " +
                     $"{attempt}: {ex.Message}",
@@ -79,62 +79,6 @@ public static class CassandraClientFactory
         }
 
         return finalSession;
-    }
-
-    /// <summary>
-    /// Determine if an exception is retryable (429, overload,
-    /// transient connection errors).
-    /// </summary>
-    internal static bool IsRetryableException(Exception ex)
-    {
-        if (ex is OverloadedException)
-            return true;
-
-        var msg = ex.Message;
-        var inner = ex.InnerException?.Message ?? string.Empty;
-        var fullMsg = msg + " " + inner;
-
-        return fullMsg.Contains("429")
-            || fullMsg.Contains("TooManyRequests")
-            || fullMsg.Contains("OverloadedException")
-            || fullMsg.Contains("Request rate is large")
-            || fullMsg.Contains("RetryAfterMs")
-            || fullMsg.Contains("rate limit",
-                StringComparison.OrdinalIgnoreCase);
-    }
-
-    /// <summary>
-    /// Extract RetryAfterMs from error message if present,
-    /// otherwise use exponential backoff.
-    /// </summary>
-    internal static int GetRetryDelayMs(
-        Exception ex, int attempt)
-    {
-        // Try to extract RetryAfterMs=NNN from message
-        var msg = (ex.Message ?? "") + " "
-            + (ex.InnerException?.Message ?? "");
-        var idx = msg.IndexOf("RetryAfterMs=",
-            StringComparison.OrdinalIgnoreCase);
-        if (idx >= 0)
-        {
-            var start = idx + "RetryAfterMs=".Length;
-            var end = start;
-            while (end < msg.Length
-                && char.IsDigit(msg[end])) end++;
-            if (end > start
-                && int.TryParse(
-                    msg.Substring(start, end - start),
-                    out var retryMs)
-                && retryMs > 0)
-            {
-                // Add jitter: retryMs + 100-500ms
-                return retryMs + Random.Shared.Next(100, 500);
-            }
-        }
-
-        // Exponential backoff: 1s, 2s, 4s, 8s, 16s
-        return (int)(Math.Pow(2, attempt - 1) * 1000)
-            + Random.Shared.Next(100, 500);
     }
 
     /// <summary>
