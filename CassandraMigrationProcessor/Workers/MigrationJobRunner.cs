@@ -165,7 +165,7 @@ public class MigrationJobRunner
 
         try
         {
-            await SetupTargetSchemaAsync(job, mu);
+            await ProvisionTargetSchemaAsync(job, mu);
 
             if (mu.BulkCopyPhase < BulkCopyPhase.Copying)
                 mu.BulkCopyPhase = BulkCopyPhase.Copying;
@@ -195,7 +195,16 @@ public class MigrationJobRunner
         }
     }
 
-    private async Task SetupTargetSchemaAsync(Job job, TableMigration mu)
+    /// <summary>
+    /// Owns destination schema provisioning for a single table:
+    /// optional drop, then keyspace + UDTs + table creation via
+    /// <see cref="SchemaManager.SyncSchemaAsync"/>. Runs exactly once
+    /// per table, before <see cref="TableMigrationEngine"/> is invoked.
+    /// The engine fetches the source column list it needs to build
+    /// writers via the cheap <see cref="SchemaManager.GetTableColumnsAsync"/>
+    /// path and does no DDL of its own.
+    /// </summary>
+    private async Task ProvisionTargetSchemaAsync(Job job, TableMigration mu)
     {
         if (job.SkipSchemaSync)
         {
@@ -240,7 +249,7 @@ public class MigrationJobRunner
         }
         finally
         {
-            MigrationUtilities.SafeDispose(sourceSession, "SetupTargetSchemaAsync source session");
+            MigrationUtilities.SafeDispose(sourceSession, "ProvisionTargetSchemaAsync source session");
         }
     }
 

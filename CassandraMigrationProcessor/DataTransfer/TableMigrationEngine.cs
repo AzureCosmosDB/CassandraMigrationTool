@@ -14,11 +14,13 @@ using System.Threading.Tasks;
 namespace CassandraMigrationProcessor.DataTransfer;
 
 /// <summary>
-/// Prepares a single table for the job-shared <see cref="JobPipeline"/>:
-/// counts rows, syncs schema, discovers feed ranges, builds
-/// <see cref="TableResources"/>, and seeds partitions into the shared
-/// channel. Then awaits the table's drain signal so the caller can mark
-/// the table CopyComplete.
+/// Runs the copy phase for a single table on top of the job-shared
+/// <see cref="JobPipeline"/>: validates the source, fetches the column
+/// list, discovers feed ranges, builds <see cref="TableResources"/>,
+/// seeds partitions, and awaits the drain signal. Destination schema
+/// provisioning (keyspace + UDTs + table creation, drop-if-requested)
+/// is owned by <c>MigrationJobRunner</c> and has completed before
+/// <see cref="MigrateTableAsync"/> is invoked.
 /// </summary>
 public class TableMigrationEngine : IDisposable
 {
@@ -185,16 +187,22 @@ public class TableMigrationEngine : IDisposable
         }
         tableMigration.CopyChunks[chunkIndex].SourceQueryRowCount = rowCount;
 
-        await SchemaManager.EnsureKeyspaceExistsAsync(_target, context.TargetKeyspaceName);
         if (_migrationJob.IsSimulatedRun)
         {
             _migrationLog.WriteLine($"Simulated: {context.KeyspaceName}.{context.TableName}", LogType.Info);
             return TaskResult.Success;
         }
 
-        var migrator = new SchemaMigrator(_migrationLog);
-        var schema = await migrator.SyncAsync(context.SourceSession, _target, context);
-        if (schema == null) return TaskResult.Abort;
+        // Destination schema (keyspace + UDTs + table) was provisioned by
+        // MigrationJobRunner.SetupTargetSchemaAsync before the engine ran;
+        // here we only fetch the source column list needed to build writers.
+        var columns = await SchemaManager.GetTableColumnsAsync(
+            context.SourceSession, context.KeyspaceName, context.TableName);
+        if (columns.Count == 0)
+        {
+            _migrationLog.WriteLine($"No columns for {context.KeyspaceName}.{context.TableName}", LogType.Error);
+            return TaskResult.Abort;
+        }
 
         var pipeline = (JobPipeline)_pipelineRef;
         bool isOnline = MigrationUtilities.IsOnline(_migrationJob);
@@ -206,7 +214,7 @@ public class TableMigrationEngine : IDisposable
         var partitioner = new Partitioner(_migrationLog);
         var seed = await partitioner.DiscoverAndSeedAsync(
             context.SourceSession, tableMigration, context,
-            schema.Columns, tracker, pipeline.Context.Partitions,
+            columns, tracker, pipeline.Context.Partitions,
             enableReplay: isOnline);
 
         if (seed.AllRangesComplete)
