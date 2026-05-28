@@ -129,9 +129,9 @@ public class MigrationJobRunner
                 return;
             ct.ThrowIfCancellationRequested();
 
+            _log.WriteLine($"[Schema] Provisioning target for {mu.KeyspaceName}.{mu.TableName}", LogType.Info);
             try
             {
-                _log.WriteLine($"[Schema] Provisioning target for {mu.KeyspaceName}.{mu.TableName}", LogType.Info);
                 await ProvisionTargetSchemaAsync(job, mu);
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
@@ -180,9 +180,9 @@ public class MigrationJobRunner
                 if (mu.CopyComplete && !job.IsOnline)
                     continue;
 
+                _log.WriteLine($"[Discovery] Discovering partitions for {mu.KeyspaceName}.{mu.TableName}", LogType.Info);
                 try
                 {
-                    _log.WriteLine($"[Discovery] Discovering partitions for {mu.KeyspaceName}.{mu.TableName}", LogType.Info);
                     await DiscoverUnitPartitioningAsync(job, mu, sourceSession, partitioner, chunks);
                 }
                 catch (Exception ex) when (ex is not OperationCanceledException)
@@ -226,9 +226,9 @@ public class MigrationJobRunner
                 _pipeline?.Stop();
                 return;
             }
+            _log.WriteLine($"[Copy] Copying data for {mu.KeyspaceName}.{mu.TableName}", LogType.Info);
             try
             {
-                _log.WriteLine($"[Copy] Copying data for {mu.KeyspaceName}.{mu.TableName}", LogType.Info);
                 await ProcessWithRetryAsync(job, mu, partitioning, cancellationToken);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
