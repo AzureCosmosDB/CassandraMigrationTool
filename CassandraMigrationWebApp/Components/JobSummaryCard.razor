@@ -85,7 +85,6 @@
                     <small class="text-muted">
                         <i class="bi bi-cpu"></i>
                         <strong>Shared workers:</strong> @(sj.WorkerCount > 0 ? sj.WorkerCount.ToString() : $"auto ({Math.Max(MigrationDefaults.MinWorkers, Environment.ProcessorCount * MigrationDefaults.WorkerMultiplier)})")
-                        · <strong>Parallel tables:</strong> @sj.ParallelThreads
                         · <strong>Source conn/host:</strong> @FormatConnPerHost(sj.SourceMaxConnectionsPerHost, sj.MaxConnectionsPerHost)
                         · <strong>Target conn/host:</strong> @FormatConnPerHost(sj.TargetMaxConnectionsPerHost, sj.MaxConnectionsPerHost)
                         · <strong>Page size:</strong> @(sj.PageSize > 0 ? sj.PageSize.ToString() : "500")

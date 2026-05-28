@@ -42,11 +42,6 @@ public class Job
     // ── Pipeline Config ──
 
     /// <summary>
-    /// Number of parallel threads for row copy operations.
-    /// </summary>
-    public int ParallelThreads { get; set; } = 5;
-
-    /// <summary>
     /// Size of the shared worker pool that does row-level copy work
     /// across all tables. 0 = auto from <see cref="Environment.ProcessorCount"/>.
     /// </summary>

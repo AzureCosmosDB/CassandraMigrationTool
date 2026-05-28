@@ -24,9 +24,7 @@ public record PipelineConfig(
         ArgumentNullException.ThrowIfNull(settings);
 
         // No job-level override: size the shared worker pool to the host's
-        // compute budget. Intentionally independent of job.ParallelThreads —
-        // the pool is shared across all tables, so dividing by table-fanout
-        // would shrink total throughput rather than partition it.
+        // compute budget.
         int workerCount = job.WorkerCount > 0
             ? job.WorkerCount
             : Math.Max(MigrationDefaults.MinWorkers,

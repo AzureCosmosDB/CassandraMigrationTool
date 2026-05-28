@@ -11,10 +11,9 @@ namespace CassandraMigrationProcessor.DataTransfer;
 /// job-wide worker pool. All tables share the same pool of
 /// <see cref="PipelineConfig.WorkerCount"/> workers; there is no
 /// table-level worker parallelism. Destination schema provisioning
-/// is done serially up front (Phase 1); <see cref="Job.ParallelThreads"/>
-/// only caps how many tables can be in copy orchestration
-/// concurrently in Phase 2 (seeding partitions / awaiting drain),
-/// not steady-state row throughput.
+/// (Phase 1) and copy orchestration (Phase 2) both fan out across
+/// every table concurrently — the shared pool gates steady-state
+/// row throughput.
 /// </summary>
 public class MigrationJobRunner
 {
@@ -45,10 +44,8 @@ public class MigrationJobRunner
             }
 
             var pipelineConfig = PipelineConfig.Resolve(job, config);
-            int copyParallelism = Math.Max(1, Math.Min(job.ParallelThreads, units.Count));
             _log.WriteLine(
-                $"Migrating {units.Count} tables with {pipelineConfig.WorkerCount} shared workers " +
-                $"(copy orchestration parallelism={copyParallelism})");
+                $"Migrating {units.Count} tables with {pipelineConfig.WorkerCount} shared workers");
 
             // Phase 1: provision destination schema for every table serially.
             var schemaFailed = await RunSchemaPhaseAsync(job, units, cancellationToken);
@@ -64,9 +61,9 @@ public class MigrationJobRunner
 
             // Phase 2: parallel copy orchestration. The shared worker
             // pool owned by JobPipeline does the actual row-level
-            // parallelism; copyParallelism only caps how many tables
-            // can be awaiting drain at the same time.
-            await RunCopyPhaseAsync(job, units, partitioning, schemaFailed, copyParallelism, cancellationToken);
+            // parallelism; here every table's orchestration loop runs
+            // concurrently and competes for those shared workers.
+            await RunCopyPhaseAsync(job, units, partitioning, schemaFailed, cancellationToken);
 
             if (Volatile.Read(ref _consecutiveAuthErrors) >= MigrationDefaults.MaxConsecutiveAuthErrors)
             {
@@ -122,14 +119,11 @@ public class MigrationJobRunner
         // it serially blocked the entire copy phase for ~25s per
         // table on Cosmos source clusters with high DDL latency
         // (e.g. 11 tables took ~4.5 minutes before any data flowed).
-        // Cap parallelism at job.ParallelThreads so we don't
-        // overwhelm small clusters; keep at least 1.
-        int schemaParallelism = Math.Max(1, Math.Min(job.ParallelThreads, units.Count));
         var failedLock = new object();
 
         await Parallel.ForEachAsync(units, new ParallelOptions
             {
-                MaxDegreeOfParallelism = schemaParallelism,
+                MaxDegreeOfParallelism = Math.Max(1, units.Count),
                 CancellationToken = ct
             },
             async (mu, token) =>
@@ -216,15 +210,19 @@ public class MigrationJobRunner
     /// parallelism; <paramref name="copyParallelism"/> only caps how
     /// many tables can be awaiting drain concurrently.
     /// </summary>
+    /// <summary>
+    /// Phase 2: orchestrate per-table copy concurrently. All tables
+    /// share the worker pool owned by JobPipeline; this loop just
+    /// kicks off each table's drain so the pool stays saturated.
+    /// </summary>
     private Task RunCopyPhaseAsync(
         Job job,
         IReadOnlyList<TableMigration> units,
         JobPartitioning partitioning,
         HashSet<string> schemaFailed,
-        int copyParallelism,
         CancellationToken cancellationToken)
     {
-        _log.WriteLine($"=== Phase 2: Copy — {units.Count} table(s), up to {copyParallelism} concurrent ===", LogType.Info);
+        _log.WriteLine($"=== Phase 2: Copy — {units.Count} table(s) concurrent ===", LogType.Info);
         // Parallel.ForEachAsync re-throws only the first iteration fault
         // and cancels its internal CTS so siblings observe OCE. That hides
         // independent per-table failures and corrupts the post-loop view of
@@ -233,7 +231,7 @@ public class MigrationJobRunner
         // observably cancelled — never silently elided by a sibling.
         return Parallel.ForEachAsync(units, new ParallelOptions
             {
-                MaxDegreeOfParallelism = copyParallelism,
+                MaxDegreeOfParallelism = Math.Max(1, units.Count),
                 CancellationToken = cancellationToken
             },
             async (mu, token) =>
