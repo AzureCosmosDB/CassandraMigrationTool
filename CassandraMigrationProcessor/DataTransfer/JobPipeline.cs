@@ -71,6 +71,12 @@ internal sealed class JobPipeline : IDisposable
     /// <summary>Waits for all workers to finish (offline mode only).</summary>
     public Task WaitForCompletionAsync() => _pool.WaitForCompletionAsync();
 
+    /// <summary>True when every worker task has exited (faulted, cancelled, or returned).</summary>
+    public bool AllWorkersExited => _pool.AllExited;
+
+    /// <summary>Number of workers that completed with faults.</summary>
+    public int FaultedWorkerCount => _pool.FaultedCount;
+
     public void Stop() => _cts.Cancel();
 
     public void Dispose()

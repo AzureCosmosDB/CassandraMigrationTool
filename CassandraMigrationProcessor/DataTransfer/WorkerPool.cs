@@ -76,6 +76,9 @@ internal class WorkerPool : IDisposable
     /// </summary>
     public int FaultedCount => _workers?.Count(t => t.IsFaulted) ?? 0;
 
+    /// <summary>True if every worker task has finished (success, fault, or cancel).</summary>
+    public bool AllExited => _workers != null && _workers.All(t => t.IsCompleted);
+
     public void Dispose()
     {
         // Workers are fire-and-forget tasks — nothing to dispose

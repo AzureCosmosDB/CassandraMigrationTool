@@ -106,7 +106,26 @@ public class MigrationJobRunner
                 _log.WriteLine("All tables drained. Change feed replaying on shared worker pool.", LogType.Info);
                 while (!cancellationToken.IsCancellationRequested
                     && !MigrationJobContext.Instance.ControlledPauseRequested)
+                {
+                    // Online change-feed mode keeps the shared worker pool alive
+                    // indefinitely. If every worker has died (faults or fatal trip)
+                    // the loop would otherwise wait forever while no rows are being
+                    // copied — silent data loss. Probe the pool each tick.
+                    if (_pipeline!.AllWorkersExited)
+                    {
+                        int faulted = _pipeline.FaultedWorkerCount;
+                        _log.WriteLine(
+                            $"Online worker pool has stopped (faulted={faulted}). Aborting job.",
+                            LogType.Error);
+                        return TaskResult.Abort;
+                    }
+                    if (Volatile.Read(ref _pipeline.Context.Flags.FatalErrorFlag) == 1)
+                    {
+                        _log.WriteLine("Fatal error tripped during online replay. Aborting job.", LogType.Error);
+                        return TaskResult.Abort;
+                    }
                     await Task.Delay(2000, cancellationToken);
+                }
             }
             else
             {

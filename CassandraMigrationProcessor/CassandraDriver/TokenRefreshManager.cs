@@ -17,6 +17,8 @@ public class TokenRefreshManager : IDisposable
     private ISession? _managedSourceSession;
     private readonly MigrationLog _log;
     private DateTime _tokenExpiresAt = DateTime.MinValue;
+    private int _consecutiveRefreshFailures;
+    private const int MaxRefreshFailures = 6;
 
     private string? _lastSourceContactPoint;
     private int _lastSourcePort;
@@ -201,17 +203,27 @@ public class TokenRefreshManager : IDisposable
                 }
 
                 // Schedule next refresh
+                _consecutiveRefreshFailures = 0;
                 StartTokenRefreshTimer(freshToken);
             }
             catch (Exception ex)
             {
-                // Retry in 2 minutes on failure
-                Console.WriteLine($"[WARN] Token refresh failed: {ex.Message}");
-                _log?.WriteLine($"Token refresh failed, retrying in 2 min: {ex.Message}", LogType.Warning);
+                _consecutiveRefreshFailures++;
+                // Exponential backoff capped at 5 min:
+                //   1: 30s  2: 1m  3: 2m  4: 4m  5+: 5m
+                int seconds = Math.Min(300, 30 * (1 << Math.Min(_consecutiveRefreshFailures - 1, 4)));
+                bool tokenAlreadyExpired = DateTime.UtcNow >= _tokenExpiresAt;
+                LogType severity = (_consecutiveRefreshFailures >= MaxRefreshFailures || tokenAlreadyExpired)
+                    ? LogType.Error
+                    : LogType.Warning;
+                string msg = $"Token refresh failed (attempt {_consecutiveRefreshFailures}, " +
+                             $"retrying in {seconds}s, tokenExpiresAt={_tokenExpiresAt:O}): {ex.Message}";
+                Console.WriteLine($"[{severity}] {msg}");
+                _log?.WriteLine(msg, severity);
                 StopTokenRefreshTimer();
                 _tokenRefreshTimer = new Timer(
                     TokenRefreshCallback, null,
-                    TimeSpan.FromMinutes(2),
+                    TimeSpan.FromSeconds(seconds),
                     Timeout.InfiniteTimeSpan);
             }
         }
