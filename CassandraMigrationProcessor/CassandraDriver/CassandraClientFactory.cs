@@ -299,25 +299,18 @@ public static class CassandraClientFactory
             username,
             password,
             tokenRefreshManager,
-            maxConnectionsPerHost: ResolveSourceMaxConnectionsPerHost(job));
+            maxConnectionsPerHost: ResolveMaxConnectionsPerHost(job.SourceMaxConnectionsPerHost, job.MaxConnectionsPerHost));
     }
 
     /// <summary>
-    /// Per-side connection pool sizing. The per-side
-    /// <see cref="Job.SourceMaxConnectionsPerHost"/> /
-    /// <see cref="Job.TargetMaxConnectionsPerHost"/> knobs take
-    /// precedence; the job-level <see cref="Job.MaxConnectionsPerHost"/>
-    /// applies to both sides when no per-side value is set.
+    /// Per-side connection pool sizing. The per-side override
+    /// (<see cref="Job.SourceMaxConnectionsPerHost"/> /
+    /// <see cref="Job.TargetMaxConnectionsPerHost"/>) takes precedence
+    /// when positive; otherwise the job-level fallback
+    /// <see cref="Job.MaxConnectionsPerHost"/> applies to both sides.
     /// </summary>
-    internal static int ResolveSourceMaxConnectionsPerHost(Job job)
-        => job.SourceMaxConnectionsPerHost > 0
-            ? job.SourceMaxConnectionsPerHost
-            : job.MaxConnectionsPerHost;
-
-    internal static int ResolveTargetMaxConnectionsPerHost(Job job)
-        => job.TargetMaxConnectionsPerHost > 0
-            ? job.TargetMaxConnectionsPerHost
-            : job.MaxConnectionsPerHost;
+    internal static int ResolveMaxConnectionsPerHost(int perSideOverride, int jobWideFallback)
+        => perSideOverride > 0 ? perSideOverride : jobWideFallback;
 
     /// <summary>
     /// Async version — Create target session from a Job's properties.
@@ -371,6 +364,6 @@ public static class CassandraClientFactory
             job.TargetPort,
             username,
             password,
-            maxConnectionsPerHost: ResolveTargetMaxConnectionsPerHost(job));
+            maxConnectionsPerHost: ResolveMaxConnectionsPerHost(job.TargetMaxConnectionsPerHost, job.MaxConnectionsPerHost));
     }
 }
