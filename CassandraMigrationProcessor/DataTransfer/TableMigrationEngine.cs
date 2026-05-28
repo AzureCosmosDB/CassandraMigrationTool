@@ -203,8 +203,8 @@ public class TableMigrationEngine : IDisposable
             tableMigration.CopyRowsCopied, tableMigration,
             new ProgressConfig(chunkIndex, initialPercent, contributionFactor, rowCount));
 
-        var seeder = new PartitionSeeder(_migrationLog);
-        var seed = await seeder.DiscoverAndSeedAsync(
+        var partitioner = new Partitioner(_migrationLog);
+        var seed = await partitioner.DiscoverAndSeedAsync(
             context.SourceSession, tableMigration, context,
             schema.Columns, tracker, pipeline.Context.Partitions,
             enableReplay: isOnline);

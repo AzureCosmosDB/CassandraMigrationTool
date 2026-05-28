@@ -39,12 +39,19 @@ internal sealed class PartitionManager
         => _channel.Writer.WriteAsync(partition, cancellationToken);
 
     /// <summary>
-    /// Worker recycle path. Returns false only if the channel was completed
-    /// (e.g. a failing worker tore down the pipeline). Safe to ignore the
-    /// return value on the happy path since the channel is unbounded.
+    /// Worker recycle path. Recycling MUST succeed during normal
+    /// operation; the only path that throws is when the pool was
+    /// already completed (shutdown or fatal cascade), in which case
+    /// the caller is about to exit on its next loop iteration anyway.
+    /// Throwing surfaces the contract violation rather than silently
+    /// losing the partition.
     /// </summary>
-    public bool TryEnqueue(Partition partition)
-        => _channel.Writer.TryWrite(partition);
+    public void Recycle(Partition partition)
+    {
+        if (!_channel.Writer.TryWrite(partition))
+            throw new InvalidOperationException(
+                "PartitionManager.Recycle: pool is completed; recycle is only valid while the pool is open.");
+    }
 
     /// <summary>
     /// Worker pull. Blocks until a partition is available, the channel is

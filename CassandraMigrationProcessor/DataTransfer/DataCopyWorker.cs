@@ -114,9 +114,10 @@ internal class DataCopyWorker
     {
         if (!result.IsEmptyPage)
         {
-            // Pool is unbounded: TryEnqueue always succeeds unless the
-            // channel was completed by a failing worker.
-            ctx.Partitions.TryEnqueue(partition);
+            // Pool is unbounded: Recycle always succeeds unless the
+            // pool was completed by a failing worker, in which case
+            // Recycle throws and the worker exits via the outer catch.
+            ctx.Partitions.Recycle(partition);
             return;
         }
 
@@ -176,7 +177,12 @@ internal class DataCopyWorker
                 || MigrationJobContext.Instance.ControlledPauseRequested)
                 return;
 
-            ctx.Partitions.TryEnqueue(partition);
+            // Cooldown is best-effort: if the pool was completed between the
+            // delay starting and ending (clean shutdown or fatal cascade),
+            // dropping the deferred recycle is the correct behaviour — the
+            // job is winding down anyway.
+            try { ctx.Partitions.Recycle(partition); }
+            catch (InvalidOperationException) { }
         });
     }
 

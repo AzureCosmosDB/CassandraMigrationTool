@@ -10,11 +10,11 @@ using System.Threading.Tasks;
 
 namespace CassandraMigrationProcessor.DataTransfer;
 
-internal class PartitionSeeder
+internal class Partitioner
 {
     private readonly MigrationLog _log;
 
-    public PartitionSeeder(MigrationLog log)
+    public Partitioner(MigrationLog log)
     {
         _log = log;
     }
