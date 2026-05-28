@@ -61,6 +61,12 @@ public class MigrationJobContext
     public bool ControlledPauseRequested
         => _controlledPauseRequested;
 
+    // Subscribers (e.g. JobPipeline) register to react to a pause
+    // request synchronously — workers waiting on BulkDrainSignal
+    // otherwise stay blocked because pause is a soft flag and never
+    // trips their CancellationToken.
+    public event Action PauseRequested;
+
     public JobIndex JobIndex { get; private set; }
 
     public void ResetControlledPause()
@@ -71,6 +77,7 @@ public class MigrationJobContext
     public void RequestControlledPause()
     {
         _controlledPauseRequested = true;
+        PauseRequested?.Invoke();
     }
 
     public void UpdateLogLevel(
