@@ -43,7 +43,7 @@ internal class WorkerPool : IDisposable
         try { await Task.WhenAll(_workers); }
         catch (OperationCanceledException)
         {
-            _log.WriteLine("Workers cancelled — graceful shutdown", LogType.Info);
+            _log.WriteLine("Workers cancelled — graceful shutdown");
         }
         catch
         {

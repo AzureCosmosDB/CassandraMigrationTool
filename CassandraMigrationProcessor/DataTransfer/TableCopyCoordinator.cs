@@ -30,7 +30,6 @@ internal sealed class TableCopyCoordinator : IDisposable
 {
     private readonly MigrationLog _migrationLog;
     private readonly Job _migrationJob;
-    private readonly PipelineConfig _pipelineConfig;
     private readonly ISession _sourceSession;
     private readonly ISession _targetSession;
     private readonly CancellationTokenSource _cts;
@@ -38,14 +37,13 @@ internal sealed class TableCopyCoordinator : IDisposable
 
     public volatile bool ProcessRunning;
 
-    private TableCopyCoordinator(MigrationLog log, AppSettings config, Job job,
+    private TableCopyCoordinator(MigrationLog log, Job job,
         ISession source, ISession target,
         JobPipeline pipeline,
         CancellationToken externalToken)
     {
         _migrationLog = log;
         _migrationJob = job;
-        _pipelineConfig = PipelineConfig.Resolve(job, config);
         _cts = externalToken.CanBeCanceled
             ? CancellationTokenSource.CreateLinkedTokenSource(externalToken)
             : new CancellationTokenSource();
@@ -68,7 +66,7 @@ internal sealed class TableCopyCoordinator : IDisposable
         ISession target = job.IsSimulatedRun
             ? new NullSession()
             : await CassandraClientFactory.CreateTargetSessionAsync(log, job);
-        return new TableCopyCoordinator(log, config, job, source, target, pipeline, externalToken);
+        return new TableCopyCoordinator(log, job, source, target, pipeline, externalToken);
     }
 
     /// <summary>

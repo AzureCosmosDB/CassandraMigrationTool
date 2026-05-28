@@ -71,11 +71,10 @@ public class MigrationJobContext
 
     public void ResetControlledPause()
     {
-        AddVerboseLog("Resetting controlled pause request.");
         _controlledPauseRequested = false;
     }
 
-    public void RequestControlledPause(string location)
+    public void RequestControlledPause()
     {
         _controlledPauseRequested = true;
     }
@@ -95,12 +94,6 @@ public class MigrationJobContext
             CurrentlyActiveJob.LogLevel = level;
             SaveMigrationJob(CurrentlyActiveJob);
         }
-    }
-
-    public void AddVerboseLog(string message)
-    {
-        // No-op: verbose log surface is currently not wired up.
-        // Kept for callers in the WebApp razor pages.
     }
 
     public LogStorageCallbacks CreateLogStorageCallbacks(

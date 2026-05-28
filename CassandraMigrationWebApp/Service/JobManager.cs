@@ -18,18 +18,14 @@ public class JobManager
     private CancellationTokenSource? _migrationCts;
     private string _runningJobId = string.Empty;
     private readonly object _stateLock = new();
-    private Task? _migrationTask;
 
     private DateTime _lastJobHeartBeat = DateTime.MinValue;
     private string _lastJobID = string.Empty;
-    private readonly IConfiguration _configuration;
     private readonly MigrationContextService _ctx;
     private readonly MigrationJobContext _migrationJobContext;
-    private string? _webAppBaseUrl = null;
 
-    public JobManager(IConfiguration configuration, MigrationContextService ctx, MigrationJobContext migrationJobContext)
+    public JobManager(MigrationContextService ctx, MigrationJobContext migrationJobContext)
     {
-        _configuration = configuration;
         _ctx = ctx;
         _migrationJobContext = migrationJobContext;
         _log = CreateLog();
@@ -44,17 +40,6 @@ public class JobManager
     }
 
     #region Configuration Management
-
-    /// <summary>
-    /// Updates the WebAppBaseUrl from browser context. Called from Index.razor on first load.
-    /// </summary>
-    public void UpdateWebAppBaseUrlFromBrowser(string baseUri)
-    {
-        if (string.IsNullOrEmpty(baseUri))
-            return;
-
-        _webAppBaseUrl = baseUri.TrimEnd('/');
-    }
 
     public bool UpdateConfig(CassandraMigrationProcessor.Models.AppSettings updated_config, out string errorMessage)
     {
@@ -93,7 +78,7 @@ public class JobManager
     }
 
 
-    public Job? GetMigrationJobById(string id, bool active = true)
+    public Job? GetMigrationJobById(string id)
     {
         return _ctx.GetJob(id);
     }
@@ -211,7 +196,7 @@ public class JobManager
         return _ctx.ControlledPauseRequested;
     }
 
-    public Task StartMigration(Job job, string sourceConnectionString, string targetConnectionString, string namespacesToMigrate, CassandraMigrationProcessor.Models.JobType jobType, bool trackChangeStreams)
+    public Task StartMigration(Job job, string sourceConnectionString, string targetConnectionString, string namespacesToMigrate)
     {
         lock (_stateLock)
         {
@@ -255,7 +240,7 @@ public class JobManager
 
         // Background migration: stored so exceptions are observable and
         // the task can be awaited during shutdown if needed.
-        _migrationTask = Task.Run(async () =>
+        _ = Task.Run(async () =>
         {
             try
             {

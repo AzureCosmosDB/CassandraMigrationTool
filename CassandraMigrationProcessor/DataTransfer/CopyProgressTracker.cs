@@ -1,9 +1,7 @@
 using CassandraMigrationProcessor.Context;
 using CassandraMigrationProcessor.Infrastructure;
 using CassandraMigrationProcessor.Models;
-using System;
 using System.Diagnostics;
-using System.Threading;
 
 namespace CassandraMigrationProcessor.DataTransfer;
 /// <summary>
@@ -45,9 +43,8 @@ public class CopyProgressTracker
 
     public long TotalCopied => _counters.TotalCopied;
     public long TotalFailed => _counters.TotalFailed;
-    internal TableMigration MigrationUnit => _migrationUnit;
 
-    public double RecentSpeed
+    private double RecentSpeed
     {
         get
         {
@@ -215,7 +212,6 @@ public class CopyProgressTracker
         long pages = _counters.ReadPages;
         long readTimeMs = _counters.ReadTimeMs;
         long writeTimeMs = _counters.WriteTimeMs;
-        long writeOps = _counters.WriteOps;
         long avgReadMs = pages > 0 ? readTimeMs / pages : 0;
         long avgWriteMs = pages > 0 ? writeTimeMs / pages : 0;
         string avgRead = avgReadMs > 0

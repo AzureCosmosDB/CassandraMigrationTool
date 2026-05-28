@@ -737,9 +737,7 @@ else if (@_showLogBackupFile)
             await JobManager.StartMigration(mj,
                 GetSourceConnectionString(mj),
                 GetTargetConnectionString(mj),
-                mj.Namespaces ?? string.Empty,
-                mj.JobType,
-                mj.IsOnline);
+                mj.Namespaces ?? string.Empty);
         });
 
         StartAutoRefresh();
@@ -938,7 +936,6 @@ else if (@_showLogBackupFile)
             if (result.DiaLogType == YesNoDialog.Category.CutoverNot
                 || result.DiaLogType == YesNoDialog.Category.CompleteNot)
             {
-                MigrationContext.AddVerboseLog($"YesNoDialogSubmit Cutover {result.DiaLogType}");
                 JobManager.StopMigration();                
                 if (CurrentlyLoadedMigrationJob != null)
                 {
@@ -952,7 +949,6 @@ else if (@_showLogBackupFile)
             }
             else if (result.DiaLogType == YesNoDialog.Category.CancelNot)
             {
-                MigrationContext.AddVerboseLog($"YesNoDialogSubmit Cancel {result.DiaLogType}");
                 JobManager.StopMigration();                
                 if (CurrentlyLoadedMigrationJob != null)
                 {
@@ -990,7 +986,7 @@ else if (@_showLogBackupFile)
         _errorMessage = string.Empty;
         try
         {
-            MigrationContext.RequestControlledPause("UI Button Click");
+            MigrationContext.RequestControlledPause();
             MigrationContext.SaveJob(CurrentlyLoadedMigrationJob);
         }
         catch (Exception ex)

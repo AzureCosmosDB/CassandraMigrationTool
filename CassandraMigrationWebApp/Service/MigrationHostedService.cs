@@ -11,14 +11,11 @@ namespace CassandraMigrationWebApp.Service;
 /// </summary>
 public class MigrationHostedService : BackgroundService
 {
-    private readonly JobManager _jobManager;
     private readonly ILogger<MigrationHostedService> _logger;
 
     public MigrationHostedService(
-        JobManager jobManager,
         ILogger<MigrationHostedService> logger)
     {
-        _jobManager = jobManager;
         _logger = logger;
     }
 

@@ -2,13 +2,8 @@ using Cassandra;
 using CassandraMigrationProcessor.Infrastructure;
 using CassandraMigrationProcessor.CassandraDriver;
 using CassandraMigrationProcessor.Models;
-using System;
 using System.Collections.Concurrent;
-using System.Collections.Generic;
 using System.Diagnostics;
-using System.Linq;
-using System.Threading;
-using System.Threading.Tasks;
 
 namespace CassandraMigrationProcessor.DataTransfer;
 
@@ -106,7 +101,7 @@ internal class PageReader : IDisposable
                 resultSet = await _sourceSession.ExecuteAsync(stmt).WaitAsync(_ct);
                 break;
             }
-            catch (System.Exception ex) when (attempt < _maxReadRetries
+            catch (Exception ex) when (attempt < _maxReadRetries
                 && ExceptionClassifier.IsTransient(ex))
             {
                 _log.WriteLine($"Read timeout for {partition.FullTableName} (attempt {attempt}/{_maxReadRetries})",
@@ -148,7 +143,7 @@ internal class PageReader : IDisposable
         return new ReadResult(rows, workChunk, isEmptyPage);
     }
 
-    internal static string BuildSelectCql(TableCopySpec context, string range)
+    private static string BuildSelectCql(TableCopySpec context, string range)
     {
         CqlIdentifier.Validate(context.KeyspaceName);
         CqlIdentifier.Validate(context.TableName);
