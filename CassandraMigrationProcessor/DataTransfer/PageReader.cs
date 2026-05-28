@@ -104,7 +104,9 @@ internal class PageReader : IDisposable
             catch (Exception ex) when (attempt < _maxReadRetries
                 && ExceptionClassifier.IsTransient(ex))
             {
-                _log.WriteLine($"Read timeout for {partition.FullTableName} (attempt {attempt}/{_maxReadRetries})",
+                _log.WriteLine(
+                    $"Read attempt {attempt}/{_maxReadRetries} on {partition.FullTableName} failed: " +
+                    $"{ex.GetType().Name}: {ex.Message}",
                     LogType.Warning);
                 await Task.Delay(attempt * RetryDelayMs, _ct);
             }

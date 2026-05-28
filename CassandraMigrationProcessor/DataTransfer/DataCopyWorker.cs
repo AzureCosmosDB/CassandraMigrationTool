@@ -77,7 +77,7 @@ internal class DataCopyWorker
         catch (Exception ex)
         {
             string tag = current?.FullTableName ?? "init";
-            _workerLog.WriteLine($"Error on {tag}: {ex.GetType().Name}: {ex.Message}", LogType.Error);
+            LogExceptionChain(tag, ex);
 
             // Any escaped exception here means the inner retry layers
             // (PageReader read retries, PageWriter row-write retries) are
@@ -151,6 +151,40 @@ internal class DataCopyWorker
         }
 
         ScheduleCooldown(partition, ctx);
+    }
+
+    private void LogExceptionChain(string tag, Exception ex)
+    {
+        // Surface the actual root cause(s) — not just the
+        // outer wrapper. AggregateException.Message is generic
+        // ("One or more errors occurred."), and the driver
+        // often surfaces a chain of InnerExceptions whose
+        // top-level message hides the underlying CQL / network
+        // error. Walk both Flatten() and InnerException to give
+        // operators every layer of context.
+        _workerLog.WriteLine($"Error on {tag}: {ex.GetType().Name}: {ex.Message}", LogType.Error);
+
+        if (ex is AggregateException agg)
+        {
+            int i = 0;
+            foreach (var inner in agg.Flatten().InnerExceptions)
+            {
+                _workerLog.WriteLine(
+                    $"  caused by [{++i}] {inner.GetType().Name}: {inner.Message}",
+                    LogType.Error);
+            }
+            return;
+        }
+
+        var cur = ex.InnerException;
+        int depth = 0;
+        while (cur != null && depth++ < 5)
+        {
+            _workerLog.WriteLine(
+                $"  caused by {cur.GetType().Name}: {cur.Message}",
+                LogType.Error);
+            cur = cur.InnerException;
+        }
     }
 
     private static void MarkBulkDrained(Partition partition)

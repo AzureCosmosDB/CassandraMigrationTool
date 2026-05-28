@@ -452,7 +452,7 @@ public class MigrationJobRunner
 
             bool existed = await SchemaManager.TableExistsAsync(targetSession, mu.KeyspaceName, mu.TableName);
             await SchemaManager.SyncSchemaAsync(sourceSession, targetSession,
-                mu.KeyspaceName, mu.TableName, mu.KeyspaceName, mu.TableName);
+                mu.KeyspaceName, mu.TableName, mu.KeyspaceName, mu.TableName, _log);
             if (!existed)
                 _log.WriteLine($"Created target table {mu.KeyspaceName}.{mu.TableName}", LogType.Info);
         }

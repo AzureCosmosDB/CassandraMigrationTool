@@ -1,5 +1,6 @@
 using Cassandra;
 using CassandraMigrationProcessor.Infrastructure;
+using CassandraMigrationProcessor.Models;
 
 namespace CassandraMigrationProcessor.CassandraDriver;
 /// <summary>
@@ -22,9 +23,10 @@ public static class SchemaManager
     public static async Task
         SyncSchemaAsync(ISession sourceSession, ISession targetSession,
             string sourceKeyspace, string sourceTable,
-            string targetKeyspace, string targetTable)
+            string targetKeyspace, string targetTable,
+            MigrationLog? log = null)
     {
-        await EnsureKeyspaceExistsAsync(targetSession, targetKeyspace);
+        await EnsureKeyspaceExistsAsync(targetSession, targetKeyspace, log: log);
 
         // Discover source columns first so that UDT replication can be
         // scoped to only the UDTs actually referenced by this table.
@@ -35,11 +37,11 @@ public static class SchemaManager
         if (requiredUdts.Count > 0)
         {
             await ReplicateUserDefinedTypesAsync(sourceSession, targetSession,
-                sourceKeyspace, targetKeyspace, requiredUdts);
+                sourceKeyspace, targetKeyspace, requiredUdts, log);
         }
 
         await CreateTableFromSourceAsync(sourceSession, targetSession,
-            sourceKeyspace, sourceTable, targetKeyspace, targetTable);
+            sourceKeyspace, sourceTable, targetKeyspace, targetTable, log);
     }
 
     /// <summary>
@@ -60,7 +62,8 @@ public static class SchemaManager
     /// </summary>
     public static async Task ReplicateUserDefinedTypesAsync(ISession sourceSession, ISession targetSession,
         string sourceKeyspace, string targetKeyspace,
-        IReadOnlyList<UserDefinedTypeDef>? udtsToReplicate = null)
+        IReadOnlyList<UserDefinedTypeDef>? udtsToReplicate = null,
+        MigrationLog? log = null)
     {
         CqlIdentifier.Validate(sourceKeyspace);
         CqlIdentifier.Validate(targetKeyspace);
@@ -85,6 +88,7 @@ public static class SchemaManager
                 $"CREATE TYPE IF NOT EXISTS \"{targetKeyspace}\".\"{udt.TypeName}\" (" +
                 string.Join(", ", fieldDefs) + ")";
 
+            log?.WriteLine($"DDL on target: {cql}", LogType.Info);
             await ExecuteWithTimeoutRetryAsync(() =>
                 targetSession.ExecuteAsync(new SimpleStatement(cql)));
         }
@@ -259,18 +263,82 @@ public static class SchemaManager
     }
 
     /// <summary>
-    /// Ensure target keyspace exists. Creates with
-    /// SimpleStrategy replication if missing.
+    /// Ensure target keyspace exists. Creates with SimpleStrategy
+    /// replication (RF=1) if missing. Refuses to auto-create on
+    /// multi-datacenter clusters: SimpleStrategy is unsafe across DCs
+    /// and an operator-chosen NetworkTopologyStrategy is required.
+    /// In that case, the caller must pre-create the keyspace with the
+    /// desired per-DC replication factors before running the job.
     /// </summary>
-    public static async Task EnsureKeyspaceExistsAsync(ISession session, string keyspace, int replicationFactor = 1)
+    public static async Task EnsureKeyspaceExistsAsync(ISession session, string keyspace,
+        int replicationFactor = 1, MigrationLog? log = null)
     {
         CqlIdentifier.Validate(keyspace);
-        if (!await KeyspaceExistsAsync(session, keyspace))
+        if (await KeyspaceExistsAsync(session, keyspace))
         {
-            await session.ExecuteAsync(new SimpleStatement(
-                $"CREATE KEYSPACE IF NOT EXISTS \"{keyspace}\" " +
-                $"WITH replication = {{'class': 'SimpleStrategy', 'replication_factor': {replicationFactor}}}"));
+            log?.WriteLine($"Target keyspace \"{keyspace}\" already exists; skipping schema mirror for keyspace.",
+                LogType.Info);
+            return;
         }
+
+        var dataCenters = await GetTargetDataCentersAsync(session);
+        if (dataCenters.Count > 1)
+        {
+            string dcList = string.Join(", ", dataCenters.OrderBy(d => d, StringComparer.Ordinal));
+            string msg =
+                $"Refusing to auto-create keyspace \"{keyspace}\": target cluster has multiple " +
+                $"datacenters ({dcList}). Auto-create uses SimpleStrategy(RF={replicationFactor}) which " +
+                "is unsafe on multi-DC clusters (writes may not reach all DCs and reads may miss replicas). " +
+                "Please pre-create the keyspace with an explicit NetworkTopologyStrategy and per-DC " +
+                "replication factor, e.g.: CREATE KEYSPACE \"" + keyspace + "\" WITH replication = " +
+                "{'class': 'NetworkTopologyStrategy', '<dc-name>': <rf>, ...};";
+            log?.WriteLine(msg, LogType.Error);
+            throw new InvalidOperationException(msg);
+        }
+
+        string cql =
+            $"CREATE KEYSPACE IF NOT EXISTS \"{keyspace}\" " +
+            $"WITH replication = {{'class': 'SimpleStrategy', 'replication_factor': {replicationFactor}}}";
+        log?.WriteLine($"DDL on target: {cql}", LogType.Info);
+        await session.ExecuteAsync(new SimpleStatement(cql));
+    }
+
+    /// <summary>
+    /// Discover distinct datacenter names from the target cluster
+    /// (system.local + system.peers). Returns an empty set if the
+    /// query is not supported by the target (e.g. Cosmos DB Cassandra
+    /// API), in which case the caller falls through to single-DC
+    /// behaviour.
+    /// </summary>
+    private static async Task<HashSet<string>> GetTargetDataCentersAsync(ISession session)
+    {
+        var dcs = new HashSet<string>(StringComparer.Ordinal);
+        try
+        {
+            var local = await session.ExecuteAsync(new SimpleStatement(
+                "SELECT data_center FROM system.local"));
+            foreach (var row in local)
+            {
+                var dc = row.GetValue<string?>("data_center");
+                if (!string.IsNullOrWhiteSpace(dc)) dcs.Add(dc);
+            }
+
+            var peers = await session.ExecuteAsync(new SimpleStatement(
+                "SELECT data_center FROM system.peers"));
+            foreach (var row in peers)
+            {
+                var dc = row.GetValue<string?>("data_center");
+                if (!string.IsNullOrWhiteSpace(dc)) dcs.Add(dc);
+            }
+        }
+        catch
+        {
+            // Targets that do not expose system.local/system.peers
+            // (or reject the query) fall through to single-DC
+            // behaviour; the caller will still emit SimpleStrategy.
+            return new HashSet<string>(StringComparer.Ordinal);
+        }
+        return dcs;
     }
 
     /// <summary>
@@ -353,7 +421,8 @@ public static class SchemaManager
         string sourceKeyspace,
         string sourceTable,
         string targetKeyspace,
-        string targetTable)
+        string targetTable,
+        MigrationLog? log = null)
     {
         CqlIdentifier.Validate(sourceKeyspace);
         CqlIdentifier.Validate(sourceTable);
@@ -391,13 +460,14 @@ public static class SchemaManager
 
             if (clusteringMismatch)
             {
-                await targetSession.ExecuteAsync(new SimpleStatement(
-                    $"DROP TABLE \"{targetKeyspace}\".\"{targetTable}\""));
+                string dropCql = $"DROP TABLE \"{targetKeyspace}\".\"{targetTable}\"";
+                log?.WriteLine($"DDL on target: {dropCql}", LogType.Info);
+                await targetSession.ExecuteAsync(new SimpleStatement(dropCql));
             }
             else
             {
                 await AlterTableAddMissingColumnsAsync(targetSession, targetKeyspace, targetTable, columns,
-                    targetCols);
+                    targetCols, log);
                 return;
             }
         }
@@ -437,6 +507,7 @@ public static class SchemaManager
             $"{string.Join(",\n", colDefs)},\n  PRIMARY KEY ({pkClause})\n)" +
             clusteringOrder;
 
+        log?.WriteLine($"DDL on target: {cql}", LogType.Info);
         await targetSession.ExecuteAsync(new SimpleStatement(cql));
     }
 
@@ -449,7 +520,8 @@ public static class SchemaManager
     public static async Task AlterTableAddMissingColumnsAsync(ISession targetSession, string targetKeyspace,
         string targetTable,
         List<CassandraColumn> sourceColumns,
-        List<CassandraColumn> targetColumns)
+        List<CassandraColumn> targetColumns,
+        MigrationLog? log = null)
     {
         CqlIdentifier.Validate(targetKeyspace);
         CqlIdentifier.Validate(targetTable);
@@ -470,12 +542,15 @@ public static class SchemaManager
             string alterCql =
                 $"ALTER TABLE \"{targetKeyspace}\".\"{targetTable}\" " +
                 $"ADD \"{col.Name}\" {col.Type}{staticClause}";
+            log?.WriteLine($"DDL on target: {alterCql}", LogType.Info);
             try
             {
                 await targetSession.ExecuteAsync(new SimpleStatement(alterCql));
             }
             catch (Exception ex)
             {
+                log?.WriteLine($"ALTER TABLE failed for column \"{col.Name}\": {ex.GetType().Name}: {ex.Message}",
+                    LogType.Error);
                 failedCols.Add((col.Name, ex));
             }
         }
