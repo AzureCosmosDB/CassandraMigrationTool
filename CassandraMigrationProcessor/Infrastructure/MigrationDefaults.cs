@@ -21,4 +21,13 @@ public static class MigrationDefaults
     // Per-row write retry count when the target write fails transiently.
     // Used by PageWriter.
     public const int DefaultMaxWriteRetries = 5;
+
+    // Schema/query read timeout (ms) applied via SetReadTimeoutMillis on
+    // SimpleStatements that query system_schema / count rows.
+    public const int SchemaQueryTimeoutMs = 30_000;
+
+    // Retry budget for the shared schema/query retry helper
+    // (RetryExecutor.ExecuteWithTimeoutRetryAsync).
+    public const int SchemaQueryMaxRetries = 3;
+    public const int SchemaQueryRetryBaseDelayMs = 2000;
 }
