@@ -310,10 +310,10 @@ public class MigrationJobRunner
                 await ProcessMigrationUnitAsync(job, mu, partitioning, token);
                 return;
             }
-            catch (Exception ex) when (CassandraClientFactory.IsRetryableException(ex)
+            catch (Exception ex) when (ExceptionClassifier.IsTransient(ex)
                 && attempt < MigrationDefaults.MaxTableRetries)
             {
-                int delayMs = CassandraClientFactory.GetRetryDelayMs(ex, attempt);
+                int delayMs = ExceptionClassifier.GetRetryDelayMs(ex, attempt);
                 _log.WriteLine($"Table retry {attempt} for {mu.KeyspaceName}.{mu.TableName}: {ex.Message}", LogType.Warning);
                 await Task.Delay(delayMs, token);
             }
@@ -495,7 +495,7 @@ public class MigrationJobRunner
         _log.WriteLine($"Error processing {mu.KeyspaceName}.{mu.TableName}: {ex}", LogType.Error);
         mu.SourceStatus = TableStatus.Failed;
 
-        if (IsAuthError(ex))
+        if (ExceptionClassifier.IsAuth(ex))
         {
             Interlocked.Increment(ref _consecutiveAuthErrors);
             _log.WriteLine($"Auth failure #{Volatile.Read(ref _consecutiveAuthErrors)} on {mu.KeyspaceName}.{mu.TableName}", LogType.Warning);
@@ -506,17 +506,6 @@ public class MigrationJobRunner
         }
 
         MigrationJobContext.Instance.SaveMigrationUnit(mu, true);
-    }
-
-    private static bool IsAuthError(Exception ex)
-    {
-        if (ex is Cassandra.AuthenticationException)
-            return true;
-        if (ex.InnerException is Cassandra.AuthenticationException)
-            return true;
-        if (ex is Cassandra.NoHostAvailableException nhae)
-            return nhae.Errors?.Values?.Any(e => e is Cassandra.AuthenticationException) ?? false;
-        return false;
     }
 
     public void Stop()

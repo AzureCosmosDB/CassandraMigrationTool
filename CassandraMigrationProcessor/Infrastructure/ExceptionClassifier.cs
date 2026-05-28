@@ -39,13 +39,10 @@ public static class ExceptionClassifier
         if (_transientTypes.Contains(inner.GetType()))
             return true;
 
-        // Cosmos DB 429 throttling (message-based, not type-based)
-        var msg = inner.Message ?? string.Empty;
-        if (msg.Contains("429")
-            || msg.Contains("TooManyRequests", StringComparison.OrdinalIgnoreCase))
-            return true;
-
-        return false;
+        // Throttle markers may live in outer or inner exception text
+        // (e.g. NoHostAvailableException wrapping a 429 response from
+        // Cosmos DB). Run the same classifier we use elsewhere.
+        return IsThrottle(ex);
     }
 
     /// <summary>
@@ -77,19 +74,74 @@ public static class ExceptionClassifier
     }
 
     /// <summary>
-    /// Whether the error is a rate-limit / throttle.
+    /// Whether the error is a rate-limit / throttle. Detects both
+    /// typed <see cref="OverloadedException"/> and message-level markers
+    /// (Cosmos DB exposes 429s via NoHostAvailable / DriverException
+    /// with the throttle text in the message chain).
     /// </summary>
     public static bool IsThrottle(Exception ex)
     {
-        if (ex is OverloadedException) return true;
+        if (UnwrapAggregate(ex) is OverloadedException) return true;
 
-        var msg = ex.Message ?? string.Empty;
-        return msg.Contains("429")
+        var msg = BuildMessageChain(ex);
+        return msg.Contains("429", StringComparison.Ordinal)
             || msg.Contains("TooManyRequests", StringComparison.OrdinalIgnoreCase)
-            || msg.Contains("rate is large", StringComparison.OrdinalIgnoreCase);
+            || msg.Contains("OverloadedException", StringComparison.OrdinalIgnoreCase)
+            || msg.Contains("Request rate is large", StringComparison.OrdinalIgnoreCase)
+            || msg.Contains("RetryAfterMs", StringComparison.OrdinalIgnoreCase)
+            || msg.Contains("rate limit", StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// Whether the error is an authentication / authorisation failure.
+    /// Handles direct <see cref="AuthenticationException"/>, wrapping via
+    /// <see cref="Exception.InnerException"/>, and Cassandra driver's
+    /// <see cref="NoHostAvailableException"/> that aggregates per-host
+    /// errors in its <c>Errors</c> dictionary.
+    /// </summary>
+    public static bool IsAuth(Exception ex)
+    {
+        if (ex is AuthenticationException) return true;
+        if (ex.InnerException is AuthenticationException) return true;
+        if (ex is NoHostAvailableException nhae)
+            return nhae.Errors?.Values?.Any(e => e is AuthenticationException) ?? false;
+        return false;
+    }
+
+    /// <summary>
+    /// Compute the recommended retry delay for an attempt. If the error
+    /// carries a <c>RetryAfterMs=NNN</c> hint (Cosmos DB throttle
+    /// response) honour it with small jitter; otherwise fall back to
+    /// capped exponential backoff (1s, 2s, 4s, …) with jitter.
+    /// </summary>
+    public static int GetRetryDelayMs(Exception ex, int attempt)
+    {
+        var msg = BuildMessageChain(ex);
+        var idx = msg.IndexOf("RetryAfterMs=", StringComparison.OrdinalIgnoreCase);
+        if (idx >= 0)
+        {
+            var start = idx + "RetryAfterMs=".Length;
+            var end = start;
+            while (end < msg.Length && char.IsDigit(msg[end])) end++;
+            if (end > start
+                && int.TryParse(msg.AsSpan(start, end - start), out var retryMs)
+                && retryMs > 0)
+            {
+                return retryMs + Random.Shared.Next(100, 500);
+            }
+        }
+
+        return (int)(Math.Pow(2, attempt - 1) * 1000) + Random.Shared.Next(100, 500);
     }
 
     private static Exception UnwrapAggregate(Exception ex)
         => ex is AggregateException agg && agg.InnerException != null
             ? agg.InnerException : ex;
+
+    private static string BuildMessageChain(Exception ex)
+    {
+        if (ex.InnerException == null)
+            return ex.Message ?? string.Empty;
+        return (ex.Message ?? string.Empty) + " " + (ex.InnerException.Message ?? string.Empty);
+    }
 }
