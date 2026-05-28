@@ -23,7 +23,7 @@ namespace CassandraMigrationProcessor.DataTransfer;
 /// shared <see cref="PartitionManager"/>, waiting for the table's
 /// own slice to drain, and marking the table CopyComplete.
 /// Destination schema provisioning is owned by
-/// <see cref="Workers.MigrationJobRunner"/> and has completed before
+/// <see cref="MigrationJobRunner"/> and has completed before
 /// <see cref="MigrateTableAsync"/> is invoked.
 /// </summary>
 internal sealed class TableCopyCoordinator : IDisposable
