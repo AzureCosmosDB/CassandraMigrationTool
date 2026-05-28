@@ -89,8 +89,8 @@ TableMigration : TableMigrationSummary
  ├── Per-table state: keyspace, table, copy progress, change feed counters
  ├── CopyChunks: List<CopyChunk>
  │    └── CopyChunk { RowCount, Segments: List<ChunkSegment> }
- ├── Partitions: Dictionary<string, PartitionState>
- │    └── PartitionState { FeedRange, CopyContinuationToken, ReplayContinuationToken, BulkCompleted }
+ ├── Partitions: Dictionary<string, Partition.PartitionSnapshot>
+ │    └── Partition.PartitionSnapshot { FeedRange, CopyContinuationToken, ReplayContinuationToken, BulkCompleted }
  └── ParentJob: Job [JsonIgnore]
 
 AppSettings : ICloneable

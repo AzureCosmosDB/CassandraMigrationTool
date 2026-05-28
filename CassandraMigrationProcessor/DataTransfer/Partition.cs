@@ -1,5 +1,6 @@
 using CassandraMigrationProcessor.CassandraDriver;
 using CassandraMigrationProcessor.Models;
+using Newtonsoft.Json;
 
 namespace CassandraMigrationProcessor.DataTransfer;
 
@@ -9,29 +10,29 @@ namespace CassandraMigrationProcessor.DataTransfer;
 /// for ongoing changes using the same query + the last paging state
 /// returned by Cosmos. Phase only flips Bulk → Replay, never back.
 /// </summary>
-internal enum PartitionPhase { Bulk, Replay }
+public enum PartitionPhase { Bulk, Replay }
 
 /// <summary>
 /// Represents a feed range partition with its in-flight checkpoint
 /// list. Uses LinkedList for clean node management. The partition
-/// owns its persisted checkpoint state via <see cref="State"/> so
+/// owns its persisted checkpoint state via <see cref="Snapshot"/> so
 /// workers checkpoint through the partition directly (no round-trip
 /// to TableMigration's dicts).
 /// </summary>
-internal class Partition
+public sealed class Partition
 {
-    public string FeedRange => State.FeedRange;
+    public string FeedRange => Snapshot.FeedRange;
     public bool IsExhausted { get; private set; }
     public byte[]? LastPagingState { get; private set; }
     public PartitionPhase Phase { get; private set; }
 
     /// <summary>
-    /// Persisted per-feed-range state — bulk + replay checkpoints
+    /// Persisted per-feed-range snapshot — bulk + replay checkpoints
     /// and bulk-completed flag. Lives on
     /// <see cref="TableMigration.Partitions"/> and is mutated
     /// through this reference by the owning worker.
     /// </summary>
-    public PartitionState State { get; }
+    public PartitionSnapshot Snapshot { get; }
 
     /// <summary>
     /// Per-table state for the table that owns this partition. Kept
@@ -68,9 +69,9 @@ internal class Partition
     private readonly LinkedList<WorkChunk> _chunks = new();
     private readonly object _chunksLock = new();
 
-    public Partition(PartitionState state, byte[]? initialPagingState, TableResources table, PartitionPhase phase = PartitionPhase.Bulk)
+    public Partition(PartitionSnapshot snapshot, byte[]? initialPagingState, TableResources table, PartitionPhase phase = PartitionPhase.Bulk)
     {
-        State = state ?? throw new ArgumentNullException(nameof(state));
+        Snapshot = snapshot ?? throw new ArgumentNullException(nameof(snapshot));
         LastPagingState = initialPagingState;
         Phase = phase;
         _table = table;
@@ -129,7 +130,7 @@ internal class Partition
 
     // ── Checkpoint API ─────────────────────────────────────────
     // Workers checkpoint through these methods. The dict on
-    // TableMigration is mutated in-place via the shared State
+    // TableMigration is mutated in-place via the shared Snapshot
     // reference — no MigrationUnit dict round-trip.
 
     /// <summary>Persist the paging state for this range. Same field
@@ -138,34 +139,78 @@ internal class Partition
     public void SaveCheckpoint(byte[]? token)
     {
         if (token == null) return;
-        State.ContinuationToken = Convert.ToBase64String(token);
+        Snapshot.ContinuationToken = Convert.ToBase64String(token);
     }
 
     /// <summary>
-    /// Online bulk → replay handoff. Sets <see cref="PartitionState.BulkCompleted"/>
-    /// while preserving the current <see cref="PartitionState.ContinuationToken"/>
+    /// Online bulk → replay handoff. Sets <see cref="PartitionSnapshot.BulkCompleted"/>
+    /// while preserving the current <see cref="PartitionSnapshot.ContinuationToken"/>
     /// as the replay anchor. On the first writer the partition notifies
     /// <see cref="_table"/> so the table-level counter and drain
     /// signal advance — workers never touch table-level state directly.
     /// </summary>
     public void HandoffToReplay()
     {
-        if (State.BulkCompleted) return;
-        State.BulkCompleted = true;
+        if (Snapshot.BulkCompleted) return;
+        Snapshot.BulkCompleted = true;
         _table.OnPartitionBulkCompleted();
     }
 
     /// <summary>
-    /// Offline final completion. Sets <see cref="PartitionState.BulkCompleted"/>
-    /// and clears <see cref="PartitionState.ContinuationToken"/> so resume
+    /// Offline final completion. Sets <see cref="PartitionSnapshot.BulkCompleted"/>
+    /// and clears <see cref="PartitionSnapshot.ContinuationToken"/> so resume
     /// skips the range entirely. On the first writer the partition
     /// notifies <see cref="_table"/>.
     /// </summary>
     public void CompleteOffline()
     {
-        if (State.BulkCompleted) return;
-        State.BulkCompleted = true;
-        State.ContinuationToken = null;
+        if (Snapshot.BulkCompleted) return;
+        Snapshot.BulkCompleted = true;
+        Snapshot.ContinuationToken = null;
         _table.OnPartitionBulkCompleted();
+    }
+
+    /// <summary>
+    /// Persisted per-feed-range checkpoint state for a table's bulk
+    /// copy and (when online) change-feed replay. One instance per
+    /// feed range, keyed in <see cref="TableMigration.Partitions"/>
+    /// by the feed range JSON. Nested inside <see cref="Partition"/>
+    /// because it is the persistence-shape projection of a partition's
+    /// runtime state — workers mutate it through Partition's
+    /// checkpoint API, never directly.
+    /// </summary>
+    public sealed class PartitionSnapshot
+    {
+        public string FeedRange { get; set; } = string.Empty;
+
+        /// <summary>
+        /// Base64-encoded paging state for whichever phase the
+        /// range is currently in. While bulk is in progress this is
+        /// the last successfully-written bulk page; on bulk drain
+        /// (online) it carries forward as the replay handoff anchor;
+        /// during replay it advances with each tail page. Offline
+        /// completion clears it. <c>null</c> means: start of range.
+        /// </summary>
+        public string? ContinuationToken { get; set; }
+
+        /// <summary>
+        /// True once the bulk drain for this range reached an empty
+        /// page. On resume, completed ranges are skipped (offline) or
+        /// re-seeded directly into Replay (online), reading
+        /// <see cref="ContinuationToken"/> as the replay anchor.
+        /// </summary>
+        public bool BulkCompleted { get; set; }
+
+        /// <summary>Serialize this snapshot to a JSON string.</summary>
+        public string Serialize() => JsonConvert.SerializeObject(this);
+
+        /// <summary>Restore a snapshot from a JSON string produced by <see cref="Serialize"/>.</summary>
+        public static PartitionSnapshot Deserialize(string json)
+        {
+            if (string.IsNullOrWhiteSpace(json))
+                throw new ArgumentException("Snapshot JSON must be non-empty.", nameof(json));
+            return JsonConvert.DeserializeObject<PartitionSnapshot>(json)
+                ?? throw new InvalidOperationException("Failed to deserialize PartitionSnapshot.");
+        }
     }
 }

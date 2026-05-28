@@ -1,3 +1,4 @@
+using CassandraMigrationProcessor.DataTransfer;
 using Newtonsoft.Json;
 using System.Security.Cryptography;
 using System.Text;
@@ -71,7 +72,7 @@ public class TableMigrationSummary
 
 /// <summary>
 /// Full per-table migration document (persisted as <c>{unitId}.json</c>): extends
-/// the summary with bulk-copy phase, per-feed-range <see cref="PartitionState"/>,
+/// the summary with bulk-copy phase, per-feed-range <see cref="Partition.PartitionSnapshot"/>,
 /// change-feed checkpoints, and live counters.
 /// </summary>
 public class TableMigration : TableMigrationSummary
@@ -96,11 +97,11 @@ public class TableMigration : TableMigrationSummary
     /// used to live here (CopyFeedRangeCheckpoints +
     /// CompletedCopyFeedRanges + FeedRangeContinuationTokens).
     /// Each runtime <see cref="DataTransfer.Partition"/> holds a
-    /// reference to its <see cref="PartitionState"/> entry, so
+    /// reference to its <see cref="Partition.PartitionSnapshot"/> entry, so
     /// workers checkpoint through the partition directly instead
     /// of reaching back through the MigrationUnit dicts.
     /// </summary>
-    public Dictionary<string, PartitionState> Partitions { get; set; } = new();
+    public Dictionary<string, Partition.PartitionSnapshot> Partitions { get; set; } = new();
 
     // ── Change Feed State ──
 

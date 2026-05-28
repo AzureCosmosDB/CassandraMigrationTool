@@ -11,11 +11,11 @@ namespace CassandraMigrationProcessor.DataTransfer;
 /// <see cref="MigrationJobRunner.DiscoverPartitioningAsync"/>.
 ///
 /// Per-feed-range checkpoint state lives on each
-/// <see cref="Partition.State"/> (and is persisted via
+/// <see cref="Partition.Snapshot"/> (and is persisted via
 /// <see cref="TableMigration.Partitions"/>) — TableResources only
 /// tracks the table-wide totals workers need on hot paths.
 /// </summary>
-internal sealed class TableResources
+public sealed class TableResources
 {
     public TableCopySpec Spec { get; }
     public List<CassandraColumn> Columns { get; }

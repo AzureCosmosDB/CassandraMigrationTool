@@ -25,7 +25,7 @@ internal class Partitioner
 
     /// <summary>
     /// Build every still-pending <see cref="Partition"/> for the table,
-    /// allocating a <see cref="PartitionState"/> on <paramref name="mu"/>
+    /// allocating a <see cref="Partition.PartitionSnapshot"/> on <paramref name="mu"/>
     /// for any range that does not already have one. <see cref="Result.AllRangesAlreadyComplete"/>
     /// is <c>true</c> if every range is already bulk-completed and there
     /// is nothing to enqueue (offline-only); the caller can short-circuit.
@@ -47,7 +47,7 @@ internal class Partitioner
             foreach (var range in feedRanges)
             {
                 if (!mu.Partitions.ContainsKey(range))
-                    mu.Partitions[range] = new PartitionState { FeedRange = range };
+                    mu.Partitions[range] = new Partition.PartitionSnapshot { FeedRange = range };
             }
         }
 
