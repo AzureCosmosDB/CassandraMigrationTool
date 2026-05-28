@@ -307,12 +307,10 @@ else if (@_showLogBackupFile)
     private string GetRowClass(string type, string message)
     {
         // Return CSS class based on LogType
-        // Treat deprecated "Message" as "Info"
         return type switch
         {
             "Error" => "error-row",
             "Warning" => "warning-row",
-            "Message" => "info-row",  // Deprecated, treat as Info
             "Info" => "info-row",
             "Debug" => "debug-row",
             "Verbose" => "verbose-row",

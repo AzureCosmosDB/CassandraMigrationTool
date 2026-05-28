@@ -24,8 +24,6 @@ internal sealed class TableCopyCoordinator : IDisposable
     private readonly IReadOnlyList<TablePartitioning> _chunks;
     private readonly Action _pauseHandler;
 
-    public volatile bool ProcessRunning;
-
     public TableCopyCoordinator(
         MigrationLog log,
         Job job,
@@ -68,20 +66,17 @@ internal sealed class TableCopyCoordinator : IDisposable
                 _migrationJob.Status = JobStatus.Paused;
                 break;
             case TaskResult.Abort:
-            case TaskResult.FailedAfterRetries:
                 if (_migrationJob.Status == JobStatus.Running)
                     _migrationJob.Status = JobStatus.Pending;
                 break;
         }
         MigrationJobContext.Instance.SaveMigrationJob(_migrationJob);
-        ProcessRunning = false;
     }
 
     public async Task<TaskResult> MigrateTableAsync(TableMigration tableMigration)
     {
         ArgumentNullException.ThrowIfNull(tableMigration);
         tableMigration.ParentJob = _migrationJob;
-        ProcessRunning = true;
 
         var result = TaskResult.Success;
         try
@@ -130,7 +125,7 @@ internal sealed class TableCopyCoordinator : IDisposable
             var chunkResult = await ProcessChunkAsync(tableMigration, chunk);
             if (chunkResult == TaskResult.Canceled)
                 return TaskResult.Canceled;
-            if (chunkResult == TaskResult.Abort || chunkResult == TaskResult.FailedAfterRetries)
+            if (chunkResult == TaskResult.Abort)
             {
                 _migrationLog.WriteLine(
                     $"Copy failed for {tableMigration.KeyspaceName}.{tableMigration.TableName}[{chunk.ChunkIndex}].",
@@ -224,8 +219,7 @@ internal sealed class TableCopyCoordinator : IDisposable
     private void MarkChunkComplete(TableMigration tableMigration, int chunkIndex)
     {
         if (!_cts.Token.IsCancellationRequested
-            && !MigrationJobContext.Instance.ControlledPauseRequested
-            && tableMigration.CopyChunks[chunkIndex].Segments.All(seg => seg.IsProcessed == true))
+            && !MigrationJobContext.Instance.ControlledPauseRequested)
         {
             tableMigration.CopyChunks[chunkIndex].IsDownloaded = true;
         }
