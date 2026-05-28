@@ -1,8 +1,12 @@
 using CassandraMigrationProcessor.Models;
-using System;
-using System.Threading;
 
 namespace CassandraMigrationProcessor.Infrastructure;
+
+/// <summary>
+/// Projects a full <see cref="TableMigration"/> down to the lightweight
+/// <see cref="TableMigrationSummary"/> stored on the parent <see cref="Job"/>,
+/// and keeps the embedded summary in sync when the unit changes.
+/// </summary>
 public static class TableMigrationMapper
 {
     private static readonly object _updateParentLock = new();
@@ -19,7 +23,15 @@ public static class TableMigrationMapper
                     .FindIndex(mu => mu.Id == unit.Id);
                 if (index == -1) return false;
 
-                ToSummary(unit, unit.ParentJob.Tables[index]);
+                var target = unit.ParentJob.Tables[index];
+                ToSummary(unit, target);
+                // Flush-and-reset the per-batch counter at the explicit
+                // sync boundary, not inside ToSummary. Read-only callers
+                // (e.g. building an initial summary) should not zero a
+                // live counter as a side effect of "looking".
+                target.ChangeFeedUpdatesInLastBatch =
+                    Interlocked.Exchange(
+                        ref unit._changeFeedUpdatesInLastBatch, 0);
             }
             return true;
         }
@@ -35,7 +47,7 @@ public static class TableMigrationMapper
         if (target == null)
             target = new TableMigrationSummary();
 
-        target.Id = MigrationUtilities.GenerateMigrationUnitId(
+        target.Id = TableMigration.GenerateId(
             unit.KeyspaceName, unit.TableName);
         target.JobId = unit.JobId;
         target.KeyspaceName = unit.KeyspaceName;
@@ -43,8 +55,7 @@ public static class TableMigrationMapper
         target.TargetKeyspaceName = unit.TargetKeyspaceName;
         target.TargetTableName = unit.TargetTableName;
         target.ChangeFeedUpdatesInLastBatch =
-            Interlocked.Exchange(
-                ref unit._changeFeedUpdatesInLastBatch, 0);
+            Volatile.Read(ref unit._changeFeedUpdatesInLastBatch);
         target.ChangeFeedAvgReadLatencyInMS =
             unit.ChangeFeedAvgReadLatencyInMS;
         target.ChangeFeedAvgWriteLatencyInMS =

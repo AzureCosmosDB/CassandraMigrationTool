@@ -1,7 +1,5 @@
 using Cassandra;
-using System;
 using System.IdentityModel.Tokens.Jwt;
-using System.Threading;
 using CassandraMigrationProcessor.Infrastructure;
 using CassandraMigrationProcessor.Models;
 
@@ -17,11 +15,12 @@ public class TokenRefreshManager : IDisposable
     private ISession? _managedSourceSession;
     private readonly MigrationLog _log;
     private DateTime _tokenExpiresAt = DateTime.MinValue;
+    private int _consecutiveRefreshFailures;
+    private const int MaxRefreshFailures = 6;
 
     private string? _lastSourceContactPoint;
     private int _lastSourcePort;
     private string? _lastSourceUsername;
-    private string? _lastSourceKeyspace;
 
     public TokenRefreshManager(MigrationLog log)
     {
@@ -33,13 +32,11 @@ public class TokenRefreshManager : IDisposable
     /// timer can reconnect with a fresh token.
     /// </summary>
     internal void CacheSourceConnectionParams(
-        string contactPoint, int port, string username,
-        string keyspace)
+        string contactPoint, int port, string username)
     {
         _lastSourceContactPoint = contactPoint;
         _lastSourcePort = port;
         _lastSourceUsername = username;
-        _lastSourceKeyspace = keyspace;
     }
 
     /// <summary>
@@ -49,36 +46,6 @@ public class TokenRefreshManager : IDisposable
     public static bool IsLikelyAadToken(string? password)
     {
         return password != null && password.Length > 200;
-    }
-
-    /// <summary>
-    /// Reconnect the source session with a fresh AAD token.
-    /// Returns a new ISession. The caller should dispose the
-    /// old session. Also restarts the token refresh timer.
-    /// </summary>
-    public ISession ReconnectSourceWithFreshToken()
-    {
-        if (string.IsNullOrEmpty(_lastSourceContactPoint))
-            throw new InvalidOperationException(
-                "Cannot reconnect: source connection parameters have not been cached. Call CacheSourceConnectionParams first.");
-
-        string freshToken = GetFreshAadToken();
-
-        // Restart refresh timer with new token
-        StartTokenRefreshTimer(freshToken);
-
-        var newSession = CassandraClientFactory.CreateSourceSession(
-            _log,
-            _lastSourceContactPoint,
-            _lastSourcePort,
-            _lastSourceUsername ?? string.Empty,
-            freshToken,
-            _lastSourceKeyspace ?? string.Empty);
-
-        // Update managed session reference
-        _managedSourceSession = newSession;
-
-        return newSession;
     }
 
     /// <summary>
@@ -195,23 +162,32 @@ public class TokenRefreshManager : IDisposable
                         _lastSourceContactPoint,
                         _lastSourcePort,
                         _lastSourceUsername ?? string.Empty,
-                        freshToken,
-                        _lastSourceKeyspace ?? string.Empty);
-                    MigrationUtilities.SafeDispose(oldSession, "TokenRefresh old session");
+                        freshToken);
+                    MigrationUtilities.SafeDisposeSession(oldSession, "TokenRefresh old session");
                 }
 
                 // Schedule next refresh
+                _consecutiveRefreshFailures = 0;
                 StartTokenRefreshTimer(freshToken);
             }
             catch (Exception ex)
             {
-                // Retry in 2 minutes on failure
-                Console.WriteLine($"[WARN] Token refresh failed: {ex.Message}");
-                _log?.WriteLine($"Token refresh failed, retrying in 2 min: {ex.Message}", LogType.Warning);
+                _consecutiveRefreshFailures++;
+                // Exponential backoff capped at 5 min:
+                //   1: 30s  2: 1m  3: 2m  4: 4m  5+: 5m
+                int seconds = Math.Min(300, 30 * (1 << Math.Min(_consecutiveRefreshFailures - 1, 4)));
+                bool tokenAlreadyExpired = DateTime.UtcNow >= _tokenExpiresAt;
+                LogType severity = (_consecutiveRefreshFailures >= MaxRefreshFailures || tokenAlreadyExpired)
+                    ? LogType.Error
+                    : LogType.Warning;
+                string msg = $"Token refresh failed (attempt {_consecutiveRefreshFailures}, " +
+                             $"retrying in {seconds}s, tokenExpiresAt={_tokenExpiresAt:O}): {ex.Message}";
+                Console.WriteLine($"[{severity}] {msg}");
+                _log?.WriteLine(msg, severity);
                 StopTokenRefreshTimer();
                 _tokenRefreshTimer = new Timer(
                     TokenRefreshCallback, null,
-                    TimeSpan.FromMinutes(2),
+                    TimeSpan.FromSeconds(seconds),
                     Timeout.InfiniteTimeSpan);
             }
         }

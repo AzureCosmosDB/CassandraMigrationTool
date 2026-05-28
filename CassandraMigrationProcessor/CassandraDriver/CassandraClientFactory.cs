@@ -1,8 +1,5 @@
 using Cassandra;
-using System;
 using System.Security.Authentication;
-using System.Threading;
-using System.Threading.Tasks;
 using CassandraMigrationProcessor.Infrastructure;
 using CassandraMigrationProcessor.Models;
 namespace CassandraMigrationProcessor.CassandraDriver;
@@ -32,24 +29,24 @@ public static class CassandraClientFactory
         int port,
         string username,
         string password,
-        string keyspace,
-        TokenRefreshManager? tokenRefreshManager = null)
+        TokenRefreshManager? tokenRefreshManager = null,
+        int maxConnectionsPerHost = 0)
     {
         // Cache parameters for token refresh reconnection
         tokenRefreshManager?.CacheSourceConnectionParams(
-            contactPoint, port, username, keyspace);
+            contactPoint, port, username);
 
         // Source always uses SSL (Cosmos DB requires it)
         var builder = CreateBaseBuilder(
             contactPoint, port, username, password,
-            useSsl: true);
+            useSsl: true, maxConnectionsPerHost);
 
         const int MaxRetries = 5;
         for (int attempt = 1; attempt <= MaxRetries; attempt++)
         {
             try
             {
-                var session = ConnectCluster(builder, keyspace);
+                var session = ConnectCluster(builder);
 
                 if (TokenRefreshManager.IsLikelyAadToken(password))
                 {
@@ -73,7 +70,7 @@ public static class CassandraClientFactory
         }
 
         // Final attempt — let exception propagate
-        var finalSession = ConnectCluster(builder, keyspace);
+        var finalSession = ConnectCluster(builder);
 
         if (TokenRefreshManager.IsLikelyAadToken(password))
         {
@@ -90,10 +87,10 @@ public static class CassandraClientFactory
     /// </summary>
     internal static bool IsRetryableException(Exception ex)
     {
-        if (ex is global::Cassandra.OverloadedException)
+        if (ex is OverloadedException)
             return true;
 
-        var msg = ex.Message ?? string.Empty;
+        var msg = ex.Message;
         var inner = ex.InnerException?.Message ?? string.Empty;
         var fullMsg = msg + " " + inner;
 
@@ -144,13 +141,10 @@ public static class CassandraClientFactory
     /// Create a session to an OSS Apache Cassandra cluster.
     /// Tries SSL first, falls back to plain if SSL fails.
     /// </summary>
-    public static ISession CreateTargetSession(
-        MigrationLog MigrationLog,
-        string contactPoint,
+    private static ISession CreateTargetSession(string contactPoint,
         int port,
         string username,
         string password,
-        string keyspace,
         bool useSsl = true,
         int maxConnectionsPerHost = 0)
     {
@@ -163,8 +157,7 @@ public static class CassandraClientFactory
                 return ConnectCluster(
                     CreateBaseBuilder(
                         contactPoint, port, username, password,
-                        useSsl: true, maxConnectionsPerHost),
-                    keyspace);
+                        useSsl: true, maxConnectionsPerHost));
             }
             catch (Exception ex)
             {
@@ -177,8 +170,7 @@ public static class CassandraClientFactory
             return ConnectCluster(
                 CreateBaseBuilder(
                     contactPoint, port, username, password,
-                    useSsl: false, maxConnectionsPerHost),
-                keyspace);
+                    useSsl: false, maxConnectionsPerHost));
         }
         catch (Exception ex)
         {
@@ -217,14 +209,15 @@ public static class CassandraClientFactory
         {
             var sslOptions = new SSLOptions(
                 SslProtocols.None, false,
-                (sender, certificate, chain, sslPolicyErrors) =>
-                {
-                    return true; // Azure MI certs may have chain+name issues
-                });
+                (_, _, _, _) => true);
             sslOptions.SetHostNameResolver(_ => contactPoint);
             builder = builder.WithSSL(sslOptions);
         }
 
+        // Apply pooling only when the caller explicitly opted in via
+        // maxConnectionsPerHost > 0. Otherwise leave the driver defaults
+        // alone — we do not silently impose Cosmos DB recommendations or
+        // any other tuning based on the endpoint.
         if (maxConnectionsPerHost > 0)
         {
             int localMax = maxConnectionsPerHost;
@@ -241,16 +234,18 @@ public static class CassandraClientFactory
         return builder;
     }
 
-    private static ISession ConnectCluster(
-        Builder builder, string keyspace)
+    private static ISession ConnectCluster(Builder builder)
     {
         Cluster? cluster = null;
         try
         {
             cluster = builder.Build();
-            return string.IsNullOrWhiteSpace(keyspace)
-                ? cluster.Connect()
-                : cluster.Connect(keyspace);
+            // Sessions are intentionally keyspace-agnostic: every query
+            // in the migration uses fully-qualified `"keyspace"."table"`
+            // identifiers, so binding a default keyspace at connect time
+            // would add nothing and would force callers to track a
+            // keyspace they never use.
+            return cluster.Connect();
         }
         catch
         {
@@ -266,7 +261,7 @@ public static class CassandraClientFactory
     /// token automatically.
     /// </summary>
     public static ISession CreateSourceSession(
-        MigrationLog MigrationLog, Job job, string keyspace,
+        MigrationLog MigrationLog, Job job,
         TokenRefreshManager? tokenRefreshManager = null)
     {
         if (string.IsNullOrEmpty(job.SourceContactPoint))
@@ -303,17 +298,37 @@ public static class CassandraClientFactory
             job.SourcePort,
             username,
             password,
-            keyspace,
-            tokenRefreshManager);
+            tokenRefreshManager,
+            maxConnectionsPerHost: ResolveSourceMaxConnectionsPerHost(job));
     }
+
+    /// <summary>
+    /// Per-side connection pool sizing. The per-side
+    /// <see cref="Job.SourceMaxConnectionsPerHost"/> /
+    /// <see cref="Job.TargetMaxConnectionsPerHost"/> knobs take
+    /// precedence; the job-level <see cref="Job.MaxConnectionsPerHost"/>
+    /// applies to both sides when no per-side value is set.
+    /// </summary>
+    internal static int ResolveSourceMaxConnectionsPerHost(Job job)
+        => job.SourceMaxConnectionsPerHost > 0
+            ? job.SourceMaxConnectionsPerHost
+            : job.MaxConnectionsPerHost;
+
+    internal static int ResolveTargetMaxConnectionsPerHost(Job job)
+        => job.TargetMaxConnectionsPerHost > 0
+            ? job.TargetMaxConnectionsPerHost
+            : job.MaxConnectionsPerHost;
 
     /// <summary>
     /// Async version — Create target session from a Job's properties.
     /// Prefer this over the sync overload to avoid blocking on ARM discovery.
     /// </summary>
     public static async Task<ISession> CreateTargetSessionAsync(
-        MigrationLog MigrationLog, Job job, string keyspace)
+        MigrationLog MigrationLog, Job job)
     {
+        if (job.IsSimulatedRun)
+            return new NullSession();
+
         if (string.IsNullOrEmpty(job.TargetContactPoint))
             throw new ArgumentException("Target contact point is required", nameof(job));
 
@@ -352,47 +367,10 @@ public static class CassandraClientFactory
             }
         }
 
-        return CreateTargetSession(
-            MigrationLog,
-            job.TargetContactPoint,
+        return CreateTargetSession(job.TargetContactPoint,
             job.TargetPort,
             username,
             password,
-            keyspace,
-            maxConnectionsPerHost: job.MaxConnectionsPerHost);
-    }
-
-    /// <summary>
-    /// Create source session from ConnectionOptions.
-    /// </summary>
-    public static ISession CreateSourceSession(
-        MigrationLog log, ConnectionOptions conn, string keyspace,
-        TokenRefreshManager? tokenRefreshManager = null)
-    {
-        return CreateSourceSession(
-            log,
-            conn.Host,
-            conn.Port,
-            conn.Username ?? string.Empty,
-            conn.Password ?? string.Empty,
-            keyspace,
-            tokenRefreshManager);
-    }
-
-    /// <summary>
-    /// Create target session from ConnectionOptions.
-    /// </summary>
-    public static ISession CreateTargetSession(
-        MigrationLog log, ConnectionOptions conn, string keyspace)
-    {
-        return CreateTargetSession(
-            log,
-            conn.Host,
-            conn.Port,
-            conn.Username ?? string.Empty,
-            conn.Password ?? string.Empty,
-            keyspace,
-            conn.UseSsl,
-            conn.MaxConnectionsPerHost);
+            maxConnectionsPerHost: ResolveTargetMaxConnectionsPerHost(job));
     }
 }

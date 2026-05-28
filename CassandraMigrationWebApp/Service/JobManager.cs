@@ -1,10 +1,3 @@
-using System;
-using System.Collections.Generic;
-using System.IO;
-using System.Linq;
-using System.Threading;
-using System.Threading.Tasks;
-using CassandraMigrationProcessor;
 using CassandraMigrationProcessor.Infrastructure;
 using CassandraMigrationProcessor.Models;
 using CassandraMigrationProcessor.DataTransfer;
@@ -13,28 +6,22 @@ using CassandraMigrationProcessor.Context;
 namespace CassandraMigrationWebApp.Service;
 public class JobManager
 {
-    private MigrationWorker? MigrationWorker { get; set; }
+    private MigrationJobRunner? MigrationJobRunner { get; set; }
     private MigrationLog _log;
     private CancellationTokenSource? _migrationCts;
     private string _runningJobId = string.Empty;
     private readonly object _stateLock = new();
-    private Task? _migrationTask;
 
     private DateTime _lastJobHeartBeat = DateTime.MinValue;
     private string _lastJobID = string.Empty;
-    private readonly IConfiguration _configuration;
     private readonly MigrationContextService _ctx;
     private readonly MigrationJobContext _migrationJobContext;
-    private string? _webAppBaseUrl = null;
 
-    public JobManager(IConfiguration configuration, MigrationContextService ctx, MigrationJobContext migrationJobContext)
+    public JobManager(MigrationContextService ctx, MigrationJobContext migrationJobContext)
     {
-        _configuration = configuration;
         _ctx = ctx;
         _migrationJobContext = migrationJobContext;
         _log = CreateLog();
-
-        MigrationUtilities.LogToFile("JobManager initialized");
     }
 
     private MigrationLog CreateLog()
@@ -46,18 +33,6 @@ public class JobManager
     }
 
     #region Configuration Management
-
-    /// <summary>
-    /// Updates the WebAppBaseUrl from browser context. Called from Index.razor on first load.
-    /// </summary>
-    public void UpdateWebAppBaseUrlFromBrowser(string baseUri)
-    {
-        if (string.IsNullOrEmpty(baseUri))
-            return;
-
-        _webAppBaseUrl = baseUri.TrimEnd('/');
-        MigrationUtilities.LogToFile($"WebAppBaseUrl updated from browser: {_webAppBaseUrl}");
-    }
 
     public bool UpdateConfig(CassandraMigrationProcessor.Models.AppSettings updated_config, out string errorMessage)
     {
@@ -96,7 +71,7 @@ public class JobManager
     }
 
 
-    public Job? GetMigrationJobById(string id, bool active = true)
+    public Job? GetMigrationJobById(string id)
     {
         return _ctx.GetJob(id);
     }
@@ -173,14 +148,14 @@ public class JobManager
 
     #endregion
 
-    #region Migration Worker Management
+    #region Migration Job Runner Management
 
     public void StopMigration()
     {
         lock (_stateLock)
         {
             _migrationCts?.Cancel();
-            MigrationWorker?.Stop();
+            MigrationJobRunner?.Stop();
             _runningJobId = string.Empty;
         }
     }
@@ -214,7 +189,7 @@ public class JobManager
         return _ctx.ControlledPauseRequested;
     }
 
-    public Task StartMigration(Job job, string sourceConnectionString, string targetConnectionString, string namespacesToMigrate, CassandraMigrationProcessor.Models.JobType jobType, bool trackChangeStreams)
+    public Task StartMigration(Job job, string sourceConnectionString, string targetConnectionString, string namespacesToMigrate)
     {
         lock (_stateLock)
         {
@@ -229,7 +204,7 @@ public class JobManager
             _log = CreateLog();
             _log.Initialize(job.Id);
             _log.SetJob(job);
-            MigrationWorker = new MigrationWorker(_log);
+            MigrationJobRunner = new MigrationJobRunner(_log);
             _migrationCts = new CancellationTokenSource();
             _runningJobId = job.Id;
         }
@@ -258,28 +233,21 @@ public class JobManager
 
         // Background migration: stored so exceptions are observable and
         // the task can be awaited during shutdown if needed.
-        _migrationTask = Task.Run(async () =>
+        _ = Task.Run(async () =>
         {
             try
             {
-                MigrationUtilities.LogToFile($"Task.Run started for job {job.Id}");
-
                 // Expand wildcards (e.g. "socialmedia.*") by connecting to source
                 if (job.Tables.Count == 0
                     || job.Tables.Any(m => m.TableName == "*"))
                 {
-                    MigrationUtilities.LogToFile($"Expanding wildcards for job {job.Id}, namespaces={namespacesToMigrate}");
                     await ExpandWildcardTablesAsync(job, namespacesToMigrate);
-                    MigrationUtilities.LogToFile($"After expand: {job.Tables.Count} units");
                 }
 
-                MigrationUtilities.LogToFile($"Calling MigrationWorker.StartAsync for job {job.Id}");
-                await MigrationWorker.StartAsync(job, config, _migrationCts.Token);
-                MigrationUtilities.LogToFile($"MigrationWorker.StartAsync completed for job {job.Id}");
+                await MigrationJobRunner.StartAsync(job, config, _migrationCts.Token);
             }
             catch (Exception ex)
             {
-                MigrationUtilities.LogToFile($"Migration failed for Job ID: {job.Id}: {ex}");
                 Console.WriteLine($"Migration failed for Job ID: {job.Id}: {ex}");
                 _log.WriteLine($"Migration failed: {ex}", LogType.Error);
             }
@@ -307,7 +275,6 @@ public class JobManager
             }
         });
 
-        MigrationUtilities.LogToFile($"Started migration task for Job ID: {job.Id}");
         Console.WriteLine($"Started migration for Job ID: {job.Id}");
 
         return Task.CompletedTask;
@@ -337,8 +304,9 @@ public class JobManager
                 // Connect to source and list all tables in this keyspace
                 try
                 {
-                    using (var session = CassandraMigrationProcessor.CassandraDriver.CassandraClientFactory
-                        .CreateSourceSession(_log, job, keyspace))
+                    var session = CassandraMigrationProcessor.CassandraDriver.CassandraClientFactory
+                        .CreateSourceSession(_log, job);
+                    try
                     {
                         var tables = await CassandraMigrationProcessor.CassandraDriver.CassandraQueries
                             .ListTablesAsync(session, keyspace);
@@ -378,6 +346,11 @@ public class JobManager
                             mu.SourceStatus = TableStatus.OK;
                             expandedUnits.Add(mu);
                         }
+                    }
+                    finally
+                    {
+                        CassandraMigrationProcessor.Infrastructure.MigrationUtilities
+                            .SafeDisposeSession(session, $"JobManager table discovery session ({keyspace})");
                     }
                 }
                 catch (Exception ex)

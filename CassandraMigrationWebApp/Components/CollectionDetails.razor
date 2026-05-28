@@ -48,7 +48,7 @@
                                     <div><span class="lbl">Ended On (UTC):</span> @(TableMigration.BulkCopyEndedOn?.ToString() ?? "N/A")</div>
                                     <div><span class="lbl">Duration:</span> @GetDuration(TableMigration.BulkCopyStartedOn, TableMigration.BulkCopyEndedOn)</div>
                                     @{
-                                        var totals = MigrationUtilities.GetProcessedTotals(TableMigration);
+                                        var totals = TableMigration.GetProcessedTotals();
                                     }
                                     <div><span class="lbl">Processed Total:</span> @FormatLong(totals.Total)</div>
                                     <div><span class="lbl">Insert:</span> @FormatLong(totals.Inserted)</div>
@@ -59,7 +59,7 @@
                             <tr>
                                 <td class="cd-col-label">Change Feed</td>
                                 <td class="group">
-                                    @if (Job != null && MigrationUtilities.IsOnline(Job))
+                                    @if (Job != null && Job.IsOnline)
                                     {
                                         <div><span class="lbl">Started On (UTC):</span> @(TableMigration.ChangeFeedStartedOn?.ToString() ?? "N/A")</div>
                                         <div><span class="lbl">Continuation Token:</span> @(TableMigration.ChangeFeedContinuationToken ?? "N/A")</div>

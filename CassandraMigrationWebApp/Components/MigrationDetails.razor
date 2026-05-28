@@ -184,14 +184,28 @@
                         </div>
                         <div class="row mb-3">
                             <div class="col-md-6">
-                                <label for="connectionsPerHost" class="form-label" title="Cassandra driver connections per host per worker. 0 = default (1).">Connections per host</label>
-                                <input type="number" id="connectionsPerHost" class="form-control" @bind="connectionsPerHost" min="0" max="128" placeholder="Default (1)"/>
+                                <label for="sourceConnectionsPerHost" class="form-label" title="Source (reader) Cassandra driver connections per host. 0 = driver default.">Source connections per host</label>
+                                <input type="number" id="sourceConnectionsPerHost" class="form-control" @bind="sourceConnectionsPerHost" min="0" max="128" placeholder="Driver default"/>
+                            </div>
+                            <div class="col-md-6">
+                                <label for="targetConnectionsPerHost" class="form-label" title="Target (writer) Cassandra driver connections per host. 0 = driver default.">Target connections per host</label>
+                                <input type="number" id="targetConnectionsPerHost" class="form-control" @bind="targetConnectionsPerHost" min="0" max="128" placeholder="Driver default"/>
                             </div>
                         </div>
                         <div class="row mb-3">
                             <div class="col-md-6">
                                 <label for="pageSize" class="form-label" title="Rows per page when reading from source. Larger pages reduce round-trips but use more RU per request. Default = 500.">Page size</label>
                                 <input type="number" id="pageSize" class="form-control" @bind="pageSize" min="0" max="10000" placeholder="Default (500)"/>
+                            </div>
+                        </div>
+                        <div class="row mb-3">
+                            <div class="col-md-6">
+                                <label for="maxReadRetries" class="form-label" title="Per-page retry count when the source SELECT fails transiently (read timeout, no host available, 429). Default = 3.">Max read retries</label>
+                                <input type="number" id="maxReadRetries" class="form-control" @bind="maxReadRetries" min="0" max="100" placeholder="Default (3)"/>
+                            </div>
+                            <div class="col-md-6">
+                                <label for="maxWriteRetries" class="form-label" title="Per-row retry count when the target write fails transiently (write timeout, overloaded). Default = 5.">Max write retries</label>
+                                <input type="number" id="maxWriteRetries" class="form-control" @bind="maxWriteRetries" min="0" max="100" placeholder="Default (5)"/>
                             </div>
                         </div>
                     }</div>
@@ -241,8 +255,11 @@
     private int? parallelThreads = null; // Parallel threads for CQL Copy
     private int defaultParallelThreads = 5;
     private int? feedRangeWorkers = null; // Max concurrent feed range workers per table
-    private int? connectionsPerHost = null; // Max connections per host (0 = default)
+    private int? sourceConnectionsPerHost = null; // Source reader connections per host (0 = auto)
+    private int? targetConnectionsPerHost = null; // Target writer connections per host (0 = auto)
     private int? pageSize = null; // Rows per page (0 = default 500)
+    private int? maxReadRetries = null; // Per-page source read retries (0 = default 3)
+    private int? maxWriteRetries = null; // Per-row target write retries (0 = default 5)
     private LogType logLevel = LogType.Info; // Minimum log level
     private string namespaces = string.Empty;   // Comma-separated list of namespaces to migrate
     private string name = string.Empty; // Name of the migration job
@@ -388,8 +405,11 @@
             skipSchemaSync = Job?.SkipSchemaSync ?? false;
             parallelThreads = Job?.ParallelThreads == defaultParallelThreads ? null : Job?.ParallelThreads;
             feedRangeWorkers = Job?.MaxFeedRangeParallelism == 0 ? null : Job?.MaxFeedRangeParallelism;
-            connectionsPerHost = Job?.MaxConnectionsPerHost == 0 ? null : Job?.MaxConnectionsPerHost;
+            sourceConnectionsPerHost = Job?.SourceMaxConnectionsPerHost == 0 ? null : Job?.SourceMaxConnectionsPerHost;
+            targetConnectionsPerHost = Job?.TargetMaxConnectionsPerHost == 0 ? null : Job?.TargetMaxConnectionsPerHost;
             pageSize = Job?.PageSize == 0 ? null : Job?.PageSize;
+            maxReadRetries = Job?.MaxReadRetries == 0 ? null : Job?.MaxReadRetries;
+            maxWriteRetries = Job?.MaxWriteRetries == 0 ? null : Job?.MaxWriteRetries;
             logLevel = Job?.LogLevel ?? LogType.Info;
 
             // Set migration mode dropdown value based on CDCMode enum
@@ -494,8 +514,11 @@
             SkipSchemaSync = skipSchemaSync,
             ParallelThreads = parallelThreads ?? defaultParallelThreads,
             MaxFeedRangeParallelism = feedRangeWorkers ?? 0,
-            MaxConnectionsPerHost = connectionsPerHost ?? 0,
+            SourceMaxConnectionsPerHost = sourceConnectionsPerHost ?? 0,
+            TargetMaxConnectionsPerHost = targetConnectionsPerHost ?? 0,
             PageSize = pageSize ?? 0,
+            MaxReadRetries = maxReadRetries ?? 0,
+            MaxWriteRetries = maxWriteRetries ?? 0,
             LogLevel = logLevel,
             Tables = new List<TableMigrationSummary>()
         };

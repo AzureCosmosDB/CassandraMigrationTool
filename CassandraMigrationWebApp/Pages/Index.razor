@@ -83,7 +83,7 @@
                                     <div class="text-truncate" style="color: var(--az-text-disabled, #a19f9d); font-size: 11px;">→ @migration.TargetContactPoint</div>
                                 </td>
                                 <td>
-                                    @if (MigrationUtilities.IsOnline(migration))
+                                    @if (migration.IsOnline)
                                     {
                                         <span class="badge bg-info">Online</span>
                                     }
@@ -213,17 +213,6 @@
 
     protected override async Task OnInitializedAsync()
     {
-        // Update WebAppBaseUrl from browser context for Keep-Alive functionality
-        try
-        {
-            var baseUri = NavigationManager.BaseUri;
-            JobManager.UpdateWebAppBaseUrlFromBrowser(baseUri);
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"Error updating WebAppBaseUrl. Details: {ex}");
-        }
-
         await base.OnInitializedAsync();
     }
 
@@ -296,7 +285,11 @@
                     {
                         JobManager.ClearJobFiles(jobId);
                     }
-                    catch { }
+                    catch (Exception ex)
+                    {
+                        Console.Error.WriteLine(
+                            $"ClearJobFiles({jobId}) failed: {ex.GetType().Name}: {ex.Message}");
+                    }
                 }
 
             }

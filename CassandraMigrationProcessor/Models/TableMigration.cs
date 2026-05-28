@@ -1,10 +1,14 @@
-using CassandraMigrationProcessor.Infrastructure;
+using CassandraMigrationProcessor.DataTransfer;
 using Newtonsoft.Json;
-using System;
-using System.Collections.Generic;
-using System.Threading;
+using System.Security.Cryptography;
+using System.Text;
 
 namespace CassandraMigrationProcessor.Models;
+
+/// <summary>
+/// Lightweight per-table snapshot embedded in <see cref="Job.Tables"/>:
+/// identity, status, and rolled-up copy / change-feed counters used by the UI.
+/// </summary>
 public class TableMigrationSummary
 {
     // ── Identity ──
@@ -51,11 +55,30 @@ public class TableMigrationSummary
         return string.IsNullOrWhiteSpace(TargetTableName)
             ? TableName : TargetTableName;
     }
+
+    /// <summary>
+    /// True when this table summary represents a row we should still
+    /// touch during migration. <see cref="TableStatus.OK"/> and
+    /// <see cref="TableStatus.Failed"/> both qualify — Failed tables
+    /// are retried on resume. Only <see cref="TableStatus.NotFound"/>
+    /// (e.g. dropped on the source) is excluded.
+    /// </summary>
+    [JsonIgnore]
+    public bool IsValid =>
+        SourceStatus == TableStatus.OK
+        || SourceStatus == TableStatus.Failed;
 }
 
+/// <summary>
+/// Full per-table migration document (persisted as <c>{unitId}.json</c>): extends
+/// the summary with bulk-copy phase, per-feed-range <see cref="Partition.PartitionSnapshot"/>,
+/// change-feed checkpoints, and live counters.
+/// </summary>
 public class TableMigration : TableMigrationSummary
 {
     // ── Bulk Copy State ──
+
+    public BulkCopyPhase BulkCopyPhase { get; set; } = BulkCopyPhase.NotStarted;
 
     public DateTime? BulkCopyStartedOn { get; set; }
     public DateTime? BulkCopyEndedOn { get; set; }
@@ -67,34 +90,18 @@ public class TableMigration : TableMigrationSummary
     public long SourceCountDuringCopy { get; set; }
 
     /// <summary>
-    /// Per-feed-range copy checkpoint. Key = feed range JSON,
-    /// Value = base64-encoded paging state. null value means
-    /// the range is fully copied. Persisted periodically so
-    /// resume can skip completed ranges and continue from
-    /// the last checkpoint of in-progress ranges.
+    /// Per-feed-range partition state — bulk checkpoint,
+    /// replay checkpoint, and bulk-completed flag — keyed by
+    /// feed range JSON. Each runtime <see cref="DataTransfer.Partition"/>
+    /// holds a reference to its <see cref="Partition.PartitionSnapshot"/>
+    /// entry, so workers checkpoint through the partition directly.
     /// </summary>
-    public Dictionary<string, string?> CopyFeedRangeCheckpoints { get; set; } = new();
-
-    /// <summary>
-    /// Set of feed ranges whose bulk copy completed fully.
-    /// On resume, these ranges are skipped entirely.
-    /// </summary>
-    public HashSet<string> CompletedCopyFeedRanges { get; set; } = new();
+    public Dictionary<string, Partition.PartitionSnapshot> Partitions { get; set; } = new();
 
     // ── Change Feed State ──
 
     public DateTime? ChangeFeedStartedOn { get; set; }
     public string? ChangeFeedContinuationToken { get; set; }
-
-    /// <summary>
-    /// Per-feed-range continuation tokens for parallel
-    /// change feed. Key = feed range JSON string,
-    /// Value = base64-encoded paging state.
-    /// Used when feed ranges > 1 for a table.
-    /// </summary>
-    public Dictionary<string, string>
-        FeedRangeContinuationTokens
-    { get; set; } = new();
 
     /// <summary>
     /// Change feed start time captured BEFORE bulk copy
@@ -174,8 +181,7 @@ public class TableMigration : TableMigrationSummary
         string tableName,
         List<CopyChunk> CopyChunks)
     {
-        this.Id = MigrationUtilities.GenerateMigrationUnitId(
-            keyspaceName, tableName);
+        this.Id = GenerateId(keyspaceName, tableName);
         this.KeyspaceName = keyspaceName;
         this.TableName = tableName;
         this.TargetKeyspaceName = keyspaceName;
@@ -186,5 +192,28 @@ public class TableMigration : TableMigrationSummary
             this.JobId = job.Id;
             this.ParentJob = job;
         }
+    }
+
+    /// <summary>
+    /// Stable deterministic id for a (keyspace, table) pair: first 16
+    /// hex chars of SHA-256("keyspace.table").
+    /// </summary>
+    public static string GenerateId(string keyspaceName, string tableName)
+    {
+        using var sha = SHA256.Create();
+        byte[] hashBytes = sha.ComputeHash(
+            Encoding.UTF8.GetBytes($"{keyspaceName}.{tableName}"));
+        return BitConverter.ToString(hashBytes)
+            .Replace("-", "").Substring(0, 16).ToLower();
+    }
+
+    /// <summary>
+    /// Aggregates copy-chunk totals: <c>(Total, Inserted, Failed)</c>.
+    /// </summary>
+    public (long Total, long Inserted, long Failed) GetProcessedTotals()
+    {
+        long inserted = CopyChunks?.Sum(c => c.TargetInsertedRowCount) ?? 0;
+        long failed = CopyChunks?.Sum(c => c.TargetFailedRowCount) ?? 0;
+        return (inserted + failed, inserted, failed);
     }
 }

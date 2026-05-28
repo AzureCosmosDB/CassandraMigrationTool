@@ -63,7 +63,7 @@
 
 @if (_resetChangeStreamDialogOpen && CurrentlyLoadedMigrationJob != null)
 {
-    <ResetChangeStream MigrationUnits="@((@JobManager.GetMigrationUnits(CurrentlyLoadedMigrationJob) ?? new List<TableMigration>()).Where(mu => MigrationUtilities.IsMigrationUnitValid(mu)).ToList())" OnCollectionsUpdated="@OnCSReset" />
+    <ResetChangeStream MigrationUnits="@((@JobManager.GetMigrationUnits(CurrentlyLoadedMigrationJob) ?? new List<TableMigration>()).Where(mu => mu.IsValid).ToList())" OnCollectionsUpdated="@OnCSReset" />
 }
 @if (_collectionDetailsDialogOpen && _selectedMigrationUnit != null)
 {
@@ -96,7 +96,7 @@
 {
     <div class="d-flex align-items-center mb-3 mt-4">
         <button class="btn btn-primary mx-2" title="You can add or remove collections from this job. Be sure to pause the job before doing so." @onclick="ManageCollections" disabled="@_isLoadingCollections">Update Tables</button>
-        @if (CurrentlyLoadedMigrationJob != null && MigrationUtilities.IsOnline(CurrentlyLoadedMigrationJob))
+        @if (CurrentlyLoadedMigrationJob != null && CurrentlyLoadedMigrationJob.IsOnline)
         {
             <button class="btn btn-warning mx-2" title="Reset the change feed checkpoint." @onclick="ResetChangeStream">
                 Reset Change Feed
@@ -477,7 +477,11 @@ else if (@_showLogBackupFile)
 
             return JobManager.GetLogCount(jobId);
         }
-        catch { }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine(
+                $"GetLogCount({jobId}) failed: {ex.GetType().Name}: {ex.Message}");
+        }
 
         return 0;
     }
@@ -733,9 +737,7 @@ else if (@_showLogBackupFile)
             await JobManager.StartMigration(mj,
                 GetSourceConnectionString(mj),
                 GetTargetConnectionString(mj),
-                mj.Namespaces ?? string.Empty,
-                mj.JobType,
-                MigrationUtilities.IsOnline(mj));
+                mj.Namespaces ?? string.Empty);
         });
 
         StartAutoRefresh();
@@ -934,7 +936,6 @@ else if (@_showLogBackupFile)
             if (result.DiaLogType == YesNoDialog.Category.CutoverNot
                 || result.DiaLogType == YesNoDialog.Category.CompleteNot)
             {
-                MigrationContext.AddVerboseLog($"YesNoDialogSubmit Cutover {result.DiaLogType}");
                 JobManager.StopMigration();                
                 if (CurrentlyLoadedMigrationJob != null)
                 {
@@ -948,7 +949,6 @@ else if (@_showLogBackupFile)
             }
             else if (result.DiaLogType == YesNoDialog.Category.CancelNot)
             {
-                MigrationContext.AddVerboseLog($"YesNoDialogSubmit Cancel {result.DiaLogType}");
                 JobManager.StopMigration();                
                 if (CurrentlyLoadedMigrationJob != null)
                 {
@@ -968,8 +968,8 @@ else if (@_showLogBackupFile)
         _errorMessage = string.Empty;
         try
         {
-            // Set status BEFORE stopping so StopProcessing
-            // won't downgrade from Paused to Pending
+            // Set status BEFORE stopping so the coordinator's
+            // FinalizeStatus won't downgrade Paused -> Pending
             if (CurrentlyLoadedMigrationJob != null)
                 CurrentlyLoadedMigrationJob.Status = JobStatus.Paused;
             MigrationContext.SaveJob(CurrentlyLoadedMigrationJob);
@@ -986,7 +986,7 @@ else if (@_showLogBackupFile)
         _errorMessage = string.Empty;
         try
         {
-            MigrationContext.RequestControlledPause("UI Button Click");
+            MigrationContext.RequestControlledPause();
             MigrationContext.SaveJob(CurrentlyLoadedMigrationJob);
         }
         catch (Exception ex)

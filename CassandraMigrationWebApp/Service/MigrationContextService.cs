@@ -63,8 +63,8 @@ public class MigrationContextService
     public bool ControlledPauseRequested
         => _context.ControlledPauseRequested;
 
-    public void RequestControlledPause(string location)
-        => _context.RequestControlledPause(location);
+    public void RequestControlledPause()
+        => _context.RequestControlledPause();
 
     public void ResetControlledPause()
         => _context.ResetControlledPause();
@@ -94,9 +94,6 @@ public class MigrationContextService
 
     public void UpdateLogLevel(LogType level, Job job)
         => _context.UpdateLogLevel(level, job);
-
-    public void AddVerboseLog(string message)
-        => _context.AddVerboseLog(message);
 
     // -- Cache --
 

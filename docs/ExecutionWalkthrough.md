@@ -12,18 +12,18 @@ Creates a `Job` object from form fields: name, source/target connections, namesp
 - Persists registry: `MigrationJobContext.SaveJobList()` → writes `JobRegistry.json`
 - Fires background: `Task.Run(() => JobManager.StartMigration(job, ...))`
 
-## 2. Job Startup (JobManager → MigrationWorker)
+## 2. Job Startup (JobManager → MigrationJobRunner)
 
 ### `JobManager.StartMigration(job, sourceCS, targetCS, namespaces, jobType, online)`
 ```
 Guards: no concurrent runs (locks _migrationLock)
-Creates: MigrationLog, MigrationWorker(log)
+Creates: MigrationLog, MigrationJobRunner(log)
 Sets: _runningJobId, ActiveMigrationJobId
 Stores: connection strings in context dictionaries
-Background: Task.Run → MigrationWorker.StartAsync(job, config, ct)
+Background: Task.Run → MigrationJobRunner.StartAsync(job, config, ct)
 ```
 
-### `MigrationWorker.StartAsync(job, config, ct)`
+### `MigrationJobRunner.StartAsync(job, config, ct)`
 ```
 Gets pending tables: UnitStore.GetMigrationUnitsToMigrate(job)
 Creates source session: CassandraClientFactory.CreateSourceSession(...)
@@ -40,13 +40,12 @@ On completion: engine.StopOfflineOrInvokeChangeFeed()
 ### `TableMigrationEngine.StartProcessAsync(migrationUnitId)`
 ```
 Loads: TableMigration from MigrationJobContext
-Creates: TableContext(keyspace, table, targetKeyspace, targetTable, sourceSession)
+Creates: TableCopySpec(keyspace, table, targetKeyspace, targetTable, sourceSession)
 Ensures: at least one CopyChunk exists
 
 FOR EACH chunk (typically 1):
   └── RetryHelper.ExecuteTask(() => ProcessChunkAsync(...))
-      └── On Canceled → PauseProcessing()
-      └── On Abort → StopProcessing()
+      └── On Canceled / Abort → returns to caller; finally-block FinalizeStatus(result)
 
 On all chunks complete:
   └── Sets CopyComplete = true, BulkCopyEndedOn
@@ -72,9 +71,9 @@ Stage 1: SeedAsync(request)
   ├── Restores checkpoints (base64 → paging state)
   ├── Creates Channel<Partition>(pendingRanges.Count)
   ├── Seeds partitions into channel
-  └── Returns (SeedResult, allComplete)
+  └── Returns allComplete (bool)
 
-Stage 2: SyncSchemaAsync(tableContext, targetSession)
+Stage 2: SyncSchemaAsync(TableCopySpec, targetSession)
   ├── SchemaManager.SyncSchemaAsync(source, target, keyspace, table)
   ├── Creates/alters target table to match source schema
   └── Returns column list
@@ -171,7 +170,7 @@ PollLoopAsync(mu, feedRange, ps, colNames, ct):
 ## Session Ownership Summary
 
 ```
-MigrationWorker
+MigrationJobRunner
   └── creates _sourceSession (metadata: row count, feed ranges)
 
 TableMigrationEngine

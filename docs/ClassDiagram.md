@@ -8,7 +8,7 @@ Program.cs (DI setup)
  ├─► ICassandraSessionFactory → CassandraSessionFactory [DI singleton]
  ├─► JobManager(IConfiguration, MigrationContextService)
  │    ├─► MigrationLog()                         [creates per job]
- │    ├─► MigrationWorker(MigrationLog)          [creates per job]
+ │    ├─► MigrationJobRunner(MigrationLog)          [creates per job]
  │    │    └─► TableMigrationEngine(log, sourceSession, config, job, worker)
  │    │         │
  │    │         ├─► CopyProgressTracker(log, keyspace, table, workerCount, ...)
@@ -72,10 +72,9 @@ PipelineRequest(TableMigration, ChunkIndex, InitialPercent, ContributionFactor, 
 PipelineConfig(PageSize, WorkerCount, CheckpointInterval, ...)   [resolved from Job + AppSettings]
 ProgressConfig(ChunkIndex, InitialPercent, ContributionFactor, TotalRowCount)
 WorkerConfig(SourceConnection, TargetConnection, Columns, Context)
-RangeState(Completed, Checkpoints, FeedRanges)
-PipelineContext(PartitionPool, Worker, Ranges, Counters, Tracker)
+PipelineContext(PartitionPool, Worker, Flags)
 ReadResult(Rows, WorkChunk, IsLastPage)                          [nested in PageReader]
-SeedResult(Pool, Completed, Checkpoints, PendingCount)            [nested in TableMigrationEngine]
+[Partitioner.SeedAsync returns bool allRangesComplete]
 ```
 
 ## Models (mutable POCOs, JSON-serialized)
@@ -84,21 +83,20 @@ SeedResult(Pool, Completed, Checkpoints, PendingCount)            [nested in Tab
 Job
  ├── Id, Name, Status (JobStatus enum)
  ├── Source/Target connection fields
- ├── Tables: List<TableMigrationSummary>
- └── SourceConnection / TargetConnection (ConnectionOptions)
+ └── Tables: List<TableMigrationSummary>
 
 TableMigration : TableMigrationSummary
  ├── Per-table state: keyspace, table, copy progress, change feed counters
  ├── CopyChunks: List<CopyChunk>
  │    └── CopyChunk { RowCount, Segments: List<ChunkSegment> }
- ├── CompletedCopyFeedRanges: HashSet<string>
- ├── CopyFeedRangeCheckpoints: Dictionary<string, string?>
+ ├── Partitions: Dictionary<string, Partition.PartitionSnapshot>
+ │    └── Partition.PartitionSnapshot { FeedRange, CopyContinuationToken, ReplayContinuationToken, BulkCompleted }
  └── ParentJob: Job [JsonIgnore]
 
 AppSettings : ICloneable
  └── Pipeline defaults: PageSize, WorkerMultiplier, MaxParallelTables, etc.
 
-TableContext
+TableCopySpec
  ├── TableMigrationId, JobId
  ├── KeyspaceName, TableName, TargetKeyspaceName, TargetTableName
  └── SourceSession: ISession
@@ -111,7 +109,7 @@ JobIndex
 
 ```
 JobManager.StartMigration(jobId)
-  └─► MigrationWorker.ExecuteAsync(job)
+  └─► MigrationJobRunner.ExecuteAsync(job)
        └─► [parallel per table] TableMigrationEngine.StartProcessAsync(unitId)
             └─► ProcessChunkAsync(tableMigration, chunkIndex, context)
                  ├── CassandraQueries.GetRowCountAsync()

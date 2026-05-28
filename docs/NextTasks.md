@@ -49,7 +49,7 @@ Pause and resume must guarantee zero data loss and zero duplicate rows.
 
 ### 2.4 Concurrent pause safety
 - Multiple rapid pause/resume clicks must not corrupt state
-- Verify `StopProcessing` and `StartProcessAsync` are properly locked
+- Verify `Cancel` and `StartProcessAsync` are properly locked
 - Test: pause during cancel, resume during pause, cancel during resume
 
 ---
