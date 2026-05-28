@@ -14,24 +14,20 @@ public class PartitionState
     public string FeedRange { get; set; } = string.Empty;
 
     /// <summary>
-    /// Base64-encoded paging state from the last successfully
-    /// written bulk page. <c>null</c> means: never checkpointed
-    /// (resume from the start of the range), or bulk completed
-    /// and the token was cleared.
+    /// Base64-encoded paging state for whichever phase the
+    /// range is currently in. While bulk is in progress this is
+    /// the last successfully-written bulk page; on bulk drain
+    /// (online) it carries forward as the replay handoff anchor;
+    /// during replay it advances with each tail page. Offline
+    /// completion clears it. <c>null</c> means: start of range.
     /// </summary>
-    public string? CopyContinuationToken { get; set; }
-
-    /// <summary>
-    /// Base64-encoded paging state for the change-feed replay
-    /// tail. Written by replay-phase workers. <c>null</c> means:
-    /// replay never advanced past the bulk handoff.
-    /// </summary>
-    public string? ReplayContinuationToken { get; set; }
+    public string? ContinuationToken { get; set; }
 
     /// <summary>
     /// True once the bulk drain for this range reached an empty
     /// page. On resume, completed ranges are skipped (offline) or
-    /// re-seeded directly into Replay (online).
+    /// re-seeded directly into Replay (online), reading
+    /// <see cref="ContinuationToken"/> as the replay anchor.
     /// </summary>
     public bool BulkCompleted { get; set; }
 }

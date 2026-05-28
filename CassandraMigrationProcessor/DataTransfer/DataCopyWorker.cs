@@ -166,11 +166,11 @@ internal class DataCopyWorker
     private static void MarkBulkDrained(Partition partition)
     {
         var resources = partition.Resources;
-        // Online: bulk drained, flip to replay. Persist the current
-        // paging state as the replay anchor so resume tails forward.
-        if (partition.MarkBulkCompleted())
+        // Online: bulk drained, flip to replay. The partition's
+        // current ContinuationToken IS the replay handoff anchor;
+        // HandoffToReplay just sets the BulkCompleted flag.
+        if (partition.HandoffToReplay())
             resources.IncrementBulkCompleted();
-        partition.SaveReplayCheckpoint(partition.LastPagingState);
 
         int drained = Interlocked.Increment(ref resources.BulkDrainedCount);
         if (drained >= resources.TotalFeedRanges)
@@ -201,17 +201,14 @@ internal class DataCopyWorker
 
     private static void SaveCheckpoint(Partition partition)
     {
-        var token = partition.GetResumeToken() ?? partition.LastPagingState;
-        if (partition.Phase == PartitionPhase.Replay)
-            partition.SaveReplayCheckpoint(token);
-        else
-            partition.SaveCopyCheckpoint(token);
+        partition.SaveCheckpoint(
+            partition.GetResumeToken() ?? partition.LastPagingState);
     }
 
     private static void MarkCompleted(Partition partition, PipelineContext ctx)
     {
         var resources = partition.Resources;
-        if (partition.MarkBulkCompleted())
+        if (partition.CompleteOffline())
             resources.IncrementBulkCompleted();
         if (resources.BulkCompletedCount >= resources.TotalFeedRanges)
         {

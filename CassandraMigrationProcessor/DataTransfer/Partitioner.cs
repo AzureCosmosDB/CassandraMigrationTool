@@ -85,20 +85,11 @@ internal class Partitioner
         int resumedCount = 0;
         foreach (var (range, state, phase) in pendingRanges)
         {
-            byte[]? pagingState = null;
-            if (phase == PartitionPhase.Replay)
-            {
-                if (!string.IsNullOrEmpty(state.ReplayContinuationToken))
-                    pagingState = Convert.FromBase64String(state.ReplayContinuationToken);
-                else if (!string.IsNullOrEmpty(state.CopyContinuationToken))
-                    pagingState = Convert.FromBase64String(state.CopyContinuationToken);
+            byte[]? pagingState = !string.IsNullOrEmpty(state.ContinuationToken)
+                ? Convert.FromBase64String(state.ContinuationToken)
+                : null;
+            if (pagingState != null || phase == PartitionPhase.Replay)
                 resumedCount++;
-            }
-            else if (!string.IsNullOrEmpty(state.CopyContinuationToken))
-            {
-                pagingState = Convert.FromBase64String(state.CopyContinuationToken);
-                resumedCount++;
-            }
             await partitions.SeedAsync(new Partition(state, pagingState, resources, phase));
         }
         if (resumedCount > 0)

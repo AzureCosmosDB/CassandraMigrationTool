@@ -109,32 +109,37 @@ internal class Partition
     // TableMigration is mutated in-place via the shared State
     // reference — no MigrationUnit dict round-trip.
 
-    /// <summary>Persist the bulk-copy paging state for this range.</summary>
-    public void SaveCopyCheckpoint(byte[]? token)
-    {
-        State.CopyContinuationToken = token == null
-            ? null
-            : Convert.ToBase64String(token);
-    }
-
-    /// <summary>Persist the change-feed replay paging state.</summary>
-    public void SaveReplayCheckpoint(byte[]? token)
+    /// <summary>Persist the paging state for this range. Same field
+    /// services bulk and replay because a partition is in exactly
+    /// one phase at a time.</summary>
+    public void SaveCheckpoint(byte[]? token)
     {
         if (token == null) return;
-        State.ReplayContinuationToken = Convert.ToBase64String(token);
+        State.ContinuationToken = Convert.ToBase64String(token);
     }
 
     /// <summary>
-    /// Mark this range as bulk-completed. Clears the bulk
-    /// continuation token so resume doesn't re-page the range.
-    /// Returns true if this call flipped the flag (first writer),
-    /// false if it was already set.
+    /// Online bulk → replay handoff. Sets <see cref="PartitionState.BulkCompleted"/>
+    /// while preserving the current <see cref="PartitionState.ContinuationToken"/>
+    /// as the replay anchor. Returns true if this call flipped the flag.
     /// </summary>
-    public bool MarkBulkCompleted()
+    public bool HandoffToReplay()
     {
         if (State.BulkCompleted) return false;
         State.BulkCompleted = true;
-        State.CopyContinuationToken = null;
+        return true;
+    }
+
+    /// <summary>
+    /// Offline final completion. Sets <see cref="PartitionState.BulkCompleted"/>
+    /// and clears <see cref="PartitionState.ContinuationToken"/> so resume
+    /// skips the range entirely. Returns true if this call flipped the flag.
+    /// </summary>
+    public bool CompleteOffline()
+    {
+        if (State.BulkCompleted) return false;
+        State.BulkCompleted = true;
+        State.ContinuationToken = null;
         return true;
     }
 }
