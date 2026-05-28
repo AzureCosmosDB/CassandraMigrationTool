@@ -166,26 +166,15 @@ internal class DataCopyWorker
     private static void MarkBulkDrained(Partition partition)
     {
         var resources = partition.Resources;
-        lock (resources.Ranges.Checkpoints)
-        {
-            resources.Ranges.Completed.Add(partition.FeedRange);
-        }
-        PersistFeedRangeContinuation(partition);
+        // Online: bulk drained, flip to replay. Persist the current
+        // paging state as the replay anchor so resume tails forward.
+        if (partition.MarkBulkCompleted())
+            resources.IncrementBulkCompleted();
+        partition.SaveReplayCheckpoint(partition.LastPagingState);
 
         int drained = Interlocked.Increment(ref resources.BulkDrainedCount);
-        if (drained >= resources.Ranges.FeedRanges.Count)
+        if (drained >= resources.TotalFeedRanges)
             resources.BulkDrainSignal.TrySetResult();
-    }
-
-    private static void PersistFeedRangeContinuation(Partition partition)
-    {
-        var token = partition.LastPagingState;
-        if (token == null) return;
-        var mu = partition.Resources.Tracker.MigrationUnit;
-        lock (mu.FeedRangeContinuationTokens)
-        {
-            mu.FeedRangeContinuationTokens[partition.FeedRange] = Convert.ToBase64String(token);
-        }
     }
 
     private void ScheduleCooldown(Partition partition, PipelineContext ctx)
@@ -212,29 +201,19 @@ internal class DataCopyWorker
 
     private static void SaveCheckpoint(Partition partition)
     {
-        var resources = partition.Resources;
-        lock (resources.Ranges.Checkpoints)
-        {
-            var token = partition.GetResumeToken();
-            if (token != null)
-                resources.Ranges.Checkpoints[partition.FeedRange] = Convert.ToBase64String(token);
-            else if (partition.LastPagingState != null)
-                resources.Ranges.Checkpoints[partition.FeedRange] = Convert.ToBase64String(partition.LastPagingState);
-        }
-
+        var token = partition.GetResumeToken() ?? partition.LastPagingState;
         if (partition.Phase == PartitionPhase.Replay)
-            PersistFeedRangeContinuation(partition);
+            partition.SaveReplayCheckpoint(token);
+        else
+            partition.SaveCopyCheckpoint(token);
     }
 
     private static void MarkCompleted(Partition partition, PipelineContext ctx)
     {
         var resources = partition.Resources;
-        lock (resources.Ranges.Checkpoints)
-        {
-            resources.Ranges.Checkpoints.Remove(partition.FeedRange);
-            resources.Ranges.Completed.Add(partition.FeedRange);
-        }
-        if (resources.Ranges.Completed.Count >= resources.Ranges.FeedRanges.Count)
+        if (partition.MarkBulkCompleted())
+            resources.IncrementBulkCompleted();
+        if (resources.BulkCompletedCount >= resources.TotalFeedRanges)
         {
             resources.BulkDrainSignal.TrySetResult();
         }

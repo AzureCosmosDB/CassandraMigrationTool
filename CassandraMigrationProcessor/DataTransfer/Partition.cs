@@ -1,4 +1,6 @@
+using System;
 using System.Collections.Generic;
+using CassandraMigrationProcessor.Models;
 
 namespace CassandraMigrationProcessor.DataTransfer;
 
@@ -12,17 +14,29 @@ internal enum PartitionPhase { Bulk, Replay }
 
 /// <summary>
 /// Represents a feed range partition with its in-flight checkpoint
-/// list. Uses LinkedList for clean node management.
+/// list. Uses LinkedList for clean node management. The partition
+/// owns its persisted checkpoint state via <see cref="State"/> so
+/// workers checkpoint through the partition directly (no round-trip
+/// to TableMigration's dicts).
 /// </summary>
 internal class Partition
 {
-    public string FeedRange { get; }
+    public string FeedRange => State.FeedRange;
     public bool IsExhausted { get; private set; }
     public byte[]? LastPagingState { get; private set; }
     public PartitionPhase Phase { get; private set; }
+
+    /// <summary>
+    /// Persisted per-feed-range state — bulk + replay checkpoints
+    /// and bulk-completed flag. Lives on
+    /// <see cref="TableMigration.Partitions"/> and is mutated
+    /// through this reference by the owning worker.
+    /// </summary>
+    public PartitionState State { get; }
+
     /// <summary>
     /// Per-table state for the table that owns this partition. Workers
-    /// resolve all per-table data (Tracker, Ranges, identifiers, columns,
+    /// resolve all per-table data (Tracker, identifiers, columns,
     /// drain signal) through this reference so a single shared worker
     /// pool can service partitions from any table.
     /// </summary>
@@ -31,9 +45,9 @@ internal class Partition
     private readonly LinkedList<WorkChunk> _chunks = new();
     private readonly object _lock = new();
 
-    public Partition(string feedRange, byte[]? initialPagingState, TableResources resources, PartitionPhase phase = PartitionPhase.Bulk)
+    public Partition(PartitionState state, byte[]? initialPagingState, TableResources resources, PartitionPhase phase = PartitionPhase.Bulk)
     {
-        FeedRange = feedRange;
+        State = state ?? throw new ArgumentNullException(nameof(state));
         LastPagingState = initialPagingState;
         Phase = phase;
         Resources = resources;
@@ -70,7 +84,6 @@ internal class Partition
         var chunk = new WorkChunk { ContinuationToken = continuationToken };
         lock (_lock)
         {
-            // Trim completed checkpoints from the front
             while (_chunks.First != null && _chunks.First.Value.IsCompleted)
                 _chunks.RemoveFirst();
 
@@ -89,5 +102,39 @@ internal class Partition
             }
             return _chunks.Last?.Value.ContinuationToken;
         }
+    }
+
+    // ── Checkpoint API ─────────────────────────────────────────
+    // Workers checkpoint through these methods. The dict on
+    // TableMigration is mutated in-place via the shared State
+    // reference — no MigrationUnit dict round-trip.
+
+    /// <summary>Persist the bulk-copy paging state for this range.</summary>
+    public void SaveCopyCheckpoint(byte[]? token)
+    {
+        State.CopyContinuationToken = token == null
+            ? null
+            : Convert.ToBase64String(token);
+    }
+
+    /// <summary>Persist the change-feed replay paging state.</summary>
+    public void SaveReplayCheckpoint(byte[]? token)
+    {
+        if (token == null) return;
+        State.ReplayContinuationToken = Convert.ToBase64String(token);
+    }
+
+    /// <summary>
+    /// Mark this range as bulk-completed. Clears the bulk
+    /// continuation token so resume doesn't re-page the range.
+    /// Returns true if this call flipped the flag (first writer),
+    /// false if it was already set.
+    /// </summary>
+    public bool MarkBulkCompleted()
+    {
+        if (State.BulkCompleted) return false;
+        State.BulkCompleted = true;
+        State.CopyContinuationToken = null;
+        return true;
     }
 }

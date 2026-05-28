@@ -22,14 +22,10 @@ internal record WorkerConfig(
     bool EnableReplay,
     int ReplayCooldownMs);
 
-/// <summary>Per-table feed-range bookkeeping owned by the table's
-/// <see cref="TableResources"/>.</summary>
-internal record RangeState(
-    HashSet<string> Completed,
-    Dictionary<string, string?> Checkpoints,
-    List<string> FeedRanges);
-
 /// <summary>
+/// Wires the job-wide configuration, partition channel, and control
+/// flags together for every worker.
+/// </summary>
 /// Job-level control flags shared by every worker: a fatal-error
 /// latch, a hook that cancels the job-wide CTS when fatal is tripped,
 /// and the collected per-worker outcomes. Per-table progress

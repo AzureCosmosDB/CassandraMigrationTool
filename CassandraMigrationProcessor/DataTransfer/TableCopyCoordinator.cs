@@ -239,13 +239,9 @@ internal sealed class TableCopyCoordinator : IDisposable
             $"{context.KeyspaceName}.{context.TableName}: {feedRanges.Count} feed range(s)",
             LogType.Info);
 
-        var ranges = new RangeState(
-            tableMigration.CompletedCopyFeedRanges,
-            tableMigration.CopyFeedRangeCheckpoints,
-            feedRanges);
-        var resources = new TableResources(context, columns, tracker, ranges);
+        var resources = new TableResources(context, columns, tracker, feedRanges.Count);
         bool allRangesComplete = await partitioner.SeedAsync(
-            resources, tableMigration, _pipeline.Context.Partitions,
+            resources, tableMigration, feedRanges, _pipeline.Context.Partitions,
             enableReplay: isOnline);
 
         if (allRangesComplete)
@@ -257,7 +253,7 @@ internal sealed class TableCopyCoordinator : IDisposable
 
         _migrationLog.WriteLine($"{context.KeyspaceName}.{context.TableName}: " +
             $"{(rowCount >= 0 ? $"{rowCount:N0} rows" : "count unavailable")}, " +
-            $"{resources.Ranges.FeedRanges.Count} feed range(s) seeded", LogType.Info);
+            $"{resources.TotalFeedRanges} feed range(s) seeded", LogType.Info);
 
         var stopwatch = Stopwatch.StartNew();
 

@@ -24,33 +24,49 @@ internal class Partitioner
     }
 
     /// <summary>
-    /// Seed every still-pending range from <paramref name="resources"/>
-    /// into <paramref name="partitions"/>. Returns <c>true</c> if there
-    /// was nothing to seed (every range already completed) — in that
-    /// case the caller can short-circuit. The table's
-    /// <see cref="TableResources.BulkDrainSignal"/> is tripped here
-    /// when there is no bulk work to do.
+    /// Seed every still-pending range from <paramref name="feedRanges"/>
+    /// into <paramref name="partitions"/>, allocating a
+    /// <see cref="PartitionState"/> on <paramref name="mu"/> for any
+    /// range that does not already have one. Returns <c>true</c> if
+    /// every range is already bulk-completed and there is nothing to
+    /// seed (offline-only) — in that case the caller can short-circuit.
     /// </summary>
     public async Task<bool> SeedAsync(
         TableResources resources,
         TableMigration mu,
+        List<string> feedRanges,
         PartitionManager partitions,
         bool enableReplay)
     {
         var spec = resources.Spec;
-        var feedRanges = resources.Ranges.FeedRanges;
-        var completed = mu.CompletedCopyFeedRanges;
-        var checkpoints = mu.CopyFeedRangeCheckpoints;
 
-        List<(string Range, PartitionPhase Phase)> pendingRanges;
-        lock (checkpoints)
+        // Ensure every range has a persisted state entry. Lock the dict
+        // because Partitioner.SeedAsync runs once per table on the
+        // coordinator, but the dict object is shared with hot-path
+        // writers via Partition.State references. Adds happen here only.
+        lock (mu.Partitions)
         {
-            pendingRanges = feedRanges
-                .Where(r => enableReplay || !completed.Contains(r))
-                .Select(r => (Range: r,
-                    Phase: completed.Contains(r) ? PartitionPhase.Replay : PartitionPhase.Bulk))
-                .ToList();
+            foreach (var range in feedRanges)
+            {
+                if (!mu.Partitions.ContainsKey(range))
+                    mu.Partitions[range] = new PartitionState { FeedRange = range };
+            }
         }
+
+        // Restore the bulk-completed counter on resume so PageWriter's
+        // ETA reads a correct "remaining ranges" count immediately.
+        int alreadyCompleted = mu.Partitions.Values.Count(p => p.BulkCompleted);
+        for (int i = 0; i < alreadyCompleted; i++)
+            resources.IncrementBulkCompleted();
+
+        var pendingRanges = feedRanges
+            .Select(r => (Range: r, State: mu.Partitions[r]))
+            .Where(t => enableReplay || !t.State.BulkCompleted)
+            .Select(t => (
+                t.Range,
+                t.State,
+                Phase: t.State.BulkCompleted ? PartitionPhase.Replay : PartitionPhase.Bulk))
+            .ToList();
 
         if (pendingRanges.Count == 0)
         {
@@ -63,37 +79,27 @@ internal class Partitioner
         int replayCount = pendingRanges.Count - bulkCount;
         _log.WriteLine(
             $"Pipeline: {bulkCount} bulk + {replayCount} replay range(s) for {spec.KeyspaceName}.{spec.TableName} " +
-            $"({completed.Count} previously bulk-completed)",
+            $"({alreadyCompleted} previously bulk-completed)",
             LogType.Info);
 
         int resumedCount = 0;
-        foreach (var (range, phase) in pendingRanges)
+        foreach (var (range, state, phase) in pendingRanges)
         {
             byte[]? pagingState = null;
             if (phase == PartitionPhase.Replay)
             {
-                lock (mu.FeedRangeContinuationTokens)
-                {
-                    if (mu.FeedRangeContinuationTokens.TryGetValue(range, out var cfToken)
-                        && !string.IsNullOrEmpty(cfToken))
-                    {
-                        pagingState = Convert.FromBase64String(cfToken);
-                    }
-                }
-                if (pagingState == null
-                    && checkpoints.TryGetValue(range, out var bulkToken)
-                    && bulkToken != null)
-                {
-                    pagingState = Convert.FromBase64String(bulkToken);
-                }
+                if (!string.IsNullOrEmpty(state.ReplayContinuationToken))
+                    pagingState = Convert.FromBase64String(state.ReplayContinuationToken);
+                else if (!string.IsNullOrEmpty(state.CopyContinuationToken))
+                    pagingState = Convert.FromBase64String(state.CopyContinuationToken);
                 resumedCount++;
             }
-            else if (checkpoints.TryGetValue(range, out var base64Token) && base64Token != null)
+            else if (!string.IsNullOrEmpty(state.CopyContinuationToken))
             {
-                pagingState = Convert.FromBase64String(base64Token);
+                pagingState = Convert.FromBase64String(state.CopyContinuationToken);
                 resumedCount++;
             }
-            await partitions.SeedAsync(new Partition(range, pagingState, resources, phase));
+            await partitions.SeedAsync(new Partition(state, pagingState, resources, phase));
         }
         if (resumedCount > 0)
             _log.WriteLine($"Resuming {resumedCount}/{pendingRanges.Count} ranges from checkpoint for {spec.KeyspaceName}.{spec.TableName}", LogType.Info);

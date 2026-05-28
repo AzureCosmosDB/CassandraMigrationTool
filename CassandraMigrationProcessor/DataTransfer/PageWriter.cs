@@ -119,8 +119,8 @@ internal sealed class PageWriter : IDisposable
             writeTasks.Add(strategy.WriteRowAsync(rows[i], onFatal, counters, i, _ct));
         }
 
-        resources.Tracker.SetPipelineState(resources.Ranges.FeedRanges.Count
-                - resources.Ranges.Completed.Count,
+        resources.Tracker.SetPipelineState(resources.TotalFeedRanges
+                - resources.BulkCompletedCount,
             _pageSize);
         await Task.WhenAll(writeTasks);
 

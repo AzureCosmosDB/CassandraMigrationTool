@@ -69,34 +69,22 @@ public class TableMigration : TableMigrationSummary
     public long SourceCountDuringCopy { get; set; }
 
     /// <summary>
-    /// Per-feed-range copy checkpoint. Key = feed range JSON,
-    /// Value = base64-encoded paging state. null value means
-    /// the range is fully copied. Persisted periodically so
-    /// resume can skip completed ranges and continue from
-    /// the last checkpoint of in-progress ranges.
+    /// Per-feed-range partition state — bulk checkpoint,
+    /// replay checkpoint, and bulk-completed flag — keyed by
+    /// feed range JSON. Replaces the three parallel dicts that
+    /// used to live here (CopyFeedRangeCheckpoints +
+    /// CompletedCopyFeedRanges + FeedRangeContinuationTokens).
+    /// Each runtime <see cref="DataTransfer.Partition"/> holds a
+    /// reference to its <see cref="PartitionState"/> entry, so
+    /// workers checkpoint through the partition directly instead
+    /// of reaching back through the MigrationUnit dicts.
     /// </summary>
-    public Dictionary<string, string?> CopyFeedRangeCheckpoints { get; set; } = new();
-
-    /// <summary>
-    /// Set of feed ranges whose bulk copy completed fully.
-    /// On resume, these ranges are skipped entirely.
-    /// </summary>
-    public HashSet<string> CompletedCopyFeedRanges { get; set; } = new();
+    public Dictionary<string, PartitionState> Partitions { get; set; } = new();
 
     // ── Change Feed State ──
 
     public DateTime? ChangeFeedStartedOn { get; set; }
     public string? ChangeFeedContinuationToken { get; set; }
-
-    /// <summary>
-    /// Per-feed-range continuation tokens for parallel
-    /// change feed. Key = feed range JSON string,
-    /// Value = base64-encoded paging state.
-    /// Used when feed ranges > 1 for a table.
-    /// </summary>
-    public Dictionary<string, string>
-        FeedRangeContinuationTokens
-    { get; set; } = new();
 
     /// <summary>
     /// Change feed start time captured BEFORE bulk copy
