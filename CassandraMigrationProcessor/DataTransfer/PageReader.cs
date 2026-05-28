@@ -11,6 +11,15 @@ using System.Threading;
 using System.Threading.Tasks;
 
 namespace CassandraMigrationProcessor.DataTransfer;
+
+/// <summary>
+/// Tunable knobs for a single <see cref="PageReader"/>: how many rows
+/// to pull per page and how many times to retry a transient read
+/// failure. Carried as a record so the caller passes one capability
+/// instead of two loose ints.
+/// </summary>
+internal record ReaderConfig(int PageSize, int MaxReadRetries);
+
 /// <summary>
 /// Reads a single page from the source Cassandra cluster. The reader's
 /// source session is keyspace-agnostic; per-table state (columns,
@@ -31,20 +40,20 @@ internal class PageReader : IDisposable
     private const int ReadTimeoutMs = 60_000;
     private const int RetryDelayMs = 5000;
 
-    private PageReader(WorkerLog log, ISessionFactory sessionFactory, int pageSize, int maxReadRetries, CancellationToken cancellationToken)
+    private PageReader(WorkerLog log, ISessionFactory sessionFactory, ReaderConfig config, CancellationToken cancellationToken)
     {
         _log = log;
         _ct = cancellationToken;
-        _pageSize = pageSize;
-        _maxReadRetries = maxReadRetries;
+        _pageSize = config.PageSize;
+        _maxReadRetries = config.MaxReadRetries;
         _sourceSession = sessionFactory.CreateSourceSession();
     }
 
     public static Task<PageReader> CreateAsync(WorkerLog log,
-        ISessionFactory sessionFactory, int pageSize, int maxReadRetries,
+        ISessionFactory sessionFactory, ReaderConfig config,
         CancellationToken cancellationToken)
     {
-        return Task.FromResult(new PageReader(log, sessionFactory, pageSize, maxReadRetries, cancellationToken));
+        return Task.FromResult(new PageReader(log, sessionFactory, config, cancellationToken));
     }
 
     public void Dispose() => MigrationUtilities.SafeDisposeSession(_sourceSession, "PageReader source session");

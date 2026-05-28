@@ -68,14 +68,13 @@ internal sealed class JobPipeline : IDisposable
 
     public void Start()
     {
-        int pageSize = _pipelineConfig.PageSize;
-        int maxReadRetries = _pipelineConfig.MaxReadRetries;
-        int maxWriteRetries = _pipelineConfig.MaxWriteRetries;
+        var readerConfig = new ReaderConfig(_pipelineConfig.PageSize, _pipelineConfig.MaxReadRetries);
+        var writerConfig = new WriterConfig(_pipelineConfig.PageSize, _pipelineConfig.MaxWriteRetries);
         _log.WriteLine(
             $"Job pipeline: {_pipelineConfig.WorkerCount} shared workers " +
-            $"(replay={Context.EnableReplay}, page size={pageSize})",
+            $"(replay={Context.EnableReplay}, page size={readerConfig.PageSize})",
             LogType.Info);
-        _pool.Start(workerId => new DataCopyWorker(_log, _cts.Token, workerId, pageSize, maxReadRetries, maxWriteRetries).RunAsync(Context));
+        _pool.Start(workerId => new DataCopyWorker(_log, _cts.Token, workerId, readerConfig, writerConfig).RunAsync(Context));
     }
 
     /// <summary>Completes the partition pool; workers will drain and exit.</summary>

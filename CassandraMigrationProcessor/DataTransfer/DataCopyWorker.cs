@@ -29,19 +29,17 @@ internal class DataCopyWorker
 {
     private readonly CancellationToken _ct;
     private readonly WorkerLog _workerLog;
-    private readonly int _pageSize;
-    private readonly int _maxReadRetries;
-    private readonly int _maxWriteRetries;
+    private readonly ReaderConfig _readerConfig;
+    private readonly WriterConfig _writerConfig;
 
     public DataCopyWorker(MigrationLog log, CancellationToken cancellationToken, int workerId,
-        int pageSize, int maxReadRetries, int maxWriteRetries)
+        ReaderConfig readerConfig, WriterConfig writerConfig)
     {
         ArgumentNullException.ThrowIfNull(log);
         _ct = cancellationToken;
         _workerLog = new WorkerLog(log, workerId);
-        _pageSize = pageSize;
-        _maxReadRetries = maxReadRetries;
-        _maxWriteRetries = maxWriteRetries;
+        _readerConfig = readerConfig;
+        _writerConfig = writerConfig;
     }
 
     public async Task RunAsync(PipelineContext ctx)
@@ -51,8 +49,8 @@ internal class DataCopyWorker
         Partition? current = null;
         try
         {
-            reader = await PageReader.CreateAsync(_workerLog, ctx.SessionFactory, _pageSize, _maxReadRetries, _ct);
-            writer = await PageWriter.CreateAsync(_workerLog, ctx.SessionFactory, _pageSize, _maxWriteRetries, _ct);
+            reader = await PageReader.CreateAsync(_workerLog, ctx.SessionFactory, _readerConfig, _ct);
+            writer = await PageWriter.CreateAsync(_workerLog, ctx.SessionFactory, _writerConfig, _ct);
 
             while (!_ct.IsCancellationRequested
                 && Volatile.Read(ref ctx.Flags.FatalErrorFlag) == 0

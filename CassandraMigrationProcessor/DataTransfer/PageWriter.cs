@@ -13,6 +13,15 @@ using System.Threading.Tasks;
 namespace CassandraMigrationProcessor.DataTransfer;
 
 /// <summary>
+/// Tunable knobs for a single <see cref="PageWriter"/>: the page size
+/// reported into <see cref="CopyProgressTracker.SetPipelineState"/> and
+/// the per-row write retry budget handed to the row write strategies.
+/// Carried as a record so the caller passes one capability instead of
+/// two loose ints.
+/// </summary>
+internal record WriterConfig(int PageSize, int MaxWriteRetries);
+
+/// <summary>
 /// Writes extracted rows to the target cluster. The target session is
 /// keyspace-agnostic; per-table prepared statements and write strategies
 /// are lazily built and cached per table on first encounter. A single
@@ -32,20 +41,20 @@ internal sealed class PageWriter : IDisposable
     private readonly ConcurrentDictionary<string, Task> _udtRegistrations = new();
 
     private PageWriter(WorkerLog log, ISessionFactory sessionFactory, ISession targetSession,
-        int pageSize, int maxWriteRetries, CancellationToken cancellationToken)
+        WriterConfig config, CancellationToken cancellationToken)
     {
         _log = log;
         _ct = cancellationToken;
         _sessionFactory = sessionFactory;
-        _pageSize = pageSize;
-        _maxWriteRetries = maxWriteRetries;
+        _pageSize = config.PageSize;
+        _maxWriteRetries = config.MaxWriteRetries;
         _targetSession = targetSession;
     }
 
-    public static async Task<PageWriter> CreateAsync(WorkerLog log, ISessionFactory sessionFactory, int pageSize, int maxWriteRetries, CancellationToken cancellationToken)
+    public static async Task<PageWriter> CreateAsync(WorkerLog log, ISessionFactory sessionFactory, WriterConfig config, CancellationToken cancellationToken)
     {
         var targetSession = await sessionFactory.CreateTargetSessionAsync();
-        return new PageWriter(log, sessionFactory, targetSession, pageSize, maxWriteRetries, cancellationToken);
+        return new PageWriter(log, sessionFactory, targetSession, config, cancellationToken);
     }
 
     public void Dispose() => MigrationUtilities.SafeDisposeSession(_targetSession, "PageWriter target session");

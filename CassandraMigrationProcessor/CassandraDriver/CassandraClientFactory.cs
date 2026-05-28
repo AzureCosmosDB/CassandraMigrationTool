@@ -1,8 +1,5 @@
 using Cassandra;
-using System;
 using System.Security.Authentication;
-using System.Threading;
-using System.Threading.Tasks;
 using CassandraMigrationProcessor.Infrastructure;
 using CassandraMigrationProcessor.Models;
 namespace CassandraMigrationProcessor.CassandraDriver;
@@ -89,10 +86,10 @@ public static class CassandraClientFactory
     /// </summary>
     internal static bool IsRetryableException(Exception ex)
     {
-        if (ex is global::Cassandra.OverloadedException)
+        if (ex is OverloadedException)
             return true;
 
-        var msg = ex.Message ?? string.Empty;
+        var msg = ex.Message;
         var inner = ex.InnerException?.Message ?? string.Empty;
         var fullMsg = msg + " " + inner;
 
@@ -143,9 +140,7 @@ public static class CassandraClientFactory
     /// Create a session to an OSS Apache Cassandra cluster.
     /// Tries SSL first, falls back to plain if SSL fails.
     /// </summary>
-    public static ISession CreateTargetSession(
-        MigrationLog MigrationLog,
-        string contactPoint,
+    private static ISession CreateTargetSession(string contactPoint,
         int port,
         string username,
         string password,
@@ -346,9 +341,7 @@ public static class CassandraClientFactory
             }
         }
 
-        return CreateTargetSession(
-            MigrationLog,
-            job.TargetContactPoint,
+        return CreateTargetSession(job.TargetContactPoint,
             job.TargetPort,
             username,
             password,
