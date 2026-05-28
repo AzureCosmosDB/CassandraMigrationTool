@@ -37,12 +37,11 @@ internal sealed class PartitionManager
         => _channel.Writer.WriteAsync(partition, cancellationToken);
 
     /// <summary>
-    /// Worker recycle path used by the synchronous in-flight handoff.
-    /// Recycling MUST succeed during normal operation; the only path
-    /// that throws is when the pool was already completed (shutdown
-    /// or fatal cascade), in which case the caller is about to exit
-    /// on its next loop iteration anyway. Throwing surfaces the
-    /// contract violation rather than silently losing the partition.
+    /// Recycle a partition back into the pool for re-pickup by any worker.
+    /// Throws if the pool was already completed — recycling is only valid
+    /// while the pool is open. Treating "pool closed" as a silent drop
+    /// would lose the partition (its checkpoint may not yet cover the
+    /// full feed range), so callers must observe the exception.
     /// </summary>
     public void Recycle(Partition partition)
     {
@@ -50,18 +49,6 @@ internal sealed class PartitionManager
             throw new InvalidOperationException(
                 "PartitionManager.Recycle: pool is completed; recycle is only valid while the pool is open.");
     }
-
-    /// <summary>
-    /// Best-effort recycle for deferred paths (e.g. replay cooldown
-    /// callbacks) that legitimately race with pool completion at
-    /// shutdown. Returns false instead of throwing when the channel
-    /// is closed so the caller does not need an empty catch around
-    /// an expected condition. False is only ever returned when the
-    /// channel writer has been completed — for any other failure
-    /// the underlying exception still propagates.
-    /// </summary>
-    public bool TryRecycle(Partition partition)
-        => _channel.Writer.TryWrite(partition);
 
     /// <summary>
     /// Worker pull. Blocks until a partition is available or the channel is

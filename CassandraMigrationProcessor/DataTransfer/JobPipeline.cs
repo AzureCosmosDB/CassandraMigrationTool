@@ -11,12 +11,13 @@ namespace CassandraMigrationProcessor.DataTransfer;
 /// channel; workers pick up any partition regardless of source table.
 /// Lifetime: created at job start, disposed on job shutdown.
 /// </summary>
-internal sealed class JobPipeline : IDisposable
+internal sealed class JobPipeline : IDisposable, IAsyncDisposable
 {
     private readonly MigrationLog _log;
     private readonly PipelineConfig _pipelineConfig;
     private readonly CancellationTokenSource _cts;
     private readonly WorkerPool _workerPool;
+    private readonly CooldownScheduler _cooldown;
     public PipelineContext Context { get; }
 
     public JobPipeline(MigrationLog log, Job job, PipelineConfig pipelineConfig, TokenRefreshManager? tokenRefreshManager, CancellationToken externalToken)
@@ -31,6 +32,7 @@ internal sealed class JobPipeline : IDisposable
         var partitions = new PartitionManager();
         var readerConfig = new ReaderConfig(pipelineConfig.PageSize, pipelineConfig.MaxReadRetries);
         var writerConfig = new WriterConfig(pipelineConfig.MaxWriteRetries);
+        _cooldown = new CooldownScheduler(log, partitions, pipelineConfig.ChangeFeedPollIntervalMs, _cts.Token);
 
         Context = new PipelineContext(
             partitions,
@@ -38,7 +40,7 @@ internal sealed class JobPipeline : IDisposable
             readerConfig,
             writerConfig,
             EnableReplay: enableReplay,
-            ReplayCooldownMs: pipelineConfig.ChangeFeedPollIntervalMs,
+            Cooldown: _cooldown,
             new JobControlFlags());
 
         // Wire fatal trip into our CTS so coordinators waiting on
@@ -90,6 +92,16 @@ internal sealed class JobPipeline : IDisposable
 
     public void Dispose()
     {
+        DisposeAsync().AsTask().GetAwaiter().GetResult();
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        // Stop the cooldown scheduler BEFORE we cancel/dispose so any
+        // queued partitions are surfaced (logged) rather than vanishing
+        // inside a torn-down task.
+        await _cooldown.DisposeAsync().ConfigureAwait(false);
+
         // Dispose can race with the fatal-shutdown wiring above. Only
         // ObjectDisposedException is expected here (double-dispose);
         // anything else should surface.

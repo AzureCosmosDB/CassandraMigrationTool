@@ -164,28 +164,11 @@ internal class DataCopyWorker
 
     private void ScheduleCooldown(Partition partition, PipelineContext ctx)
     {
-        int cooldownMs = ctx.ReplayCooldownMs;
-        _ = Task.Run(async () =>
-        {
-            try { await Task.Delay(cooldownMs, _ct); }
-            catch (OperationCanceledException) { return; }
-
-            if (_ct.IsCancellationRequested
-                || Volatile.Read(ref ctx.Flags.FatalErrorFlag) != 0
-                || MigrationJobContext.Instance.ControlledPauseRequested)
-                return;
-
-            // Cooldown is best-effort: if the pool was completed between the
-            // delay starting and ending (clean shutdown or fatal cascade),
-            // dropping the deferred recycle is the correct behaviour — the
-            // job is winding down anyway. TryRecycle returns false on a
-            // closed channel so we don't need to swallow an exception just
-            // to express "expected during shutdown".
-            if (!ctx.Partitions.TryRecycle(partition))
-                _workerLog.WriteLine(
-                    $"Cooldown recycle skipped for {partition.FullTableName}/{partition.FeedRange}: pool closed (shutdown).",
-                    LogType.Info);
-        }, _ct);
+        // Hand the partition to the pipeline-owned cooldown scheduler.
+        // The worker returns to the pool immediately — no Task.Run, no
+        // delay held inside this worker. The scheduler is the single
+        // owner of in-flight cooldowns and is drained on shutdown.
+        ctx.Cooldown.Schedule(partition);
     }
 
     private static void SaveCheckpoint(Partition partition)

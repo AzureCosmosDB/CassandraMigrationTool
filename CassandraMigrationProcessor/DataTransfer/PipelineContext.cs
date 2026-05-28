@@ -70,5 +70,5 @@ internal record PipelineContext(
     ReaderConfig ReaderConfig,
     WriterConfig WriterConfig,
     bool EnableReplay,
-    int ReplayCooldownMs,
+    CooldownScheduler Cooldown,
     JobControlFlags Flags);
