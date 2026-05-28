@@ -166,19 +166,15 @@ public class MigrationJobContext
 
     private string ReadConfig(IConfiguration configuration)
     {
-        try
-        {
-            var path = configuration["StateStore:ConnectionStringOrPath"];
-            var appId = configuration["StateStore:AppID"];
-            AppId = appId;
-            DataDirectoryResolver.SetAppId(appId);
-            return path ?? string.Empty;
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"[WARN] Initialize config read failed: {ex.Message}");
-            return string.Empty;
-        }
+        // Configuration access failure indicates a misconfigured host
+        // (missing IConfiguration provider, etc.). Silently falling back
+        // to an empty path would point persistence at the wrong store
+        // and let resume target the wrong job state. Fail fast instead.
+        var path = configuration["StateStore:ConnectionStringOrPath"];
+        var appId = configuration["StateStore:AppID"];
+        AppId = appId;
+        DataDirectoryResolver.SetAppId(appId);
+        return path ?? string.Empty;
     }
 
     private void InitializePersistence(string stateStoreCSorPath)

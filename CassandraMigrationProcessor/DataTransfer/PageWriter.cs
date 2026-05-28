@@ -77,7 +77,11 @@ internal sealed class PageWriter : IDisposable
             }
             catch (Exception ex)
             {
-                _log.WriteLine($"UDT mapping registration on target failed for {ks}: {ex.Message}", LogType.Warning);
+                // Do NOT swallow: missing UDT mapping on the target makes
+                // the driver serialize fields incorrectly. Fail fast so
+                // the row never reaches the wire mis-shaped.
+                _log.WriteLine($"FATAL: UDT mapping registration on target failed for {ks}: {ex.Message}", LogType.Error);
+                throw;
             }
             finally
             {

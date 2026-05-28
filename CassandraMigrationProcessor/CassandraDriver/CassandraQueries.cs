@@ -139,10 +139,15 @@ public static class CassandraQueries
                     ranges.Add(range);
             }
         }
-        catch (Exception ex)
+        catch (InvalidQueryException ex)
         {
-            verboseLog?.Invoke($"GetFeedRanges error: {ex.Message}");
+            // Expected on non-Cosmos clusters where system_cosmos.feedranges
+            // does not exist. Caller falls back to token-range partitioning.
+            verboseLog?.Invoke($"GetFeedRanges: system table unavailable ({ex.Message})");
         }
+        // All other exceptions (timeout, auth, NoHost, etc.) must propagate.
+        // Returning an empty list silently would cause the table to be
+        // marked complete with zero rows copied.
         return ranges;
     }
 

@@ -63,7 +63,12 @@ internal class PageReader : IDisposable
             }
             catch (Exception ex)
             {
-                _log.WriteLine($"UDT mapping registration on source failed for {ks}: {ex.Message}", LogType.Warning);
+                // Do NOT swallow: UDT mapping is required for correct row
+                // decoding. Surfacing as fatal aborts the worker via the
+                // outer catch and stops the job before silently emitting
+                // mis-shaped rows.
+                _log.WriteLine($"FATAL: UDT mapping registration on source failed for {ks}: {ex.Message}", LogType.Error);
+                throw;
             }
         });
     }

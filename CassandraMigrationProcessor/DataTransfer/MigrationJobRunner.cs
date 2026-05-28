@@ -152,6 +152,18 @@ public class MigrationJobRunner
                 _log.WriteLine($"Table retry {attempt} for {mu.KeyspaceName}.{mu.TableName}: {ex.Message}", LogType.Warning);
                 await Task.Delay(delayMs, token);
             }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                // Non-retryable, or retryable but final attempt. Record the
+                // unit-level failure and stop retrying this table. Other
+                // tables in the Parallel.ForEachAsync continue running.
+                HandleMigrationUnitError(mu, ex);
+                return;
+            }
         }
     }
 
@@ -226,10 +238,6 @@ public class MigrationJobRunner
             MigrationJobContext.Instance.SaveMigrationUnit(mu, true);
             await RunCopyForUnitAsync(job, config, mu, cancellationToken);
             MigrationJobContext.Instance.SaveMigrationUnit(mu, true);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            HandleMigrationUnitError(mu, ex);
         }
         finally
         {
