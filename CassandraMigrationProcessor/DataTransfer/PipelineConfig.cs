@@ -27,8 +27,8 @@ public record PipelineConfig(
         // compute budget. Intentionally independent of job.ParallelThreads —
         // the pool is shared across all tables, so dividing by table-fanout
         // would shrink total throughput rather than partition it.
-        int workerCount = job.MaxFeedRangeParallelism > 0
-            ? job.MaxFeedRangeParallelism
+        int workerCount = job.WorkerCount > 0
+            ? job.WorkerCount
             : Math.Max(MigrationDefaults.MinWorkers,
                 Environment.ProcessorCount * MigrationDefaults.WorkerMultiplier);
 
