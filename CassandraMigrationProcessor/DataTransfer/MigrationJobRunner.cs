@@ -416,7 +416,9 @@ public class MigrationJobRunner
 
         MigrationJobContext.Instance.SaveMigrationUnit(mu, true);
         await RunCopyForUnitAsync(job, mu, partitioning, cancellationToken);
-        MigrationJobContext.Instance.SaveMigrationUnit(mu, true);
+        // Note: TableCopyCoordinator already flushes the unit when the
+        // copy completes successfully; cancel/fault paths propagate
+        // before we'd save here. No post-save needed.
     }
 
     /// <summary>
