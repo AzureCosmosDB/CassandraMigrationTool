@@ -181,9 +181,11 @@ internal class DataCopyWorker
     {
         try
         {
-            if (await ctx.PartitionPool.Reader.WaitToReadAsync(_ct))
+            while (await ctx.PartitionPool.Reader.WaitToReadAsync(_ct))
+            {
                 if (ctx.PartitionPool.Reader.TryRead(out var p))
                     return p;
+            }
         }
         catch (OperationCanceledException) { }
         return null;
