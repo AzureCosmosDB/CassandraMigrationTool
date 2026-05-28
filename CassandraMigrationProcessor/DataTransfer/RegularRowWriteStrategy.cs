@@ -72,7 +72,7 @@ internal sealed class RegularRowWriteStrategy : IRowWriteStrategy
         return _preparedInsert.Bind(bindValues);
     }
 
-    public Task WriteRowAsync(object[] sourceRow, Action onFatal, WriteCounters counters, int rowIndex, CancellationToken cancellationToken)
+    public Task<WriteOutcome> WriteRowAsync(object[] sourceRow, WriteCounters counters, int rowIndex, CancellationToken cancellationToken)
     {
         var bound = BindRow(sourceRow);
         bound.SetReadTimeoutMillis(RowWriteRetry.WriteTimeoutMs);
@@ -82,7 +82,7 @@ internal sealed class RegularRowWriteStrategy : IRowWriteStrategy
             attempt: () => _targetSession.ExecuteAsync(bound).WaitAsync(cancellationToken),
             policy: _retryPolicy,
             log: _log, rowIndex: rowIndex, rowKind: "Row",
-            onFatal: onFatal, counters: counters,
+            counters: counters,
             cancellationToken: cancellationToken);
     }
 }

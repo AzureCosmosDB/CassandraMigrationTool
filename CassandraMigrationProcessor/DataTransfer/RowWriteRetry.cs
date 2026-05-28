@@ -19,13 +19,12 @@ internal static class RowWriteRetry
 {
     public const int WriteTimeoutMs = 60_000;
 
-    public static async Task ExecuteAsync(
+    public static async Task<WriteOutcome> ExecuteAsync(
         Func<Task> attempt,
         RetryPolicy policy,
         WorkerLog log,
         int rowIndex,
         string rowKind,
-        Action onFatal,
         WriteCounters counters,
         CancellationToken cancellationToken)
     {
@@ -39,7 +38,7 @@ internal static class RowWriteRetry
                 long elapsed = (Stopwatch.GetTimestamp() - start) * 1000 / Stopwatch.Frequency;
                 Interlocked.Add(ref counters.LatencySum, elapsed);
                 Interlocked.Increment(ref counters.Done);
-                return;
+                return WriteOutcome.Success;
             }
             catch (OperationCanceledException)
             {
@@ -51,9 +50,8 @@ internal static class RowWriteRetry
                 {
                     log.WriteLine($"FATAL {rowKind} {rowIndex}: {ex.GetType().Name}: {ex.Message}",
                         LogType.Error);
-                    onFatal();
                     Interlocked.Increment(ref counters.Failed);
-                    return;
+                    return WriteOutcome.Fatal;
                 }
 
                 if (ExceptionClassifier.IsTransient(ex) && n < policy.MaxAttempts)
@@ -66,12 +64,11 @@ internal static class RowWriteRetry
                 log.WriteLine($"{rowKind} {rowIndex} FAILED after {n} attempt(s): {ex.GetType().Name}: {ex.Message}",
                     LogType.Error);
 
-                if (!ExceptionClassifier.IsTransient(ex))
-                {
-                    onFatal();
-                }
-                return;
+                return ExceptionClassifier.IsTransient(ex)
+                    ? WriteOutcome.Failed
+                    : WriteOutcome.Fatal;
             }
         }
+        return WriteOutcome.Failed;
     }
 }

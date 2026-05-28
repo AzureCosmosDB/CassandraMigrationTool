@@ -88,13 +88,13 @@ internal sealed class CounterRowWriteStrategy : IRowWriteStrategy
             retryPolicy, counterBindCount, targetSelectByPk);
     }
 
-    public Task WriteRowAsync(object[] sourceRow, Action onFatal, WriteCounters counters, int rowIndex, CancellationToken cancellationToken)
+    public Task<WriteOutcome> WriteRowAsync(object[] sourceRow, WriteCounters counters, int rowIndex, CancellationToken cancellationToken)
     {
         return RowWriteRetry.ExecuteAsync(
             attempt: () => ReadModifyWriteAsync(sourceRow, cancellationToken),
             policy: _retryPolicy,
             log: _log, rowIndex: rowIndex, rowKind: "Counter row",
-            onFatal: onFatal, counters: counters,
+            counters: counters,
             cancellationToken: cancellationToken);
     }
 

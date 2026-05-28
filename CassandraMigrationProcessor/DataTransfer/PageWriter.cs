@@ -113,8 +113,7 @@ internal sealed class PageWriter : IDisposable
 
         var stopwatch = Stopwatch.StartNew();
         var counters = new WriteCounters();
-        var writeTasks = new List<Task>(rows.Count);
-        Action onFatal = () => ctx.Flags.TripFatal();
+        var writeTasks = new List<Task<WriteOutcome>>(rows.Count);
 
         for (int i = 0; i < rows.Count; i++)
         {
@@ -122,10 +121,12 @@ internal sealed class PageWriter : IDisposable
                 || Volatile.Read(ref ctx.Flags.FatalErrorFlag) != 0)
                 break;
 
-            writeTasks.Add(strategy.WriteRowAsync(rows[i], onFatal, counters, i, _ct));
+            writeTasks.Add(strategy.WriteRowAsync(rows[i], counters, i, _ct));
         }
 
-        await Task.WhenAll(writeTasks);
+        var outcomes = await Task.WhenAll(writeTasks);
+        if (Array.IndexOf(outcomes, WriteOutcome.Fatal) >= 0)
+            ctx.Flags.TripFatal();
 
         if (counters.Failed == 0) workChunk.IsCompleted = true;
         else
