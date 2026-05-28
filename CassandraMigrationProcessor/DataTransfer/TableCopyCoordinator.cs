@@ -329,7 +329,7 @@ internal sealed class TableCopyCoordinator : IDisposable
     public void Dispose()
     {
         _cts?.Dispose();
-        MigrationUtilities.SafeDispose(_target, "TableCopyCoordinator target session");
-        MigrationUtilities.SafeDispose(_source, "TableCopyCoordinator source session");
+        MigrationUtilities.SafeDisposeSession(_target, "TableCopyCoordinator target session");
+        MigrationUtilities.SafeDisposeSession(_source, "TableCopyCoordinator source session");
     }
 }

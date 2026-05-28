@@ -280,7 +280,7 @@ public class MigrationJobRunner
             MigrationJobContext.Instance.SaveMigrationUnit(mu, true);
         }
 
-        using var targetSession = await CassandraClientFactory.CreateTargetSessionAsync(_log, job, string.Empty);
+        var targetSession = await CassandraClientFactory.CreateTargetSessionAsync(_log, job, string.Empty);
         // Keyspace-agnostic source session: SchemaManager queries hit system_schema with
         // parameterized keyspace_name and all data CQL is fully qualified, so we avoid the
         // extra USE keyspace round trip and per-keyspace metadata refresh.
@@ -303,7 +303,8 @@ public class MigrationJobRunner
         }
         finally
         {
-            MigrationUtilities.SafeDispose(sourceSession, "ProvisionTargetSchemaAsync source session");
+            MigrationUtilities.SafeDisposeSession(sourceSession, "ProvisionTargetSchemaAsync source session");
+            MigrationUtilities.SafeDisposeSession(targetSession, "ProvisionTargetSchemaAsync target session");
         }
     }
 

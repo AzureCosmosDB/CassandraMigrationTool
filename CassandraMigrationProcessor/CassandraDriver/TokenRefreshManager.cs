@@ -197,7 +197,7 @@ public class TokenRefreshManager : IDisposable
                         _lastSourceUsername ?? string.Empty,
                         freshToken,
                         _lastSourceKeyspace ?? string.Empty);
-                    MigrationUtilities.SafeDispose(oldSession, "TokenRefresh old session");
+                    MigrationUtilities.SafeDisposeSession(oldSession, "TokenRefresh old session");
                 }
 
                 // Schedule next refresh

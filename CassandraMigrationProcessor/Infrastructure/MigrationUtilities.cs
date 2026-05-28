@@ -66,6 +66,23 @@ public static class MigrationUtilities
     }
 
     /// <summary>
+    /// Disposes a Cassandra session AND its owning Cluster. The driver's
+    /// connection pool is owned by Cluster, not Session — disposing only
+    /// the session leaks sockets and queues. Calling Cluster.Dispose()
+    /// shuts down the pool and disposes every session it owns, so we do
+    /// not separately call session.Dispose() here. Safe to pass null.
+    /// </summary>
+    public static void SafeDisposeSession(Cassandra.ISession? session, string name)
+    {
+        if (session == null) return;
+        try { session.Cluster?.Dispose(); }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[WARN] {name} cluster dispose failed: {ex.Message}");
+        }
+    }
+
+    /// <summary>
     /// Executes an action, returning a fallback on failure.
     /// Shared helper for the repeated try/catch-warn-return pattern.
     /// </summary>

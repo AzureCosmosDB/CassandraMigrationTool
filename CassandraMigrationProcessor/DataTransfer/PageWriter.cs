@@ -48,7 +48,7 @@ internal sealed class PageWriter : IDisposable
         return new PageWriter(log, config, targetSession, pageSize, maxWriteRetries, cancellationToken);
     }
 
-    public void Dispose() => MigrationUtilities.SafeDispose(_targetSession, "PageWriter target session");
+    public void Dispose() => MigrationUtilities.SafeDisposeSession(_targetSession, "PageWriter target session");
 
     private Task<IRowWriteStrategy> GetStrategyAsync(TableResources resources)
     {
@@ -86,7 +86,7 @@ internal sealed class PageWriter : IDisposable
             finally
             {
                 if (sourceSession != null)
-                    MigrationUtilities.SafeDispose(sourceSession, "PageWriter UDT discovery session");
+                    MigrationUtilities.SafeDisposeSession(sourceSession, "PageWriter UDT discovery session");
             }
         });
     }

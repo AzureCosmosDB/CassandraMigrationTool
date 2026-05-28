@@ -337,8 +337,9 @@ public class JobManager
                 // Connect to source and list all tables in this keyspace
                 try
                 {
-                    using (var session = CassandraMigrationProcessor.CassandraDriver.CassandraClientFactory
-                        .CreateSourceSession(_log, job, keyspace))
+                    var session = CassandraMigrationProcessor.CassandraDriver.CassandraClientFactory
+                        .CreateSourceSession(_log, job, keyspace);
+                    try
                     {
                         var tables = await CassandraMigrationProcessor.CassandraDriver.CassandraQueries
                             .ListTablesAsync(session, keyspace);
@@ -378,6 +379,11 @@ public class JobManager
                             mu.SourceStatus = TableStatus.OK;
                             expandedUnits.Add(mu);
                         }
+                    }
+                    finally
+                    {
+                        CassandraMigrationProcessor.Infrastructure.MigrationUtilities
+                            .SafeDisposeSession(session, $"JobManager table discovery session ({keyspace})");
                     }
                 }
                 catch (Exception ex)

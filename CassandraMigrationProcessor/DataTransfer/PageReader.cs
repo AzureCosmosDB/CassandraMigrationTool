@@ -47,7 +47,7 @@ internal class PageReader : IDisposable
         return Task.FromResult(new PageReader(log, config, pageSize, maxReadRetries, cancellationToken));
     }
 
-    public void Dispose() => MigrationUtilities.SafeDispose(_sourceSession, "PageReader source session");
+    public void Dispose() => MigrationUtilities.SafeDisposeSession(_sourceSession, "PageReader source session");
 
     /// <summary>Lazy, idempotent UDT registration for a table's keyspace.</summary>
     private Task EnsureUdtsRegisteredAsync(TableResources resources)
