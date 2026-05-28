@@ -295,20 +295,11 @@ This is different from "Time Since Last Change" which shows when the last actual
 
 These settings are persisted per app instance and affect all jobs:
 
-- Cassandra tools download URL
-        - Supports either:
-            - Single HTTPS ZIP URL (same package provides both `bulk copy` and `bulk restore`), or
-            - JSON with separate URLs:
-                - `{"BulkCopyDumpURL":"https://...dump.zip","BulkCopyRestoreURL":"https://...restore.zip"}`
-        - Use separate URLs when source compatibility requires different versions for dump vs restore (for example, migrations from older Cassandra versions).
-        - If your app has no internet egress, upload ZIP file(s) alongside your app content and point to those hosted URLs.
-        - URLs must start with `https://` and end with `.zip`.
-
 - Binary format utilized for the _id
     - Use when your source uses binary GUIDs for _id.
 
 - Chunk size (MB) for bulk copy
-    - Range: 2–5120. Affects download-and-upload batching for Dump/Restore.
+    - Range: 2–5120. Controls the per-chunk size used by the bulk copy pipeline.
 
 - Cassandra driver page size
     - Range: 50–40000. Controls batch size for driver-based bulk reads/writes.
@@ -338,36 +329,6 @@ These settings are persisted per app instance and affect all jobs:
 
 Advanced notes:
 - The app’s working folder defaults to the system temp path, or to `%ResourceDrive%\home\` when present (e.g., on Azure App Service). It stores job state under `migrationjobs` and logs under `migrationlogs`.
-
-#### Exclusive dump/restore modes and tool version split
-
-##### Exclusive dump/restore modes
-
-Use environment variables to run only one side of the pipeline:
-
-- `ExclusiveDumpMode=true`
-    - Runs dump workers only and pauses restore workers (`CurrentRestoreWorkers=0`).
-- `ExclusiveRestoreMode=true`
-    - Runs restore workers only and pauses dump workers (`CurrentDumpWorkers=0`).
-- If both are `true`, both dump and restore are paused.
-
-Set these variables in your hosting platform environment configuration:
-
-- **Azure Web App**: App Settings
-- **Azure Container Apps (ACA)**: Container App environment variables
-
-##### Separate tool versions for dump and restore
-
-You can use different versions of `bulk copy` and `bulk restore` when source compatibility requires it (for example, older Cassandra sources).
-
-- **Azure Web App**
-    - Configure **Cassandra tools download URL(s)** as JSON in settings:
-    - `{"BulkCopyDumpURL":"https://...dump.zip","BulkCopyRestoreURL":"https://...restore.zip"}`
-    - See [WebApp/README.md](WebApp/README.md).
-
-- **Azure Container Apps (ACA)**
-    - Configure separate versions at image build time in Docker (`BulkCopyDumpURL` and `BulkCopyRestoreURL` build args).
-    - See [ACA/README.md](ACA/README.md).
 
 ## Job lifecycle controls in Job Viewer
 

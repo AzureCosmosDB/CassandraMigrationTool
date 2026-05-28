@@ -32,14 +32,14 @@ FROM base AS final
 USER root
 
 ARG TARGETARCH
-ARG BulkCopyDumpURL=""
-ARG BulkCopyRestoreURL=""
-ENV BulkCopyDumpURL=${BulkCopyDumpURL}
-ENV BulkCopyRestoreURL=${BulkCopyRestoreURL}
+ARG MongoDumpURL=""
+ARG MongoRestoreURL=""
+ENV MongoDumpURL=${MongoDumpURL}
+ENV MongoRestoreURL=${MongoRestoreURL}
 ENV PATH="/usr/local/bin:${PATH}"
 
 # Install MongoDB tools.
-# - If BulkCopyDumpURL and BulkCopyRestoreURL are both provided and different, install each tool from its own URL.
+# - If MongoDumpURL and MongoRestoreURL are both provided and different, install each tool from its own URL.
 # - Otherwise, use the current single-package approach.
 RUN set -eux; \
     apt-get update; \
@@ -51,7 +51,7 @@ RUN set -eux; \
         libssl3 \
         libldap-2.5-0 \
         zlib1g; \
-    if [ -z "$BulkCopyDumpURL" ] || [ -z "$BulkCopyRestoreURL" ]; then \
+    if [ -z "$MongoDumpURL" ] || [ -z "$MongoRestoreURL" ]; then \
         if [ "${TARGETARCH:-amd64}" = "arm64" ]; then \
             DUMP_DEFAULT_URL="https://fastdl.mongodb.org/tools/db/mongodb-database-tools-ubuntu2204-arm64-100.13.0.tgz"; \
             RESTORE_DEFAULT_URL="https://fastdl.mongodb.org/tools/db/mongodb-database-tools-ubuntu2204-arm64-100.13.0.tgz"; \
@@ -59,13 +59,13 @@ RUN set -eux; \
             DUMP_DEFAULT_URL="https://fastdl.mongodb.org/tools/db/mongodb-database-tools-ubuntu2204-x86_64-100.13.0.tgz"; \
             RESTORE_DEFAULT_URL="https://fastdl.mongodb.org/tools/db/mongodb-database-tools-ubuntu2204-x86_64-100.13.0.tgz"; \
         fi; \
-        BulkCopyDumpURL="${BulkCopyDumpURL:-$DUMP_DEFAULT_URL}"; \
-        BulkCopyRestoreURL="${BulkCopyRestoreURL:-$RESTORE_DEFAULT_URL}"; \
+        MongoDumpURL="${MongoDumpURL:-$DUMP_DEFAULT_URL}"; \
+        MongoRestoreURL="${MongoRestoreURL:-$RESTORE_DEFAULT_URL}"; \
     fi; \
-    if [ -n "$BulkCopyDumpURL" ] && [ -n "$BulkCopyRestoreURL" ] && [ "$BulkCopyDumpURL" != "$BulkCopyRestoreURL" ]; then \
+    if [ -n "$MongoDumpURL" ] && [ -n "$MongoRestoreURL" ] && [ "$MongoDumpURL" != "$MongoRestoreURL" ]; then \
         mkdir -p /opt/mongo-tools/dump /opt/mongo-tools/restore; \
-        wget -O /tmp/mongodump-tools.tgz "$BulkCopyDumpURL"; \
-        wget -O /tmp/mongorestore-tools.tgz "$BulkCopyRestoreURL"; \
+        wget -O /tmp/mongodump-tools.tgz "$MongoDumpURL"; \
+        wget -O /tmp/mongorestore-tools.tgz "$MongoRestoreURL"; \
         tar -xzf /tmp/mongodump-tools.tgz -C /opt/mongo-tools/dump; \
         tar -xzf /tmp/mongorestore-tools.tgz -C /opt/mongo-tools/restore; \
         DUMP_BIN="$(find /opt/mongo-tools/dump -type f -name mongodump | head -n 1)"; \
