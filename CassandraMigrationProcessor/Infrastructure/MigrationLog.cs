@@ -158,11 +158,22 @@ public class MigrationLog : IDisposable
 
     public LogBucket GetCurrentLogBucket(string id)
     {
-        if (_currentId == id)
+        if (_currentId != id)
+            return new LogBucket();
+
+        // Return a defensive snapshot. _logBucket.Logs is mutated by
+        // WriteLine under _writeLock; a UI caller enumerating the live
+        // reference would race with WriteLine's Add/RemoveAt and throw
+        // InvalidOperationException: Collection was modified.
+        lock (_writeLock)
         {
-            return _logBucket;
+            return new LogBucket
+            {
+                Logs = _logBucket.Logs != null
+                    ? new List<LogObject>(_logBucket.Logs)
+                    : new List<LogObject>(),
+            };
         }
-        return new LogBucket();
     }
 
     public byte[] ExportLogsAsBytes(string id, int topEntries = 20, int bottomEntries = 230)

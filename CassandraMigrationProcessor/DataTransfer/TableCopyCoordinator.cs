@@ -48,7 +48,7 @@ internal sealed class TableCopyCoordinator : IDisposable
 
     public void Cancel() => _cts?.Cancel();
 
-    private void FinalizeStatus(TableMigration mu, TaskResult result)
+    private void FinalizeStatus(TaskResult result)
     {
         switch (result)
         {
@@ -63,7 +63,6 @@ internal sealed class TableCopyCoordinator : IDisposable
         }
         MigrationJobContext.Instance.SaveMigrationJob(_migrationJob);
         ProcessRunning = false;
-        _ = mu;
     }
 
     public async Task<TaskResult> MigrateTableAsync(TableMigration tableMigration)
@@ -85,7 +84,7 @@ internal sealed class TableCopyCoordinator : IDisposable
         }
         finally
         {
-            FinalizeStatus(tableMigration, result);
+            FinalizeStatus(result);
         }
     }
 

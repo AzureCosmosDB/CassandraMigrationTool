@@ -3,7 +3,6 @@ using CassandraMigrationProcessor.Context;
 using CassandraMigrationProcessor.Infrastructure;
 using CassandraMigrationProcessor.CassandraDriver;
 using CassandraMigrationProcessor.Models;
-using System.Collections.Concurrent;
 
 namespace CassandraMigrationProcessor.DataTransfer;
 
@@ -21,7 +20,6 @@ public class MigrationJobRunner
 {
     private readonly MigrationLog _log;
     private int _consecutiveAuthErrors;
-    private readonly ConcurrentDictionary<string, TableCopyCoordinator> _activeProcessors = new();
     private readonly TokenRefreshManager _tokenRefreshManager;
     private JobPipeline? _pipeline;
 
@@ -53,48 +51,24 @@ public class MigrationJobRunner
                 $"(copy orchestration parallelism={copyParallelism})");
 
             // Phase 1: provision destination schema for every table serially.
-            // Schema sync issues DDL (CREATE KEYSPACE / CREATE TYPE / CREATE TABLE)
-            // and is cheap per table; running it serially avoids concurrent
-            // schema-change traffic on the target cluster and ensures we fail
-            // fast on bad schema before any row data starts flowing.
-            var schemaFailed = await ProvisionAllSchemasAsync(job, units, cancellationToken);
+            var schemaFailed = await RunSchemaPhaseAsync(job, units, cancellationToken);
 
-            // Phase 1.5: discover partitioning for every still-eligible
-            // unit. All source-side I/O (columns / feed ranges / row
-            // counts) happens here so the worker pool can be constructed
-            // with the full partition list and nothing has to be "seeded"
-            // into the channel at runtime.
-            var partitioning = await DiscoverPartitioningAsync(
+            // Phase 1.5: discover partitioning. All source-side I/O
+            // (columns / feed ranges / row counts) happens here so the
+            // worker pool is constructed with the full partition list.
+            var partitioning = await RunDiscoveryPhaseAsync(
                 job, units, schemaFailed, cancellationToken);
 
             _pipeline = new JobPipeline(_log, job, pipelineConfig, partitioning, _tokenRefreshManager, cancellationToken);
             _pipeline.Start();
 
-            var abortRequested = false;
-            // Phase 2: parallel copy orchestration. The shared worker pool
-            // owned by JobPipeline does the actual row-level parallelism;
-            // copyParallelism only caps how many tables can be awaiting
-            // drain at the same time.
-            await Parallel.ForEachAsync(units, new ParallelOptions
-                {
-                    MaxDegreeOfParallelism = copyParallelism,
-                    CancellationToken = cancellationToken
-                },
-                async (mu, token) =>
-                {
-                    if (MigrationJobContext.Instance.ControlledPauseRequested)
-                        return;
-                    if (schemaFailed.Contains(mu.Id))
-                        return;
-                    if (Volatile.Read(ref _consecutiveAuthErrors) >= MigrationDefaults.MaxConsecutiveAuthErrors)
-                    {
-                        abortRequested = true;
-                        return;
-                    }
-                    await ProcessWithRetryAsync(job, mu, partitioning, token);
-                });
+            // Phase 2: parallel copy orchestration. The shared worker
+            // pool owned by JobPipeline does the actual row-level
+            // parallelism; copyParallelism only caps how many tables
+            // can be awaiting drain at the same time.
+            await RunCopyPhaseAsync(job, units, partitioning, schemaFailed, copyParallelism, cancellationToken);
 
-            if (abortRequested)
+            if (Volatile.Read(ref _consecutiveAuthErrors) >= MigrationDefaults.MaxConsecutiveAuthErrors)
             {
                 _log.WriteLine($"Aborting: {Volatile.Read(ref _consecutiveAuthErrors)} consecutive auth failures.", LogType.Error);
                 return;
@@ -104,49 +78,17 @@ public class MigrationJobRunner
             // keep the shared pool alive for change-feed tailing; offline
             // jobs close the channel so workers exit.
             if (job.IsOnline)
-            {
-                _log.WriteLine("All tables drained. Change feed replaying on shared worker pool.", LogType.Info);
-                while (!cancellationToken.IsCancellationRequested
-                    && !MigrationJobContext.Instance.ControlledPauseRequested)
-                {
-                    // Online change-feed mode keeps the shared worker pool alive
-                    // indefinitely. If every worker has died (faults or fatal trip)
-                    // the loop would otherwise wait forever while no rows are being
-                    // copied — silent data loss. Probe the pool each tick.
-                    if (_pipeline!.AllWorkersExited)
-                    {
-                        int faulted = _pipeline.FaultedWorkerCount;
-                        _log.WriteLine(
-                            $"Online worker pool has stopped (faulted={faulted}). Aborting job.",
-                            LogType.Error);
-                        return;
-                    }
-                    if (Volatile.Read(ref _pipeline.Context.Flags.FatalErrorFlag) == 1)
-                    {
-                        _log.WriteLine("Fatal error tripped during online replay. Aborting job.", LogType.Error);
-                        return;
-                    }
-                    await Task.Delay(2000, cancellationToken);
-                }
-            }
+                await RunOnlineTailLoopAsync(cancellationToken);
             else
-            {
-                _pipeline.CompletePartitionChannel();
-                await _pipeline.WaitForCompletionAsync();
-                await HandleOfflineCompletionAsync(job);
-            }
-
-            return;
+                await RunOfflineFinalizeAsync(job);
         }
         catch (OperationCanceledException)
         {
             _log.WriteLine("Migration was cancelled.", LogType.Info);
-            return;
         }
         catch (Exception ex)
         {
             _log.WriteLine($"Migration failed: {ex}", LogType.Error);
-            return;
         }
         finally
         {
@@ -156,69 +98,48 @@ public class MigrationJobRunner
         }
     }
 
-    private async Task ProcessWithRetryAsync(Job job, TableMigration mu, JobPartitioning partitioning, CancellationToken token)
+    /// <summary>
+    /// Phase 1 of <see cref="StartAsync"/>: provision destination
+    /// schema for every table serially. Failures are recorded on the
+    /// unit (<see cref="HandleMigrationUnitError"/>) and the unit ID
+    /// is returned so later phases skip it.
+    /// </summary>
+    private async Task<HashSet<string>> RunSchemaPhaseAsync(
+        Job job, IReadOnlyList<TableMigration> units, CancellationToken ct)
     {
-        for (int attempt = 1; attempt <= MigrationDefaults.MaxTableRetries; attempt++)
+        var failed = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var mu in units)
         {
+            ct.ThrowIfCancellationRequested();
+            if (MigrationJobContext.Instance.ControlledPauseRequested)
+                break;
+            if (Volatile.Read(ref _consecutiveAuthErrors) >= MigrationDefaults.MaxConsecutiveAuthErrors)
+                break;
+
             try
             {
-                await ProcessMigrationUnitAsync(job, mu, partitioning, token);
-                return;
+                await ProvisionTargetSchemaAsync(job, mu);
             }
-            catch (Exception ex) when (CassandraClientFactory.IsRetryableException(ex)
-                && attempt < MigrationDefaults.MaxTableRetries)
+            catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                int delayMs = CassandraClientFactory.GetRetryDelayMs(ex, attempt);
-                _log.WriteLine($"Table retry {attempt} for {mu.KeyspaceName}.{mu.TableName}: {ex.Message}", LogType.Warning);
-                await Task.Delay(delayMs, token);
-            }
-            catch (OperationCanceledException)
-            {
-                throw;
-            }
-            catch (Exception ex)
-            {
-                // Non-retryable, or retryable but final attempt. Record the
-                // unit-level failure and stop retrying this table. Other
-                // tables in the Parallel.ForEachAsync continue running.
                 HandleMigrationUnitError(mu, ex);
-                return;
+                failed.Add(mu.Id);
             }
         }
-    }
-
-    private async Task HandleOfflineCompletionAsync(Job job)
-    {
-        if (job.IsOfflineCompleted
-            && !MigrationJobContext.Instance.ControlledPauseRequested
-            && job.Status != JobStatus.Cancelled
-            && job.Status != JobStatus.Paused)
-        {
-            _log.WriteLine($"Job {job.Id} Completed", LogType.Info);
-            job.Status = JobStatus.Completed;
-            MigrationJobContext.Instance.SaveMigrationJob(job);
-        }
-        await Task.CompletedTask;
+        return failed;
     }
 
     /// <summary>
-    /// Phase 1 of <see cref="StartAsync"/>: provision destination schema
-    /// for every table serially. Failures are recorded on the unit
-    /// (<see cref="HandleMigrationUnitError"/>) and the unit ID is
-    /// returned so Phase 2 can skip it without re-running provision
-    /// against a broken destination.
-    /// </summary>
-    /// <summary>
-    /// Phase 1.5 of <see cref="StartAsync"/>: walk every still-eligible
-    /// migration unit and gather all source-side state we need to build
-    /// the worker pool — columns, feed-range list, per-chunk row count —
-    /// and call <see cref="Partitioner.Partition"/> to produce a
+    /// Phase 1.5: walk every still-eligible migration unit and gather
+    /// all source-side state we need to build the worker pool —
+    /// columns, feed-range list, per-chunk row count — and call
+    /// <see cref="Partitioner.Partition"/> to produce a
     /// <see cref="TablePartitioning"/> for each chunk. All work uses a
     /// single transient source session so the JobPipeline can be
     /// constructed with the full partition list and no runtime
     /// "seeding" path is required.
     /// </summary>
-    private async Task<JobPartitioning> DiscoverPartitioningAsync(
+    private async Task<JobPartitioning> RunDiscoveryPhaseAsync(
         Job job,
         IReadOnlyList<TableMigration> units,
         HashSet<string> schemaFailed,
@@ -258,9 +179,126 @@ public class MigrationJobRunner
         }
         finally
         {
-            MigrationUtilities.SafeDisposeSession(sourceSession, "DiscoverPartitioningAsync source session");
+            MigrationUtilities.SafeDisposeSession(sourceSession, "RunDiscoveryPhaseAsync source session");
         }
         return new JobPartitioning(chunks);
+    }
+
+    /// <summary>
+    /// Phase 2: run per-table drain coordinators in parallel under the
+    /// shared worker pool. The pool does the actual row-level
+    /// parallelism; <paramref name="copyParallelism"/> only caps how
+    /// many tables can be awaiting drain concurrently.
+    /// </summary>
+    private Task RunCopyPhaseAsync(
+        Job job,
+        IReadOnlyList<TableMigration> units,
+        JobPartitioning partitioning,
+        HashSet<string> schemaFailed,
+        int copyParallelism,
+        CancellationToken cancellationToken)
+    {
+        return Parallel.ForEachAsync(units, new ParallelOptions
+            {
+                MaxDegreeOfParallelism = copyParallelism,
+                CancellationToken = cancellationToken
+            },
+            async (mu, token) =>
+            {
+                if (MigrationJobContext.Instance.ControlledPauseRequested)
+                    return;
+                if (schemaFailed.Contains(mu.Id))
+                    return;
+                if (Volatile.Read(ref _consecutiveAuthErrors) >= MigrationDefaults.MaxConsecutiveAuthErrors)
+                {
+                    // Stop scheduling new tables and unblock any sibling
+                    // coordinator waiting on a BulkDrainSignal. Tables
+                    // already running ProcessChunkAsync see the pipeline
+                    // cancellation immediately rather than draining to
+                    // completion against an already-failed cluster.
+                    _pipeline?.Stop();
+                    return;
+                }
+                await ProcessWithRetryAsync(job, mu, partitioning, token);
+            });
+    }
+
+    /// <summary>
+    /// Online change-feed mode keeps the shared worker pool alive
+    /// indefinitely. If every worker has died (faults or fatal trip)
+    /// the loop would otherwise wait forever while no rows are being
+    /// copied — silent data loss. Probe the pool each tick.
+    /// </summary>
+    private async Task RunOnlineTailLoopAsync(CancellationToken cancellationToken)
+    {
+        _log.WriteLine("All tables drained. Change feed replaying on shared worker pool.", LogType.Info);
+        while (!cancellationToken.IsCancellationRequested
+            && !MigrationJobContext.Instance.ControlledPauseRequested)
+        {
+            if (_pipeline!.AllWorkersExited)
+            {
+                int faulted = _pipeline.FaultedWorkerCount;
+                _log.WriteLine(
+                    $"Online worker pool has stopped (faulted={faulted}). Aborting job.",
+                    LogType.Error);
+                return;
+            }
+            if (Volatile.Read(ref _pipeline.Context.Flags.FatalErrorFlag) == 1)
+            {
+                _log.WriteLine("Fatal error tripped during online replay. Aborting job.", LogType.Error);
+                return;
+            }
+            await Task.Delay(2000, cancellationToken);
+        }
+    }
+
+    /// <summary>
+    /// Offline finalize: complete the partition channel so workers
+    /// drain and exit, await pool completion, then mark the job
+    /// completed if the run reached the terminal state cleanly.
+    /// </summary>
+    private async Task RunOfflineFinalizeAsync(Job job)
+    {
+        _pipeline!.CompletePartitionChannel();
+        await _pipeline.WaitForCompletionAsync();
+
+        if (job.IsOfflineCompleted
+            && !MigrationJobContext.Instance.ControlledPauseRequested
+            && job.Status != JobStatus.Cancelled
+            && job.Status != JobStatus.Paused)
+        {
+            _log.WriteLine($"Job {job.Id} Completed", LogType.Info);
+            job.Status = JobStatus.Completed;
+            MigrationJobContext.Instance.SaveMigrationJob(job);
+        }
+    }
+
+    private async Task ProcessWithRetryAsync(Job job, TableMigration mu, JobPartitioning partitioning, CancellationToken token)
+    {
+        for (int attempt = 1; attempt <= MigrationDefaults.MaxTableRetries; attempt++)
+        {
+            try
+            {
+                await ProcessMigrationUnitAsync(job, mu, partitioning, token);
+                return;
+            }
+            catch (Exception ex) when (CassandraClientFactory.IsRetryableException(ex)
+                && attempt < MigrationDefaults.MaxTableRetries)
+            {
+                int delayMs = CassandraClientFactory.GetRetryDelayMs(ex, attempt);
+                _log.WriteLine($"Table retry {attempt} for {mu.KeyspaceName}.{mu.TableName}: {ex.Message}", LogType.Warning);
+                await Task.Delay(delayMs, token);
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                HandleMigrationUnitError(mu, ex);
+                return;
+            }
+        }
     }
 
     private async Task DiscoverUnitPartitioningAsync(
@@ -329,31 +367,6 @@ public class MigrationJobRunner
         MigrationJobContext.Instance.SaveMigrationUnit(mu, true);
     }
 
-    private async Task<HashSet<string>> ProvisionAllSchemasAsync(
-        Job job, IReadOnlyList<TableMigration> units, CancellationToken ct)
-    {
-        var failed = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var mu in units)
-        {
-            ct.ThrowIfCancellationRequested();
-            if (MigrationJobContext.Instance.ControlledPauseRequested)
-                break;
-            if (Volatile.Read(ref _consecutiveAuthErrors) >= MigrationDefaults.MaxConsecutiveAuthErrors)
-                break;
-
-            try
-            {
-                await ProvisionTargetSchemaAsync(job, mu);
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException)
-            {
-                HandleMigrationUnitError(mu, ex);
-                failed.Add(mu.Id);
-            }
-        }
-        return failed;
-    }
-
     private async Task ProcessMigrationUnitAsync(Job job, TableMigration mu, JobPartitioning partitioning, CancellationToken cancellationToken)
     {
         if (mu.SourceStatus == TableStatus.Failed)
@@ -362,31 +375,20 @@ public class MigrationJobRunner
             MigrationJobContext.Instance.SaveMigrationUnit(mu, true);
         }
 
-        try
-        {
-            // Destination schema was provisioned up front in Phase 1.
-            if (mu.BulkCopyPhase < BulkCopyPhase.Copying)
-                mu.BulkCopyPhase = BulkCopyPhase.Copying;
+        // Destination schema was provisioned up front in Phase 1.
+        if (mu.BulkCopyPhase < BulkCopyPhase.Copying)
+            mu.BulkCopyPhase = BulkCopyPhase.Copying;
 
-            mu.BulkCopyStartedOn ??= DateTime.UtcNow;
-            if (job.IsOnline)
-            {
-                mu.ChangeFeedStartToken ??= DateTime.UtcNow.ToString(
-                    "yyyy-MM-ddTHH:mm:ss.fffZ", System.Globalization.CultureInfo.InvariantCulture);
-            }
-
-            MigrationJobContext.Instance.SaveMigrationUnit(mu, true);
-            await RunCopyForUnitAsync(job, mu, partitioning, cancellationToken);
-            MigrationJobContext.Instance.SaveMigrationUnit(mu, true);
-        }
-        finally
+        mu.BulkCopyStartedOn ??= DateTime.UtcNow;
+        if (job.IsOnline)
         {
-            // All tables can release their coordinators once MigrateTableAsync
-            // returns — the worker pool is owned by the JobPipeline now,
-            // not by the coordinator.
-            _activeProcessors.TryRemove(mu.Id, out var removed);
-            MigrationUtilities.SafeDispose(removed as IDisposable, "MigrationJobRunner processor");
+            mu.ChangeFeedStartToken ??= DateTime.UtcNow.ToString(
+                "yyyy-MM-ddTHH:mm:ss.fffZ", System.Globalization.CultureInfo.InvariantCulture);
         }
+
+        MigrationJobContext.Instance.SaveMigrationUnit(mu, true);
+        await RunCopyForUnitAsync(job, mu, partitioning, cancellationToken);
+        MigrationJobContext.Instance.SaveMigrationUnit(mu, true);
     }
 
     /// <summary>
@@ -394,9 +396,6 @@ public class MigrationJobRunner
     /// optional drop, then keyspace + UDTs + table creation via
     /// <see cref="SchemaManager.SyncSchemaAsync"/>. Runs exactly once
     /// per table, before <see cref="TableCopyCoordinator"/> is invoked.
-    /// The coordinator fetches the source column list it needs to build
-    /// writers via the cheap <see cref="SchemaManager.GetTableColumnsAsync"/>
-    /// path and does no DDL of its own.
     /// </summary>
     private async Task ProvisionTargetSchemaAsync(Job job, TableMigration mu)
     {
@@ -451,11 +450,10 @@ public class MigrationJobRunner
     private async Task RunCopyForUnitAsync(Job job, TableMigration mu, JobPartitioning partitioning, CancellationToken ct)
     {
         var chunks = partitioning.ForUnit(mu.Id);
-        var processor = new TableCopyCoordinator(_log, job, _pipeline!, chunks, ct);
-        _activeProcessors[mu.Id] = processor;
+        using var coordinator = new TableCopyCoordinator(_log, job, _pipeline!, chunks, ct);
         ct.ThrowIfCancellationRequested();
 
-        TaskResult result = await processor.MigrateTableAsync(mu);
+        TaskResult result = await coordinator.MigrateTableAsync(mu);
         if (result == TaskResult.Success)
             _log.WriteLine($"Copy succeeded for {mu.KeyspaceName}.{mu.TableName}", LogType.Info);
         else if (result == TaskResult.Canceled)
@@ -495,11 +493,11 @@ public class MigrationJobRunner
 
     public void Stop()
     {
-        foreach (var kvp in _activeProcessors)
-            kvp.Value?.Cancel();
-        foreach (var kvp in _activeProcessors)
-            MigrationUtilities.SafeDispose(kvp.Value, "MigrationJobRunner processor (Stop)");
-        _activeProcessors.Clear();
+        // Pipeline CTS cascades cancellation to every running
+        // coordinator and every worker, including any sibling tables
+        // still being scheduled by Parallel.ForEachAsync (the
+        // ParallelOptions.CancellationToken is the same external token
+        // that the pipeline links from).
         _pipeline?.Stop();
         MigrationUtilities.SafeDispose(_pipeline, "JobPipeline (Stop)");
         _pipeline = null;

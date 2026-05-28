@@ -23,7 +23,15 @@ public static class TableMigrationMapper
                     .FindIndex(mu => mu.Id == unit.Id);
                 if (index == -1) return false;
 
-                ToSummary(unit, unit.ParentJob.Tables[index]);
+                var target = unit.ParentJob.Tables[index];
+                ToSummary(unit, target);
+                // Flush-and-reset the per-batch counter at the explicit
+                // sync boundary, not inside ToSummary. Read-only callers
+                // (e.g. building an initial summary) should not zero a
+                // live counter as a side effect of "looking".
+                target.ChangeFeedUpdatesInLastBatch =
+                    Interlocked.Exchange(
+                        ref unit._changeFeedUpdatesInLastBatch, 0);
             }
             return true;
         }
@@ -47,8 +55,7 @@ public static class TableMigrationMapper
         target.TargetKeyspaceName = unit.TargetKeyspaceName;
         target.TargetTableName = unit.TargetTableName;
         target.ChangeFeedUpdatesInLastBatch =
-            Interlocked.Exchange(
-                ref unit._changeFeedUpdatesInLastBatch, 0);
+            Volatile.Read(ref unit._changeFeedUpdatesInLastBatch);
         target.ChangeFeedAvgReadLatencyInMS =
             unit.ChangeFeedAvgReadLatencyInMS;
         target.ChangeFeedAvgWriteLatencyInMS =

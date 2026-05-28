@@ -8,15 +8,8 @@ using System.Diagnostics;
 namespace CassandraMigrationProcessor.DataTransfer;
 
 /// <summary>
-/// Tunable knobs for a single <see cref="PageWriter"/>: the page size
-/// reported into <see cref="CopyProgressTracker.SetPipelineState"/> and
-/// the per-row write retry budget handed to the row write strategies.
-/// Carried as a record so the caller passes one capability instead of
-/// two loose ints.
-/// </summary>
-/// <summary>
-/// Tunables for <see cref="PageWriter"/>: write retry budget. Page size
-/// is reader-only; writers don't page.
+/// Tunables for <see cref="PageWriter"/>: per-row write retry budget.
+/// Page size is reader-only; writers don't page.
 /// </summary>
 internal record WriterConfig(int MaxWriteRetries);
 

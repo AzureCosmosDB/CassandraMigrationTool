@@ -114,25 +114,38 @@ public class MigrationJobContext
     {
         get
         {
-            if (JobStore.CachedActiveJob != null
-                && !string.IsNullOrEmpty(ActiveMigrationJobId)
-                && JobStore.CachedActiveJob.Id
-                    == ActiveMigrationJobId)
-            {
-                return JobStore.CachedActiveJob;
-            }
+            EnsureActiveJobLoaded();
+            return JobStore.CachedActiveJob;
+        }
+    }
 
-            if (!string.IsNullOrEmpty(ActiveMigrationJobId))
-            {
-                JobStore.CachedActiveJob =
-                    JobStore.LoadJob(ActiveMigrationJobId);
-                if (MigrationUnitsCache == null)
-                    MigrationUnitsCache =
-                        new TableMigrationCache();
-                return JobStore.CachedActiveJob;
-            }
+    /// <summary>
+    /// Idempotent: loads the active job and primes the unit cache on
+    /// first access. Previously a side effect of the
+    /// <c>CurrentlyActiveJob</c> getter — a property read should not
+    /// mutate global state or lose a racy second instantiation of the
+    /// unit cache.
+    /// </summary>
+    private readonly object _activeJobLoadLock = new object();
+    private void EnsureActiveJobLoaded()
+    {
+        var activeId = ActiveMigrationJobId;
+        if (string.IsNullOrEmpty(activeId)) return;
 
-            return null;
+        if (JobStore.CachedActiveJob != null
+            && JobStore.CachedActiveJob.Id == activeId
+            && MigrationUnitsCache != null)
+            return;
+
+        lock (_activeJobLoadLock)
+        {
+            if (JobStore.CachedActiveJob == null
+                || JobStore.CachedActiveJob.Id != activeId)
+            {
+                JobStore.CachedActiveJob = JobStore.LoadJob(activeId);
+            }
+            if (MigrationUnitsCache == null)
+                MigrationUnitsCache = new TableMigrationCache();
         }
     }
 

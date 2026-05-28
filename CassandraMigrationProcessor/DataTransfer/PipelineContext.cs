@@ -16,13 +16,18 @@ internal class JobControlFlags
     public ConcurrentBag<TaskResult> WorkerErrors { get; } = new();
 
     /// <summary>
-    /// Wired by <see cref="JobPipeline"/> to cancel the job-wide CTS.
-    /// Workers invoke this together with setting <see cref="FatalErrorFlag"/>
-    /// so all coordinators waiting on per-table <c>BulkDrainSignal</c>
-    /// (under the pipeline CTS) unblock immediately instead of hanging
-    /// until external cancel.
+    /// Wired by <see cref="JobPipeline"/> at construction so workers
+    /// can cancel the job-wide CTS when raising a fatal error. Set
+    /// once via the constructor — never mutated after — so there is
+    /// no half-built window where a fatal trip silently no-ops.
     /// </summary>
-    public Action? TriggerFatalShutdown { get; set; }
+    private readonly Action _triggerFatalShutdown;
+
+    public JobControlFlags(Action triggerFatalShutdown)
+    {
+        ArgumentNullException.ThrowIfNull(triggerFatalShutdown);
+        _triggerFatalShutdown = triggerFatalShutdown;
+    }
 
     /// <summary>
     /// Idempotent fatal trip: sets the latch and cancels the job CTS.
@@ -39,7 +44,7 @@ internal class JobControlFlags
         // itself be in a catch block reacting to the original fault).
         try
         {
-            TriggerFatalShutdown?.Invoke();
+            _triggerFatalShutdown();
         }
         catch (ObjectDisposedException) { /* shutdown already torn down */ }
         catch (Exception ex)

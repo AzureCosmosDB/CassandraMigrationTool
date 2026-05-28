@@ -34,6 +34,23 @@ internal sealed class JobPipeline : IDisposable, IAsyncDisposable
         var writerConfig = new WriterConfig(pipelineConfig.MaxWriteRetries);
         _cooldown = new CooldownScheduler(log, partitions, pipelineConfig.ChangeFeedPollIntervalMs, _cts.Token);
 
+        // Wire fatal trip into our CTS at construction so coordinators
+        // waiting on per-table BulkDrainSignal under this token unblock
+        // as soon as any worker raises a fatal error. ObjectDisposedException
+        // during teardown is the only race we expect; everything else is
+        // surfaced via TripFatal's logging.
+        var cts = _cts;
+        var flags = new JobControlFlags(() =>
+        {
+            try { cts.Cancel(); }
+            catch (ObjectDisposedException)
+            {
+                _log.WriteLine(
+                    "Fatal shutdown trigger fired after pipeline disposal — cancellation already moot.",
+                    LogType.Info);
+            }
+        });
+
         Context = new PipelineContext(
             partitions,
             new JobSessionFactory(log, job, tokenRefreshManager),
@@ -41,28 +58,7 @@ internal sealed class JobPipeline : IDisposable, IAsyncDisposable
             writerConfig,
             EnableReplay: enableReplay,
             Cooldown: _cooldown,
-            new JobControlFlags());
-
-        // Wire fatal trip into our CTS so coordinators waiting on
-        // per-table BulkDrainSignal under this token unblock as soon
-        // as any worker raises a fatal error. If the pipeline has
-        // already been disposed the CTS is gone and cancellation is
-        // moot — we explicitly check IsCancellationRequested-style
-        // disposal via try/catch so we can log it instead of leaving
-        // a silent empty catch that could hide unrelated bugs.
-        Context.Flags.TriggerFatalShutdown = () =>
-        {
-            try
-            {
-                _cts.Cancel();
-            }
-            catch (ObjectDisposedException)
-            {
-                _log.WriteLine(
-                    "Fatal shutdown trigger fired after pipeline disposal — cancellation already moot.",
-                    LogType.Info);
-            }
-        };
+            flags);
 
         _workerPool = new WorkerPool(_log, pipelineConfig.WorkerCount);
     }
