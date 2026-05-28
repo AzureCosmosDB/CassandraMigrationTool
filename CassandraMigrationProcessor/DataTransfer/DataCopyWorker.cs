@@ -131,6 +131,16 @@ internal class DataCopyWorker
             return;
         }
 
+        // Don't act on an empty page if we're shutting down — a cancelled or
+        // fatal-tripped run may return early-empty pages from the driver, and
+        // persisting Bulk→Replay or Completed here would silently skip data on
+        // resume. Defer to the outer loop; it will exit cleanly.
+        if (_ct.IsCancellationRequested
+            || Volatile.Read(ref ctx.Flags.FatalErrorFlag) != 0)
+        {
+            return;
+        }
+
         if (partition.Phase == PartitionPhase.Bulk)
         {
             if (ctx.EnableReplay)

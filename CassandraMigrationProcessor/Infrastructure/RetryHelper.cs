@@ -62,6 +62,20 @@ public class RetryHelper
                     MigrationLog.WriteLine(
                         $"  Inner: {ex.InnerException.GetType().FullName}: {ex.InnerException.Message}",
                         LogType.Error);
+
+                // Built-in fatal short-circuit. Even if a caller-supplied handler
+                // mistakenly returns Retry for AuthenticationException /
+                // InvalidQueryException / SyntaxError / UnauthorizedException,
+                // we refuse to retry — these are permanent and infinite retry
+                // hides the misconfiguration from the operator.
+                if (ExceptionClassifier.IsFatal(ex))
+                {
+                    MigrationLog.WriteLine(
+                        $"Fatal exception type {ex.GetType().Name} — not retrying",
+                        LogType.Error);
+                    return TaskResult.Abort;
+                }
+
                 var shouldRetry = await exceptionHandler(ex, attempt, currentBackoffSeconds);
                 if (shouldRetry == TaskResult.Canceled)
                     return TaskResult.Canceled;

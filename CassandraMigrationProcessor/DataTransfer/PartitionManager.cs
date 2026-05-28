@@ -54,20 +54,19 @@ internal sealed class PartitionManager
     }
 
     /// <summary>
-    /// Worker pull. Blocks until a partition is available, the channel is
-    /// completed, or the token fires. Returns null on completion / cancel.
+    /// Worker pull. Blocks until a partition is available or the channel is
+    /// completed. Returns null only when the channel has been completed AND
+    /// drained. Throws OperationCanceledException on cancel so the caller can
+    /// distinguish "job finished normally" (null) from "I was asked to stop"
+    /// (OCE) — otherwise a cancel mid-job is silently mistaken for completion.
     /// </summary>
     public async Task<Partition?> TakeAsync(CancellationToken cancellationToken)
     {
-        try
+        while (await _channel.Reader.WaitToReadAsync(cancellationToken))
         {
-            while (await _channel.Reader.WaitToReadAsync(cancellationToken))
-            {
-                if (_channel.Reader.TryRead(out var partition))
-                    return partition;
-            }
+            if (_channel.Reader.TryRead(out var partition))
+                return partition;
         }
-        catch (OperationCanceledException) { }
         return null;
     }
 
