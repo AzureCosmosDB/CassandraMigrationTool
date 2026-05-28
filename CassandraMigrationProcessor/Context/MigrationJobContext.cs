@@ -21,7 +21,6 @@ public class MigrationJobContext
     public static MigrationJobContext Instance { get; private set; }
 
     private readonly object _writeJobListLock = new object();
-    private MigrationLog _log;
 
     public TableMigrationCache MigrationUnitsCache
     { get; set; }
@@ -71,8 +70,6 @@ public class MigrationJobContext
 
     public void RequestControlledPause(string location)
     {
-        _log?.WriteLine(
-            $"{location} caused controlled pause.", LogType.Warning);
         _controlledPauseRequested = true;
     }
 
@@ -95,13 +92,8 @@ public class MigrationJobContext
 
     public void AddVerboseLog(string message)
     {
-        if (_log == null
-            || CurrentlyActiveJob == null
-            || CurrentlyActiveJob.Status == JobStatus.Cancelled
-            || CurrentlyActiveJob.Status == JobStatus.Completed)
-            return;
-
-        _log?.WriteLine(message, LogType.Verbose);
+        // No-op: verbose log surface is currently not wired up.
+        // Kept for callers in the WebApp razor pages.
     }
 
     public LogStorageCallbacks CreateLogStorageCallbacks(

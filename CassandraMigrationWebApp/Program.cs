@@ -5,7 +5,6 @@ using CassandraMigrationProcessor;
 using Microsoft.AspNetCore.Components.Authorization;
 using CassandraMigrationProcessor.Infrastructure;
 using CassandraMigrationProcessor.Context;
-using CassandraMigrationProcessor.CassandraDriver;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -71,7 +70,6 @@ if (!string.IsNullOrEmpty(useLocalDisk))
 builder.Services.AddRazorPages();
 builder.Services.AddServerSideBlazor();
 builder.Services.AddSingleton(builder.Configuration);
-builder.Services.AddSingleton<ICassandraSessionFactory, CassandraSessionFactory>();
 
 // Create and initialize the MigrationJobContext singleton
 var migrationJobContext = new MigrationJobContext();

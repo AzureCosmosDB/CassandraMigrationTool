@@ -153,14 +153,6 @@ public static class MigrationUtilities
             .All(mu => mu.CopyComplete);
     }
 
-    public static bool AnyValidTable(Job job)
-    {
-        if (job == null)
-            return false;
-        return job.Tables
-            .Any(mu => IsMigrationUnitValid(mu));
-    }
-
     /// <summary>
     /// Validates that a string is a safe CQL identifier
     /// (alphanumeric, underscore, or hyphen only).

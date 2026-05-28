@@ -361,38 +361,4 @@ public static class CassandraClientFactory
             keyspace,
             maxConnectionsPerHost: job.MaxConnectionsPerHost);
     }
-
-    /// <summary>
-    /// Create source session from ConnectionOptions.
-    /// </summary>
-    public static ISession CreateSourceSession(
-        MigrationLog log, ConnectionOptions conn, string keyspace,
-        TokenRefreshManager? tokenRefreshManager = null)
-    {
-        return CreateSourceSession(
-            log,
-            conn.Host,
-            conn.Port,
-            conn.Username ?? string.Empty,
-            conn.Password ?? string.Empty,
-            keyspace,
-            tokenRefreshManager);
-    }
-
-    /// <summary>
-    /// Create target session from ConnectionOptions.
-    /// </summary>
-    public static ISession CreateTargetSession(
-        MigrationLog log, ConnectionOptions conn, string keyspace)
-    {
-        return CreateTargetSession(
-            log,
-            conn.Host,
-            conn.Port,
-            conn.Username ?? string.Empty,
-            conn.Password ?? string.Empty,
-            keyspace,
-            conn.UseSsl,
-            conn.MaxConnectionsPerHost);
-    }
 }

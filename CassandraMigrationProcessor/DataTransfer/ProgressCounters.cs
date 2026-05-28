@@ -9,7 +9,6 @@ internal class ProgressCounters
 {
     private long _totalCopied;
     private long _totalFailed;
-    private long _totalSkipped;
     private long _totalRead;
     private long _totalBytes;
 
@@ -26,7 +25,6 @@ internal class ProgressCounters
 
     public long TotalCopied => Volatile.Read(ref _totalCopied);
     public long TotalFailed => Volatile.Read(ref _totalFailed);
-    public long TotalSkipped => Volatile.Read(ref _totalSkipped);
     public long TotalRead => Volatile.Read(ref _totalRead);
     public long TotalBytes => Volatile.Read(ref _totalBytes);
     public long ReadTimeMs => Volatile.Read(ref _readTimeMs);

@@ -49,7 +49,6 @@ public class CopyProgressTracker
 
     public long TotalCopied => _counters.TotalCopied;
     public long TotalFailed => _counters.TotalFailed;
-    public long TotalSkipped => _counters.TotalSkipped;
     internal TableMigration MigrationUnit => _migrationUnit;
 
     public double RecentSpeed
@@ -260,12 +259,11 @@ public class CopyProgressTracker
     {
         long copied = TotalCopied;
         long failed = TotalFailed;
-        long skipped = TotalSkipped;
         double elapsed = _stopwatch.Elapsed.TotalSeconds;
         double rps = elapsed > 0
             ? copied / elapsed : 0;
         string speedStr = rps >= 1000
             ? $"{rps / 1000:F1}k/s" : $"{rps:F0}/s";
-        _log.WriteLine($"Bulk copy done: {_keyspace}.{_table} - {copied:N0} copied, " + $"{failed:N0} failed, {skipped:N0} skipped ({elapsed:F1}s, {speedStr})", LogType.Info);
+        _log.WriteLine($"Bulk copy done: {_keyspace}.{_table} - {copied:N0} copied, " + $"{failed:N0} failed ({elapsed:F1}s, {speedStr})", LogType.Info);
     }
 }

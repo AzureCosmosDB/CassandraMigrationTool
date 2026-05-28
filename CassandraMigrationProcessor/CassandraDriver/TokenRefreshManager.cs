@@ -54,36 +54,6 @@ public class TokenRefreshManager : IDisposable
     }
 
     /// <summary>
-    /// Reconnect the source session with a fresh AAD token.
-    /// Returns a new ISession. The caller should dispose the
-    /// old session. Also restarts the token refresh timer.
-    /// </summary>
-    public ISession ReconnectSourceWithFreshToken()
-    {
-        if (string.IsNullOrEmpty(_lastSourceContactPoint))
-            throw new InvalidOperationException(
-                "Cannot reconnect: source connection parameters have not been cached. Call CacheSourceConnectionParams first.");
-
-        string freshToken = GetFreshAadToken();
-
-        // Restart refresh timer with new token
-        StartTokenRefreshTimer(freshToken);
-
-        var newSession = CassandraClientFactory.CreateSourceSession(
-            _log,
-            _lastSourceContactPoint,
-            _lastSourcePort,
-            _lastSourceUsername ?? string.Empty,
-            freshToken,
-            _lastSourceKeyspace ?? string.Empty);
-
-        // Update managed session reference
-        _managedSourceSession = newSession;
-
-        return newSession;
-    }
-
-    /// <summary>
     /// Acquire a fresh AAD token for Cosmos DB Cassandra
     /// without tracking expiry state. Use for one-shot
     /// sessions that do not need proactive refresh.
