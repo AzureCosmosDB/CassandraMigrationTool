@@ -45,8 +45,7 @@ Ensures: at least one CopyChunk exists
 
 FOR EACH chunk (typically 1):
   └── RetryHelper.ExecuteTask(() => ProcessChunkAsync(...))
-      └── On Canceled → PauseProcessing()
-      └── On Abort → StopProcessing()
+      └── On Canceled / Abort → returns to caller; finally-block FinalizeStatus(result)
 
 On all chunks complete:
   └── Sets CopyComplete = true, BulkCopyEndedOn

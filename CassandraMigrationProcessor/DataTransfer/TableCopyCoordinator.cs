@@ -71,22 +71,28 @@ internal sealed class TableCopyCoordinator : IDisposable
         return new TableCopyCoordinator(log, config, job, source, target, pipeline, externalToken);
     }
 
-    public void StopProcessing()
-    {
-        if (_migrationJob.Status == JobStatus.Running)
-            _migrationJob.Status = JobStatus.Pending;
-        Shutdown();
-    }
+    /// <summary>
+    /// Idempotent: signal this coordinator to abort. Cancelling the
+    /// CTS unblocks the <c>BulkDrainSignal</c> wait in
+    /// <see cref="ProcessChunkAsync"/>, so <see cref="MigrateTableAsync"/>
+    /// throws <see cref="OperationCanceledException"/> and runs its
+    /// natural exit path (which sets job status + saves).
+    /// </summary>
+    public void Cancel() => _cts?.Cancel();
 
-    public void PauseProcessing()
+    private void FinalizeStatus(TaskResult result)
     {
-        _migrationJob.Status = JobStatus.Paused;
-        Shutdown();
-    }
-
-    private void Shutdown()
-    {
-        _cts?.Cancel();
+        switch (result)
+        {
+            case TaskResult.Canceled:
+                _migrationJob.Status = JobStatus.Paused;
+                break;
+            case TaskResult.Abort:
+            case TaskResult.FailedAfterRetries:
+                if (_migrationJob.Status == JobStatus.Running)
+                    _migrationJob.Status = JobStatus.Pending;
+                break;
+        }
         MigrationJobContext.Instance.SaveMigrationJob(_migrationJob);
         ProcessRunning = false;
     }
@@ -100,6 +106,25 @@ internal sealed class TableCopyCoordinator : IDisposable
         tableMigration.ParentJob = _migrationJob;
         ProcessRunning = true;
 
+        var result = TaskResult.Success;
+        try
+        {
+            result = await MigrateTableCoreAsync(tableMigration);
+            return result;
+        }
+        catch (OperationCanceledException)
+        {
+            result = TaskResult.Canceled;
+            throw;
+        }
+        finally
+        {
+            FinalizeStatus(result);
+        }
+    }
+
+    private async Task<TaskResult> MigrateTableCoreAsync(TableMigration tableMigration)
+    {
         var context = CreateTableCopySpec(tableMigration);
 
         if (!await SchemaManager.TableExistsAsync(_source, context.KeyspaceName, context.TableName))
@@ -138,24 +163,17 @@ internal sealed class TableCopyCoordinator : IDisposable
             {
                 var result = await ProcessChunkAsync(tableMigration, chunkIndex, context, initialPercent, contributionFactor);
                 if (result == TaskResult.Canceled)
-                {
-                    PauseProcessing();
                     return TaskResult.Canceled;
-                }
                 if (result == TaskResult.Abort || result == TaskResult.FailedAfterRetries)
                 {
                     _migrationLog.WriteLine($"Copy failed for {context.KeyspaceName}.{context.TableName}[{chunkIndex}].", LogType.Error);
-                    StopProcessing();
                     return result;
                 }
             }
         }
 
         if (MigrationJobContext.Instance.ControlledPauseRequested)
-        {
-            PauseProcessing();
-            return TaskResult.Success;
-        }
+            return TaskResult.Canceled;
 
         tableMigration.SourceCountDuringCopy = tableMigration.CopyChunks.Sum(c => c.SourceQueryRowCount);
         long failed = tableMigration.CopyChunks.Sum(c => c.TargetFailedRowCount);

@@ -968,8 +968,8 @@ else if (@_showLogBackupFile)
         _errorMessage = string.Empty;
         try
         {
-            // Set status BEFORE stopping so StopProcessing
-            // won't downgrade from Paused to Pending
+            // Set status BEFORE stopping so the coordinator's
+            // FinalizeStatus won't downgrade Paused -> Pending
             if (CurrentlyLoadedMigrationJob != null)
                 CurrentlyLoadedMigrationJob.Status = JobStatus.Paused;
             MigrationContext.SaveJob(CurrentlyLoadedMigrationJob);

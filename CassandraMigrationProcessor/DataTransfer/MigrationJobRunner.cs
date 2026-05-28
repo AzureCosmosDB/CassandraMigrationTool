@@ -347,7 +347,7 @@ public class MigrationJobRunner
     public void Stop()
     {
         foreach (var kvp in _activeProcessors)
-            kvp.Value?.StopProcessing();
+            kvp.Value?.Cancel();
         foreach (var kvp in _activeProcessors)
             MigrationUtilities.SafeDispose(kvp.Value, "MigrationJobRunner processor (Stop)");
         _activeProcessors.Clear();
