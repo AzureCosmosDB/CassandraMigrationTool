@@ -154,10 +154,19 @@ public class JobManager
     {
         lock (_stateLock)
         {
+            if (!string.IsNullOrEmpty(_runningJobId))
+                _log.WriteLine($"User requested CANCEL for job {_runningJobId}", LogType.Info);
             _migrationCts?.Cancel();
             MigrationJobRunner?.Stop();
             _runningJobId = string.Empty;
         }
+    }
+
+    public void RequestControlledPause()
+    {
+        if (!string.IsNullOrEmpty(_runningJobId))
+            _log.WriteLine($"User requested PAUSE for job {_runningJobId}", LogType.Info);
+        _ctx.RequestControlledPause();
     }
 
     /// <summary>
@@ -204,6 +213,12 @@ public class JobManager
             _log = CreateLog();
             _log.Initialize(job.Id);
             _log.SetJob(job);
+            bool isResume = job.Status == JobStatus.Paused
+                || job.Status == JobStatus.Pending
+                || job.Status == JobStatus.Faulted;
+            _log.WriteLine(
+                $"User requested {(isResume ? "RESUME" : "START")} for job {job.Id} (prior status={job.Status})",
+                LogType.Info);
             MigrationJobRunner = new MigrationJobRunner(_log);
             _migrationCts = new CancellationTokenSource();
             _runningJobId = job.Id;
