@@ -69,7 +69,7 @@ internal sealed class PageWriter : IDisposable
             ISession? sourceSession = null;
             try
             {
-                sourceSession = CassandraClientFactory.CreateSourceSession(_log.Inner, _config.Job, resources.Context.KeyspaceName, _config.TokenRefreshManager);
+                sourceSession = CassandraClientFactory.CreateSourceSession(_log.Inner, _config.Job, string.Empty, _config.TokenRefreshManager);
                 var allUdts = await SchemaManager.GetUserDefinedTypesAsync(sourceSession, resources.Context.KeyspaceName);
                 var requiredUdts = SchemaManager.FilterUdtsReferencedByTable(
                     allUdts, resources.Columns.Select(c => c.Type));
