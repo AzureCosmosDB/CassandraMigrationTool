@@ -90,16 +90,20 @@ internal class DataCopyWorker
             string tag = current?.Resources.TableId ?? "init";
             _workerLog.WriteLine($"Error on {tag}: {ex.GetType().Name}: {ex.Message}", LogType.Error);
 
-            if (current == null || ExceptionClassifier.IsFatal(ex))
-            {
-                _workerLog.WriteLine("FATAL — failing job", LogType.Error);
-                ctx.Flags.TripFatal();
-                ctx.Flags.WorkerErrors.Add(TaskResult.Abort);
-            }
-            else
-            {
-                ctx.Flags.WorkerErrors.Add(TaskResult.Retry);
-            }
+            // Any escaped exception here means the inner retry layers
+            // (PageReader read retries, PageWriter row-write retries) are
+            // already exhausted. The in-flight partition is dropped — it is
+            // not recycled, its BulkDrainedCount is not incremented, and its
+            // checkpoint did not advance — so continuing the job would
+            // either hang the table's BulkDrainSignal forever, or worse,
+            // silently mark the table complete with a feed range missing.
+            // Trip fatal so the operator can investigate and resume from
+            // the last persisted checkpoint.
+            _workerLog.WriteLine(
+                $"FATAL — worker exhausted retries on {tag}; aborting job to preserve data integrity",
+                LogType.Error);
+            ctx.Flags.TripFatal();
+            ctx.Flags.WorkerErrors.Add(TaskResult.Abort);
         }
         finally
         {
