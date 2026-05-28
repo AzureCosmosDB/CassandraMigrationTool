@@ -1,3 +1,4 @@
+using CassandraMigrationProcessor.CassandraDriver;
 using CassandraMigrationProcessor.Models;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
@@ -6,14 +7,16 @@ using System.Threading.Channels;
 namespace CassandraMigrationProcessor.DataTransfer;
 
 /// <summary>
-/// Per-job worker configuration. Table identifiers, columns, and
-/// per-table state live on <see cref="TableResources"/> attached to each
-/// <see cref="Partition"/> so a single shared worker pool can service
-/// partitions from any table.
+/// Per-job worker configuration. Carries the <see cref="Job"/> so worker
+/// sessions are built via the Job-aware factory overloads — that path
+/// lazily fetches AAD tokens / ARM credentials and caches them onto the
+/// job before any session is opened. Snapshotting <c>ConnectionOptions</c>
+/// here would skip that step and crash workers with a null-password
+/// error when source AAD is enabled.
 /// </summary>
 internal record WorkerConfig(
-    ConnectionOptions SourceConnection,
-    ConnectionOptions TargetConnection,
+    Job Job,
+    TokenRefreshManager? TokenRefreshManager,
     bool EnableReplay,
     int ReplayCooldownMs);
 
@@ -51,7 +54,6 @@ internal record PipelineContext(
     WorkerConfig Worker,
     PipelineCounters Counters)
 {
-    public ConnectionOptions SourceConnection => Worker.SourceConnection;
-    public ConnectionOptions TargetConnection => Worker.TargetConnection;
+    public Job Job => Worker.Job;
     public bool EnableReplay => Worker.EnableReplay;
 }

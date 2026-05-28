@@ -56,7 +56,7 @@ public class MigrationJobRunner
                 $"Migrating {units.Count} tables with {pipelineConfig.WorkerCount} shared workers " +
                 $"(setup parallelism={setupParallelism})", LogType.Info);
 
-            _pipeline = new JobPipeline(_log, job, pipelineConfig, cancellationToken);
+            _pipeline = new JobPipeline(_log, job, pipelineConfig, _tokenRefreshManager, cancellationToken);
             _pipeline.Start();
 
             var abortRequested = false;

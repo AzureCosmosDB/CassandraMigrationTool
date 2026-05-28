@@ -37,7 +37,7 @@ internal class PageReader : IDisposable
         _ct = cancellationToken;
         _pageSize = pageSize;
         _maxReadRetries = maxReadRetries;
-        _sourceSession = CassandraClientFactory.CreateSourceSession(log.Inner, config.SourceConnection, string.Empty);
+        _sourceSession = CassandraClientFactory.CreateSourceSession(log.Inner, config.Job, string.Empty, config.TokenRefreshManager);
     }
 
     public static Task<PageReader> CreateAsync(WorkerLog log,

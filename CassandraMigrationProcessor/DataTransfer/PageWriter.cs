@@ -42,10 +42,10 @@ internal sealed class PageWriter : IDisposable
         _targetSession = targetSession;
     }
 
-    public static Task<PageWriter> CreateAsync(WorkerLog log, WorkerConfig config, int pageSize, int maxWriteRetries, CancellationToken cancellationToken)
+    public static async Task<PageWriter> CreateAsync(WorkerLog log, WorkerConfig config, int pageSize, int maxWriteRetries, CancellationToken cancellationToken)
     {
-        var targetSession = CassandraClientFactory.CreateTargetSession(log.Inner, config.TargetConnection, string.Empty);
-        return Task.FromResult(new PageWriter(log, config, targetSession, pageSize, maxWriteRetries, cancellationToken));
+        var targetSession = await CassandraClientFactory.CreateTargetSessionAsync(log.Inner, config.Job, string.Empty);
+        return new PageWriter(log, config, targetSession, pageSize, maxWriteRetries, cancellationToken);
     }
 
     public void Dispose() => MigrationUtilities.SafeDispose(_targetSession, "PageWriter target session");
@@ -69,7 +69,7 @@ internal sealed class PageWriter : IDisposable
             ISession? sourceSession = null;
             try
             {
-                sourceSession = CassandraClientFactory.CreateSourceSession(_log.Inner, _config.SourceConnection, resources.Context.KeyspaceName);
+                sourceSession = CassandraClientFactory.CreateSourceSession(_log.Inner, _config.Job, resources.Context.KeyspaceName, _config.TokenRefreshManager);
                 var allUdts = await SchemaManager.GetUserDefinedTypesAsync(sourceSession, resources.Context.KeyspaceName);
                 var requiredUdts = SchemaManager.FilterUdtsReferencedByTable(
                     allUdts, resources.Columns.Select(c => c.Type));

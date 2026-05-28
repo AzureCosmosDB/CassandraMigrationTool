@@ -1,3 +1,4 @@
+using CassandraMigrationProcessor.CassandraDriver;
 using CassandraMigrationProcessor.Infrastructure;
 using CassandraMigrationProcessor.Models;
 using System;
@@ -23,7 +24,7 @@ internal sealed class JobPipeline : IDisposable
     private readonly WorkerPool _pool;
     public PipelineContext Context { get; }
 
-    public JobPipeline(MigrationLog log, Job job, PipelineConfig pipelineConfig, CancellationToken externalToken)
+    public JobPipeline(MigrationLog log, Job job, PipelineConfig pipelineConfig, TokenRefreshManager? tokenRefreshManager, CancellationToken externalToken)
     {
         _log = log;
         _pipelineConfig = pipelineConfig;
@@ -41,7 +42,7 @@ internal sealed class JobPipeline : IDisposable
 
         Context = new PipelineContext(
             pool,
-            new WorkerConfig(job.SourceConnection, job.TargetConnection,
+            new WorkerConfig(job, tokenRefreshManager,
                 EnableReplay: enableReplay,
                 ReplayCooldownMs: pipelineConfig.ChangeFeedPollIntervalMs),
             new PipelineCounters());
