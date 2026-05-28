@@ -77,10 +77,6 @@ builder.Services.AddSingleton(migrationJobContext);
 builder.Services.AddSingleton<MigrationContextService>();
 builder.Services.AddSingleton<JobManager>();
 
-// Background service: keeps migration alive across
-// IIS app pool recycles and auto-resumes jobs.
-builder.Services.AddHostedService<MigrationHostedService>();
-
 // Add authentication services
 builder.Services.AddSingleton<PasswordManager>();
 builder.Services.AddScoped<AuthenticationService>();
