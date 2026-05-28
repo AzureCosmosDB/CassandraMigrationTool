@@ -21,7 +21,6 @@ internal class Partitioner
 
     public record SeedResult(
         TableResources Resources,
-        int PendingCount,
         bool AllRangesComplete);
 
     /// <summary>
@@ -61,7 +60,7 @@ internal class Partitioner
             _log.WriteLine($"All {feedRanges.Count} ranges already completed for {context.KeyspaceName}.{context.TableName}", LogType.Info);
             // Mark drain immediately so callers don't wait.
             resources.BulkDrainSignal.TrySetResult();
-            return new SeedResult(resources, 0, AllRangesComplete: true);
+            return new SeedResult(resources, AllRangesComplete: true);
         }
 
         int bulkCount = pendingRanges.Count(p => p.Phase == PartitionPhase.Bulk);
@@ -103,6 +102,6 @@ internal class Partitioner
         if (resumedCount > 0)
             _log.WriteLine($"Resuming {resumedCount}/{pendingRanges.Count} ranges from checkpoint for {context.KeyspaceName}.{context.TableName}", LogType.Info);
 
-        return new SeedResult(resources, pendingRanges.Count, AllRangesComplete: false);
+        return new SeedResult(resources, AllRangesComplete: false);
     }
 }
