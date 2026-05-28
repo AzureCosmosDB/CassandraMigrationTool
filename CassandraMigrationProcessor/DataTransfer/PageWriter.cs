@@ -64,6 +64,10 @@ internal sealed class PageWriter : IDisposable
 
     private Task EnsureTargetUdtsRegisteredAsync(Partition partition)
     {
+        // Simulated run: target session has no UDT registration surface.
+        if (_targetSession is NullSession)
+            return Task.CompletedTask;
+
         return _udtRegistrations.GetOrAdd(partition.Spec.TargetKeyspaceName, async ks =>
         {
             ISession? sourceSession = null;

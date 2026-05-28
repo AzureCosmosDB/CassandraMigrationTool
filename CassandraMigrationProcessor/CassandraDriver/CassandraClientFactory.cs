@@ -326,6 +326,9 @@ public static class CassandraClientFactory
     public static async Task<ISession> CreateTargetSessionAsync(
         MigrationLog MigrationLog, Job job)
     {
+        if (job.IsSimulatedRun)
+            return new NullSession();
+
         if (string.IsNullOrEmpty(job.TargetContactPoint))
             throw new ArgumentException("Target contact point is required", nameof(job));
 

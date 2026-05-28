@@ -29,6 +29,11 @@ internal static class RowWriteStrategyFactory
         string targetKeyspace, string targetTable, int maxWriteRetries,
         bool isCounterTable)
     {
+        // Simulated run: target is a NullSession that cannot prepare.
+        // Skip strategy preparation entirely and count rows as written.
+        if (targetSession is NullSession)
+            return new SimulatedRowWriteStrategy();
+
         // One policy per worker, shared across rows and across strategy
         // variants. Linear 500ms × attempt matches the historical schedule.
         var retryPolicy = RetryPolicy.Linear(maxWriteRetries, TimeSpan.FromMilliseconds(500));

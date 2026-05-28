@@ -108,6 +108,11 @@ public class MigrationJobRunner
         Job job, IReadOnlyList<TableMigration> units, CancellationToken ct)
     {
         var failed = new HashSet<string>(StringComparer.Ordinal);
+        if (job.IsSimulatedRun)
+        {
+            _log.WriteLine("Simulated run: skipping target schema provisioning.", LogType.Info);
+            return failed;
+        }
         foreach (var mu in units)
         {
             ct.ThrowIfCancellationRequested();
@@ -146,11 +151,6 @@ public class MigrationJobRunner
         CancellationToken ct)
     {
         var chunks = new List<TablePartitioning>();
-        if (job.IsSimulatedRun)
-        {
-            _log.WriteLine("Simulated run: skipping partition discovery.", LogType.Info);
-            return new JobPartitioning(chunks);
-        }
 
         var partitioner = new Partitioner(_log);
         var sourceSession = CassandraClientFactory.CreateSourceSession(_log, job, _tokenRefreshManager);
