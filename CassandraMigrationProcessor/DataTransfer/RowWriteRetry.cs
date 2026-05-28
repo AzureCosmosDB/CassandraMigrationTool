@@ -23,7 +23,6 @@ internal static class RowWriteRetry
         Func<Task> attempt,
         RetryPolicy policy,
         WorkerLog log,
-        int rowIndex,
         string rowKind,
         WriteCounters counters,
         CancellationToken cancellationToken)
@@ -48,7 +47,7 @@ internal static class RowWriteRetry
             {
                 if (ExceptionClassifier.IsFatal(ex))
                 {
-                    log.WriteLine($"FATAL {rowKind} {rowIndex}: {ex.GetType().Name}: {ex.Message}",
+                    log.WriteLine($"FATAL {rowKind}: {ex.GetType().Name}: {ex.Message}",
                         LogType.Error);
                     Interlocked.Increment(ref counters.Failed);
                     return WriteOutcome.Fatal;
@@ -61,7 +60,7 @@ internal static class RowWriteRetry
                 }
 
                 Interlocked.Increment(ref counters.Failed);
-                log.WriteLine($"{rowKind} {rowIndex} FAILED after {n} attempt(s): {ex.GetType().Name}: {ex.Message}",
+                log.WriteLine($"{rowKind} FAILED after {n} attempt(s): {ex.GetType().Name}: {ex.Message}",
                     LogType.Error);
 
                 return ExceptionClassifier.IsTransient(ex)

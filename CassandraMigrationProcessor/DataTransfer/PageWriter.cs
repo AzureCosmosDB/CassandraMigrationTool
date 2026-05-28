@@ -121,7 +121,7 @@ internal sealed class PageWriter : IDisposable
                 || Volatile.Read(ref ctx.Flags.FatalErrorFlag) != 0)
                 break;
 
-            writeTasks.Add(strategy.WriteRowAsync(rows[i], counters, i, _ct));
+            writeTasks.Add(strategy.WriteRowAsync(rows[i], counters, _ct));
         }
 
         var outcomes = await Task.WhenAll(writeTasks);

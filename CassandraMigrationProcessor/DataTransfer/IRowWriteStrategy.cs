@@ -16,7 +16,7 @@ namespace CassandraMigrationProcessor.DataTransfer;
 /// </summary>
 internal interface IRowWriteStrategy
 {
-    Task<WriteOutcome> WriteRowAsync(object[] sourceRow, WriteCounters counters, int rowIndex, CancellationToken cancellationToken);
+    Task<WriteOutcome> WriteRowAsync(object[] sourceRow, WriteCounters counters, CancellationToken cancellationToken);
 }
 
 /// <summary>
