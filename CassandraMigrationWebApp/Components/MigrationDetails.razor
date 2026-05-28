@@ -174,12 +174,12 @@
                     {
                         <div class="row mb-3">
                             <div class="col-md-6">
-                                <label for="parallelThreads" class="form-label" title="Number of tables to copy in parallel. Higher values copy more tables concurrently but use more connections. Default = ProcessorCount * 5.">Parallel tables</label>
+                                <label for="parallelThreads" class="form-label" title="Maximum number of tables whose copy is orchestrated concurrently. Caps copy-phase and schema-phase fan-out. Default = 5.">Parallel tables</label>
                                 <input type="number" id="parallelThreads" class="form-control" @bind="parallelThreads" min="1" max="500" placeholder="@($"Default ({defaultParallelThreads})")"/>
                             </div>
                             <div class="col-md-6">
-                                <label for="feedRangeWorkers" class="form-label" title="Workers per table. 0 = auto (CPU cores × 15 / parallel tables).">Feed range workers</label>
-                                <input type="number" id="feedRangeWorkers" class="form-control" @bind="feedRangeWorkers" min="0" max="500" placeholder="Auto"/>
+                                <label for="feedRangeWorkers" class="form-label" title="Size of the shared worker pool that does row-level copy work across all tables. Leave blank for auto = max(MinWorkers, ProcessorCount × WorkerMultiplier).">Shared workers</label>
+                                <input type="number" id="feedRangeWorkers" class="form-control" @bind="feedRangeWorkers" min="0" max="500" placeholder="@($"Auto ({Math.Max(MigrationDefaults.MinWorkers, Environment.ProcessorCount * MigrationDefaults.WorkerMultiplier)})")"/>
                             </div>
                         </div>
                         <div class="row mb-3">
