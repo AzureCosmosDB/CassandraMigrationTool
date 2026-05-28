@@ -86,7 +86,8 @@
                         <i class="bi bi-cpu"></i>
                         <strong>Workers/table:</strong> @(sj.MaxFeedRangeParallelism > 0 ? sj.MaxFeedRangeParallelism.ToString() : $"auto ({Math.Max(4, Environment.ProcessorCount * 15 / Math.Max(1, sj.ParallelThreads))})")
                         · <strong>Parallel tables:</strong> @sj.ParallelThreads
-                        · <strong>Connections/host:</strong> @(sj.MaxConnectionsPerHost > 0 ? sj.MaxConnectionsPerHost.ToString() : "1")
+                        · <strong>Source conn/host:</strong> @FormatConnPerHost(sj.SourceMaxConnectionsPerHost, sj.MaxConnectionsPerHost, sj.SourceContactPoint)
+                        · <strong>Target conn/host:</strong> @FormatConnPerHost(sj.TargetMaxConnectionsPerHost, sj.MaxConnectionsPerHost, sj.TargetContactPoint)
                         · <strong>Page size:</strong> @(sj.PageSize > 0 ? sj.PageSize.ToString() : "500")
                     </small>
                 </div>
@@ -123,4 +124,20 @@
     [Parameter] public Job? Job { get; set; }
     [Parameter] public string StatusLabel { get; set; } = string.Empty;
     [Parameter] public string StatusBadge { get; set; } = string.Empty;
+
+    private static string FormatConnPerHost(int sideValue, int fallback, string? contactPoint)
+    {
+        int effective = sideValue > 0 ? sideValue : fallback;
+        if (effective > 0) return effective.ToString();
+        return IsCosmos(contactPoint) ? "10 (auto)" : "driver default";
+    }
+
+    private static bool IsCosmos(string? cp)
+    {
+        if (string.IsNullOrWhiteSpace(cp)) return false;
+        return cp.EndsWith(".cassandra.cosmos.azure.com", StringComparison.OrdinalIgnoreCase)
+            || cp.EndsWith(".cassandra.cosmosdb.azure.com", StringComparison.OrdinalIgnoreCase)
+            || cp.EndsWith(".cassandra.cosmos.azure.us", StringComparison.OrdinalIgnoreCase)
+            || cp.EndsWith(".cassandra.cosmos.azure.cn", StringComparison.OrdinalIgnoreCase);
+    }
 }

@@ -184,8 +184,12 @@
                         </div>
                         <div class="row mb-3">
                             <div class="col-md-6">
-                                <label for="connectionsPerHost" class="form-label" title="Cassandra driver connections per host per worker. 0 = default (1).">Connections per host</label>
-                                <input type="number" id="connectionsPerHost" class="form-control" @bind="connectionsPerHost" min="0" max="128" placeholder="Default (1)"/>
+                                <label for="sourceConnectionsPerHost" class="form-label" title="Source (reader) Cassandra driver connections per host. 0 = use Cosmos DB recommendation (10) for Cosmos endpoints, driver default otherwise.">Source connections per host</label>
+                                <input type="number" id="sourceConnectionsPerHost" class="form-control" @bind="sourceConnectionsPerHost" min="0" max="128" placeholder="Auto"/>
+                            </div>
+                            <div class="col-md-6">
+                                <label for="targetConnectionsPerHost" class="form-label" title="Target (writer) Cassandra driver connections per host. 0 = use Cosmos DB recommendation (10) for Cosmos endpoints, driver default otherwise.">Target connections per host</label>
+                                <input type="number" id="targetConnectionsPerHost" class="form-control" @bind="targetConnectionsPerHost" min="0" max="128" placeholder="Auto"/>
                             </div>
                         </div>
                         <div class="row mb-3">
@@ -251,7 +255,8 @@
     private int? parallelThreads = null; // Parallel threads for CQL Copy
     private int defaultParallelThreads = 5;
     private int? feedRangeWorkers = null; // Max concurrent feed range workers per table
-    private int? connectionsPerHost = null; // Max connections per host (0 = default)
+    private int? sourceConnectionsPerHost = null; // Source reader connections per host (0 = auto)
+    private int? targetConnectionsPerHost = null; // Target writer connections per host (0 = auto)
     private int? pageSize = null; // Rows per page (0 = default 500)
     private int? maxReadRetries = null; // Per-page source read retries (0 = default 3)
     private int? maxWriteRetries = null; // Per-row target write retries (0 = default 5)
@@ -400,7 +405,8 @@
             skipSchemaSync = Job?.SkipSchemaSync ?? false;
             parallelThreads = Job?.ParallelThreads == defaultParallelThreads ? null : Job?.ParallelThreads;
             feedRangeWorkers = Job?.MaxFeedRangeParallelism == 0 ? null : Job?.MaxFeedRangeParallelism;
-            connectionsPerHost = Job?.MaxConnectionsPerHost == 0 ? null : Job?.MaxConnectionsPerHost;
+            sourceConnectionsPerHost = Job?.SourceMaxConnectionsPerHost == 0 ? null : Job?.SourceMaxConnectionsPerHost;
+            targetConnectionsPerHost = Job?.TargetMaxConnectionsPerHost == 0 ? null : Job?.TargetMaxConnectionsPerHost;
             pageSize = Job?.PageSize == 0 ? null : Job?.PageSize;
             maxReadRetries = Job?.MaxReadRetries == 0 ? null : Job?.MaxReadRetries;
             maxWriteRetries = Job?.MaxWriteRetries == 0 ? null : Job?.MaxWriteRetries;
@@ -508,7 +514,8 @@
             SkipSchemaSync = skipSchemaSync,
             ParallelThreads = parallelThreads ?? defaultParallelThreads,
             MaxFeedRangeParallelism = feedRangeWorkers ?? 0,
-            MaxConnectionsPerHost = connectionsPerHost ?? 0,
+            SourceMaxConnectionsPerHost = sourceConnectionsPerHost ?? 0,
+            TargetMaxConnectionsPerHost = targetConnectionsPerHost ?? 0,
             PageSize = pageSize ?? 0,
             MaxReadRetries = maxReadRetries ?? 0,
             MaxWriteRetries = maxWriteRetries ?? 0,

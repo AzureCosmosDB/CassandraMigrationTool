@@ -343,8 +343,24 @@ public static class CassandraClientFactory
             username,
             password,
             tokenRefreshManager,
-            maxConnectionsPerHost: job.MaxConnectionsPerHost);
+            maxConnectionsPerHost: ResolveSourceMaxConnectionsPerHost(job));
     }
+
+    /// <summary>
+    /// Per-side connection pool sizing. The job-level
+    /// <see cref="Job.MaxConnectionsPerHost"/> is the back-compat
+    /// fallback so jobs persisted before the per-side knobs existed
+    /// keep behaving the same on resume.
+    /// </summary>
+    internal static int ResolveSourceMaxConnectionsPerHost(Job job)
+        => job.SourceMaxConnectionsPerHost > 0
+            ? job.SourceMaxConnectionsPerHost
+            : job.MaxConnectionsPerHost;
+
+    internal static int ResolveTargetMaxConnectionsPerHost(Job job)
+        => job.TargetMaxConnectionsPerHost > 0
+            ? job.TargetMaxConnectionsPerHost
+            : job.MaxConnectionsPerHost;
 
     /// <summary>
     /// Async version — Create target session from a Job's properties.
@@ -395,6 +411,6 @@ public static class CassandraClientFactory
             job.TargetPort,
             username,
             password,
-            maxConnectionsPerHost: job.MaxConnectionsPerHost);
+            maxConnectionsPerHost: ResolveTargetMaxConnectionsPerHost(job));
     }
 }

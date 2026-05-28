@@ -53,10 +53,28 @@ public class Job
     public int MaxFeedRangeParallelism { get; set; } = 0;
 
     /// <summary>
-    /// Max Cassandra driver connections per host.
-    /// 0 = default (1 per worker session).
+    /// Max Cassandra driver connections per host. Back-compat
+    /// fallback for both source and target when
+    /// <see cref="SourceMaxConnectionsPerHost"/> /
+    /// <see cref="TargetMaxConnectionsPerHost"/> are 0. 0 here also
+    /// means: use Cosmos DB recommendation for Cosmos endpoints,
+    /// driver default otherwise.
     /// </summary>
     public int MaxConnectionsPerHost { get; set; } = 0;
+
+    /// <summary>
+    /// Source (reader) driver connections per host. 0 falls back to
+    /// <see cref="MaxConnectionsPerHost"/>, which itself falls back
+    /// to the Cosmos DB recommendation for Cosmos endpoints and the
+    /// driver default otherwise.
+    /// </summary>
+    public int SourceMaxConnectionsPerHost { get; set; } = 0;
+
+    /// <summary>
+    /// Target (writer) driver connections per host. Same fallback
+    /// chain as <see cref="SourceMaxConnectionsPerHost"/>.
+    /// </summary>
+    public int TargetMaxConnectionsPerHost { get; set; } = 0;
 
     /// <summary>
     /// Rows per page when reading from source.
