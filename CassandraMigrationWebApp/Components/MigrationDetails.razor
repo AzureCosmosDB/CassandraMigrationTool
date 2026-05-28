@@ -51,7 +51,7 @@
                         </div>
                         <div class="col-md-4">
                             <label for="sourcePort" class="form-label">Port</label>
-                            <input type="number" id="sourcePort" class="form-control" @bind="sourcePort" />
+                            <input type="number" id="sourcePort" class="form-control" min="1" max="65535" @bind="sourcePort" />
                         </div>
                     </div>
                     <div class="row mb-2">
@@ -84,7 +84,7 @@
                         </div>
                         <div class="col-md-4">
                             <label for="targetPort" class="form-label">Port</label>
-                            <input type="number" id="targetPort" class="form-control" @bind="targetPort" />
+                            <input type="number" id="targetPort" class="form-control" min="1" max="65535" @bind="targetPort" />
                         </div>
                     </div>
                     <div class="row mb-3">
@@ -213,7 +213,7 @@
 
                 @if (!string.IsNullOrEmpty(errorMessage))
                 {
-                    <div class="alert alert-danger mt-2">
+                    <div class="alert alert-danger mt-2" style="white-space: pre-line">
                         @errorMessage
                         <button type="button" class="btn-close btn-close-sm" aria-label="Close" @onclick="() => errorMessage = string.Empty"></button>
                     </div>
@@ -423,32 +423,37 @@
 
     private async Task HandleSubmit()
     {
+        // Overwrite confirmation is treated as a hard gate that bypasses
+        // accumulation: until the operator opts in we should not waste
+        // time validating the rest of the form.
         if (ShowWarning() && !overwrite)
         {
             errorMessage = "Please check the overwrite option to proceed with migration.";
             return;
         }
 
+        // Aggregate every validation problem in a single pass so the
+        // operator does not have to fix-submit-fix-submit one field at a
+        // time. Keep the messages stable in order so the rendered list
+        // is predictable.
+        var errors = new List<string>();
+
         if (string.IsNullOrEmpty(name))
         {
-            errorMessage = "Name can't be empty.";
-            return;
+            errors.Add("Name can't be empty.");
         }
-
-        if (NewMode && CheckNameExists != null) // Ensure callback is provided
+        else if (NewMode && CheckNameExists != null)
         {
             var nameExists = await CheckNameExists(name);
             if (nameExists)
             {
-                errorMessage = "Name already exists.";
-                return;
+                errors.Add("Name already exists.");
             }
         }
 
         if (string.IsNullOrEmpty(sourceConnectionString))
         {
-            errorMessage = "Source Connection String can't be empty.";
-            return;
+            errors.Add("Source Connection String can't be empty.");
         }
 
         // For simulation mode, add a dummy target connection string if not provided
@@ -460,15 +465,24 @@
             }
             else
             {
-                errorMessage = "Target Connection String can't be empty.";
-                return;
+                errors.Add("Target Connection String can't be empty.");
             }
         }
 
-        if (sourceConnectionString == targetConnectionString && !isSimulatedRun)
+        if (!string.IsNullOrEmpty(sourceConnectionString)
+            && sourceConnectionString == targetConnectionString
+            && !isSimulatedRun)
         {
-            errorMessage = "Target and Source contact points can't be the same.";
-            return;
+            errors.Add("Target and Source contact points can't be the same.");
+        }
+
+        if (sourcePort < 1 || sourcePort > 65535)
+        {
+            errors.Add($"Source Port must be between 1 and 65535 (got {sourcePort}).");
+        }
+        if (targetPort < 1 || targetPort > 65535)
+        {
+            errors.Add($"Target Port must be between 1 and 65535 (got {targetPort}).");
         }
 
         if (NewMode)
@@ -477,18 +491,22 @@
 
             if (retValue == null)
             {
-                errorMessage = "Invalid namespace format.";
-                return;
+                errors.Add("Invalid namespace format.");
             }
-            if (!retValue.Item1)
+            else if (!retValue.Item1)
             {
-                errorMessage = retValue.Item3;
-                return;
+                errors.Add(retValue.Item3);
             }
             else
             {
                 namespaces = retValue.Item2;
             }
+        }
+
+        if (errors.Count > 0)
+        {
+            errorMessage = string.Join("\n", errors.Select(e => "• " + e));
+            return;
         }
 
 
