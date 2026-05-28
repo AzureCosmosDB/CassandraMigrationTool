@@ -150,8 +150,8 @@ internal class PageReader : IDisposable
 
     internal static string BuildSelectCql(TableCopySpec context, string range)
     {
-        MigrationUtilities.ValidateCqlIdentifier(context.KeyspaceName);
-        MigrationUtilities.ValidateCqlIdentifier(context.TableName);
+        CqlIdentifier.Validate(context.KeyspaceName);
+        CqlIdentifier.Validate(context.TableName);
         return
             $"SELECT * FROM \"{context.KeyspaceName}\".\"{context.TableName}\"" +
             $" WHERE COSMOS_CHANGEFEED_FROM_START() = true AND COSMOS_FEEDRANGE() = '{range}'";

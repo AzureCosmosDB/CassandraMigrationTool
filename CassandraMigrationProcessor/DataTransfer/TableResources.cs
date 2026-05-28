@@ -31,7 +31,7 @@ internal sealed class TableResources
     /// fixed property of the schema and computing it per write would
     /// be wasted work.
     /// </summary>
-    public readonly bool IsCounterTable;
+    public bool IsCounterTable { get; }
 
     /// <summary>Total number of feed ranges for this table.</summary>
     public int TotalFeedRanges { get; }
@@ -52,7 +52,7 @@ internal sealed class TableResources
     /// each table has its own drain handoff moment.
     /// </summary>
     public TaskCompletionSource BulkDrainSignal { get; } =
-        new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     public string FullTableName => $"{Spec.KeyspaceName}.{Spec.TableName}";
 

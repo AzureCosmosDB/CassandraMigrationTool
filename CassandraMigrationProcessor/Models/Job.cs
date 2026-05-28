@@ -129,4 +129,33 @@ public class Job
     public bool AutoRefreshEnabled { get; set; } = true;
 
     public string? Namespaces { get; set; }
+
+    /// <summary>
+    /// True when this job runs change-data-capture replay alongside bulk
+    /// copy. False for pure offline jobs which finish once bulk copy
+    /// completes. Replaces <c>MigrationUtilities.IsOnline(Job)</c>.
+    /// </summary>
+    [JsonIgnore]
+    public bool IsOnline => CDCMode != CDCMode.Offline;
+
+    /// <summary>
+    /// True iff every valid table in this offline job has finished bulk
+    /// copy. Always false for online jobs (they don't have a single
+    /// "done" moment — they tail change feeds forever). Replaces
+    /// <c>MigrationUtilities.IsOfflineJobCompleted(Job)</c>.
+    /// </summary>
+    [JsonIgnore]
+    public bool IsOfflineCompleted
+    {
+        get
+        {
+            if (Tables.Count == 0) return false;
+            foreach (var t in Tables)
+            {
+                if (!t.IsValid) continue;
+                if (!t.CopyComplete) return false;
+            }
+            return true;
+        }
+    }
 }

@@ -2,6 +2,9 @@ using CassandraMigrationProcessor.Infrastructure;
 using Newtonsoft.Json;
 using System;
 using System.Collections.Generic;
+using System.Linq;
+using System.Security.Cryptography;
+using System.Text;
 using System.Threading;
 
 namespace CassandraMigrationProcessor.Models;
@@ -56,6 +59,19 @@ public class TableMigrationSummary
         return string.IsNullOrWhiteSpace(TargetTableName)
             ? TableName : TargetTableName;
     }
+
+    /// <summary>
+    /// True when this table summary represents a row we should still
+    /// touch during migration. <see cref="TableStatus.OK"/> and
+    /// <see cref="TableStatus.Failed"/> both qualify — Failed tables
+    /// are retried on resume. Only <see cref="TableStatus.NotFound"/>
+    /// (e.g. dropped on the source) is excluded. Replaces
+    /// <c>MigrationUtilities.IsMigrationUnitValid</c>.
+    /// </summary>
+    [JsonIgnore]
+    public bool IsValid =>
+        SourceStatus == TableStatus.OK
+        || SourceStatus == TableStatus.Failed;
 }
 
 /// <summary>
@@ -174,8 +190,7 @@ public class TableMigration : TableMigrationSummary
         string tableName,
         List<CopyChunk> CopyChunks)
     {
-        this.Id = MigrationUtilities.GenerateMigrationUnitId(
-            keyspaceName, tableName);
+        this.Id = GenerateId(keyspaceName, tableName);
         this.KeyspaceName = keyspaceName;
         this.TableName = tableName;
         this.TargetKeyspaceName = keyspaceName;
@@ -186,5 +201,31 @@ public class TableMigration : TableMigrationSummary
             this.JobId = job.Id;
             this.ParentJob = job;
         }
+    }
+
+    /// <summary>
+    /// Stable deterministic id for a (keyspace, table) pair: first 16
+    /// hex chars of SHA-256("keyspace.table"). Lives here because the
+    /// id is a TableMigration concern and was previously buried in
+    /// <c>MigrationUtilities</c>.
+    /// </summary>
+    public static string GenerateId(string keyspaceName, string tableName)
+    {
+        using var sha = SHA256.Create();
+        byte[] hashBytes = sha.ComputeHash(
+            Encoding.UTF8.GetBytes($"{keyspaceName}.{tableName}"));
+        return BitConverter.ToString(hashBytes)
+            .Replace("-", "").Substring(0, 16).ToLower();
+    }
+
+    /// <summary>
+    /// Aggregates copy-chunk totals: <c>(Total, Inserted, Failed)</c>.
+    /// Replaces <c>MigrationUtilities.GetProcessedTotals(TableMigration)</c>.
+    /// </summary>
+    public (long Total, long Inserted, long Failed) GetProcessedTotals()
+    {
+        long inserted = CopyChunks?.Sum(c => c.TargetInsertedRowCount) ?? 0;
+        long failed = CopyChunks?.Sum(c => c.TargetFailedRowCount) ?? 0;
+        return (inserted + failed, inserted, failed);
     }
 }

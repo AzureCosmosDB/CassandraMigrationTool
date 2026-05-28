@@ -57,7 +57,7 @@
                     Rows Copied
                     <i class="bi @GetSortIcon("RowsCopied") ms-1"></i>
                 </th>
-                @if (Job != null && MigrationUtilities.IsOnline(Job))
+                @if (Job != null && Job.IsOnline)
                 {
                     <th class="sortable-header @GetSortClass("TimeSinceLastChange")" @onclick='() => SortBy("TimeSinceLastChange")' style="cursor: pointer;">
                         Last Checked
@@ -97,7 +97,7 @@
                                 else if (mu.SkippedDueToMaxRetries)
                                 { copyStatus = "Skipped (Max Retries)"; barColor = "bg-warning"; pct = 100; }
                                 else if (mu.CopyComplete && Job != null
-                                    && MigrationUtilities.IsOnline(Job)
+                                    && Job.IsOnline
                                     && Job.Status == JobStatus.Running)
                                 { copyStatus = "Replaying"; barColor = "bg-info"; pct = 100; }
                                 else if (mu.CopyComplete)
@@ -137,7 +137,7 @@
                             @(mu.CopyRowsCopied > 0 ? mu.CopyRowsCopied.ToString("N0") : "-")
                         </td>
 
-                        @if (Job != null && MigrationUtilities.IsOnline(Job))
+                        @if (Job != null && Job.IsOnline)
                         {
                             <td title="Avg Read Latency: @mu.ChangeFeedAvgReadLatencyInMS.ToString("F2") ms | Avg Write Latency: @mu.ChangeFeedAvgWriteLatencyInMS.ToString("F2") ms">                           
                                 @(mu.ChangeFeedLastChecked.HasValue ? MigrationUtilities.GetTimestampDiff(mu.ChangeFeedLastChecked.Value) : "NA")
@@ -290,14 +290,14 @@
             if (sourceStatus.Contains(searchText, StringComparison.OrdinalIgnoreCase))
                 return true;
 
-            if (Job != null && MigrationUtilities.IsOnline(Job) == true)
+            if (Job != null && Job.IsOnline == true)
             {
                 var lagText = mu.ChangeFeedLastChecked.HasValue ? MigrationUtilities.GetTimestampDiff(mu.ChangeFeedLastChecked.Value) : "NA";
                 if (lagText.Contains(searchText, StringComparison.OrdinalIgnoreCase))
                     return true;
             }
 
-            if (Job != null && MigrationUtilities.IsOnline(Job) == true)
+            if (Job != null && Job.IsOnline == true)
             {
                 var batchCount = mu.ChangeFeedUpdatesInLastBatch.ToString();
                 if (batchCount.Contains(searchText, StringComparison.OrdinalIgnoreCase))

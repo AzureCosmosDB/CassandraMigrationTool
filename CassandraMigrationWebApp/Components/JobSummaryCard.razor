@@ -23,7 +23,7 @@
                 <div class="col">
                     <small class="text-muted">
                         <strong>Type:</strong> @sj.JobType
-                        @if (MigrationUtilities.IsOnline(sj)) { <span> · <strong>Mode:</strong> Online (CDC)</span> }
+                        @if (sj.IsOnline) { <span> · <strong>Mode:</strong> Online (CDC)</span> }
                         else { <span> · <strong>Mode:</strong> Offline</span> }
                         @if (sj.StartedOn.HasValue) { <span> · <strong>Started:</strong> @sj.StartedOn.Value.ToString("yyyy-MM-dd HH:mm:ss") UTC</span> }
                         @if (sj.IsSimulatedRun) { <span class="badge bg-info ms-1">Simulated</span> }

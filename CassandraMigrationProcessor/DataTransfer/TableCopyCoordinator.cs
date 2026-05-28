@@ -135,7 +135,7 @@ internal sealed class TableCopyCoordinator : IDisposable
             return TaskResult.Abort;
         }
 
-        bool isOnline = MigrationUtilities.IsOnline(_migrationJob);
+        bool isOnline = _migrationJob.IsOnline;
         if (tableMigration.CopyComplete && !isOnline)
         {
             _migrationLog.WriteLine($"Copy for {context.KeyspaceName}.{context.TableName} already completed.", LogType.Debug);
@@ -226,7 +226,7 @@ internal sealed class TableCopyCoordinator : IDisposable
             return TaskResult.Abort;
         }
 
-        bool isOnline = MigrationUtilities.IsOnline(_migrationJob);
+        bool isOnline = _migrationJob.IsOnline;
 
         var tracker = new CopyProgressTracker(_migrationLog,
             tableMigration.CopyRowsCopied, tableMigration,

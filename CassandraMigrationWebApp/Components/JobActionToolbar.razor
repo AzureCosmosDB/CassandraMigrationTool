@@ -40,7 +40,7 @@
                 </span>
             }
             
-            @if (Job != null && MigrationUtilities.IsOnline(Job))
+            @if (Job != null && Job.IsOnline)
             {
                 var lagInfo = ChangeFeedLag;
                 <span class="badge @(lagInfo.IsLow ? "bg-success" : "bg-warning text-dark") me-1"

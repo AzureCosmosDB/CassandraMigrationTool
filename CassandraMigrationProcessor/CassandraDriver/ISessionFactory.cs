@@ -1,4 +1,3 @@
-using System.Threading.Tasks;
 using Cassandra;
 using CassandraMigrationProcessor.Models;
 using CassandraMigrationProcessor.Infrastructure;

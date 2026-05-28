@@ -63,7 +63,7 @@
 
 @if (_resetChangeStreamDialogOpen && CurrentlyLoadedMigrationJob != null)
 {
-    <ResetChangeStream MigrationUnits="@((@JobManager.GetMigrationUnits(CurrentlyLoadedMigrationJob) ?? new List<TableMigration>()).Where(mu => MigrationUtilities.IsMigrationUnitValid(mu)).ToList())" OnCollectionsUpdated="@OnCSReset" />
+    <ResetChangeStream MigrationUnits="@((@JobManager.GetMigrationUnits(CurrentlyLoadedMigrationJob) ?? new List<TableMigration>()).Where(mu => mu.IsValid).ToList())" OnCollectionsUpdated="@OnCSReset" />
 }
 @if (_collectionDetailsDialogOpen && _selectedMigrationUnit != null)
 {
@@ -96,7 +96,7 @@
 {
     <div class="d-flex align-items-center mb-3 mt-4">
         <button class="btn btn-primary mx-2" title="You can add or remove collections from this job. Be sure to pause the job before doing so." @onclick="ManageCollections" disabled="@_isLoadingCollections">Update Tables</button>
-        @if (CurrentlyLoadedMigrationJob != null && MigrationUtilities.IsOnline(CurrentlyLoadedMigrationJob))
+        @if (CurrentlyLoadedMigrationJob != null && CurrentlyLoadedMigrationJob.IsOnline)
         {
             <button class="btn btn-warning mx-2" title="Reset the change feed checkpoint." @onclick="ResetChangeStream">
                 Reset Change Feed
@@ -739,7 +739,7 @@ else if (@_showLogBackupFile)
                 GetTargetConnectionString(mj),
                 mj.Namespaces ?? string.Empty,
                 mj.JobType,
-                MigrationUtilities.IsOnline(mj));
+                mj.IsOnline);
         });
 
         StartAutoRefresh();

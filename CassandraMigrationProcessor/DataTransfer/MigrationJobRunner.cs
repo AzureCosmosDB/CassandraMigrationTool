@@ -3,13 +3,7 @@ using CassandraMigrationProcessor.Context;
 using CassandraMigrationProcessor.Infrastructure;
 using CassandraMigrationProcessor.CassandraDriver;
 using CassandraMigrationProcessor.Models;
-using CassandraMigrationProcessor.DataTransfer;
-using System;
 using System.Collections.Concurrent;
-using System.Collections.Generic;
-using System.Linq;
-using System.Threading;
-using System.Threading.Tasks;
 
 namespace CassandraMigrationProcessor.DataTransfer;
 
@@ -101,7 +95,7 @@ public class MigrationJobRunner
             // All tables have either drained or completed. Online jobs
             // keep the shared pool alive for change-feed tailing; offline
             // jobs close the channel so workers exit.
-            if (MigrationUtilities.IsOnline(job))
+            if (job.IsOnline)
             {
                 _log.WriteLine("All tables drained. Change feed replaying on shared worker pool.", LogType.Info);
                 while (!cancellationToken.IsCancellationRequested
@@ -188,7 +182,7 @@ public class MigrationJobRunner
 
     private async Task HandleOfflineCompletionAsync(Job job)
     {
-        if (MigrationUtilities.IsOfflineJobCompleted(job)
+        if (job.IsOfflineCompleted
             && !MigrationJobContext.Instance.ControlledPauseRequested
             && job.Status != JobStatus.Cancelled
             && job.Status != JobStatus.Paused)
@@ -248,7 +242,7 @@ public class MigrationJobRunner
                 mu.BulkCopyPhase = BulkCopyPhase.Copying;
 
             mu.BulkCopyStartedOn ??= DateTime.UtcNow;
-            if (MigrationUtilities.IsOnline(job))
+            if (job.IsOnline)
             {
                 mu.ChangeFeedStartToken ??= DateTime.UtcNow.ToString(
                     "yyyy-MM-ddTHH:mm:ss.fffZ", System.Globalization.CultureInfo.InvariantCulture);

@@ -83,7 +83,7 @@
                                     <div class="text-truncate" style="color: var(--az-text-disabled, #a19f9d); font-size: 11px;">→ @migration.TargetContactPoint</div>
                                 </td>
                                 <td>
-                                    @if (MigrationUtilities.IsOnline(migration))
+                                    @if (migration.IsOnline)
                                     {
                                         <span class="badge bg-info">Online</span>
                                     }

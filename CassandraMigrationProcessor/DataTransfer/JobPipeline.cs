@@ -1,11 +1,6 @@
 using CassandraMigrationProcessor.CassandraDriver;
 using CassandraMigrationProcessor.Infrastructure;
 using CassandraMigrationProcessor.Models;
-using System;
-using System.Linq;
-using System.Threading;
-using System.Threading.Channels;
-using System.Threading.Tasks;
 
 namespace CassandraMigrationProcessor.DataTransfer;
 
@@ -32,7 +27,7 @@ internal sealed class JobPipeline : IDisposable
             ? CancellationTokenSource.CreateLinkedTokenSource(externalToken)
             : new CancellationTokenSource();
 
-        bool enableReplay = MigrationUtilities.IsOnline(job);
+        bool enableReplay = job.IsOnline;
         var partitions = new PartitionManager();
         var readerConfig = new ReaderConfig(pipelineConfig.PageSize, pipelineConfig.MaxReadRetries);
         var writerConfig = new WriterConfig(pipelineConfig.MaxWriteRetries);

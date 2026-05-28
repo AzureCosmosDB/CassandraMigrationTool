@@ -41,7 +41,7 @@ public static class TableMigrationMapper
         if (target == null)
             target = new TableMigrationSummary();
 
-        target.Id = MigrationUtilities.GenerateMigrationUnitId(
+        target.Id = TableMigration.GenerateId(
             unit.KeyspaceName, unit.TableName);
         target.JobId = unit.JobId;
         target.KeyspaceName = unit.KeyspaceName;

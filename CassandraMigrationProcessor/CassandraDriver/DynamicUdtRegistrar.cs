@@ -1,12 +1,7 @@
 using Cassandra;
-using CassandraMigrationProcessor.Infrastructure;
-using System;
 using System.Collections.Concurrent;
-using System.Collections.Generic;
-using System.Linq;
 using System.Reflection;
 using System.Reflection.Emit;
-using System.Threading.Tasks;
 
 namespace CassandraMigrationProcessor.CassandraDriver;
 
@@ -54,7 +49,7 @@ internal static class DynamicUdtRegistrar
     public static async Task RegisterAsync(ISession session, string keyspace,
         IReadOnlyList<SchemaManager.UserDefinedTypeDef>? udts = null)
     {
-        MigrationUtilities.ValidateCqlIdentifier(keyspace);
+        CqlIdentifier.Validate(keyspace);
 
         udts ??= await SchemaManager.GetUserDefinedTypesAsync(session, keyspace);
         if (udts.Count == 0) return;
