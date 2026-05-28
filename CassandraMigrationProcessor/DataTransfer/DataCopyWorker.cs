@@ -58,7 +58,7 @@ internal class DataCopyWorker
                 && Volatile.Read(ref ctx.Counters.FatalErrorFlag) == 0
                 && !MigrationJobContext.Instance.ControlledPauseRequested)
             {
-                current = await TakeNextPartitionAsync(ctx);
+                current = await ctx.Partitions.TakeAsync(_ct);
                 if (current == null) break;
 
                 var result = await reader.ReadAsync(current, ctx);
@@ -104,7 +104,7 @@ internal class DataCopyWorker
         finally
         {
             if (current != null) current.Resources.Tracker.UpdateMigrationUnit();
-            ctx.PartitionPool.Writer.TryComplete();
+            ctx.Partitions.Complete();
             MigrationUtilities.SafeDispose(writer, "worker PageWriter");
             MigrationUtilities.SafeDispose(reader, "worker PageReader");
         }
@@ -114,9 +114,9 @@ internal class DataCopyWorker
     {
         if (!result.IsEmptyPage)
         {
-            // Pool is unbounded: TryWrite always succeeds unless the
+            // Pool is unbounded: TryEnqueue always succeeds unless the
             // channel was completed by a failing worker.
-            ctx.PartitionPool.Writer.TryWrite(partition);
+            ctx.Partitions.TryEnqueue(partition);
             return;
         }
 
@@ -176,22 +176,8 @@ internal class DataCopyWorker
                 || MigrationJobContext.Instance.ControlledPauseRequested)
                 return;
 
-            ctx.PartitionPool.Writer.TryWrite(partition);
+            ctx.Partitions.TryEnqueue(partition);
         });
-    }
-
-    private async Task<Partition?> TakeNextPartitionAsync(PipelineContext ctx)
-    {
-        try
-        {
-            while (await ctx.PartitionPool.Reader.WaitToReadAsync(_ct))
-            {
-                if (ctx.PartitionPool.Reader.TryRead(out var p))
-                    return p;
-            }
-        }
-        catch (OperationCanceledException) { }
-        return null;
     }
 
     private static void SaveCheckpoint(Partition partition)

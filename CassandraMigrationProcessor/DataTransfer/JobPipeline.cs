@@ -33,18 +33,10 @@ internal sealed class JobPipeline : IDisposable
             : new CancellationTokenSource();
 
         bool enableReplay = MigrationUtilities.IsOnline(job);
-        // Unbounded channel: total partitions = registered feed ranges
-        // across all tables (already bounded by the migration's scope),
-        // and each Partition is a small reference whose object graph is
-        // already retained for the duration of the job. A bounded channel
-        // would risk deadlock — workers and seeder both writing into a
-        // full pool while no one reads — or silent partition drops if
-        // worker re-enqueue used TryWrite.
-        var pool = Channel.CreateUnbounded<Partition>(new UnboundedChannelOptions
-            { SingleReader = false, SingleWriter = false });
+        var partitions = new PartitionManager();
 
         Context = new PipelineContext(
-            pool,
+            partitions,
             new WorkerConfig(job, tokenRefreshManager,
                 EnableReplay: enableReplay,
                 ReplayCooldownMs: pipelineConfig.ChangeFeedPollIntervalMs),
@@ -65,8 +57,8 @@ internal sealed class JobPipeline : IDisposable
         _pool.Start(workerId => new DataCopyWorker(_log, _cts.Token, workerId, pageSize, maxReadRetries, maxWriteRetries).RunAsync(Context));
     }
 
-    /// <summary>Completes the partition channel; workers will drain and exit.</summary>
-    public void CompletePartitionChannel() => Context.PartitionPool.Writer.TryComplete();
+    /// <summary>Completes the partition pool; workers will drain and exit.</summary>
+    public void CompletePartitionChannel() => Context.Partitions.Complete();
 
     /// <summary>Waits for all workers to finish (offline mode only).</summary>
     public Task WaitForCompletionAsync() => _pool.WaitForCompletionAsync();

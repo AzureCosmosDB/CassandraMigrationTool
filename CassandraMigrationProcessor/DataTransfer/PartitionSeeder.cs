@@ -27,13 +27,13 @@ internal class PartitionSeeder
     /// <summary>
     /// Discovers feed ranges, restores per-range checkpoints, builds the
     /// table's <see cref="TableResources"/>, and seeds the resulting
-    /// partitions into the job-shared <paramref name="sharedPool"/>.
+    /// partitions into the job-shared <paramref name="partitions"/>.
     /// </summary>
     public async Task<SeedResult> DiscoverAndSeedAsync(
         ISession sourceSession, TableMigration mu, TableContext context,
         List<(string Name, string Type, string Kind, string ClusteringOrder, int Position)> columns,
         CopyProgressTracker tracker,
-        Channel<Partition> sharedPool,
+        PartitionManager partitions,
         bool enableReplay)
     {
         var feedRanges = await CassandraQueries.GetFeedRangesAsync(
@@ -98,7 +98,7 @@ internal class PartitionSeeder
                 pagingState = Convert.FromBase64String(base64Token);
                 resumedCount++;
             }
-            await sharedPool.Writer.WriteAsync(new Partition(range, pagingState, resources, phase));
+            await partitions.SeedAsync(new Partition(range, pagingState, resources, phase));
         }
         if (resumedCount > 0)
             _log.WriteLine($"Resuming {resumedCount}/{pendingRanges.Count} ranges from checkpoint for {context.KeyspaceName}.{context.TableName}", LogType.Info);

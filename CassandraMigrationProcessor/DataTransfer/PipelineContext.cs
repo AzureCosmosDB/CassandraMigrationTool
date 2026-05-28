@@ -44,13 +44,14 @@ public record ProgressConfig(
     long TotalRowCount);
 
 /// <summary>
-/// Shared (job-wide) state passed to every worker. Holds the single
-/// partition channel that all tables seed into, the connection/replay
-/// configuration, and global counters. Per-table state is resolved via
+/// Shared (job-wide) state passed to every worker. Holds the
+/// <see cref="DataTransfer.PartitionManager"/> that all tables seed into and
+/// every worker pulls from, plus the connection/replay configuration and
+/// global counters. Per-table state is resolved via
 /// <see cref="Partition.Resources"/>.
 /// </summary>
 internal record PipelineContext(
-    Channel<Partition> PartitionPool,
+    PartitionManager Partitions,
     WorkerConfig Worker,
     PipelineCounters Counters)
 {

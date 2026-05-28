@@ -206,7 +206,7 @@ public class TableMigrationEngine : IDisposable
         var seeder = new PartitionSeeder(_migrationLog);
         var seed = await seeder.DiscoverAndSeedAsync(
             context.SourceSession, tableMigration, context,
-            schema.Columns, tracker, pipeline.Context.PartitionPool,
+            schema.Columns, tracker, pipeline.Context.Partitions,
             enableReplay: isOnline);
 
         if (seed.AllRangesComplete)
