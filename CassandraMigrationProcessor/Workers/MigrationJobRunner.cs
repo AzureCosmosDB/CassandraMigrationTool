@@ -17,9 +17,11 @@ namespace CassandraMigrationProcessor.DataTransfer;
 /// Orchestrates a Cassandra-to-Cassandra migration with a single
 /// job-wide worker pool. All tables share the same pool of
 /// <see cref="PipelineConfig.WorkerCount"/> workers; there is no
-/// table-level worker parallelism. <see cref="Job.ParallelThreads"/>
-/// only caps the parallelism of cheap setup work (schema sync round
-/// trips), not steady-state workers.
+/// table-level worker parallelism. Destination schema provisioning
+/// is done serially up front (Phase 1); <see cref="Job.ParallelThreads"/>
+/// only caps how many tables can be in copy orchestration
+/// concurrently in Phase 2 (seeding partitions / awaiting drain),
+/// not steady-state row throughput.
 /// </summary>
 public class MigrationJobRunner
 {
@@ -51,23 +53,36 @@ public class MigrationJobRunner
             }
 
             var pipelineConfig = PipelineConfig.Resolve(job, config);
-            int setupParallelism = Math.Max(1, Math.Min(job.ParallelThreads, units.Count));
+            int copyParallelism = Math.Max(1, Math.Min(job.ParallelThreads, units.Count));
             _log.WriteLine(
                 $"Migrating {units.Count} tables with {pipelineConfig.WorkerCount} shared workers " +
-                $"(setup parallelism={setupParallelism})", LogType.Info);
+                $"(copy orchestration parallelism={copyParallelism})", LogType.Info);
 
             _pipeline = new JobPipeline(_log, job, pipelineConfig, _tokenRefreshManager, cancellationToken);
             _pipeline.Start();
 
+            // Phase 1: provision destination schema for every table serially.
+            // Schema sync issues DDL (CREATE KEYSPACE / CREATE TYPE / CREATE TABLE)
+            // and is cheap per table; running it serially avoids concurrent
+            // schema-change traffic on the target cluster and ensures we fail
+            // fast on bad schema before any row data starts flowing.
+            var schemaFailed = await ProvisionAllSchemasAsync(job, units, cancellationToken);
+
             var abortRequested = false;
+            // Phase 2: parallel copy orchestration. The shared worker pool
+            // owned by JobPipeline does the actual row-level parallelism;
+            // copyParallelism only caps how many tables can be seeding
+            // partitions / awaiting drain at the same time.
             await Parallel.ForEachAsync(units, new ParallelOptions
                 {
-                    MaxDegreeOfParallelism = setupParallelism,
+                    MaxDegreeOfParallelism = copyParallelism,
                     CancellationToken = cancellationToken
                 },
                 async (mu, token) =>
                 {
                     if (MigrationJobContext.Instance.ControlledPauseRequested)
+                        return;
+                    if (schemaFailed.Contains(mu.Id))
                         return;
                     if (Volatile.Read(ref _consecutiveAuthErrors) >= MigrationDefaults.MaxConsecutiveAuthErrors)
                     {
@@ -154,6 +169,38 @@ public class MigrationJobRunner
         await Task.CompletedTask;
     }
 
+    /// <summary>
+    /// Phase 1 of <see cref="StartAsync"/>: provision destination schema
+    /// for every table serially. Failures are recorded on the unit
+    /// (<see cref="HandleMigrationUnitError"/>) and the unit ID is
+    /// returned so Phase 2 can skip it without re-running provision
+    /// against a broken destination.
+    /// </summary>
+    private async Task<HashSet<string>> ProvisionAllSchemasAsync(
+        Job job, IReadOnlyList<TableMigration> units, CancellationToken ct)
+    {
+        var failed = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var mu in units)
+        {
+            ct.ThrowIfCancellationRequested();
+            if (MigrationJobContext.Instance.ControlledPauseRequested)
+                break;
+            if (Volatile.Read(ref _consecutiveAuthErrors) >= MigrationDefaults.MaxConsecutiveAuthErrors)
+                break;
+
+            try
+            {
+                await ProvisionTargetSchemaAsync(job, mu);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                HandleMigrationUnitError(mu, ex);
+                failed.Add(mu.Id);
+            }
+        }
+        return failed;
+    }
+
     private async Task ProcessMigrationUnitAsync(Job job, AppSettings config,
         TableMigration mu, CancellationToken cancellationToken)
     {
@@ -165,8 +212,7 @@ public class MigrationJobRunner
 
         try
         {
-            await ProvisionTargetSchemaAsync(job, mu);
-
+            // Destination schema was provisioned up front in Phase 1.
             if (mu.BulkCopyPhase < BulkCopyPhase.Copying)
                 mu.BulkCopyPhase = BulkCopyPhase.Copying;
 
