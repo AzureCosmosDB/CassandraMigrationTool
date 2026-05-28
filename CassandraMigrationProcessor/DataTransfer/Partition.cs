@@ -1,6 +1,6 @@
 using System.Collections.Generic;
 
-namespace CassandraMigrationProcessor.DataTransfer.BulkCopy;
+namespace CassandraMigrationProcessor.DataTransfer;
 
 /// <summary>
 /// Partition lifecycle phase. Bulk = draining the initial snapshot

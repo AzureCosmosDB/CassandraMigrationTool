@@ -3,7 +3,7 @@ using CassandraMigrationProcessor.Context;
 using CassandraMigrationProcessor.Infrastructure;
 using CassandraMigrationProcessor.CassandraDriver;
 using CassandraMigrationProcessor.Models;
-using CassandraMigrationProcessor.DataTransfer.BulkCopy;
+using CassandraMigrationProcessor.DataTransfer;
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;

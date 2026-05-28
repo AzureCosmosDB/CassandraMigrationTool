@@ -8,7 +8,7 @@ using System.Linq;
 using System.Threading.Channels;
 using System.Threading.Tasks;
 
-namespace CassandraMigrationProcessor.DataTransfer.BulkCopy;
+namespace CassandraMigrationProcessor.DataTransfer;
 
 internal class PartitionSeeder
 {

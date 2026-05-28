@@ -6,7 +6,7 @@ using System.Threading;
 using System.Threading.Channels;
 using System.Threading.Tasks;
 
-namespace CassandraMigrationProcessor.DataTransfer.BulkCopy;
+namespace CassandraMigrationProcessor.DataTransfer;
 
 /// <summary>
 /// Job-wide worker pipeline. Holds one shared partition channel and one

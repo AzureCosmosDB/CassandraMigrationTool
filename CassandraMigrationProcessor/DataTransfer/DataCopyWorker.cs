@@ -5,7 +5,7 @@ using System;
 using System.Threading;
 using System.Threading.Tasks;
 
-namespace CassandraMigrationProcessor.DataTransfer.BulkCopy;
+namespace CassandraMigrationProcessor.DataTransfer;
 /// <summary>
 /// Job-shared worker. Takes a partition (from any table) off the shared
 /// channel, reads one page, writes rows, saves checkpoint, re-enqueues

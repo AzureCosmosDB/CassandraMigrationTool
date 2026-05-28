@@ -2,7 +2,7 @@ using Cassandra;
 using CassandraMigrationProcessor.CassandraDriver;
 using System.Threading.Tasks;
 
-namespace CassandraMigrationProcessor.DataTransfer.BulkCopy;
+namespace CassandraMigrationProcessor.DataTransfer;
 
 /// <summary>
 /// Row-write strategy for non-counter (regular) target tables. Per-row

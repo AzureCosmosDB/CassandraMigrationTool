@@ -3,7 +3,7 @@ using CassandraMigrationProcessor.Models;
 using System.Collections.Generic;
 using System.Threading.Tasks;
 
-namespace CassandraMigrationProcessor.DataTransfer.BulkCopy;
+namespace CassandraMigrationProcessor.DataTransfer;
 
 /// <summary>
 /// Per-table state carried on each <see cref="Partition"/> so that a

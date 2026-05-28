@@ -5,7 +5,7 @@ using CassandraMigrationProcessor.Models;
 using System.Collections.Generic;
 using System.Threading.Tasks;
 
-namespace CassandraMigrationProcessor.DataTransfer.BulkCopy;
+namespace CassandraMigrationProcessor.DataTransfer;
 
 internal class SchemaMigrator
 {

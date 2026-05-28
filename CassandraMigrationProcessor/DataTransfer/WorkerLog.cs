@@ -1,7 +1,7 @@
 using CassandraMigrationProcessor.Infrastructure;
 using CassandraMigrationProcessor.Models;
 
-namespace CassandraMigrationProcessor.DataTransfer.BulkCopy;
+namespace CassandraMigrationProcessor.DataTransfer;
 
 /// <summary>
 /// Thin worker-scoped wrapper around <see cref="MigrationLog"/> that

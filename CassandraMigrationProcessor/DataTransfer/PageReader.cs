@@ -10,7 +10,7 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 
-namespace CassandraMigrationProcessor.DataTransfer.BulkCopy;
+namespace CassandraMigrationProcessor.DataTransfer;
 /// <summary>
 /// Reads a single page from the source Cassandra cluster. The reader's
 /// source session is keyspace-agnostic; per-table state (columns,

@@ -1,4 +1,4 @@
-namespace CassandraMigrationProcessor.DataTransfer.BulkCopy;
+namespace CassandraMigrationProcessor.DataTransfer;
 /// <summary>
 /// Tracks a pending or completed read-write cycle.
 /// Managed by Partition via LinkedList.

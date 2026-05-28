@@ -5,7 +5,7 @@ using System;
 using System.Diagnostics;
 using System.Threading;
 
-namespace CassandraMigrationProcessor.DataTransfer.BulkCopy;
+namespace CassandraMigrationProcessor.DataTransfer;
 /// <summary>
 /// Orchestrator for copy-pipeline progress: delegates atomic
 /// counting to <see cref="ProgressCounters"/> and owns speed

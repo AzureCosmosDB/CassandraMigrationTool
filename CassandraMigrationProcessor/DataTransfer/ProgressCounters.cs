@@ -1,6 +1,6 @@
 using System.Threading;
 
-namespace CassandraMigrationProcessor.DataTransfer.BulkCopy;
+namespace CassandraMigrationProcessor.DataTransfer;
 /// <summary>
 /// Thread-safe atomic counters for copy-pipeline progress.
 /// Pure data class — no logging, no side effects, easily testable.

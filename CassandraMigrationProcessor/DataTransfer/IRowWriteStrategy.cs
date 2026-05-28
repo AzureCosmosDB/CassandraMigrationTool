@@ -1,7 +1,7 @@
 using System;
 using System.Threading.Tasks;
 
-namespace CassandraMigrationProcessor.DataTransfer.BulkCopy;
+namespace CassandraMigrationProcessor.DataTransfer;
 
 /// <summary>
 /// Per-row write strategy used by <see cref="PageWriter"/> and the

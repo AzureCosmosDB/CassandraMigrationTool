@@ -1,6 +1,6 @@
 using System;
 
-namespace CassandraMigrationProcessor.DataTransfer.BulkCopy;
+namespace CassandraMigrationProcessor.DataTransfer;
 
 /// <summary>
 /// Immutable retry configuration for per-row writes. Encapsulates the
