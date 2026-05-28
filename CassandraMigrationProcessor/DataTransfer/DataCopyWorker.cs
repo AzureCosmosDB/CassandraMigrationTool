@@ -47,97 +47,63 @@ internal class DataCopyWorker
     {
         PageReader? reader = null;
         PageWriter? writer = null;
+        Partition? current = null;
         try
         {
-            try
-            {
-                reader = await PageReader.CreateAsync(_workerLog, ctx.Worker, _pageSize, _maxReadRetries, _ct);
-                writer = await PageWriter.CreateAsync(_workerLog, ctx.Worker, _pageSize, _maxWriteRetries, _ct);
-            }
-            catch (OperationCanceledException)
-            {
-                ctx.Counters.WorkerErrors.Add(TaskResult.Canceled);
-                ctx.PartitionPool.Writer.TryComplete();
-                return;
-            }
-            catch (Exception ex)
-            {
-                _workerLog.WriteLine($"FATAL: worker init failed: {ex.GetType().Name}: {ex.Message}", LogType.Error);
-                Interlocked.Exchange(ref ctx.Counters.FatalErrorFlag, 1);
-                ctx.Counters.WorkerErrors.Add(TaskResult.Abort);
-                ctx.PartitionPool.Writer.TryComplete();
-                return;
-            }
+            reader = await PageReader.CreateAsync(_workerLog, ctx.Worker, _pageSize, _maxReadRetries, _ct);
+            writer = await PageWriter.CreateAsync(_workerLog, ctx.Worker, _pageSize, _maxWriteRetries, _ct);
 
             while (!_ct.IsCancellationRequested
                 && Volatile.Read(ref ctx.Counters.FatalErrorFlag) == 0
                 && !MigrationJobContext.Instance.ControlledPauseRequested)
             {
-                var partition = await TakeNextPartitionAsync(ctx);
-                if (partition == null) break;
-                var resources = partition.Resources;
+                current = await TakeNextPartitionAsync(ctx);
+                if (current == null) break;
 
-                try
+                var result = await reader.ReadAsync(current, ctx);
+                if (result == null)
                 {
-                    var result = await reader.ReadAsync(partition, ctx);
-                    if (result == null)
-                    {
-                        _workerLog.WriteLine($"FATAL: Read failed for {resources.TableId} — failing job", LogType.Error);
-                        Interlocked.Exchange(ref ctx.Counters.FatalErrorFlag, 1);
-                        break;
-                    }
-
-                    await writer.WriteAsync(result.Rows, result.WorkChunk, partition, ctx);
-
-                    if (result.WorkChunk.IsCompleted)
-                        SaveCheckpoint(partition);
-                    else
-                        _workerLog.WriteLine($"Checkpoint NOT advanced for {resources.TableId} — page had failures", LogType.Warning);
-
-                    DispatchAfterPage(partition, result, ctx);
+                    _workerLog.WriteLine($"FATAL: Read failed for {current.Resources.TableId} — failing job", LogType.Error);
+                    Interlocked.Exchange(ref ctx.Counters.FatalErrorFlag, 1);
+                    break;
                 }
-                catch (OperationCanceledException)
-                {
-                    ctx.Counters.WorkerErrors.Add(TaskResult.Canceled);
-                    ctx.PartitionPool.Writer.TryComplete();
-                }
-                catch (Exception ex)
-                {
-                    _workerLog.WriteLine($"Error on {resources.TableId}: {ex.GetType().Name}: {ex.Message}", LogType.Error);
 
-                    if (ExceptionClassifier.IsFatal(ex))
-                    {
-                        _workerLog.WriteLine($"FATAL — failing job", LogType.Error);
-                        Interlocked.Exchange(ref ctx.Counters.FatalErrorFlag, 1);
-                        ctx.Counters.WorkerErrors.Add(TaskResult.Abort);
-                    }
-                    else
-                    {
-                        ctx.Counters.WorkerErrors.Add(TaskResult.Retry);
-                    }
+                await writer.WriteAsync(result.Rows, result.WorkChunk, current, ctx);
 
-                    ctx.PartitionPool.Writer.TryComplete();
-                }
-                finally
-                {
-                    resources.Tracker.UpdateMigrationUnit();
-                }
+                if (result.WorkChunk.IsCompleted)
+                    SaveCheckpoint(current);
+                else
+                    _workerLog.WriteLine($"Checkpoint NOT advanced for {current.Resources.TableId} — page had failures", LogType.Warning);
+
+                DispatchAfterPage(current, result, ctx);
+                current.Resources.Tracker.UpdateMigrationUnit();
+                current = null;
             }
         }
         catch (OperationCanceledException)
         {
             ctx.Counters.WorkerErrors.Add(TaskResult.Canceled);
-            ctx.PartitionPool.Writer.TryComplete();
         }
         catch (Exception ex)
         {
-            _workerLog.WriteLine($"FATAL: unhandled worker exception: {ex.GetType().Name}: {ex.Message}", LogType.Error);
-            Interlocked.Exchange(ref ctx.Counters.FatalErrorFlag, 1);
-            ctx.Counters.WorkerErrors.Add(TaskResult.Abort);
-            ctx.PartitionPool.Writer.TryComplete();
+            string tag = current?.Resources.TableId ?? "init";
+            _workerLog.WriteLine($"Error on {tag}: {ex.GetType().Name}: {ex.Message}", LogType.Error);
+
+            if (current == null || ExceptionClassifier.IsFatal(ex))
+            {
+                _workerLog.WriteLine("FATAL — failing job", LogType.Error);
+                Interlocked.Exchange(ref ctx.Counters.FatalErrorFlag, 1);
+                ctx.Counters.WorkerErrors.Add(TaskResult.Abort);
+            }
+            else
+            {
+                ctx.Counters.WorkerErrors.Add(TaskResult.Retry);
+            }
         }
         finally
         {
+            if (current != null) current.Resources.Tracker.UpdateMigrationUnit();
+            ctx.PartitionPool.Writer.TryComplete();
             MigrationUtilities.SafeDispose(writer, "worker PageWriter");
             MigrationUtilities.SafeDispose(reader, "worker PageReader");
         }

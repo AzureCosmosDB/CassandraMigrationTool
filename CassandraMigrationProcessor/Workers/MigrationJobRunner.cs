@@ -181,8 +181,7 @@ public class MigrationJobRunner
             await RunCopyForUnitAsync(job, config, mu, cancellationToken);
             MigrationJobContext.Instance.SaveMigrationUnit(mu, true);
         }
-        catch (OperationCanceledException) { throw; }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is not OperationCanceledException)
         {
             HandleMigrationUnitError(mu, ex);
         }
