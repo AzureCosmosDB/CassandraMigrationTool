@@ -184,12 +184,12 @@
                         </div>
                         <div class="row mb-3">
                             <div class="col-md-6">
-                                <label for="sourceConnectionsPerHost" class="form-label" title="Source (reader) Cassandra driver connections per host. 0 = use Cosmos DB recommendation (10) for Cosmos endpoints, driver default otherwise.">Source connections per host</label>
-                                <input type="number" id="sourceConnectionsPerHost" class="form-control" @bind="sourceConnectionsPerHost" min="0" max="128" placeholder="Auto"/>
+                                <label for="sourceConnectionsPerHost" class="form-label" title="Source (reader) Cassandra driver connections per host. 0 = driver default.">Source connections per host</label>
+                                <input type="number" id="sourceConnectionsPerHost" class="form-control" @bind="sourceConnectionsPerHost" min="0" max="128" placeholder="Driver default"/>
                             </div>
                             <div class="col-md-6">
-                                <label for="targetConnectionsPerHost" class="form-label" title="Target (writer) Cassandra driver connections per host. 0 = use Cosmos DB recommendation (10) for Cosmos endpoints, driver default otherwise.">Target connections per host</label>
-                                <input type="number" id="targetConnectionsPerHost" class="form-control" @bind="targetConnectionsPerHost" min="0" max="128" placeholder="Auto"/>
+                                <label for="targetConnectionsPerHost" class="form-label" title="Target (writer) Cassandra driver connections per host. 0 = driver default.">Target connections per host</label>
+                                <input type="number" id="targetConnectionsPerHost" class="form-control" @bind="targetConnectionsPerHost" min="0" max="128" placeholder="Driver default"/>
                             </div>
                         </div>
                         <div class="row mb-3">

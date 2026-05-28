@@ -56,17 +56,15 @@ public class Job
     /// Max Cassandra driver connections per host. Back-compat
     /// fallback for both source and target when
     /// <see cref="SourceMaxConnectionsPerHost"/> /
-    /// <see cref="TargetMaxConnectionsPerHost"/> are 0. 0 here also
-    /// means: use Cosmos DB recommendation for Cosmos endpoints,
-    /// driver default otherwise.
+    /// <see cref="TargetMaxConnectionsPerHost"/> are 0.
+    /// 0 here means: use the driver default (no override).
     /// </summary>
     public int MaxConnectionsPerHost { get; set; } = 0;
 
     /// <summary>
     /// Source (reader) driver connections per host. 0 falls back to
     /// <see cref="MaxConnectionsPerHost"/>, which itself falls back
-    /// to the Cosmos DB recommendation for Cosmos endpoints and the
-    /// driver default otherwise.
+    /// to the driver default.
     /// </summary>
     public int SourceMaxConnectionsPerHost { get; set; } = 0;
 

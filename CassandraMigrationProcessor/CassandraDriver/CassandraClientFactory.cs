@@ -16,27 +16,6 @@ public static class CassandraClientFactory
     private const int ReconnectBaseDelayMs = 2000;
     private const int ReconnectMaxDelayMs = 60000;
 
-    // Microsoft recommendation for the DataStax C# driver against
-    // Cosmos DB API for Cassandra: keep Core==Max==10 connections per
-    // host, and raise MaxRequestsPerConnection to 32768 (Cosmos DB
-    // does not enforce the per-connection limits the OSS driver
-    // defaults assume).
-    private const int CosmosDbRecommendedConnectionsPerHost = 10;
-    private const int CosmosDbRecommendedMaxRequestsPerConnection = 32768;
-
-    private static bool IsCosmosDbCassandraEndpoint(string? contactPoint)
-    {
-        if (string.IsNullOrWhiteSpace(contactPoint)) return false;
-        return contactPoint.EndsWith(".cassandra.cosmos.azure.com",
-                StringComparison.OrdinalIgnoreCase)
-            || contactPoint.EndsWith(".cassandra.cosmosdb.azure.com",
-                StringComparison.OrdinalIgnoreCase)
-            || contactPoint.EndsWith(".cassandra.cosmos.azure.us",
-                StringComparison.OrdinalIgnoreCase)
-            || contactPoint.EndsWith(".cassandra.cosmos.azure.cn",
-                StringComparison.OrdinalIgnoreCase);
-    }
-
     /// <summary>
     /// Create a session to a Cosmos DB Cassandra API account.
     /// Uses SSL on port 10350 with PlainTextAuthProvider.
@@ -235,44 +214,21 @@ public static class CassandraClientFactory
             builder = builder.WithSSL(sslOptions);
         }
 
-        // Apply pooling. For Cosmos DB API for Cassandra, Microsoft
-        // recommends Core==Max==10 on Local + a generous
-        // MaxRequestsPerConnection so the driver does not bottleneck on
-        // a single TCP connection (Cosmos DB scales horizontally on the
-        // service side and does not impose the per-connection request
-        // ceiling that OSS Cassandra does).
-        // Ref: github.com/Azure-Samples/azure-cosmos-cassandra-extensions
-        // and learn.microsoft.com Cosmos DB for Cassandra perf guidance.
-        // For non-Cosmos endpoints we keep the older "halve for Remote"
-        // shape so an explicit user override still applies.
-        bool isCosmos = IsCosmosDbCassandraEndpoint(contactPoint);
-        int effectiveMax = maxConnectionsPerHost > 0
-            ? maxConnectionsPerHost
-            : (isCosmos ? CosmosDbRecommendedConnectionsPerHost : 0);
-
-        if (effectiveMax > 0)
+        // Apply pooling only when the caller explicitly opted in via
+        // maxConnectionsPerHost > 0. Otherwise leave the driver defaults
+        // alone — we do not silently impose Cosmos DB recommendations or
+        // any other tuning based on the endpoint.
+        if (maxConnectionsPerHost > 0)
         {
-            var pooling = new PoolingOptions();
-            if (isCosmos)
-            {
-                pooling
-                    .SetCoreConnectionsPerHost(HostDistance.Local, effectiveMax)
-                    .SetMaxConnectionsPerHost(HostDistance.Local, effectiveMax)
-                    .SetMaxRequestsPerConnection(CosmosDbRecommendedMaxRequestsPerConnection);
-            }
-            else
-            {
-                int localMax = effectiveMax;
-                int localCore = Math.Max(1, localMax / 2);
-                int remoteMax = Math.Max(1, localMax / 2);
-                int remoteCore = Math.Max(1, remoteMax / 2);
-                pooling
-                    .SetMaxConnectionsPerHost(HostDistance.Local, localMax)
-                    .SetCoreConnectionsPerHost(HostDistance.Local, localCore)
-                    .SetMaxConnectionsPerHost(HostDistance.Remote, remoteMax)
-                    .SetCoreConnectionsPerHost(HostDistance.Remote, remoteCore);
-            }
-            builder = builder.WithPoolingOptions(pooling);
+            int localMax = maxConnectionsPerHost;
+            int localCore = Math.Max(1, localMax / 2);
+            int remoteMax = Math.Max(1, localMax / 2);
+            int remoteCore = Math.Max(1, remoteMax / 2);
+            builder = builder.WithPoolingOptions(new PoolingOptions()
+                .SetMaxConnectionsPerHost(HostDistance.Local, localMax)
+                .SetCoreConnectionsPerHost(HostDistance.Local, localCore)
+                .SetMaxConnectionsPerHost(HostDistance.Remote, remoteMax)
+                .SetCoreConnectionsPerHost(HostDistance.Remote, remoteCore));
         }
 
         return builder;
