@@ -4,11 +4,11 @@ using CassandraMigrationProcessor.Models;
 namespace CassandraMigrationProcessor.DataTransfer;
 
 /// <summary>
-/// Slices a table's feed-range list into <see cref="Partition"/>s and
-/// seeds them into the job-shared <see cref="PartitionManager"/>. Owns
-/// no per-table state — the caller supplies a fully-built
-/// <see cref="TableResources"/>; the Partitioner only decides which
-/// ranges are still pending and what paging state to resume from.
+/// Pure factory: slices a table's feed-range list into
+/// <see cref="Partition"/>s and returns them to the caller. Does not
+/// touch the <see cref="PartitionManager"/> — the job-init phase
+/// collects every table's partition list into a <see cref="JobPartitioning"/>
+/// and hands the flattened result to the pool's constructor.
 /// </summary>
 internal class Partitioner
 {
@@ -19,27 +19,29 @@ internal class Partitioner
         _log = log;
     }
 
+    public readonly record struct Result(
+        IReadOnlyList<Partition> Partitions,
+        bool AllRangesAlreadyComplete);
+
     /// <summary>
-    /// Seed every still-pending range from <paramref name="feedRanges"/>
-    /// into <paramref name="partitions"/>, allocating a
-    /// <see cref="PartitionState"/> on <paramref name="mu"/> for any
-    /// range that does not already have one. Returns <c>true</c> if
-    /// every range is already bulk-completed and there is nothing to
-    /// seed (offline-only) — in that case the caller can short-circuit.
+    /// Build every still-pending <see cref="Partition"/> for the table,
+    /// allocating a <see cref="PartitionState"/> on <paramref name="mu"/>
+    /// for any range that does not already have one. <see cref="Result.AllRangesAlreadyComplete"/>
+    /// is <c>true</c> if every range is already bulk-completed and there
+    /// is nothing to enqueue (offline-only); the caller can short-circuit.
     /// </summary>
-    public async Task<bool> SeedAsync(
+    public Result Partition(
         TableResources resources,
         TableMigration mu,
-        List<string> feedRanges,
-        PartitionManager partitions,
+        IReadOnlyList<string> feedRanges,
         bool enableReplay)
     {
         var spec = resources.Spec;
 
         // Ensure every range has a persisted state entry. Lock the dict
-        // because Partitioner.SeedAsync runs once per table on the
-        // coordinator, but the dict object is shared with hot-path
-        // writers via Partition.State references. Adds happen here only.
+        // because Partitioner runs once per table on the coordinator, but
+        // the dict object is shared with hot-path writers via
+        // Partition.State references. Adds happen here only.
         lock (mu.Partitions)
         {
             foreach (var range in feedRanges)
@@ -71,7 +73,7 @@ internal class Partitioner
         if (pendingRanges.Count == 0)
         {
             _log.WriteLine($"All {feedRanges.Count} ranges already completed for {spec.KeyspaceName}.{spec.TableName}", LogType.Info);
-            return true;
+            return new Result(Array.Empty<Partition>(), AllRangesAlreadyComplete: true);
         }
 
         int bulkCount = pendingRanges.Count(p => p.Phase == PartitionPhase.Bulk);
@@ -82,6 +84,7 @@ internal class Partitioner
             LogType.Info);
 
         int resumedCount = 0;
+        var partitions = new List<Partition>(pendingRanges.Count);
         foreach (var (range, state, phase) in pendingRanges)
         {
             byte[]? pagingState = !string.IsNullOrEmpty(state.ContinuationToken)
@@ -89,11 +92,11 @@ internal class Partitioner
                 : null;
             if (pagingState != null || phase == PartitionPhase.Replay)
                 resumedCount++;
-            await partitions.SeedAsync(new Partition(state, pagingState, resources, phase));
+            partitions.Add(new Partition(state, pagingState, resources, phase));
         }
         if (resumedCount > 0)
             _log.WriteLine($"Resuming {resumedCount}/{pendingRanges.Count} ranges from checkpoint for {spec.KeyspaceName}.{spec.TableName}", LogType.Info);
 
-        return false;
+        return new Result(partitions, AllRangesAlreadyComplete: false);
     }
 }

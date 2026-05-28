@@ -20,7 +20,7 @@ internal sealed class JobPipeline : IDisposable, IAsyncDisposable
     private readonly CooldownScheduler _cooldown;
     public PipelineContext Context { get; }
 
-    public JobPipeline(MigrationLog log, Job job, PipelineConfig pipelineConfig, TokenRefreshManager? tokenRefreshManager, CancellationToken externalToken)
+    public JobPipeline(MigrationLog log, Job job, PipelineConfig pipelineConfig, JobPartitioning partitioning, TokenRefreshManager? tokenRefreshManager, CancellationToken externalToken)
     {
         _log = log;
         _pipelineConfig = pipelineConfig;
@@ -29,7 +29,7 @@ internal sealed class JobPipeline : IDisposable, IAsyncDisposable
             : new CancellationTokenSource();
 
         bool enableReplay = job.IsOnline;
-        var partitions = new PartitionManager();
+        var partitions = new PartitionManager(partitioning.AllPartitions);
         var readerConfig = new ReaderConfig(pipelineConfig.PageSize, pipelineConfig.MaxReadRetries);
         var writerConfig = new WriterConfig(pipelineConfig.MaxWriteRetries);
         _cooldown = new CooldownScheduler(log, partitions, pipelineConfig.ChangeFeedPollIntervalMs, _cts.Token);

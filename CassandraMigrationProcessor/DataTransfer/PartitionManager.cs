@@ -4,9 +4,15 @@ namespace CassandraMigrationProcessor.DataTransfer;
 
 /// <summary>
 /// Owns the job-wide partition channel and is the only type that touches it.
-/// Seeders, workers, and the pipeline interact through the narrow API below
-/// so the underlying transport (channel today, possibly a bounded queue or
+/// Workers and the pipeline interact through the narrow API below so the
+/// underlying transport (channel today, possibly a bounded queue or
 /// priority structure later) stays an implementation detail.
+/// <para>
+/// The full set of partitions is determined at job init and supplied to
+/// the ctor; there is no runtime seeding path. Treating the partition
+/// set as immutable after construction removes the bug surface where a
+/// late seed could race against pool completion.
+/// </para>
 /// <para>
 /// Lifetime: created and disposed by <see cref="JobPipeline"/>.
 /// </para>
@@ -15,26 +21,28 @@ internal sealed class PartitionManager
 {
     private readonly Channel<Partition> _channel;
 
-    public PartitionManager()
+    public PartitionManager(IReadOnlyList<Partition> initialPartitions)
     {
+        ArgumentNullException.ThrowIfNull(initialPartitions);
+
         // Unbounded: total partitions = registered feed ranges across all
         // tables (already bounded by job scope). A bounded channel would
-        // risk deadlock — seeder and workers both writing into a full pool
-        // with no slack — or silent drops if worker recycle used TryWrite
-        // on a full channel.
+        // risk deadlock at construction if the initial set exceeds the
+        // bound, since the ctor would have to block on writes before any
+        // worker exists to drain.
         _channel = Channel.CreateUnbounded<Partition>(new UnboundedChannelOptions
         {
             SingleReader = false,
             SingleWriter = false,
         });
-    }
 
-    /// <summary>
-    /// Initial seed at table start. Awaitable so a future bounded transport
-    /// can apply backpressure to the seeder without changing callers.
-    /// </summary>
-    public ValueTask SeedAsync(Partition partition, CancellationToken cancellationToken = default)
-        => _channel.Writer.WriteAsync(partition, cancellationToken);
+        foreach (var p in initialPartitions)
+        {
+            if (!_channel.Writer.TryWrite(p))
+                throw new InvalidOperationException(
+                    "PartitionManager: unbounded channel TryWrite failed at construction.");
+        }
+    }
 
     /// <summary>
     /// Recycle a partition back into the pool for re-pickup by any worker.

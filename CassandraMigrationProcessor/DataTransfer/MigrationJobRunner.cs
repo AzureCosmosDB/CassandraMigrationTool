@@ -52,9 +52,6 @@ public class MigrationJobRunner
                 $"Migrating {units.Count} tables with {pipelineConfig.WorkerCount} shared workers " +
                 $"(copy orchestration parallelism={copyParallelism})");
 
-            _pipeline = new JobPipeline(_log, job, pipelineConfig, _tokenRefreshManager, cancellationToken);
-            _pipeline.Start();
-
             // Phase 1: provision destination schema for every table serially.
             // Schema sync issues DDL (CREATE KEYSPACE / CREATE TYPE / CREATE TABLE)
             // and is cheap per table; running it serially avoids concurrent
@@ -62,11 +59,22 @@ public class MigrationJobRunner
             // fast on bad schema before any row data starts flowing.
             var schemaFailed = await ProvisionAllSchemasAsync(job, units, cancellationToken);
 
+            // Phase 1.5: discover partitioning for every still-eligible
+            // unit. All source-side I/O (columns / feed ranges / row
+            // counts) happens here so the worker pool can be constructed
+            // with the full partition list and nothing has to be "seeded"
+            // into the channel at runtime.
+            var partitioning = await DiscoverPartitioningAsync(
+                job, units, schemaFailed, cancellationToken);
+
+            _pipeline = new JobPipeline(_log, job, pipelineConfig, partitioning, _tokenRefreshManager, cancellationToken);
+            _pipeline.Start();
+
             var abortRequested = false;
             // Phase 2: parallel copy orchestration. The shared worker pool
             // owned by JobPipeline does the actual row-level parallelism;
-            // copyParallelism only caps how many tables can be seeding
-            // partitions / awaiting drain at the same time.
+            // copyParallelism only caps how many tables can be awaiting
+            // drain at the same time.
             await Parallel.ForEachAsync(units, new ParallelOptions
                 {
                     MaxDegreeOfParallelism = copyParallelism,
@@ -83,7 +91,7 @@ public class MigrationJobRunner
                         abortRequested = true;
                         return;
                     }
-                    await ProcessWithRetryAsync(job, config, mu, token);
+                    await ProcessWithRetryAsync(job, mu, partitioning, token);
                 });
 
             if (abortRequested)
@@ -148,14 +156,13 @@ public class MigrationJobRunner
         }
     }
 
-    private async Task ProcessWithRetryAsync(Job job, AppSettings config,
-        TableMigration mu, CancellationToken token)
+    private async Task ProcessWithRetryAsync(Job job, TableMigration mu, JobPartitioning partitioning, CancellationToken token)
     {
         for (int attempt = 1; attempt <= MigrationDefaults.MaxTableRetries; attempt++)
         {
             try
             {
-                await ProcessMigrationUnitAsync(job, config, mu, token);
+                await ProcessMigrationUnitAsync(job, mu, partitioning, token);
                 return;
             }
             catch (Exception ex) when (CassandraClientFactory.IsRetryableException(ex)
@@ -201,6 +208,127 @@ public class MigrationJobRunner
     /// returned so Phase 2 can skip it without re-running provision
     /// against a broken destination.
     /// </summary>
+    /// <summary>
+    /// Phase 1.5 of <see cref="StartAsync"/>: walk every still-eligible
+    /// migration unit and gather all source-side state we need to build
+    /// the worker pool — columns, feed-range list, per-chunk row count —
+    /// and call <see cref="Partitioner.Partition"/> to produce a
+    /// <see cref="TablePartitioning"/> for each chunk. All work uses a
+    /// single transient source session so the JobPipeline can be
+    /// constructed with the full partition list and no runtime
+    /// "seeding" path is required.
+    /// </summary>
+    private async Task<JobPartitioning> DiscoverPartitioningAsync(
+        Job job,
+        IReadOnlyList<TableMigration> units,
+        HashSet<string> schemaFailed,
+        CancellationToken ct)
+    {
+        var chunks = new List<TablePartitioning>();
+        if (job.IsSimulatedRun)
+        {
+            _log.WriteLine("Simulated run: skipping partition discovery.", LogType.Info);
+            return new JobPartitioning(chunks);
+        }
+
+        var partitioner = new Partitioner(_log);
+        var sourceSession = CassandraClientFactory.CreateSourceSession(_log, job, _tokenRefreshManager);
+        try
+        {
+            foreach (var mu in units)
+            {
+                ct.ThrowIfCancellationRequested();
+                if (MigrationJobContext.Instance.ControlledPauseRequested)
+                    break;
+                if (schemaFailed.Contains(mu.Id))
+                    continue;
+                if (mu.CopyComplete && !job.IsOnline)
+                    continue;
+
+                try
+                {
+                    await DiscoverUnitPartitioningAsync(job, mu, sourceSession, partitioner, chunks);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    HandleMigrationUnitError(mu, ex);
+                    schemaFailed.Add(mu.Id);
+                }
+            }
+        }
+        finally
+        {
+            MigrationUtilities.SafeDisposeSession(sourceSession, "DiscoverPartitioningAsync source session");
+        }
+        return new JobPartitioning(chunks);
+    }
+
+    private async Task DiscoverUnitPartitioningAsync(
+        Job job,
+        TableMigration mu,
+        ISession sourceSession,
+        Partitioner partitioner,
+        List<TablePartitioning> chunks)
+    {
+        if (!await SchemaManager.TableExistsAsync(sourceSession, mu.KeyspaceName, mu.TableName))
+        {
+            _log.WriteLine($"Source table {mu.KeyspaceName}.{mu.TableName} not found.", LogType.Error);
+            mu.SourceStatus = TableStatus.NotFound;
+            MigrationJobContext.Instance.SaveMigrationUnit(mu, true);
+            return;
+        }
+
+        var columns = await SchemaManager.GetTableColumnsAsync(sourceSession, mu.KeyspaceName, mu.TableName);
+        if (columns.Count == 0)
+        {
+            _log.WriteLine($"No columns for {mu.KeyspaceName}.{mu.TableName}", LogType.Error);
+            mu.SourceStatus = TableStatus.Failed;
+            MigrationJobContext.Instance.SaveMigrationUnit(mu, true);
+            return;
+        }
+
+        var feedRanges = await CassandraQueries.GetFeedRangesAsync(sourceSession, mu.KeyspaceName, mu.TableName);
+        _log.WriteLine(
+            $"{mu.KeyspaceName}.{mu.TableName}: {feedRanges.Count} feed range(s)",
+            LogType.Info);
+
+        if (mu.CopyChunks == null || mu.CopyChunks.Count == 0)
+            mu.CopyChunks = new List<CopyChunk> { new CopyChunk() };
+
+        bool isOnline = job.IsOnline;
+        var spec = new TableCopySpec(
+            mu.KeyspaceName, mu.TableName,
+            mu.GetEffectiveTargetKeyspaceName(), mu.GetEffectiveTargetTableName());
+
+        for (int chunkIndex = 0; chunkIndex < mu.CopyChunks.Count; chunkIndex++)
+        {
+            var chunk = mu.CopyChunks[chunkIndex];
+            if (chunk.IsDownloaded == true && !isOnline)
+                continue;
+
+            long rowCount = await CassandraQueries.GetRowCountAsync(sourceSession, mu.KeyspaceName, mu.TableName);
+            if (rowCount > 0)
+            {
+                mu.EstimatedRowCount = rowCount;
+                TableMigrationMapper.UpdateParentJob(mu);
+            }
+            chunk.SourceQueryRowCount = rowCount;
+
+            double initialPercent = (100.0 / mu.CopyChunks.Count) * chunkIndex;
+            double contributionFactor = 1.0 / mu.CopyChunks.Count;
+
+            var tracker = new CopyProgressTracker(_log,
+                mu.CopyRowsCopied, mu,
+                new ProgressConfig(chunkIndex, initialPercent, contributionFactor, rowCount));
+            var resources = new TableResources(spec, columns, tracker, feedRanges.Count);
+            var result = partitioner.Partition(resources, mu, feedRanges, enableReplay: isOnline);
+
+            chunks.Add(new TablePartitioning(mu, chunkIndex, resources, result.Partitions, result.AllRangesAlreadyComplete));
+        }
+
+        MigrationJobContext.Instance.SaveMigrationUnit(mu, true);
+    }
+
     private async Task<HashSet<string>> ProvisionAllSchemasAsync(
         Job job, IReadOnlyList<TableMigration> units, CancellationToken ct)
     {
@@ -226,8 +354,7 @@ public class MigrationJobRunner
         return failed;
     }
 
-    private async Task ProcessMigrationUnitAsync(Job job, AppSettings config,
-        TableMigration mu, CancellationToken cancellationToken)
+    private async Task ProcessMigrationUnitAsync(Job job, TableMigration mu, JobPartitioning partitioning, CancellationToken cancellationToken)
     {
         if (mu.SourceStatus == TableStatus.Failed)
         {
@@ -249,7 +376,7 @@ public class MigrationJobRunner
             }
 
             MigrationJobContext.Instance.SaveMigrationUnit(mu, true);
-            await RunCopyForUnitAsync(job, config, mu, cancellationToken);
+            await RunCopyForUnitAsync(job, mu, partitioning, cancellationToken);
             MigrationJobContext.Instance.SaveMigrationUnit(mu, true);
         }
         finally
@@ -321,14 +448,14 @@ public class MigrationJobRunner
         }
     }
 
-    private async Task RunCopyForUnitAsync(Job job, AppSettings config,
-        TableMigration mu, CancellationToken ct)
+    private async Task RunCopyForUnitAsync(Job job, TableMigration mu, JobPartitioning partitioning, CancellationToken ct)
     {
-        var processor = await TableCopyCoordinator.CreateAsync(_log, config, job, _pipeline!, _tokenRefreshManager, ct);
+        var chunks = partitioning.ForUnit(mu.Id);
+        var processor = new TableCopyCoordinator(_log, job, _pipeline!, chunks, ct);
         _activeProcessors[mu.Id] = processor;
         ct.ThrowIfCancellationRequested();
 
-        TaskResult result = await processor.MigrateTableAsync(mu.Id);
+        TaskResult result = await processor.MigrateTableAsync(mu);
         if (result == TaskResult.Success)
             _log.WriteLine($"Copy succeeded for {mu.KeyspaceName}.{mu.TableName}", LogType.Info);
         else if (result == TaskResult.Canceled)

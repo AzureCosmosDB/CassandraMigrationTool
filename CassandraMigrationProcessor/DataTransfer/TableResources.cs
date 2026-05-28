@@ -7,7 +7,8 @@ namespace CassandraMigrationProcessor.DataTransfer;
 /// Per-table state carried on each <see cref="Partition"/> so that a
 /// shared (job-wide) worker pool can process partitions from any table
 /// without re-binding workers to a single table at construction.
-/// Created once per table by <see cref="WorkerExecutor"/>.
+/// Created once per (table, chunk) during the discovery phase in
+/// <see cref="MigrationJobRunner.DiscoverPartitioningAsync"/>.
 ///
 /// Per-feed-range checkpoint state lives on each
 /// <see cref="Partition.State"/> (and is persisted via

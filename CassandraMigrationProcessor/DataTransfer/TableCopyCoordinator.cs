@@ -1,78 +1,54 @@
-using Cassandra;
 using CassandraMigrationProcessor.Context;
 using CassandraMigrationProcessor.Infrastructure;
-using CassandraMigrationProcessor.CassandraDriver;
 using CassandraMigrationProcessor.Models;
 using System.Diagnostics;
 
 namespace CassandraMigrationProcessor.DataTransfer;
 
 /// <summary>
-/// Coordinates the copy of a single table on top of the job-shared
-/// <see cref="JobPipeline"/>. Does no copying itself: workers in the
-/// shared pool drain partitions. Per-table responsibilities are
-/// opening per-table sessions, fetching the source column list,
-/// slicing the source token range into <see cref="Partition"/>
-/// work items (<see cref="Partitioner"/>), seeding them into the
-/// shared <see cref="PartitionManager"/>, waiting for the table's
-/// own slice to drain, and marking the table CopyComplete.
-/// Destination schema provisioning is owned by
-/// <see cref="MigrationJobRunner"/> and has completed before
-/// <see cref="MigrateTableAsync"/> is invoked.
+/// Per-table drain coordinator. All partitioning, schema lookup and
+/// row-count gathering happen up front in
+/// <see cref="MigrationJobRunner.DiscoverPartitioningAsync"/> and the
+/// resulting <see cref="TablePartitioning"/> objects are handed in here.
+/// The coordinator does not touch the partition pool, does not own
+/// Cassandra sessions, and does no DDL — it just walks each chunk's
+/// <see cref="TableResources.BulkDrainSignal"/>, finalises chunk state,
+/// and rolls the table-wide status up.
 /// </summary>
 internal sealed class TableCopyCoordinator : IDisposable
 {
     private readonly MigrationLog _migrationLog;
     private readonly Job _migrationJob;
-    private readonly ISession _sourceSession;
-    private readonly ISession _targetSession;
     private readonly CancellationTokenSource _cts;
     private readonly JobPipeline _jobPipeline;
+    private readonly IReadOnlyList<TablePartitioning> _chunks;
 
     public volatile bool ProcessRunning;
 
-    private TableCopyCoordinator(MigrationLog log, Job job,
-        ISession source, ISession target,
+    public TableCopyCoordinator(
+        MigrationLog log,
+        Job job,
         JobPipeline pipeline,
+        IReadOnlyList<TablePartitioning> chunks,
         CancellationToken externalToken)
     {
+        ArgumentNullException.ThrowIfNull(log);
+        ArgumentNullException.ThrowIfNull(job);
+        ArgumentNullException.ThrowIfNull(pipeline);
+        ArgumentNullException.ThrowIfNull(chunks);
+
         _migrationLog = log;
         _migrationJob = job;
+        _jobPipeline = pipeline;
+        _chunks = chunks;
         _cts = externalToken.CanBeCanceled
             ? CancellationTokenSource.CreateLinkedTokenSource(externalToken)
             : new CancellationTokenSource();
-        _sourceSession = source;
-        _targetSession = target;
-        _jobPipeline = pipeline;
     }
 
-    internal static async Task<TableCopyCoordinator> CreateAsync(
-        MigrationLog log, AppSettings config, Job job,
-        JobPipeline pipeline,
-        TokenRefreshManager? tokenRefreshManager = null,
-        CancellationToken externalToken = default)
-    {
-        if (log == null) throw new ArgumentNullException(nameof(log));
-        if (job == null) throw new ArgumentNullException(nameof(job));
-        if (config == null) throw new ArgumentNullException(nameof(config));
-
-        var source = CassandraClientFactory.CreateSourceSession(log, job, tokenRefreshManager);
-        ISession target = job.IsSimulatedRun
-            ? new NullSession()
-            : await CassandraClientFactory.CreateTargetSessionAsync(log, job);
-        return new TableCopyCoordinator(log, job, source, target, pipeline, externalToken);
-    }
-
-    /// <summary>
-    /// Idempotent: signal this coordinator to abort. Cancelling the
-    /// CTS unblocks the <c>BulkDrainSignal</c> wait in
-    /// <see cref="ProcessChunkAsync"/>, so <see cref="MigrateTableAsync"/>
-    /// throws <see cref="OperationCanceledException"/> and runs its
-    /// natural exit path (which sets job status + saves).
-    /// </summary>
     public void Cancel() => _cts?.Cancel();
 
-    private void FinalizeStatus(TaskResult result)
+    private void FinalizeStatus(TableMigration mu, TaskResult result)
     {
         switch (result)
         {
@@ -87,14 +63,12 @@ internal sealed class TableCopyCoordinator : IDisposable
         }
         MigrationJobContext.Instance.SaveMigrationJob(_migrationJob);
         ProcessRunning = false;
+        _ = mu;
     }
 
-    public async Task<TaskResult> MigrateTableAsync(string migrationUnitId)
+    public async Task<TaskResult> MigrateTableAsync(TableMigration tableMigration)
     {
-        if (string.IsNullOrWhiteSpace(migrationUnitId))
-            throw new ArgumentException("Migration unit ID is required", nameof(migrationUnitId));
-
-        var tableMigration = MigrationJobContext.Instance.GetMigrationUnit(migrationUnitId);
+        ArgumentNullException.ThrowIfNull(tableMigration);
         tableMigration.ParentJob = _migrationJob;
         ProcessRunning = true;
 
@@ -111,56 +85,46 @@ internal sealed class TableCopyCoordinator : IDisposable
         }
         finally
         {
-            FinalizeStatus(result);
+            FinalizeStatus(tableMigration, result);
         }
     }
 
     private async Task<TaskResult> MigrateTableCoreAsync(TableMigration tableMigration)
     {
-        var context = CreateTableCopySpec(tableMigration);
-
-        if (!await SchemaManager.TableExistsAsync(_sourceSession, context.KeyspaceName, context.TableName))
-        {
-            _migrationLog.WriteLine($"Source table {context.KeyspaceName}.{context.TableName} not found.", LogType.Error);
-            tableMigration.SourceStatus = TableStatus.NotFound;
-            MigrationJobContext.Instance.SaveMigrationUnit(tableMigration, true);
-            return TaskResult.Abort;
-        }
-
         bool isOnline = _migrationJob.IsOnline;
         if (tableMigration.CopyComplete && !isOnline)
         {
-            _migrationLog.WriteLine($"Copy for {context.KeyspaceName}.{context.TableName} already completed.", LogType.Debug);
+            _migrationLog.WriteLine($"Copy for {tableMigration.KeyspaceName}.{tableMigration.TableName} already completed.", LogType.Debug);
             return TaskResult.Success;
         }
 
-        _migrationLog.WriteLine($"{context.KeyspaceName}.{context.TableName} Copy started", LogType.Info);
+        if (_chunks.Count == 0)
+        {
+            // Source table missing or no work — discovery already logged
+            // the reason and updated SourceStatus.
+            return TaskResult.Success;
+        }
 
-        if (tableMigration.CopyChunks == null || tableMigration.CopyChunks.Count == 0)
-            tableMigration.CopyChunks = new List<CopyChunk> { new CopyChunk() };
+        _migrationLog.WriteLine($"{tableMigration.KeyspaceName}.{tableMigration.TableName} Copy started", LogType.Info);
 
-        for (int chunkIndex = 0; chunkIndex < tableMigration.CopyChunks.Count; chunkIndex++)
+        foreach (var chunk in _chunks)
         {
             if (MigrationJobContext.Instance.ControlledPauseRequested)
             {
-                _migrationLog.WriteLine($"Controlled pause before chunk {chunkIndex}", LogType.Info);
+                _migrationLog.WriteLine($"Controlled pause before chunk {chunk.ChunkIndex}", LogType.Info);
                 break;
             }
             _cts.Token.ThrowIfCancellationRequested();
 
-            double initialPercent = ((double)100 / tableMigration.CopyChunks.Count) * chunkIndex;
-            double contributionFactor = 1.0 / tableMigration.CopyChunks.Count;
-
-            if (tableMigration.CopyChunks[chunkIndex].IsDownloaded != true || isOnline)
+            var chunkResult = await ProcessChunkAsync(tableMigration, chunk);
+            if (chunkResult == TaskResult.Canceled)
+                return TaskResult.Canceled;
+            if (chunkResult == TaskResult.Abort || chunkResult == TaskResult.FailedAfterRetries)
             {
-                var result = await ProcessChunkAsync(tableMigration, chunkIndex, context, initialPercent, contributionFactor);
-                if (result == TaskResult.Canceled)
-                    return TaskResult.Canceled;
-                if (result == TaskResult.Abort || result == TaskResult.FailedAfterRetries)
-                {
-                    _migrationLog.WriteLine($"Copy failed for {context.KeyspaceName}.{context.TableName}[{chunkIndex}].", LogType.Error);
-                    return result;
-                }
+                _migrationLog.WriteLine(
+                    $"Copy failed for {tableMigration.KeyspaceName}.{tableMigration.TableName}[{chunk.ChunkIndex}].",
+                    LogType.Error);
+                return chunkResult;
             }
         }
 
@@ -183,76 +147,28 @@ internal sealed class TableCopyCoordinator : IDisposable
         }
         else if (!isOnline)
         {
-            _migrationLog.WriteLine($"Copy for {context.KeyspaceName}.{context.TableName} had {failed} failed row(s). Job will retry on resume.", LogType.Error);
+            _migrationLog.WriteLine(
+                $"Copy for {tableMigration.KeyspaceName}.{tableMigration.TableName} had {failed} failed row(s). Job will retry on resume.",
+                LogType.Error);
             return TaskResult.Retry;
         }
 
         return TaskResult.Success;
     }
 
-    private async Task<TaskResult> ProcessChunkAsync(TableMigration tableMigration, int chunkIndex,
-        TableCopySpec context, double initialPercent, double contributionFactor)
+    private async Task<TaskResult> ProcessChunkAsync(TableMigration tableMigration, TablePartitioning chunk)
     {
-        long rowCount = await CassandraQueries.GetRowCountAsync(context.SourceSession, context.KeyspaceName, context.TableName);
-        if (rowCount > 0)
+        if (chunk.AllRangesAlreadyComplete)
         {
-            tableMigration.EstimatedRowCount = rowCount;
-            TableMigrationMapper.UpdateParentJob(tableMigration);
-        }
-        tableMigration.CopyChunks[chunkIndex].SourceQueryRowCount = rowCount;
-
-        if (_migrationJob.IsSimulatedRun)
-        {
-            _migrationLog.WriteLine($"Simulated: {context.KeyspaceName}.{context.TableName}", LogType.Info);
+            MarkChunkComplete(tableMigration, chunk.ChunkIndex);
+            chunk.Resources.Tracker.UpdateMigrationUnit();
             return TaskResult.Success;
         }
-
-        // Destination schema (keyspace + UDTs + table) was provisioned by
-        // MigrationJobRunner.SetupTargetSchemaAsync before the engine ran;
-        // here we only fetch the source column list needed to build writers.
-        var columns = await SchemaManager.GetTableColumnsAsync(
-            context.SourceSession, context.KeyspaceName, context.TableName);
-        if (columns.Count == 0)
-        {
-            _migrationLog.WriteLine($"No columns for {context.KeyspaceName}.{context.TableName}", LogType.Error);
-            return TaskResult.Abort;
-        }
-
-        bool isOnline = _migrationJob.IsOnline;
-
-        var tracker = new CopyProgressTracker(_migrationLog,
-            tableMigration.CopyRowsCopied, tableMigration,
-            new ProgressConfig(chunkIndex, initialPercent, contributionFactor, rowCount));
-
-        var partitioner = new Partitioner(_migrationLog);
-        var feedRanges = await CassandraQueries.GetFeedRangesAsync(
-            context.SourceSession, context.KeyspaceName, context.TableName);
-        _migrationLog.WriteLine(
-            $"{context.KeyspaceName}.{context.TableName}: {feedRanges.Count} feed range(s)",
-            LogType.Info);
-
-        var resources = new TableResources(context, columns, tracker, feedRanges.Count);
-        bool allRangesComplete = await partitioner.SeedAsync(
-            resources, tableMigration, feedRanges, _jobPipeline.Context.Partitions,
-            enableReplay: isOnline);
-
-        if (allRangesComplete)
-        {
-            MarkChunkComplete(tableMigration, chunkIndex);
-            tracker.UpdateMigrationUnit();
-            return TaskResult.Success;
-        }
-
-        _migrationLog.WriteLine($"{context.KeyspaceName}.{context.TableName}: " +
-            $"{(rowCount >= 0 ? $"{rowCount:N0} rows" : "count unavailable")}, " +
-            $"{resources.TotalFeedRanges} feed range(s) seeded", LogType.Info);
 
         var stopwatch = Stopwatch.StartNew();
-
-        // Wait for this table's bulk drain.
         try
         {
-            await resources.BulkDrainSignal.Task.WaitAsync(_cts.Token);
+            await chunk.Resources.BulkDrainSignal.Task.WaitAsync(_cts.Token);
         }
         catch (OperationCanceledException)
         {
@@ -266,19 +182,20 @@ internal sealed class TableCopyCoordinator : IDisposable
         }
         stopwatch.Stop();
 
+        var tracker = chunk.Resources.Tracker;
         tracker.LogFinal();
         tracker.UpdateMigrationUnit();
         MigrationJobContext.Instance.SaveMigrationUnit(tableMigration, true);
 
         long sessionWritten = tracker.TotalCopied - tableMigration.CopyRowsCopied;
         _migrationLog.WriteLine(
-            $"Bulk drained for {context.KeyspaceName}.{context.TableName}: " +
+            $"Bulk drained for {tableMigration.KeyspaceName}.{tableMigration.TableName}: " +
             $"session={sessionWritten:N0} written, {tracker.TotalFailed:N0} failed " +
             $"({stopwatch.Elapsed.TotalSeconds:F1}s)", LogType.Info);
 
         var result = DetermineOutcome(_jobPipeline.Context.Flags, tracker.TotalFailed);
         if (result == TaskResult.Success)
-            MarkChunkComplete(tableMigration, chunkIndex);
+            MarkChunkComplete(tableMigration, chunk.ChunkIndex);
         return result;
     }
 
@@ -304,20 +221,8 @@ internal sealed class TableCopyCoordinator : IDisposable
         MigrationJobContext.Instance.SaveMigrationUnit(tableMigration, false);
     }
 
-    private TableCopySpec CreateTableCopySpec(TableMigration mu)
-    {
-        return new TableCopySpec(
-            mu.KeyspaceName,
-            mu.TableName,
-            mu.GetEffectiveTargetKeyspaceName(),
-            mu.GetEffectiveTargetTableName(),
-            _sourceSession);
-    }
-
     public void Dispose()
     {
         _cts?.Dispose();
-        MigrationUtilities.SafeDisposeSession(_targetSession, "TableCopyCoordinator target session");
-        MigrationUtilities.SafeDisposeSession(_sourceSession, "TableCopyCoordinator source session");
     }
 }
