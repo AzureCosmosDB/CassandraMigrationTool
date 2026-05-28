@@ -3,6 +3,7 @@ using CassandraMigrationProcessor.Infrastructure;
 using CassandraMigrationProcessor.Models;
 using System;
 using System.Threading;
+using System.Threading.Channels;
 using System.Threading.Tasks;
 
 namespace CassandraMigrationProcessor.DataTransfer;
@@ -113,6 +114,8 @@ internal class DataCopyWorker
     {
         if (!result.IsEmptyPage)
         {
+            // Pool is unbounded: TryWrite always succeeds unless the
+            // channel was completed by a failing worker.
             ctx.PartitionPool.Writer.TryWrite(partition);
             return;
         }

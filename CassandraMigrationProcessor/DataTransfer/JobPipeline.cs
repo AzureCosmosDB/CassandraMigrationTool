@@ -33,12 +33,15 @@ internal sealed class JobPipeline : IDisposable
             : new CancellationTokenSource();
 
         bool enableReplay = MigrationUtilities.IsOnline(job);
-        // Bounded channel sized to the worker pool plus a small backlog —
-        // partitions are recycled hot, so the channel only ever holds
-        // a handful at a time even with many tables registered.
-        int capacity = Math.Max(pipelineConfig.WorkerCount * 4, 64);
-        var pool = Channel.CreateBounded<Partition>(new BoundedChannelOptions(capacity)
-            { FullMode = BoundedChannelFullMode.Wait });
+        // Unbounded channel: total partitions = registered feed ranges
+        // across all tables (already bounded by the migration's scope),
+        // and each Partition is a small reference whose object graph is
+        // already retained for the duration of the job. A bounded channel
+        // would risk deadlock — workers and seeder both writing into a
+        // full pool while no one reads — or silent partition drops if
+        // worker re-enqueue used TryWrite.
+        var pool = Channel.CreateUnbounded<Partition>(new UnboundedChannelOptions
+            { SingleReader = false, SingleWriter = false });
 
         Context = new PipelineContext(
             pool,
