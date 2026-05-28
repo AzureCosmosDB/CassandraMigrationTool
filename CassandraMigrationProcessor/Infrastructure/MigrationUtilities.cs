@@ -23,6 +23,16 @@ public static class MigrationUtilities
 {
     #region Logging
 
+    /// <summary>
+    /// Out-of-band file trace used only where the structured
+    /// <see cref="MigrationLog"/> isn't available yet or has itself
+    /// failed: working-folder discovery in
+    /// <see cref="DataDirectoryResolver"/> (runs before any log exists)
+    /// and the persistence-layer crash fallback in
+    /// <see cref="Persistence.LogPersistence"/>. Do not use this for
+    /// regular lifecycle tracing — route those through the per-job
+    /// <see cref="MigrationLog"/> instead.
+    /// </summary>
     public static void LogToFile(
         string message,
         string fileName = "AutoStartLog.txt")

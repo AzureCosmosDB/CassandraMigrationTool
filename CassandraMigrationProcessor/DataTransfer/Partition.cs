@@ -37,6 +37,8 @@ internal class Partition
     /// Per-table state for the table that owns this partition. Kept
     /// private so workers go through typed pass-through accessors
     /// (<see cref="Spec"/>, <see cref="Columns"/>, <see cref="Tracker"/>,
+    /// <see cref="FullTableName"/>, <see cref="TotalFeedRanges"/>,
+    /// <see cref="BulkCompletedCount"/>) rather than reaching into a
     /// shared bag. This keeps the worker → table coupling explicit and
     /// stops new code from grabbing the whole table object.
     /// </summary>
@@ -53,6 +55,12 @@ internal class Partition
 
     /// <summary>Human-readable "keyspace.table" identifier for logs.</summary>
     public string FullTableName => _table.FullTableName;
+
+    /// <summary>Total feed ranges across the owning table.</summary>
+    public int TotalFeedRanges => _table.TotalFeedRanges;
+
+    /// <summary>Feed ranges in the owning table whose bulk phase has completed.</summary>
+    public int BulkCompletedCount => _table.BulkCompletedCount;
 
     /// <summary>True iff the owning table is a counter table (cached on the table).</summary>
     public bool IsCounterTable => _table.IsCounterTable;

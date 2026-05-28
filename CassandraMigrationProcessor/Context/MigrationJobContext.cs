@@ -156,7 +156,6 @@ public class MigrationJobContext
     public void Initialize(IConfiguration configuration)
     {
         Instance = this;
-        MigrationUtilities.LogToFile("MigrationJobContext.Initialize started");
 
         var stateStoreCSorPath = ReadConfig(configuration);
         InitializePersistence(stateStoreCSorPath);

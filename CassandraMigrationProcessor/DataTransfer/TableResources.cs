@@ -31,7 +31,7 @@ internal sealed class TableResources
     /// fixed property of the schema and computing it per write would
     /// be wasted work.
     /// </summary>
-    public bool IsCounterTable { get; }
+    public readonly bool IsCounterTable;
 
     /// <summary>Total number of feed ranges for this table.</summary>
     public int TotalFeedRanges { get; }

@@ -33,8 +33,6 @@ public class JobManager
         _ctx = ctx;
         _migrationJobContext = migrationJobContext;
         _log = CreateLog();
-
-        MigrationUtilities.LogToFile("JobManager initialized");
     }
 
     private MigrationLog CreateLog()
@@ -56,7 +54,6 @@ public class JobManager
             return;
 
         _webAppBaseUrl = baseUri.TrimEnd('/');
-        MigrationUtilities.LogToFile($"WebAppBaseUrl updated from browser: {_webAppBaseUrl}");
     }
 
     public bool UpdateConfig(CassandraMigrationProcessor.Models.AppSettings updated_config, out string errorMessage)
@@ -262,24 +259,17 @@ public class JobManager
         {
             try
             {
-                MigrationUtilities.LogToFile($"Task.Run started for job {job.Id}");
-
                 // Expand wildcards (e.g. "socialmedia.*") by connecting to source
                 if (job.Tables.Count == 0
                     || job.Tables.Any(m => m.TableName == "*"))
                 {
-                    MigrationUtilities.LogToFile($"Expanding wildcards for job {job.Id}, namespaces={namespacesToMigrate}");
                     await ExpandWildcardTablesAsync(job, namespacesToMigrate);
-                    MigrationUtilities.LogToFile($"After expand: {job.Tables.Count} units");
                 }
 
-                MigrationUtilities.LogToFile($"Calling MigrationJobRunner.StartAsync for job {job.Id}");
                 await MigrationJobRunner.StartAsync(job, config, _migrationCts.Token);
-                MigrationUtilities.LogToFile($"MigrationJobRunner.StartAsync completed for job {job.Id}");
             }
             catch (Exception ex)
             {
-                MigrationUtilities.LogToFile($"Migration failed for Job ID: {job.Id}: {ex}");
                 Console.WriteLine($"Migration failed for Job ID: {job.Id}: {ex}");
                 _log.WriteLine($"Migration failed: {ex}", LogType.Error);
             }
@@ -307,7 +297,6 @@ public class JobManager
             }
         });
 
-        MigrationUtilities.LogToFile($"Started migration task for Job ID: {job.Id}");
         Console.WriteLine($"Started migration for Job ID: {job.Id}");
 
         return Task.CompletedTask;
