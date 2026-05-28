@@ -1,7 +1,4 @@
 using Cassandra;
-using System;
-using System.Collections.Generic;
-using System.Linq;
 
 namespace CassandraMigrationProcessor.Infrastructure;
 /// <summary>
@@ -31,9 +28,6 @@ public static class ExceptionClassifier
         typeof(InvalidQueryException),
         typeof(SyntaxError),
     };
-
-    public static void RegisterTransient(Type exceptionType) => _transientTypes.Add(exceptionType);
-    public static void RegisterFatal(Type exceptionType) => _fatalTypes.Add(exceptionType);
 
     /// <summary>
     /// Transient errors that should be retried.

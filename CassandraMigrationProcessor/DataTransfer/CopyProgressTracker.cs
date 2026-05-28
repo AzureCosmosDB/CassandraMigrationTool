@@ -1,32 +1,27 @@
 using CassandraMigrationProcessor.Context;
 using CassandraMigrationProcessor.Infrastructure;
 using CassandraMigrationProcessor.Models;
-using System;
 using System.Diagnostics;
-using System.Threading;
 
-namespace CassandraMigrationProcessor.DataTransfer.BulkCopy;
+namespace CassandraMigrationProcessor.DataTransfer;
 /// <summary>
 /// Orchestrator for copy-pipeline progress: delegates atomic
 /// counting to <see cref="ProgressCounters"/> and owns speed
 /// calculation, logging, TableMigration updates, and checkpoint
-/// saves. Workers call AddCopied / AddFailed / AddRead and
+/// saves. Workers call AddCopied / AddFailed and
 /// UpdateMigrationUnit; no other class should maintain
 /// parallel counters.
 /// </summary>
 public class CopyProgressTracker
 {
     private readonly MigrationLog _log;
-    private readonly string _keyspace;
-    private readonly string _table;
-    private readonly int _workerCount;
+    private readonly string _keyspaceName;
+    private readonly string _tableName;
     private readonly Stopwatch _stopwatch;
 
     // Atomic counters (delegated)
     private readonly ProgressCounters _counters;
 
-    private int _activeWorkers;
-    private int _peakActiveWorkers;
     private long _lastLogTicks = 0;
 
     // Sliding window for recent speed
@@ -34,11 +29,7 @@ public class CopyProgressTracker
     private double _windowTime;
     private double _recentRowsPerSecond;
 
-    // Pipeline state (set by writer)
-    private int _activeRanges;
-    private int _adaptivePageSize;
-
-    // --- TableMigration progress (moved from ProgressState / ProgressConfig) ---
+    // --- TableMigration progress sink ---
     // Tracker owns progress state updates on this unit (CopyRowsCopied, CopyPercent, chunk stats)
     private readonly TableMigration _migrationUnit;
     private readonly int _chunkIndex;
@@ -46,35 +37,14 @@ public class CopyProgressTracker
     private readonly double _contributionFactor;
     private readonly long _totalRowCount;
     private long _lastCheckpointTicks;
+    private int _forceCheckpointFlush;
 
     private const int LogIntervalSeconds = 5;
 
     public long TotalCopied => _counters.TotalCopied;
     public long TotalFailed => _counters.TotalFailed;
-    public long TotalSkipped => _counters.TotalSkipped;
 
-    /// <summary>
-    /// Call once when a worker thread starts.
-    /// </summary>
-    public void WorkerStarted()
-    {
-        int active = Interlocked.Increment(ref _activeWorkers);
-        // Track peak
-        int peak = _peakActiveWorkers;
-        while (active > peak)
-        {
-            int old = Interlocked.CompareExchange(ref _peakActiveWorkers, active, peak);
-            if (old == peak) break;
-            peak = old;
-        }
-    }
-
-    /// <summary>
-    /// Call once when a worker thread exits.
-    /// </summary>
-    public void WorkerExited() => Interlocked.Decrement(ref _activeWorkers);
-
-    public double RecentSpeed
+    private double RecentSpeed
     {
         get
         {
@@ -84,14 +54,13 @@ public class CopyProgressTracker
         }
     }
 
-    public CopyProgressTracker(MigrationLog log, int workerCount,
+    public CopyProgressTracker(MigrationLog log,
         long initialCopied,
         TableMigration migration, ProgressConfig progressConfig)
     {
         _log = log;
-        _keyspace = migration.KeyspaceName;
-        _table = migration.TableName;
-        _workerCount = workerCount;
+        _keyspaceName = migration.KeyspaceName;
+        _tableName = migration.TableName;
         _counters = new ProgressCounters(initialCopied);
         _windowCopied = initialCopied;
         _migrationUnit = migration;
@@ -114,6 +83,36 @@ public class CopyProgressTracker
         LogIfDue();
     }
 
+    /// <summary>
+    /// Called by each worker after applying a replay-phase page (post
+    /// bulk drain). Bumps the MU's change-feed counters and timestamps.
+    /// Always force-flushes the MU on the next UpdateMigrationUnit call
+    /// — CF pages are infrequent and each one is irreplaceable progress.
+    /// </summary>
+    public void AddReplayApplied(long count, long elapsedMs)
+    {
+        Interlocked.Add(ref _migrationUnit._changeFeedInsertEvents, count);
+        Interlocked.Add(ref _migrationUnit._changeFeedRowsInserted, count);
+        Interlocked.Add(ref _migrationUnit._changeFeedUpdatesInLastBatch, count);
+        _migrationUnit.ChangeFeedLastChecked = DateTime.UtcNow;
+
+        if (elapsedMs > 0 && count > 0)
+            _migrationUnit.ChangeFeedAvgWriteLatencyInMS = (double)elapsedMs / count;
+
+        // Force-flush on the next UpdateMigrationUnit call.
+        Volatile.Write(ref _forceCheckpointFlush, 1);
+    }
+
+    /// <summary>
+    /// Called by each worker after a replay-phase page returns errors.
+    /// Bumps the MU's change-feed error counter.
+    /// </summary>
+    public void AddReplayErrors(long count)
+    {
+        Interlocked.Add(ref _migrationUnit._changeFeedErrors, count);
+        Volatile.Write(ref _forceCheckpointFlush, 1);
+    }
+
     /// <summary>Track data volume written.</summary>
     public void AddBytes(long bytes)
     {
@@ -127,27 +126,14 @@ public class CopyProgressTracker
     }
 
     /// <summary>Track total write batch duration.</summary>
-    public void AddWriteTime(long ms, int ops)
+    public void AddWriteTime(long ms)
     {
-        _counters.AddWriteTime(ms, ops);
-    }
-
-    /// <summary>Set active feed range count and adaptive page size.</summary>
-    public void SetPipelineState(int activeRanges, int pageSize)
-    {
-        Volatile.Write(ref _activeRanges, activeRanges);
-        Volatile.Write(ref _adaptivePageSize, pageSize);
+        _counters.AddWriteTime(ms);
     }
 
     public void AddFailed(long count)
     {
         _counters.AddFailed(count);
-    }
-
-    /// <summary>Track source rows read.</summary>
-    public void AddRead(long count)
-    {
-        _counters.AddRead(count);
     }
 
     /// <summary>
@@ -176,7 +162,10 @@ public class CopyProgressTracker
 
         long prevTicks = Volatile.Read(ref _lastCheckpointTicks);
         long nowTicks = DateTime.UtcNow.Ticks;
-        if ((nowTicks - prevTicks) / TimeSpan.TicksPerSecond >= MigrationDefaults.CheckpointIntervalSeconds
+        bool forceFlush = Interlocked.Exchange(ref _forceCheckpointFlush, 0) != 0;
+        bool intervalElapsed =
+            (nowTicks - prevTicks) / TimeSpan.TicksPerSecond >= MigrationDefaults.CheckpointIntervalSeconds;
+        if ((forceFlush || intervalElapsed)
             && Interlocked.CompareExchange(ref _lastCheckpointTicks, nowTicks, prevTicks) == prevTicks)
         {
             MigrationJobContext.Instance.SaveMigrationUnit(_migrationUnit, true);
@@ -217,7 +206,6 @@ public class CopyProgressTracker
         long pages = _counters.ReadPages;
         long readTimeMs = _counters.ReadTimeMs;
         long writeTimeMs = _counters.WriteTimeMs;
-        long writeOps = _counters.WriteOps;
         long avgReadMs = pages > 0 ? readTimeMs / pages : 0;
         long avgWriteMs = pages > 0 ? writeTimeMs / pages : 0;
         string avgRead = avgReadMs > 0
@@ -231,16 +219,13 @@ public class CopyProgressTracker
         string throughput = mbps >= 1
             ? $"{mbps:F1} MB/s" : $"{mbps * 1024:F0} KB/s";
 
-        int ranges = Volatile.Read(ref _activeRanges);
-        int pageSize = Volatile.Read(ref _adaptivePageSize);
-
         string bottleneck = avgReadMs > avgWriteMs * 2
                 ? "READ-BOUND" :
             avgWriteMs > avgReadMs * 2
                 ? "WRITE-BOUND" :
                   "BALANCED";
 
-        _log.WriteLine($"Progress: {_keyspace}.{_table} [{_activeWorkers}/{_workerCount} workers, {ranges} ranges, pg={pageSize}] {copied:N0} rows ({speedStr}, {throughput}), " + $"{failed:N0} failed ({elapsed:F1}s) | read={avgRead}/page, write={avgWrite}/page | {bottleneck}", LogType.Debug);
+        _log.WriteLine($"Progress: {_keyspaceName}.{_tableName} {copied:N0} rows ({speedStr}, {throughput}), " + $"{failed:N0} failed ({elapsed:F1}s) | read={avgRead}/page, write={avgWrite}/page | {bottleneck}", LogType.Debug);
     }
 
     /// <summary>
@@ -250,12 +235,11 @@ public class CopyProgressTracker
     {
         long copied = TotalCopied;
         long failed = TotalFailed;
-        long skipped = TotalSkipped;
         double elapsed = _stopwatch.Elapsed.TotalSeconds;
         double rps = elapsed > 0
             ? copied / elapsed : 0;
         string speedStr = rps >= 1000
             ? $"{rps / 1000:F1}k/s" : $"{rps:F0}/s";
-        _log.WriteLine($"Bulk copy done: {_keyspace}.{_table} [{_workerCount} workers] - {copied:N0} copied, " + $"{failed:N0} failed, {skipped:N0} skipped ({elapsed:F1}s, {speedStr}), peak active: {_peakActiveWorkers}", LogType.Info);
+        _log.WriteLine($"Bulk copy done: {_keyspaceName}.{_tableName} - {copied:N0} copied, " + $"{failed:N0} failed ({elapsed:F1}s, {speedStr})", LogType.Info);
     }
 }

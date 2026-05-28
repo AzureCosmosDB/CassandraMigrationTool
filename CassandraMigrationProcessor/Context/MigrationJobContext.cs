@@ -1,17 +1,18 @@
 using Microsoft.Extensions.Configuration;
 using Newtonsoft.Json;
 using CassandraMigrationProcessor.Infrastructure;
-using CassandraMigrationProcessor.Context;
 using CassandraMigrationProcessor.Persistence;
-using System;
 using System.Collections.Concurrent;
-using System.Collections.Generic;
-using System.IO;
-using System.Threading;
-using System.Threading.Tasks;
 using CassandraMigrationProcessor.Models;
 
 namespace CassandraMigrationProcessor.Context;
+
+/// <summary>
+/// Process-wide ambient state for the migration host: wires up persistence
+/// (<see cref="IDocumentStorage"/> + <see cref="ILogStorage"/>), tracks the
+/// currently active job, holds the <see cref="JobIndex"/>, and exposes
+/// thin facades over <see cref="JobStore"/> / <see cref="UnitStore"/>.
+/// </summary>
 public class MigrationJobContext
 {
     /// <summary>
@@ -21,7 +22,6 @@ public class MigrationJobContext
     public static MigrationJobContext Instance { get; private set; }
 
     private readonly object _writeJobListLock = new object();
-    private MigrationLog _log;
 
     public TableMigrationCache MigrationUnitsCache
     { get; set; }
@@ -65,14 +65,11 @@ public class MigrationJobContext
 
     public void ResetControlledPause()
     {
-        AddVerboseLog("Resetting controlled pause request.");
         _controlledPauseRequested = false;
     }
 
-    public void RequestControlledPause(string location)
+    public void RequestControlledPause()
     {
-        _log?.WriteLine(
-            $"{location} caused controlled pause.", LogType.Warning);
         _controlledPauseRequested = true;
     }
 
@@ -91,17 +88,6 @@ public class MigrationJobContext
             CurrentlyActiveJob.LogLevel = level;
             SaveMigrationJob(CurrentlyActiveJob);
         }
-    }
-
-    public void AddVerboseLog(string message)
-    {
-        if (_log == null
-            || CurrentlyActiveJob == null
-            || CurrentlyActiveJob.Status == JobStatus.Cancelled
-            || CurrentlyActiveJob.Status == JobStatus.Completed)
-            return;
-
-        _log?.WriteLine(message, LogType.Verbose);
     }
 
     public LogStorageCallbacks CreateLogStorageCallbacks(
@@ -128,25 +114,38 @@ public class MigrationJobContext
     {
         get
         {
-            if (JobStore.CachedActiveJob != null
-                && !string.IsNullOrEmpty(ActiveMigrationJobId)
-                && JobStore.CachedActiveJob.Id
-                    == ActiveMigrationJobId)
-            {
-                return JobStore.CachedActiveJob;
-            }
+            EnsureActiveJobLoaded();
+            return JobStore.CachedActiveJob;
+        }
+    }
 
-            if (!string.IsNullOrEmpty(ActiveMigrationJobId))
-            {
-                JobStore.CachedActiveJob =
-                    JobStore.LoadJob(ActiveMigrationJobId);
-                if (MigrationUnitsCache == null)
-                    MigrationUnitsCache =
-                        new TableMigrationCache();
-                return JobStore.CachedActiveJob;
-            }
+    /// <summary>
+    /// Idempotent: loads the active job and primes the unit cache on
+    /// first access. Previously a side effect of the
+    /// <c>CurrentlyActiveJob</c> getter — a property read should not
+    /// mutate global state or lose a racy second instantiation of the
+    /// unit cache.
+    /// </summary>
+    private readonly object _activeJobLoadLock = new object();
+    private void EnsureActiveJobLoaded()
+    {
+        var activeId = ActiveMigrationJobId;
+        if (string.IsNullOrEmpty(activeId)) return;
 
-            return null;
+        if (JobStore.CachedActiveJob != null
+            && JobStore.CachedActiveJob.Id == activeId
+            && MigrationUnitsCache != null)
+            return;
+
+        lock (_activeJobLoadLock)
+        {
+            if (JobStore.CachedActiveJob == null
+                || JobStore.CachedActiveJob.Id != activeId)
+            {
+                JobStore.CachedActiveJob = JobStore.LoadJob(activeId);
+            }
+            if (MigrationUnitsCache == null)
+                MigrationUnitsCache = new TableMigrationCache();
         }
     }
 
@@ -157,7 +156,6 @@ public class MigrationJobContext
     public void Initialize(IConfiguration configuration)
     {
         Instance = this;
-        MigrationUtilities.LogToFile("MigrationJobContext.Initialize started");
 
         var stateStoreCSorPath = ReadConfig(configuration);
         InitializePersistence(stateStoreCSorPath);
@@ -166,19 +164,15 @@ public class MigrationJobContext
 
     private string ReadConfig(IConfiguration configuration)
     {
-        try
-        {
-            var path = configuration["StateStore:ConnectionStringOrPath"];
-            var appId = configuration["StateStore:AppID"];
-            AppId = appId;
-            DataDirectoryResolver.SetAppId(appId);
-            return path ?? string.Empty;
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"[WARN] Initialize config read failed: {ex.Message}");
-            return string.Empty;
-        }
+        // Configuration access failure indicates a misconfigured host
+        // (missing IConfiguration provider, etc.). Silently falling back
+        // to an empty path would point persistence at the wrong store
+        // and let resume target the wrong job state. Fail fast instead.
+        var path = configuration["StateStore:ConnectionStringOrPath"];
+        var appId = configuration["StateStore:AppID"];
+        AppId = appId;
+        DataDirectoryResolver.SetAppId(appId);
+        return path ?? string.Empty;
     }
 
     private void InitializePersistence(string stateStoreCSorPath)

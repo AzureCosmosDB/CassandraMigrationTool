@@ -1,11 +1,7 @@
 using CassandraMigrationProcessor.Infrastructure;
 using CassandraMigrationProcessor.Models;
-using System;
-using System.Linq;
-using System.Threading;
-using System.Threading.Tasks;
 
-namespace CassandraMigrationProcessor.DataTransfer.BulkCopy;
+namespace CassandraMigrationProcessor.DataTransfer;
 /// <summary>
 /// Manages a pool of copy workers that process partitions
 /// from the partition pool channel.
@@ -43,7 +39,7 @@ internal class WorkerPool : IDisposable
         try { await Task.WhenAll(_workers); }
         catch (OperationCanceledException)
         {
-            _log.WriteLine("Workers cancelled — graceful shutdown", LogType.Info);
+            _log.WriteLine("Workers cancelled — graceful shutdown");
         }
         catch
         {
@@ -75,6 +71,9 @@ internal class WorkerPool : IDisposable
     /// Number of workers that completed with faults.
     /// </summary>
     public int FaultedCount => _workers?.Count(t => t.IsFaulted) ?? 0;
+
+    /// <summary>True if every worker task has finished (success, fault, or cancel).</summary>
+    public bool AllExited => _workers != null && _workers.All(t => t.IsCompleted);
 
     public void Dispose()
     {

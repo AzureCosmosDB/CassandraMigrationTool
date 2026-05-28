@@ -40,13 +40,12 @@ On completion: engine.StopOfflineOrInvokeChangeFeed()
 ### `TableMigrationEngine.StartProcessAsync(migrationUnitId)`
 ```
 Loads: TableMigration from MigrationJobContext
-Creates: TableContext(keyspace, table, targetKeyspace, targetTable, sourceSession)
+Creates: TableCopySpec(keyspace, table, targetKeyspace, targetTable, sourceSession)
 Ensures: at least one CopyChunk exists
 
 FOR EACH chunk (typically 1):
   └── RetryHelper.ExecuteTask(() => ProcessChunkAsync(...))
-      └── On Canceled → PauseProcessing()
-      └── On Abort → StopProcessing()
+      └── On Canceled / Abort → returns to caller; finally-block FinalizeStatus(result)
 
 On all chunks complete:
   └── Sets CopyComplete = true, BulkCopyEndedOn
@@ -72,9 +71,9 @@ Stage 1: SeedAsync(request)
   ├── Restores checkpoints (base64 → paging state)
   ├── Creates Channel<Partition>(pendingRanges.Count)
   ├── Seeds partitions into channel
-  └── Returns (SeedResult, allComplete)
+  └── Returns allComplete (bool)
 
-Stage 2: SyncSchemaAsync(tableContext, targetSession)
+Stage 2: SyncSchemaAsync(TableCopySpec, targetSession)
   ├── SchemaManager.SyncSchemaAsync(source, target, keyspace, table)
   ├── Creates/alters target table to match source schema
   └── Returns column list

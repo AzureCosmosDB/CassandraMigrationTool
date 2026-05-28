@@ -1,15 +1,17 @@
 using Newtonsoft.Json;
 using CassandraMigrationProcessor.Models;
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Threading.Tasks;
 
 #pragma warning disable CS8600
 #pragma warning disable CS8602
 #pragma warning disable CS8604
 
 namespace CassandraMigrationProcessor.Infrastructure;
+
+/// <summary>
+/// Parses the user-supplied namespace specification (JSON or CSV) and
+/// expands it into the concrete list of <see cref="TableMapping"/> entries
+/// to migrate, querying source keyspaces/tables as needed.
+/// </summary>
 public static class TableDiscovery
 {
     /// <summary>

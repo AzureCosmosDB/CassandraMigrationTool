@@ -1,9 +1,5 @@
 using Cassandra;
 using CassandraMigrationProcessor.Infrastructure;
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Threading.Tasks;
 
 namespace CassandraMigrationProcessor.CassandraDriver;
 /// <summary>
@@ -139,76 +135,102 @@ public static class CassandraQueries
                     ranges.Add(range);
             }
         }
-        catch (Exception ex)
+        catch (InvalidQueryException ex)
         {
-            verboseLog?.Invoke($"GetFeedRanges error: {ex.Message}");
+            // Expected on non-Cosmos clusters where system_cosmos.feedranges
+            // does not exist. Caller falls back to token-range partitioning.
+            verboseLog?.Invoke($"GetFeedRanges: system table unavailable ({ex.Message})");
         }
+        // All other exceptions (timeout, auth, NoHost, etc.) must propagate.
+        // Returning an empty list silently would cause the table to be
+        // marked complete with zero rows copied.
         return ranges;
     }
 
     /// <summary>
-    /// Build a prepared write statement for a table.
-    /// For regular tables this is INSERT INTO ... VALUES (...).
-    /// For counter tables (any column with CQL type "counter")
-    /// Cassandra forbids INSERT, so we emit
-    /// UPDATE ... SET c = c + ?, ... WHERE pk = ? AND ck = ?
-    /// instead. The returned ColumnNames are in the bind-parameter
-    /// order, which differs from the source column order for counter
-    /// tables — callers must look up row values by name (or reorder)
-    /// rather than relying on positional alignment with the source
-    /// schema.
+    /// True when the table is a counter table — i.e. it has at least one
+    /// CQL counter column. Cassandra forbids mixing counter and
+    /// non-counter regular columns in the same table, so a single
+    /// counter column implies every non-PK column is a counter and the
+    /// write path must use UPDATE c = c + ? instead of INSERT.
+    /// </summary>
+    public static bool IsCounterTable(
+        IEnumerable<CassandraColumn> columns)
+        => columns.Any(IsCounterColumn);
+
+    /// <summary>
+    /// Build a prepared INSERT for a non-counter table:
+    /// <c>INSERT INTO ks.t (...) VALUES (...)</c>. The returned
+    /// ColumnNames are in bind-parameter order (which, for INSERT,
+    /// equals the source column order). Callers <b>must not</b> invoke
+    /// this for counter tables — Cassandra rejects INSERT against
+    /// counter columns; use <see cref="PrepareCounterUpdateAsync"/>.
     /// </summary>
     public static async Task<(PreparedStatement Ps, List<string> ColumnNames)>
         PrepareInsertAsync(ISession session, string keyspace, string table,
-            List<(string Name, string Type, string Kind, string ClusteringOrder, int Position)> columns)
+            List<CassandraColumn> columns)
     {
-        bool isCounterTable = columns.Any(IsCounterColumn);
+        if (IsCounterTable(columns))
+            throw new InvalidOperationException(
+                $"PrepareInsertAsync called on counter table {keyspace}.{table}; " +
+                "use PrepareCounterUpdateAsync instead.");
 
-        string cql;
-        List<string> bindOrder;
-        if (isCounterTable)
-        {
-            var counterCols = columns.Where(IsCounterColumn).ToList();
-            var keyCols = columns
-                .Where(c => c.Kind == "partition_key" || c.Kind == "clustering")
-                .OrderBy(c => c.Kind == "partition_key" ? 0 : 1)
-                .ThenBy(c => c.Position)
-                .ToList();
+        var colNames = columns.Select(c => $"\"{c.Name}\"").ToList();
+        var placeholders = columns.Select(_ => "?").ToList();
 
-            var setClause = string.Join(", ",
-                counterCols.Select(c => $"\"{c.Name}\" = \"{c.Name}\" + ?"));
-            var whereClause = string.Join(" AND ",
-                keyCols.Select(c => $"\"{c.Name}\" = ?"));
+        var cql =
+            $"INSERT INTO \"{keyspace}\".\"{table}\" " +
+            $"({string.Join(", ", colNames)}) " +
+            $"VALUES ({string.Join(", ", placeholders)})";
 
-            cql =
-                $"UPDATE \"{keyspace}\".\"{table}\" " +
-                $"SET {setClause} WHERE {whereClause}";
+        var bindOrder = columns.Select(c => c.Name).ToList();
+        var ps = await session.PrepareAsync(cql);
+        return (ps, bindOrder);
+    }
 
-            bindOrder = counterCols.Select(c => c.Name)
-                .Concat(keyCols.Select(c => c.Name))
-                .ToList();
-        }
-        else
-        {
-            var colNames = columns
-                .Select(c => $"\"{c.Name}\"").ToList();
-            var placeholders = columns
-                .Select(_ => "?").ToList();
+    /// <summary>
+    /// Build a prepared UPDATE for a counter table:
+    /// <c>UPDATE ks.t SET c = c + ?, ... WHERE pk = ? AND ck = ?</c>.
+    /// Bind order is counter columns first (in schema order), then the
+    /// partition-key + clustering columns in key order. Callers can derive
+    /// the counter-bind prefix length by counting counter columns in the
+    /// source column list.
+    /// </summary>
+    public static async Task<(PreparedStatement Ps, List<string> BindOrder)>
+        PrepareCounterUpdateAsync(ISession session, string keyspace, string table,
+            List<CassandraColumn> columns)
+    {
+        var counterCols = columns.Where(IsCounterColumn).ToList();
+        if (counterCols.Count == 0)
+            throw new InvalidOperationException(
+                $"PrepareCounterUpdateAsync called on non-counter table {keyspace}.{table}; " +
+                "use PrepareInsertAsync instead.");
 
-            cql =
-                $"INSERT INTO \"{keyspace}\".\"{table}\" " +
-                $"({string.Join(", ", colNames)}) " +
-                $"VALUES ({string.Join(", ", placeholders)})";
+        var keyCols = columns
+            .Where(c => c.Kind == "partition_key" || c.Kind == "clustering")
+            .OrderBy(c => c.Kind == "partition_key" ? 0 : 1)
+            .ThenBy(c => c.Position)
+            .ToList();
 
-            bindOrder = columns.Select(c => c.Name).ToList();
-        }
+        var setClause = string.Join(", ",
+            counterCols.Select(c => $"\"{c.Name}\" = \"{c.Name}\" + ?"));
+        var whereClause = string.Join(" AND ",
+            keyCols.Select(c => $"\"{c.Name}\" = ?"));
+
+        var cql =
+            $"UPDATE \"{keyspace}\".\"{table}\" " +
+            $"SET {setClause} WHERE {whereClause}";
+
+        var bindOrder = counterCols.Select(c => c.Name)
+            .Concat(keyCols.Select(c => c.Name))
+            .ToList();
 
         var ps = await session.PrepareAsync(cql);
         return (ps, bindOrder);
     }
 
     private static bool IsCounterColumn(
-        (string Name, string Type, string Kind, string ClusteringOrder, int Position) c)
+        CassandraColumn c)
     {
         return string.Equals(c.Type, "counter", StringComparison.OrdinalIgnoreCase);
     }
