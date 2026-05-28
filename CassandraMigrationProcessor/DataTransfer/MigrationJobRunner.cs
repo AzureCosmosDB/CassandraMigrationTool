@@ -115,6 +115,7 @@ public class MigrationJobRunner
             return failed;
         }
 
+        _log.WriteLine($"=== Phase 1: Schema — {units.Count} table(s) ===", LogType.Info);
         // Schema provisioning is per-table independent (each table
         // opens its own source + target sessions for one CREATE
         // KEYSPACE / CREATE TYPE / CREATE TABLE round-trip). Running
@@ -141,6 +142,7 @@ public class MigrationJobRunner
 
                 try
                 {
+                    _log.WriteLine($"[Schema] Provisioning target for {mu.KeyspaceName}.{mu.TableName}", LogType.Info);
                     await ProvisionTargetSchemaAsync(job, mu);
                 }
                 catch (Exception ex) when (ex is not OperationCanceledException)
@@ -174,6 +176,7 @@ public class MigrationJobRunner
     {
         var chunks = new List<TablePartitioning>();
 
+        _log.WriteLine($"=== Phase 1.5: Partition discovery ===", LogType.Info);
         var partitioner = new Partitioner(_log);
         var sourceSession = CassandraClientFactory.CreateSourceSession(_log, job, _tokenRefreshManager);
         try
@@ -190,6 +193,7 @@ public class MigrationJobRunner
 
                 try
                 {
+                    _log.WriteLine($"[Discovery] Discovering partitions for {mu.KeyspaceName}.{mu.TableName}", LogType.Info);
                     await DiscoverUnitPartitioningAsync(job, mu, sourceSession, partitioner, chunks);
                 }
                 catch (Exception ex) when (ex is not OperationCanceledException)
@@ -220,6 +224,7 @@ public class MigrationJobRunner
         int copyParallelism,
         CancellationToken cancellationToken)
     {
+        _log.WriteLine($"=== Phase 2: Copy — {units.Count} table(s), up to {copyParallelism} concurrent ===", LogType.Info);
         // Parallel.ForEachAsync re-throws only the first iteration fault
         // and cancels its internal CTS so siblings observe OCE. That hides
         // independent per-table failures and corrupts the post-loop view of
@@ -244,6 +249,7 @@ public class MigrationJobRunner
                 }
                 try
                 {
+                    _log.WriteLine($"[Copy] Copying data for {mu.KeyspaceName}.{mu.TableName}", LogType.Info);
                     await ProcessWithRetryAsync(job, mu, partitioning, token);
                 }
                 catch (OperationCanceledException) when (token.IsCancellationRequested)
