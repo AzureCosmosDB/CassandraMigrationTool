@@ -126,9 +126,9 @@ public class CopyProgressTracker
     }
 
     /// <summary>Track total write batch duration.</summary>
-    public void AddWriteTime(long ms, int ops)
+    public void AddWriteTime(long ms)
     {
-        _counters.AddWriteTime(ms, ops);
+        _counters.AddWriteTime(ms);
     }
 
     public void AddFailed(long count)

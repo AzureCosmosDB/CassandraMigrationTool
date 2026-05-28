@@ -135,7 +135,7 @@ internal sealed class PageWriter : IDisposable
         }
 
         stopwatch.Stop();
-        partition.Tracker.AddWriteTime(counters.LatencySum, rows.Count);
+        partition.Tracker.AddWriteTime(counters.LatencySum);
 
         if (partition.Phase == PartitionPhase.Replay)
         {

@@ -13,7 +13,6 @@ internal class ProgressCounters
     private long _readTimeMs;
     private long _writeTimeMs;
     private long _readPages;
-    private long _writeOps;
 
     public ProgressCounters(long initialCopied = 0)
     {
@@ -26,7 +25,6 @@ internal class ProgressCounters
     public long ReadTimeMs => Volatile.Read(ref _readTimeMs);
     public long WriteTimeMs => Volatile.Read(ref _writeTimeMs);
     public long ReadPages => Interlocked.Read(ref _readPages);
-    public long WriteOps => Volatile.Read(ref _writeOps);
 
     public void AddCopied(long count) => Interlocked.Add(ref _totalCopied, count);
     public void AddFailed(long count) => Interlocked.Add(ref _totalFailed, count);
@@ -38,9 +36,8 @@ internal class ProgressCounters
         Interlocked.Increment(ref _readPages);
     }
 
-    public void AddWriteTime(long ms, int ops)
+    public void AddWriteTime(long ms)
     {
         Interlocked.Add(ref _writeTimeMs, ms);
-        Interlocked.Add(ref _writeOps, ops);
     }
 }
