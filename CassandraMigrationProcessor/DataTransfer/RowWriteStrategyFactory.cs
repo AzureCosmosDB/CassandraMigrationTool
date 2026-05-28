@@ -43,7 +43,7 @@ internal static class RowWriteStrategyFactory
 
     /// <summary>
     /// Builds the bind-order → source-index map used by every strategy:
-    /// for each bind slot, the index into <see cref="WorkerConfig.Columns"/>
+    /// for each bind slot, the index into <see cref="TableResources.Columns"/>
     /// that holds the source value. Lives here so both strategies share
     /// one implementation.
     /// </summary>

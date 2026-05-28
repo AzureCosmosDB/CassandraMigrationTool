@@ -64,10 +64,10 @@ internal sealed class TableCopyCoordinator : IDisposable
         if (job == null) throw new ArgumentNullException(nameof(job));
         if (config == null) throw new ArgumentNullException(nameof(config));
 
-        var source = CassandraClientFactory.CreateSourceSession(log, job, string.Empty, tokenRefreshManager);
+        var source = CassandraClientFactory.CreateSourceSession(log, job, tokenRefreshManager);
         ISession target = job.IsSimulatedRun
             ? new NullSession()
-            : await CassandraClientFactory.CreateTargetSessionAsync(log, job, string.Empty);
+            : await CassandraClientFactory.CreateTargetSessionAsync(log, job);
         return new TableCopyCoordinator(log, config, job, source, target, pipeline, externalToken);
     }
 

@@ -299,11 +299,11 @@ public class MigrationJobRunner
             MigrationJobContext.Instance.SaveMigrationUnit(mu, true);
         }
 
-        var targetSession = await CassandraClientFactory.CreateTargetSessionAsync(_log, job, string.Empty);
+        var targetSession = await CassandraClientFactory.CreateTargetSessionAsync(_log, job);
         // Keyspace-agnostic source session: SchemaManager queries hit system_schema with
         // parameterized keyspace_name and all data CQL is fully qualified, so we avoid the
         // extra USE keyspace round trip and per-keyspace metadata refresh.
-        var sourceSession = CassandraClientFactory.CreateSourceSession(_log, job, string.Empty, _tokenRefreshManager);
+        var sourceSession = CassandraClientFactory.CreateSourceSession(_log, job, _tokenRefreshManager);
         try
         {
             if (shouldDrop

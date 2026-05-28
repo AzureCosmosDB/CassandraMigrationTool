@@ -32,12 +32,11 @@ public static class CassandraClientFactory
         int port,
         string username,
         string password,
-        string keyspace,
         TokenRefreshManager? tokenRefreshManager = null)
     {
         // Cache parameters for token refresh reconnection
         tokenRefreshManager?.CacheSourceConnectionParams(
-            contactPoint, port, username, keyspace);
+            contactPoint, port, username);
 
         // Source always uses SSL (Cosmos DB requires it)
         var builder = CreateBaseBuilder(
@@ -49,7 +48,7 @@ public static class CassandraClientFactory
         {
             try
             {
-                var session = ConnectCluster(builder, keyspace);
+                var session = ConnectCluster(builder);
 
                 if (TokenRefreshManager.IsLikelyAadToken(password))
                 {
@@ -73,7 +72,7 @@ public static class CassandraClientFactory
         }
 
         // Final attempt — let exception propagate
-        var finalSession = ConnectCluster(builder, keyspace);
+        var finalSession = ConnectCluster(builder);
 
         if (TokenRefreshManager.IsLikelyAadToken(password))
         {
@@ -150,7 +149,6 @@ public static class CassandraClientFactory
         int port,
         string username,
         string password,
-        string keyspace,
         bool useSsl = true,
         int maxConnectionsPerHost = 0)
     {
@@ -163,8 +161,7 @@ public static class CassandraClientFactory
                 return ConnectCluster(
                     CreateBaseBuilder(
                         contactPoint, port, username, password,
-                        useSsl: true, maxConnectionsPerHost),
-                    keyspace);
+                        useSsl: true, maxConnectionsPerHost));
             }
             catch (Exception ex)
             {
@@ -177,8 +174,7 @@ public static class CassandraClientFactory
             return ConnectCluster(
                 CreateBaseBuilder(
                     contactPoint, port, username, password,
-                    useSsl: false, maxConnectionsPerHost),
-                keyspace);
+                    useSsl: false, maxConnectionsPerHost));
         }
         catch (Exception ex)
         {
@@ -217,10 +213,7 @@ public static class CassandraClientFactory
         {
             var sslOptions = new SSLOptions(
                 SslProtocols.None, false,
-                (sender, certificate, chain, sslPolicyErrors) =>
-                {
-                    return true; // Azure MI certs may have chain+name issues
-                });
+                (_, _, _, _) => true);
             sslOptions.SetHostNameResolver(_ => contactPoint);
             builder = builder.WithSSL(sslOptions);
         }
@@ -241,16 +234,18 @@ public static class CassandraClientFactory
         return builder;
     }
 
-    private static ISession ConnectCluster(
-        Builder builder, string keyspace)
+    private static ISession ConnectCluster(Builder builder)
     {
         Cluster? cluster = null;
         try
         {
             cluster = builder.Build();
-            return string.IsNullOrWhiteSpace(keyspace)
-                ? cluster.Connect()
-                : cluster.Connect(keyspace);
+            // Sessions are intentionally keyspace-agnostic: every query
+            // in the migration uses fully-qualified `"keyspace"."table"`
+            // identifiers, so binding a default keyspace at connect time
+            // would add nothing and would force callers to track a
+            // keyspace they never use.
+            return cluster.Connect();
         }
         catch
         {
@@ -266,7 +261,7 @@ public static class CassandraClientFactory
     /// token automatically.
     /// </summary>
     public static ISession CreateSourceSession(
-        MigrationLog MigrationLog, Job job, string keyspace,
+        MigrationLog MigrationLog, Job job,
         TokenRefreshManager? tokenRefreshManager = null)
     {
         if (string.IsNullOrEmpty(job.SourceContactPoint))
@@ -303,7 +298,6 @@ public static class CassandraClientFactory
             job.SourcePort,
             username,
             password,
-            keyspace,
             tokenRefreshManager);
     }
 
@@ -312,7 +306,7 @@ public static class CassandraClientFactory
     /// Prefer this over the sync overload to avoid blocking on ARM discovery.
     /// </summary>
     public static async Task<ISession> CreateTargetSessionAsync(
-        MigrationLog MigrationLog, Job job, string keyspace)
+        MigrationLog MigrationLog, Job job)
     {
         if (string.IsNullOrEmpty(job.TargetContactPoint))
             throw new ArgumentException("Target contact point is required", nameof(job));
@@ -358,7 +352,6 @@ public static class CassandraClientFactory
             job.TargetPort,
             username,
             password,
-            keyspace,
             maxConnectionsPerHost: job.MaxConnectionsPerHost);
     }
 }

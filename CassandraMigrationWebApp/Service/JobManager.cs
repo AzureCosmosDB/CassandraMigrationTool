@@ -338,7 +338,7 @@ public class JobManager
                 try
                 {
                     var session = CassandraMigrationProcessor.CassandraDriver.CassandraClientFactory
-                        .CreateSourceSession(_log, job, keyspace);
+                        .CreateSourceSession(_log, job);
                     try
                     {
                         var tables = await CassandraMigrationProcessor.CassandraDriver.CassandraQueries

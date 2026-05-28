@@ -45,8 +45,8 @@ public sealed class JobSessionFactory : ISessionFactory
     }
 
     public ISession CreateSourceSession()
-        => CassandraClientFactory.CreateSourceSession(_log, _job, string.Empty, _tokenRefreshManager);
+        => CassandraClientFactory.CreateSourceSession(_log, _job, _tokenRefreshManager);
 
     public Task<ISession> CreateTargetSessionAsync()
-        => CassandraClientFactory.CreateTargetSessionAsync(_log, _job, string.Empty);
+        => CassandraClientFactory.CreateTargetSessionAsync(_log, _job);
 }

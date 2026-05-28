@@ -23,7 +23,6 @@ public class TokenRefreshManager : IDisposable
     private string? _lastSourceContactPoint;
     private int _lastSourcePort;
     private string? _lastSourceUsername;
-    private string? _lastSourceKeyspace;
 
     public TokenRefreshManager(MigrationLog log)
     {
@@ -35,13 +34,11 @@ public class TokenRefreshManager : IDisposable
     /// timer can reconnect with a fresh token.
     /// </summary>
     internal void CacheSourceConnectionParams(
-        string contactPoint, int port, string username,
-        string keyspace)
+        string contactPoint, int port, string username)
     {
         _lastSourceContactPoint = contactPoint;
         _lastSourcePort = port;
         _lastSourceUsername = username;
-        _lastSourceKeyspace = keyspace;
     }
 
     /// <summary>
@@ -167,8 +164,7 @@ public class TokenRefreshManager : IDisposable
                         _lastSourceContactPoint,
                         _lastSourcePort,
                         _lastSourceUsername ?? string.Empty,
-                        freshToken,
-                        _lastSourceKeyspace ?? string.Empty);
+                        freshToken);
                     MigrationUtilities.SafeDisposeSession(oldSession, "TokenRefresh old session");
                 }
 

@@ -37,10 +37,9 @@ internal sealed class JobPipeline : IDisposable
 
         Context = new PipelineContext(
             partitions,
-            new WorkerConfig(
-                new JobSessionFactory(log, job, tokenRefreshManager),
-                EnableReplay: enableReplay,
-                ReplayCooldownMs: pipelineConfig.ChangeFeedPollIntervalMs),
+            new JobSessionFactory(log, job, tokenRefreshManager),
+            EnableReplay: enableReplay,
+            ReplayCooldownMs: pipelineConfig.ChangeFeedPollIntervalMs,
             new JobControlFlags());
 
         // Wire fatal trip into our CTS so coordinators waiting on

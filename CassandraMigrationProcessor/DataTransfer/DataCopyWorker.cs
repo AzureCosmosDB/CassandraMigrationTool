@@ -51,8 +51,8 @@ internal class DataCopyWorker
         Partition? current = null;
         try
         {
-            reader = await PageReader.CreateAsync(_workerLog, ctx.Worker.SessionFactory, _pageSize, _maxReadRetries, _ct);
-            writer = await PageWriter.CreateAsync(_workerLog, ctx.Worker.SessionFactory, _pageSize, _maxWriteRetries, _ct);
+            reader = await PageReader.CreateAsync(_workerLog, ctx.SessionFactory, _pageSize, _maxReadRetries, _ct);
+            writer = await PageWriter.CreateAsync(_workerLog, ctx.SessionFactory, _pageSize, _maxWriteRetries, _ct);
 
             while (!_ct.IsCancellationRequested
                 && Volatile.Read(ref ctx.Flags.FatalErrorFlag) == 0
@@ -175,7 +175,7 @@ internal class DataCopyWorker
 
     private void ScheduleCooldown(Partition partition, PipelineContext ctx)
     {
-        int cooldownMs = ctx.Worker.ReplayCooldownMs;
+        int cooldownMs = ctx.ReplayCooldownMs;
         _ = Task.Run(async () =>
         {
             try { await Task.Delay(cooldownMs, _ct); }
