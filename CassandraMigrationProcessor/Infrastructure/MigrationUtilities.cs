@@ -5,16 +5,8 @@
 namespace CassandraMigrationProcessor.Infrastructure;
 
 /// <summary>
-/// Cross-cutting helper grab-bag for genuinely process-wide concerns:
-/// file logging, safe-dispose/execute wrappers, and the UI-side
-/// timestamp formatter. Domain predicates that used to live here have
-/// moved onto the model classes they describe
-/// (<see cref="Models.Job.IsOnline"/>, <see cref="Models.Job.IsOfflineCompleted"/>,
-/// <see cref="Models.TableMigrationSummary.IsValid"/>,
-/// <see cref="Models.TableMigration.GenerateId"/>,
-/// <see cref="Models.TableMigration.GetProcessedTotals"/>) and
-/// <c>ValidateCqlIdentifier</c> moved to
-/// <see cref="CassandraDriver.CqlIdentifier.Validate"/>.
+/// Cross-cutting helpers for process-wide concerns: file logging,
+/// safe-dispose/execute wrappers, and the UI-side timestamp formatter.
 /// </summary>
 public static class MigrationUtilities
 {

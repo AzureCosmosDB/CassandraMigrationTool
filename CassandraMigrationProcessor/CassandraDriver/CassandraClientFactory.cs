@@ -303,10 +303,11 @@ public static class CassandraClientFactory
     }
 
     /// <summary>
-    /// Per-side connection pool sizing. The job-level
-    /// <see cref="Job.MaxConnectionsPerHost"/> is the back-compat
-    /// fallback so jobs persisted before the per-side knobs existed
-    /// keep behaving the same on resume.
+    /// Per-side connection pool sizing. The per-side
+    /// <see cref="Job.SourceMaxConnectionsPerHost"/> /
+    /// <see cref="Job.TargetMaxConnectionsPerHost"/> knobs take
+    /// precedence; the job-level <see cref="Job.MaxConnectionsPerHost"/>
+    /// applies to both sides when no per-side value is set.
     /// </summary>
     internal static int ResolveSourceMaxConnectionsPerHost(Job job)
         => job.SourceMaxConnectionsPerHost > 0

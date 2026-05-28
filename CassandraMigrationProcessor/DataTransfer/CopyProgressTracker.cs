@@ -29,7 +29,7 @@ public class CopyProgressTracker
     private double _windowTime;
     private double _recentRowsPerSecond;
 
-    // --- TableMigration progress (moved from ProgressState / ProgressConfig) ---
+    // --- TableMigration progress sink ---
     // Tracker owns progress state updates on this unit (CopyRowsCopied, CopyPercent, chunk stats)
     private readonly TableMigration _migrationUnit;
     private readonly int _chunkIndex;

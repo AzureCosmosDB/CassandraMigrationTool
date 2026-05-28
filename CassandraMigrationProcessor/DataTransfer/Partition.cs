@@ -131,7 +131,7 @@ public sealed class Partition
     // ── Checkpoint API ─────────────────────────────────────────
     // Workers checkpoint through these methods. The dict on
     // TableMigration is mutated in-place via the shared Snapshot
-    // reference — no MigrationUnit dict round-trip.
+    // reference — no round-trip through the owning table.
 
     /// <summary>Persist the paging state for this range. Same field
     /// services bulk and replay because a partition is in exactly

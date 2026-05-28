@@ -61,8 +61,7 @@ public class TableMigrationSummary
     /// touch during migration. <see cref="TableStatus.OK"/> and
     /// <see cref="TableStatus.Failed"/> both qualify — Failed tables
     /// are retried on resume. Only <see cref="TableStatus.NotFound"/>
-    /// (e.g. dropped on the source) is excluded. Replaces
-    /// <c>MigrationUtilities.IsMigrationUnitValid</c>.
+    /// (e.g. dropped on the source) is excluded.
     /// </summary>
     [JsonIgnore]
     public bool IsValid =>
@@ -93,13 +92,9 @@ public class TableMigration : TableMigrationSummary
     /// <summary>
     /// Per-feed-range partition state — bulk checkpoint,
     /// replay checkpoint, and bulk-completed flag — keyed by
-    /// feed range JSON. Replaces the three parallel dicts that
-    /// used to live here (CopyFeedRangeCheckpoints +
-    /// CompletedCopyFeedRanges + FeedRangeContinuationTokens).
-    /// Each runtime <see cref="DataTransfer.Partition"/> holds a
-    /// reference to its <see cref="Partition.PartitionSnapshot"/> entry, so
-    /// workers checkpoint through the partition directly instead
-    /// of reaching back through the MigrationUnit dicts.
+    /// feed range JSON. Each runtime <see cref="DataTransfer.Partition"/>
+    /// holds a reference to its <see cref="Partition.PartitionSnapshot"/>
+    /// entry, so workers checkpoint through the partition directly.
     /// </summary>
     public Dictionary<string, Partition.PartitionSnapshot> Partitions { get; set; } = new();
 
@@ -201,9 +196,7 @@ public class TableMigration : TableMigrationSummary
 
     /// <summary>
     /// Stable deterministic id for a (keyspace, table) pair: first 16
-    /// hex chars of SHA-256("keyspace.table"). Lives here because the
-    /// id is a TableMigration concern and was previously buried in
-    /// <c>MigrationUtilities</c>.
+    /// hex chars of SHA-256("keyspace.table").
     /// </summary>
     public static string GenerateId(string keyspaceName, string tableName)
     {
@@ -216,7 +209,6 @@ public class TableMigration : TableMigrationSummary
 
     /// <summary>
     /// Aggregates copy-chunk totals: <c>(Total, Inserted, Failed)</c>.
-    /// Replaces <c>MigrationUtilities.GetProcessedTotals(TableMigration)</c>.
     /// </summary>
     public (long Total, long Inserted, long Failed) GetProcessedTotals()
     {

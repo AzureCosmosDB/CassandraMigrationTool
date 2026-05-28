@@ -148,7 +148,7 @@ public class Job
     /// <summary>
     /// True when this job runs change-data-capture replay alongside bulk
     /// copy. False for pure offline jobs which finish once bulk copy
-    /// completes. Replaces <c>MigrationUtilities.IsOnline(Job)</c>.
+    /// completes.
     /// </summary>
     [JsonIgnore]
     public bool IsOnline => CDCMode != CDCMode.Offline;
@@ -156,8 +156,7 @@ public class Job
     /// <summary>
     /// True iff every valid table in this offline job has finished bulk
     /// copy. Always false for online jobs (they don't have a single
-    /// "done" moment — they tail change feeds forever). Replaces
-    /// <c>MigrationUtilities.IsOfflineJobCompleted(Job)</c>.
+    /// "done" moment — they tail change feeds forever).
     /// </summary>
     [JsonIgnore]
     public bool IsOfflineCompleted
