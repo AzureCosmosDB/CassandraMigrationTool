@@ -174,15 +174,9 @@
                     {
                         <div class="row mb-3">
                             <div class="col-md-6">
-                                <label for="parallelThreads" class="form-label" title="Number of tables to copy in parallel. Higher values copy more tables concurrently but use more connections. Default = ProcessorCount * 5.">Parallel tables</label>
-                                <input type="number" id="parallelThreads" class="form-control" @bind="parallelThreads" min="1" max="500" placeholder="@($"Default ({defaultParallelThreads})")"/>
+                                <label for="workerCount" class="form-label" title="Size of the shared worker pool that does row-level copy work across all tables. Leave blank for auto = max(MinWorkers, ProcessorCount × WorkerMultiplier).">Shared workers</label>
+                                <input type="number" id="workerCount" class="form-control" @bind="workerCount" min="0" max="500" placeholder="@($"Auto ({Math.Max(MigrationDefaults.MinWorkers, Environment.ProcessorCount * MigrationDefaults.WorkerMultiplier)})")"/>
                             </div>
-                            <div class="col-md-6">
-                                <label for="feedRangeWorkers" class="form-label" title="Workers per table. 0 = auto (CPU cores × 15 / parallel tables).">Feed range workers</label>
-                                <input type="number" id="feedRangeWorkers" class="form-control" @bind="feedRangeWorkers" min="0" max="500" placeholder="Auto"/>
-                            </div>
-                        </div>
-                        <div class="row mb-3">
                             <div class="col-md-6">
                                 <label for="sourceConnectionsPerHost" class="form-label" title="Source (reader) Cassandra driver connections per host. 0 = driver default.">Source connections per host</label>
                                 <input type="number" id="sourceConnectionsPerHost" class="form-control" @bind="sourceConnectionsPerHost" min="0" max="128" placeholder="Driver default"/>
@@ -252,9 +246,7 @@
     private bool appendMode = false;
     private bool dropTargetTableBeforeStart = false;
     private bool skipSchemaSync = false;
-    private int? parallelThreads = null; // Parallel threads for CQL Copy
-    private int defaultParallelThreads = 5;
-    private int? feedRangeWorkers = null; // Max concurrent feed range workers per table
+    private int? workerCount = null; // Shared worker pool size (0 = auto from ProcessorCount)
     private int? sourceConnectionsPerHost = null; // Source reader connections per host (0 = auto)
     private int? targetConnectionsPerHost = null; // Target writer connections per host (0 = auto)
     private int? pageSize = null; // Rows per page (0 = default 500)
@@ -377,7 +369,6 @@
             appendMode = false;
             dropTargetTableBeforeStart = false;
             skipSchemaSync = false;
-            parallelThreads = null; // Default will be calculated
             logLevel = LogType.Info; // Default to Info
             isFileUploaded = false;
             isTextAreaUsed = false;
@@ -403,8 +394,7 @@
             appendMode = Job?.AppendMode ?? false;
             dropTargetTableBeforeStart = Job?.DropTargetTableBeforeStart ?? false;
             skipSchemaSync = Job?.SkipSchemaSync ?? false;
-            parallelThreads = Job?.ParallelThreads == defaultParallelThreads ? null : Job?.ParallelThreads;
-            feedRangeWorkers = Job?.MaxFeedRangeParallelism == 0 ? null : Job?.MaxFeedRangeParallelism;
+            workerCount = Job?.WorkerCount == 0 ? null : Job?.WorkerCount;
             sourceConnectionsPerHost = Job?.SourceMaxConnectionsPerHost == 0 ? null : Job?.SourceMaxConnectionsPerHost;
             targetConnectionsPerHost = Job?.TargetMaxConnectionsPerHost == 0 ? null : Job?.TargetMaxConnectionsPerHost;
             pageSize = Job?.PageSize == 0 ? null : Job?.PageSize;
@@ -530,8 +520,7 @@
             AppendMode = appendMode,
             DropTargetTableBeforeStart = dropTargetTableBeforeStart,
             SkipSchemaSync = skipSchemaSync,
-            ParallelThreads = parallelThreads ?? defaultParallelThreads,
-            MaxFeedRangeParallelism = feedRangeWorkers ?? 0,
+            WorkerCount = workerCount ?? 0,
             SourceMaxConnectionsPerHost = sourceConnectionsPerHost ?? 0,
             TargetMaxConnectionsPerHost = targetConnectionsPerHost ?? 0,
             PageSize = pageSize ?? 0,

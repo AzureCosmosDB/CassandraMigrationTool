@@ -42,15 +42,10 @@ public class Job
     // ── Pipeline Config ──
 
     /// <summary>
-    /// Number of parallel threads for row copy operations.
+    /// Size of the shared worker pool that does row-level copy work
+    /// across all tables. 0 = auto from <see cref="Environment.ProcessorCount"/>.
     /// </summary>
-    public int ParallelThreads { get; set; } = 5;
-
-    /// <summary>
-    /// Max concurrent feed-range workers per table.
-    /// 0 = auto (CPU cores × 15 / parallel tables).
-    /// </summary>
-    public int MaxFeedRangeParallelism { get; set; } = 0;
+    public int WorkerCount { get; set; } = 0;
 
     /// <summary>
     /// Max Cassandra driver connections per host. Back-compat

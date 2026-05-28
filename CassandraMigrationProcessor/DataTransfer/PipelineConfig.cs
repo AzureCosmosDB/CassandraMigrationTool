@@ -20,13 +20,15 @@ public record PipelineConfig(
     /// Priority: Job > Settings > Defaults.
     /// </summary>
     public static PipelineConfig Resolve(Job job, AppSettings settings)
-    {
-        ArgumentNullException.ThrowIfNull(job);
+    {        ArgumentNullException.ThrowIfNull(job);
         ArgumentNullException.ThrowIfNull(settings);
 
-        int workerCount = job.MaxFeedRangeParallelism > 0
-            ? job.MaxFeedRangeParallelism
-            : AutoWorkerCount(job.ParallelThreads);
+        // No job-level override: size the shared worker pool to the host's
+        // compute budget.
+        int workerCount = job.WorkerCount > 0
+            ? job.WorkerCount
+            : Math.Max(MigrationDefaults.MinWorkers,
+                Environment.ProcessorCount * MigrationDefaults.WorkerMultiplier);
 
         int pageSize = job.PageSize > 0
             ? job.PageSize
@@ -50,12 +52,5 @@ public record PipelineConfig(
             ChangeFeedPollIntervalMs: cfPollMs,
             MaxReadRetries: maxReadRetries,
             MaxWriteRetries: maxWriteRetries);
-    }
-
-    private static int AutoWorkerCount(int parallelTables)
-    {
-        int totalBudget = Environment.ProcessorCount * MigrationDefaults.WorkerMultiplier;
-        int tables = Math.Max(1, parallelTables);
-        return Math.Max(MigrationDefaults.MinWorkers, totalBudget / tables);
     }
 }

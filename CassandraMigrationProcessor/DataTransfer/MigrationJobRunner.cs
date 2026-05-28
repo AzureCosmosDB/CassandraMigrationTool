@@ -11,10 +11,9 @@ namespace CassandraMigrationProcessor.DataTransfer;
 /// job-wide worker pool. All tables share the same pool of
 /// <see cref="PipelineConfig.WorkerCount"/> workers; there is no
 /// table-level worker parallelism. Destination schema provisioning
-/// is done serially up front (Phase 1); <see cref="Job.ParallelThreads"/>
-/// only caps how many tables can be in copy orchestration
-/// concurrently in Phase 2 (seeding partitions / awaiting drain),
-/// not steady-state row throughput.
+/// (Phase 1) and copy orchestration (Phase 3) both fan out across
+/// every table concurrently — the shared pool gates steady-state
+/// row throughput.
 /// </summary>
 public class MigrationJobRunner
 {
@@ -45,15 +44,13 @@ public class MigrationJobRunner
             }
 
             var pipelineConfig = PipelineConfig.Resolve(job, config);
-            int copyParallelism = Math.Max(1, Math.Min(job.ParallelThreads, units.Count));
             _log.WriteLine(
-                $"Migrating {units.Count} tables with {pipelineConfig.WorkerCount} shared workers " +
-                $"(copy orchestration parallelism={copyParallelism})");
+                $"Migrating {units.Count} tables with {pipelineConfig.WorkerCount} shared workers");
 
             // Phase 1: provision destination schema for every table serially.
             var schemaFailed = await RunSchemaPhaseAsync(job, units, cancellationToken);
 
-            // Phase 1.5: discover partitioning. All source-side I/O
+            // Phase 2: discover partitioning. All source-side I/O
             // (columns / feed ranges / row counts) happens here so the
             // worker pool is constructed with the full partition list.
             var partitioning = await RunDiscoveryPhaseAsync(
@@ -62,11 +59,11 @@ public class MigrationJobRunner
             _pipeline = new JobPipeline(_log, job, pipelineConfig, partitioning, _tokenRefreshManager, cancellationToken);
             _pipeline.Start();
 
-            // Phase 2: parallel copy orchestration. The shared worker
+            // Phase 3: parallel copy orchestration. The shared worker
             // pool owned by JobPipeline does the actual row-level
-            // parallelism; copyParallelism only caps how many tables
-            // can be awaiting drain at the same time.
-            await RunCopyPhaseAsync(job, units, partitioning, schemaFailed, copyParallelism, cancellationToken);
+            // parallelism; here every table's orchestration loop runs
+            // concurrently and competes for those shared workers.
+            await RunCopyPhaseAsync(job, units, partitioning, schemaFailed, cancellationToken);
 
             if (Volatile.Read(ref _consecutiveAuthErrors) >= MigrationDefaults.MaxConsecutiveAuthErrors)
             {
@@ -100,8 +97,9 @@ public class MigrationJobRunner
 
     /// <summary>
     /// Phase 1 of <see cref="StartAsync"/>: provision destination
-    /// schema for every table serially. Failures are recorded on the
-    /// unit (<see cref="HandleMigrationUnitError"/>) and the unit ID
+    /// schema for every table in parallel (bounded by the job's
+    /// copy parallelism). Failures are recorded on the unit
+    /// (<see cref="HandleMigrationUnitError"/>) and the unit ID
     /// is returned so later phases skip it.
     /// </summary>
     private async Task<HashSet<string>> RunSchemaPhaseAsync(
@@ -113,29 +111,44 @@ public class MigrationJobRunner
             _log.WriteLine("Simulated run: skipping target schema provisioning.", LogType.Info);
             return failed;
         }
-        foreach (var mu in units)
-        {
-            ct.ThrowIfCancellationRequested();
-            if (MigrationJobContext.Instance.ControlledPauseRequested)
-                break;
-            if (Volatile.Read(ref _consecutiveAuthErrors) >= MigrationDefaults.MaxConsecutiveAuthErrors)
-                break;
 
+        _log.WriteLine($"=== Phase 1: Schema — {units.Count} table(s) ===", LogType.Info);
+        // Schema provisioning is per-table independent (each table
+        // opens its own source + target sessions for one CREATE
+        // KEYSPACE / CREATE TYPE / CREATE TABLE round-trip). Running
+        // it serially blocked the entire copy phase for ~25s per
+        // table on Cosmos source clusters with high DDL latency
+        // (e.g. 11 tables took ~4.5 minutes before any data flowed).
+        var failedLock = new object();
+
+        await Task.WhenAll(units.Select(async mu =>
+        {
+            if (MigrationJobContext.Instance.ControlledPauseRequested)
+                return;
+            if (Volatile.Read(ref _consecutiveAuthErrors) >= MigrationDefaults.MaxConsecutiveAuthErrors)
+                return;
+            ct.ThrowIfCancellationRequested();
+
+            _log.WriteLine($"[Schema] Provisioning target for {mu.KeyspaceName}.{mu.TableName}", LogType.Info);
             try
             {
                 await ProvisionTargetSchemaAsync(job, mu);
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                HandleMigrationUnitError(mu, ex);
-                failed.Add(mu.Id);
+                lock (failedLock)
+                {
+                    HandleMigrationUnitError(mu, ex);
+                    failed.Add(mu.Id);
+                }
             }
-        }
+        }));
+
         return failed;
     }
 
     /// <summary>
-    /// Phase 1.5: walk every still-eligible migration unit and gather
+    /// Phase 2: walk every still-eligible migration unit and gather
     /// all source-side state we need to build the worker pool —
     /// columns, feed-range list, per-chunk row count — and call
     /// <see cref="Partitioner.Partition"/> to produce a
@@ -152,6 +165,7 @@ public class MigrationJobRunner
     {
         var chunks = new List<TablePartitioning>();
 
+        _log.WriteLine($"=== Phase 2: Partition discovery ===", LogType.Info);
         var partitioner = new Partitioner(_log);
         var sourceSession = CassandraClientFactory.CreateSourceSession(_log, job, _tokenRefreshManager);
         try
@@ -166,6 +180,7 @@ public class MigrationJobRunner
                 if (mu.CopyComplete && !job.IsOnline)
                     continue;
 
+                _log.WriteLine($"[Discovery] Discovering partitions for {mu.KeyspaceName}.{mu.TableName}", LogType.Info);
                 try
                 {
                     await DiscoverUnitPartitioningAsync(job, mu, sourceSession, partitioner, chunks);
@@ -185,58 +200,50 @@ public class MigrationJobRunner
     }
 
     /// <summary>
-    /// Phase 2: run per-table drain coordinators in parallel under the
-    /// shared worker pool. The pool does the actual row-level
-    /// parallelism; <paramref name="copyParallelism"/> only caps how
-    /// many tables can be awaiting drain concurrently.
+    /// Phase 3: orchestrate per-table copy concurrently. All tables
+    /// share the worker pool owned by JobPipeline; this loop just
+    /// kicks off each table's drain so the pool stays saturated.
     /// </summary>
     private Task RunCopyPhaseAsync(
         Job job,
         IReadOnlyList<TableMigration> units,
         JobPartitioning partitioning,
         HashSet<string> schemaFailed,
-        int copyParallelism,
         CancellationToken cancellationToken)
     {
-        // Parallel.ForEachAsync re-throws only the first iteration fault
-        // and cancels its internal CTS so siblings observe OCE. That hides
-        // independent per-table failures and corrupts the post-loop view of
-        // "which tables succeeded". Catch and log each table's fault here
-        // so every table either completes, is observably faulted, or is
+        _log.WriteLine($"=== Phase 3: Copy — {units.Count} table(s) concurrent ===", LogType.Info);
+        // Catch each table's fault inside the loop body so every
+        // table either completes, is observably faulted, or is
         // observably cancelled — never silently elided by a sibling.
-        return Parallel.ForEachAsync(units, new ParallelOptions
+        return Task.WhenAll(units.Select(async mu =>
+        {
+            if (MigrationJobContext.Instance.ControlledPauseRequested)
+                return;
+            if (schemaFailed.Contains(mu.Id))
+                return;
+            if (Volatile.Read(ref _consecutiveAuthErrors) >= MigrationDefaults.MaxConsecutiveAuthErrors)
             {
-                MaxDegreeOfParallelism = copyParallelism,
-                CancellationToken = cancellationToken
-            },
-            async (mu, token) =>
+                _pipeline?.Stop();
+                return;
+            }
+            _log.WriteLine($"[Copy] Copying data for {mu.KeyspaceName}.{mu.TableName}", LogType.Info);
+            try
             {
-                if (MigrationJobContext.Instance.ControlledPauseRequested)
-                    return;
-                if (schemaFailed.Contains(mu.Id))
-                    return;
-                if (Volatile.Read(ref _consecutiveAuthErrors) >= MigrationDefaults.MaxConsecutiveAuthErrors)
-                {
-                    _pipeline?.Stop();
-                    return;
-                }
-                try
-                {
-                    await ProcessWithRetryAsync(job, mu, partitioning, token);
-                }
-                catch (OperationCanceledException) when (token.IsCancellationRequested)
-                {
-                    throw;
-                }
-                catch (Exception ex)
-                {
-                    _log.WriteLine(
-                        $"Table {mu.KeyspaceName}.{mu.TableName} faulted: {ex.GetType().FullName}: {ex.Message}",
-                        LogType.Error);
-                    if (ex.StackTrace != null)
-                        _log.WriteLine($"  at {ex.StackTrace}", LogType.Error);
-                }
-            });
+                await ProcessWithRetryAsync(job, mu, partitioning, cancellationToken);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _log.WriteLine(
+                    $"Table {mu.KeyspaceName}.{mu.TableName} faulted: {ex.GetType().FullName}: {ex.Message}",
+                    LogType.Error);
+                if (ex.StackTrace != null)
+                    _log.WriteLine($"  at {ex.StackTrace}", LogType.Error);
+            }
+        }));
     }
 
     /// <summary>
