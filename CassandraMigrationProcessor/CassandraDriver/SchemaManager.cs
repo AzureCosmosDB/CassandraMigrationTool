@@ -19,20 +19,11 @@ public static class SchemaManager
     private const int ThrottleMaxRetries = 10;
 
     /// <summary>
-    /// Generate and register a CLR mapping per UDT in the given keyspace
-    /// on the supplied session. Required so that the driver decodes UDT
-    /// cells into typed instances (instead of raw byte[]) and so values
-    /// read on one session can be re-bound on another.
-    /// </summary>
-    public static Task RegisterDynamicUdtMappingsAsync(ISession session, string keyspace)
-        => DynamicUdtRegistrar.RegisterAsync(session, keyspace);
-
-    /// <summary>
     /// Synchronises the target schema with the source:
     /// ensure keyspace → check table exists → create or
     /// alter → return source column list.
     /// </summary>
-    public static async Task<List<CassandraColumn>>
+    public static async Task
         SyncSchemaAsync(ISession sourceSession, ISession targetSession,
             string sourceKeyspace, string sourceTable,
             string targetKeyspace, string targetTable)
@@ -53,8 +44,6 @@ public static class SchemaManager
 
         await CreateTableFromSourceAsync(sourceSession, targetSession,
             sourceKeyspace, sourceTable, targetKeyspace, targetTable);
-
-        return sourceColumns;
     }
 
     /// <summary>

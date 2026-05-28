@@ -17,8 +17,8 @@ namespace CassandraMigrationProcessor.DataTransfer;
 public class CopyProgressTracker
 {
     private readonly MigrationLog _log;
-    private readonly string _keyspace;
-    private readonly string _table;
+    private readonly string _keyspaceName;
+    private readonly string _tableName;
     private readonly Stopwatch _stopwatch;
 
     // Atomic counters (delegated)
@@ -62,8 +62,8 @@ public class CopyProgressTracker
         TableMigration migration, ProgressConfig progressConfig)
     {
         _log = log;
-        _keyspace = migration.KeyspaceName;
-        _table = migration.TableName;
+        _keyspaceName = migration.KeyspaceName;
+        _tableName = migration.TableName;
         _counters = new ProgressCounters(initialCopied);
         _windowCopied = initialCopied;
         _migrationUnit = migration;
@@ -235,7 +235,7 @@ public class CopyProgressTracker
                 ? "WRITE-BOUND" :
                   "BALANCED";
 
-        _log.WriteLine($"Progress: {_keyspace}.{_table} {copied:N0} rows ({speedStr}, {throughput}), " + $"{failed:N0} failed ({elapsed:F1}s) | read={avgRead}/page, write={avgWrite}/page | {bottleneck}", LogType.Debug);
+        _log.WriteLine($"Progress: {_keyspaceName}.{_tableName} {copied:N0} rows ({speedStr}, {throughput}), " + $"{failed:N0} failed ({elapsed:F1}s) | read={avgRead}/page, write={avgWrite}/page | {bottleneck}", LogType.Debug);
     }
 
     /// <summary>
@@ -250,6 +250,6 @@ public class CopyProgressTracker
             ? copied / elapsed : 0;
         string speedStr = rps >= 1000
             ? $"{rps / 1000:F1}k/s" : $"{rps:F0}/s";
-        _log.WriteLine($"Bulk copy done: {_keyspace}.{_table} - {copied:N0} copied, " + $"{failed:N0} failed ({elapsed:F1}s, {speedStr})", LogType.Info);
+        _log.WriteLine($"Bulk copy done: {_keyspaceName}.{_tableName} - {copied:N0} copied, " + $"{failed:N0} failed ({elapsed:F1}s, {speedStr})", LogType.Info);
     }
 }

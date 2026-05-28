@@ -31,7 +31,7 @@ public class MigrationJobRunner
         _tokenRefreshManager = new TokenRefreshManager(migrationLog);
     }
 
-    public async Task<TaskResult> StartAsync(Job job, AppSettings config,
+    public async Task StartAsync(Job job, AppSettings config,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(job);
@@ -40,17 +40,17 @@ public class MigrationJobRunner
         try
         {
             var units = UnitStore.GetMigrationUnitsToMigrate(job);
-            if (units == null || units.Count == 0)
+            if (units.Count == 0)
             {
                 _log.WriteLine("No remaining migration units.", LogType.Warning);
-                return TaskResult.Success;
+                return;
             }
 
             var pipelineConfig = PipelineConfig.Resolve(job, config);
             int copyParallelism = Math.Max(1, Math.Min(job.ParallelThreads, units.Count));
             _log.WriteLine(
                 $"Migrating {units.Count} tables with {pipelineConfig.WorkerCount} shared workers " +
-                $"(copy orchestration parallelism={copyParallelism})", LogType.Info);
+                $"(copy orchestration parallelism={copyParallelism})");
 
             _pipeline = new JobPipeline(_log, job, pipelineConfig, _tokenRefreshManager, cancellationToken);
             _pipeline.Start();
@@ -89,7 +89,7 @@ public class MigrationJobRunner
             if (abortRequested)
             {
                 _log.WriteLine($"Aborting: {Volatile.Read(ref _consecutiveAuthErrors)} consecutive auth failures.", LogType.Error);
-                return TaskResult.Abort;
+                return;
             }
 
             // All tables have either drained or completed. Online jobs
@@ -111,12 +111,12 @@ public class MigrationJobRunner
                         _log.WriteLine(
                             $"Online worker pool has stopped (faulted={faulted}). Aborting job.",
                             LogType.Error);
-                        return TaskResult.Abort;
+                        return;
                     }
                     if (Volatile.Read(ref _pipeline.Context.Flags.FatalErrorFlag) == 1)
                     {
                         _log.WriteLine("Fatal error tripped during online replay. Aborting job.", LogType.Error);
-                        return TaskResult.Abort;
+                        return;
                     }
                     await Task.Delay(2000, cancellationToken);
                 }
@@ -128,17 +128,17 @@ public class MigrationJobRunner
                 await HandleOfflineCompletionAsync(job);
             }
 
-            return TaskResult.Success;
+            return;
         }
         catch (OperationCanceledException)
         {
             _log.WriteLine("Migration was cancelled.", LogType.Info);
-            return TaskResult.Canceled;
+            return;
         }
         catch (Exception ex)
         {
             _log.WriteLine($"Migration failed: {ex}", LogType.Error);
-            return TaskResult.Abort;
+            return;
         }
         finally
         {

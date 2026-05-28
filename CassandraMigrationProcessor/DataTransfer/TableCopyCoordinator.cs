@@ -31,10 +31,10 @@ internal sealed class TableCopyCoordinator : IDisposable
     private readonly MigrationLog _migrationLog;
     private readonly Job _migrationJob;
     private readonly PipelineConfig _pipelineConfig;
-    private readonly ISession _source;
-    private readonly ISession _target;
+    private readonly ISession _sourceSession;
+    private readonly ISession _targetSession;
     private readonly CancellationTokenSource _cts;
-    private readonly JobPipeline _pipeline;
+    private readonly JobPipeline _jobPipeline;
 
     public volatile bool ProcessRunning;
 
@@ -49,9 +49,9 @@ internal sealed class TableCopyCoordinator : IDisposable
         _cts = externalToken.CanBeCanceled
             ? CancellationTokenSource.CreateLinkedTokenSource(externalToken)
             : new CancellationTokenSource();
-        _source = source;
-        _target = target;
-        _pipeline = pipeline;
+        _sourceSession = source;
+        _targetSession = target;
+        _jobPipeline = pipeline;
     }
 
     internal static async Task<TableCopyCoordinator> CreateAsync(
@@ -127,7 +127,7 @@ internal sealed class TableCopyCoordinator : IDisposable
     {
         var context = CreateTableCopySpec(tableMigration);
 
-        if (!await SchemaManager.TableExistsAsync(_source, context.KeyspaceName, context.TableName))
+        if (!await SchemaManager.TableExistsAsync(_sourceSession, context.KeyspaceName, context.TableName))
         {
             _migrationLog.WriteLine($"Source table {context.KeyspaceName}.{context.TableName} not found.", LogType.Error);
             tableMigration.SourceStatus = TableStatus.NotFound;
@@ -241,7 +241,7 @@ internal sealed class TableCopyCoordinator : IDisposable
 
         var resources = new TableResources(context, columns, tracker, feedRanges.Count);
         bool allRangesComplete = await partitioner.SeedAsync(
-            resources, tableMigration, feedRanges, _pipeline.Context.Partitions,
+            resources, tableMigration, feedRanges, _jobPipeline.Context.Partitions,
             enableReplay: isOnline);
 
         if (allRangesComplete)
@@ -268,7 +268,7 @@ internal sealed class TableCopyCoordinator : IDisposable
             // which cascaded into our CTS via JobControlFlags.TriggerFatalShutdown)
             // from user-initiated cancel — the customer needs to see Abort,
             // not "paused", when a worker has failed the job.
-            if (Volatile.Read(ref _pipeline.Context.Flags.FatalErrorFlag) != 0)
+            if (Volatile.Read(ref _jobPipeline.Context.Flags.FatalErrorFlag) != 0)
                 return TaskResult.Abort;
             return TaskResult.Canceled;
         }
@@ -284,7 +284,7 @@ internal sealed class TableCopyCoordinator : IDisposable
             $"session={sessionWritten:N0} written, {tracker.TotalFailed:N0} failed " +
             $"({stopwatch.Elapsed.TotalSeconds:F1}s)", LogType.Info);
 
-        var result = DetermineOutcome(_pipeline.Context.Flags, tracker.TotalFailed);
+        var result = DetermineOutcome(_jobPipeline.Context.Flags, tracker.TotalFailed);
         if (result == TaskResult.Success)
             MarkChunkComplete(tableMigration, chunkIndex);
         return result;
@@ -319,13 +319,13 @@ internal sealed class TableCopyCoordinator : IDisposable
             mu.TableName,
             mu.GetEffectiveTargetKeyspaceName(),
             mu.GetEffectiveTargetTableName(),
-            _source);
+            _sourceSession);
     }
 
     public void Dispose()
     {
         _cts?.Dispose();
-        MigrationUtilities.SafeDisposeSession(_target, "TableCopyCoordinator target session");
-        MigrationUtilities.SafeDisposeSession(_source, "TableCopyCoordinator source session");
+        MigrationUtilities.SafeDisposeSession(_targetSession, "TableCopyCoordinator target session");
+        MigrationUtilities.SafeDisposeSession(_sourceSession, "TableCopyCoordinator source session");
     }
 }

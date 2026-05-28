@@ -16,7 +16,7 @@ internal sealed class JobPipeline : IDisposable
     private readonly MigrationLog _log;
     private readonly PipelineConfig _pipelineConfig;
     private readonly CancellationTokenSource _cts;
-    private readonly WorkerPool _pool;
+    private readonly WorkerPool _workerPool;
     public PipelineContext Context { get; }
 
     public JobPipeline(MigrationLog log, Job job, PipelineConfig pipelineConfig, TokenRefreshManager? tokenRefreshManager, CancellationToken externalToken)
@@ -62,7 +62,7 @@ internal sealed class JobPipeline : IDisposable
             }
         };
 
-        _pool = new WorkerPool(_log, pipelineConfig.WorkerCount);
+        _workerPool = new WorkerPool(_log, pipelineConfig.WorkerCount);
     }
 
     public void Start()
@@ -71,20 +71,20 @@ internal sealed class JobPipeline : IDisposable
             $"Job pipeline: {_pipelineConfig.WorkerCount} shared workers " +
             $"(replay={Context.EnableReplay}, page size={Context.ReaderConfig.PageSize})",
             LogType.Info);
-        _pool.Start(workerId => new DataCopyWorker(_log, _cts.Token, workerId).RunAsync(Context));
+        _workerPool.Start(workerId => new DataCopyWorker(_log, _cts.Token, workerId).RunAsync(Context));
     }
 
     /// <summary>Completes the partition pool; workers will drain and exit.</summary>
     public void CompletePartitionChannel() => Context.Partitions.Complete();
 
     /// <summary>Waits for all workers to finish (offline mode only).</summary>
-    public Task WaitForCompletionAsync() => _pool.WaitForCompletionAsync();
+    public Task WaitForCompletionAsync() => _workerPool.WaitForCompletionAsync();
 
     /// <summary>True when every worker task has exited (faulted, cancelled, or returned).</summary>
-    public bool AllWorkersExited => _pool.AllExited;
+    public bool AllWorkersExited => _workerPool.AllExited;
 
     /// <summary>Number of workers that completed with faults.</summary>
-    public int FaultedWorkerCount => _pool.FaultedCount;
+    public int FaultedWorkerCount => _workerPool.FaultedCount;
 
     public void Stop() => _cts.Cancel();
 
@@ -98,7 +98,7 @@ internal sealed class JobPipeline : IDisposable
             _cts.Cancel();
         }
         catch (ObjectDisposedException) { /* already disposed */ }
-        MigrationUtilities.SafeDispose(_pool, "JobPipeline WorkerPool");
+        MigrationUtilities.SafeDispose(_workerPool, "JobPipeline WorkerPool");
         _cts.Dispose();
     }
 }

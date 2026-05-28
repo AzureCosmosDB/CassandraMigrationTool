@@ -66,7 +66,7 @@ internal class Partition
     public bool IsCounterTable => _table.IsCounterTable;
 
     private readonly LinkedList<WorkChunk> _chunks = new();
-    private readonly object _lock = new();
+    private readonly object _chunksLock = new();
 
     public Partition(PartitionState state, byte[]? initialPagingState, TableResources table, PartitionPhase phase = PartitionPhase.Bulk)
     {
@@ -81,7 +81,7 @@ internal class Partition
 
     public void SetPageState(byte[]? pagingState, bool isExhausted)
     {
-        lock (_lock)
+        lock (_chunksLock)
         {
             LastPagingState = pagingState;
             if (isExhausted) IsExhausted = true;
@@ -96,7 +96,7 @@ internal class Partition
     /// </summary>
     public void TransitionToReplay()
     {
-        lock (_lock)
+        lock (_chunksLock)
         {
             Phase = PartitionPhase.Replay;
         }
@@ -105,7 +105,7 @@ internal class Partition
     public WorkChunk AddChunkAndTrim(byte[]? continuationToken)
     {
         var chunk = new WorkChunk { ContinuationToken = continuationToken };
-        lock (_lock)
+        lock (_chunksLock)
         {
             while (_chunks.First != null && _chunks.First.Value.IsCompleted)
                 _chunks.RemoveFirst();
@@ -117,7 +117,7 @@ internal class Partition
 
     public byte[]? GetResumeToken()
     {
-        lock (_lock)
+        lock (_chunksLock)
         {
             foreach (var chunk in _chunks)
             {
