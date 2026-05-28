@@ -121,25 +121,28 @@ internal class Partition
     /// <summary>
     /// Online bulk → replay handoff. Sets <see cref="PartitionState.BulkCompleted"/>
     /// while preserving the current <see cref="PartitionState.ContinuationToken"/>
-    /// as the replay anchor. Returns true if this call flipped the flag.
+    /// as the replay anchor. On the first writer the partition notifies
+    /// <see cref="Resources"/> so the table-level counter and drain
+    /// signal advance — workers never touch table-level state directly.
     /// </summary>
-    public bool HandoffToReplay()
+    public void HandoffToReplay()
     {
-        if (State.BulkCompleted) return false;
+        if (State.BulkCompleted) return;
         State.BulkCompleted = true;
-        return true;
+        Resources.OnPartitionBulkCompleted();
     }
 
     /// <summary>
     /// Offline final completion. Sets <see cref="PartitionState.BulkCompleted"/>
     /// and clears <see cref="PartitionState.ContinuationToken"/> so resume
-    /// skips the range entirely. Returns true if this call flipped the flag.
+    /// skips the range entirely. On the first writer the partition
+    /// notifies <see cref="Resources"/>.
     /// </summary>
-    public bool CompleteOffline()
+    public void CompleteOffline()
     {
-        if (State.BulkCompleted) return false;
+        if (State.BulkCompleted) return;
         State.BulkCompleted = true;
         State.ContinuationToken = null;
-        return true;
+        Resources.OnPartitionBulkCompleted();
     }
 }

@@ -28,19 +28,11 @@ internal sealed class TableResources
     public int TotalFeedRanges { get; }
 
     /// <summary>
-    /// Number of partitions for this table that have transitioned
-    /// Bulk → Replay (online) or completed (offline). Trips
-    /// <see cref="BulkDrainSignal"/> when it reaches the total range count.
-    /// Public field so workers can Interlocked.Increment it.
-    /// </summary>
-    public int BulkDrainedCount;
-
-    /// <summary>
     /// Number of partitions for this table whose bulk copy has
-    /// fully completed (offline final state, or bulk-drain in online
-    /// mode). Maintained as an atomic counter by workers via
-    /// <see cref="IncrementBulkCompleted"/> so the hot-path read in
-    /// <see cref="PageWriter"/> stays O(1).
+    /// fully finished — both online drain → replay and offline
+    /// final completion count. Maintained as an atomic counter
+    /// updated only via <see cref="OnPartitionBulkCompleted"/>
+    /// so the hot-path read in <see cref="PageWriter"/> stays O(1).
     /// </summary>
     private int _bulkCompletedCount;
     public int BulkCompletedCount => Volatile.Read(ref _bulkCompletedCount);
@@ -68,9 +60,17 @@ internal sealed class TableResources
     }
 
     /// <summary>
-    /// Atomically increments the bulk-completed counter. Called by
-    /// workers when a partition's bulk drain finishes.
+    /// Notification raised by a <see cref="Partition"/> when its
+    /// bulk phase has just finished (online handoff or offline
+    /// final). Atomic increment + signal trip — invoked by the
+    /// partition itself, NEVER by workers directly. This is the
+    /// single point where per-partition state is rolled up into
+    /// the table-wide drain signal.
     /// </summary>
-    public int IncrementBulkCompleted()
-        => Interlocked.Increment(ref _bulkCompletedCount);
+    public void OnPartitionBulkCompleted()
+    {
+        int n = Interlocked.Increment(ref _bulkCompletedCount);
+        if (n >= TotalFeedRanges)
+            BulkDrainSignal.TrySetResult();
+    }
 }

@@ -93,10 +93,11 @@ internal class DataCopyWorker
             // Any escaped exception here means the inner retry layers
             // (PageReader read retries, PageWriter row-write retries) are
             // already exhausted. The in-flight partition is dropped — it is
-            // not recycled, its BulkDrainedCount is not incremented, and its
-            // checkpoint did not advance — so continuing the job would
-            // either hang the table's BulkDrainSignal forever, or worse,
-            // silently mark the table complete with a feed range missing.
+            // not recycled, its bulk-completion counter is not advanced,
+            // and its checkpoint did not advance — so continuing the job
+            // would either hang the table's BulkDrainSignal forever, or
+            // worse, silently mark the table complete with a feed range
+            // missing.
             // Trip fatal so the operator can investigate and resume from
             // the last persisted checkpoint.
             _workerLog.WriteLine(
@@ -165,16 +166,11 @@ internal class DataCopyWorker
 
     private static void MarkBulkDrained(Partition partition)
     {
-        var resources = partition.Resources;
-        // Online: bulk drained, flip to replay. The partition's
-        // current ContinuationToken IS the replay handoff anchor;
-        // HandoffToReplay just sets the BulkCompleted flag.
-        if (partition.HandoffToReplay())
-            resources.IncrementBulkCompleted();
-
-        int drained = Interlocked.Increment(ref resources.BulkDrainedCount);
-        if (drained >= resources.TotalFeedRanges)
-            resources.BulkDrainSignal.TrySetResult();
+        // Online: bulk drained, flip to replay. Partition handles
+        // its own state + notifies TableResources so the table-wide
+        // counter and BulkDrainSignal advance — worker does not
+        // touch table state directly.
+        partition.HandoffToReplay();
     }
 
     private void ScheduleCooldown(Partition partition, PipelineContext ctx)
@@ -207,12 +203,8 @@ internal class DataCopyWorker
 
     private static void MarkCompleted(Partition partition, PipelineContext ctx)
     {
-        var resources = partition.Resources;
-        if (partition.CompleteOffline())
-            resources.IncrementBulkCompleted();
-        if (resources.BulkCompletedCount >= resources.TotalFeedRanges)
-        {
-            resources.BulkDrainSignal.TrySetResult();
-        }
+        // Offline final: partition clears its token + notifies
+        // TableResources. Worker stays out of table-level state.
+        partition.CompleteOffline();
     }
 }

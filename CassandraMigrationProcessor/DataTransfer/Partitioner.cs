@@ -54,10 +54,14 @@ internal class Partitioner
         }
 
         // Restore the bulk-completed counter on resume so PageWriter's
-        // ETA reads a correct "remaining ranges" count immediately.
+        // ETA reads a correct "remaining ranges" count immediately, and
+        // the table-wide BulkDrainSignal trips automatically if every
+        // range was already finished in a prior run. Going through the
+        // single OnPartitionBulkCompleted entry point keeps signal
+        // semantics consistent with runtime partition transitions.
         int alreadyCompleted = mu.Partitions.Values.Count(p => p.BulkCompleted);
         for (int i = 0; i < alreadyCompleted; i++)
-            resources.IncrementBulkCompleted();
+            resources.OnPartitionBulkCompleted();
 
         var pendingRanges = feedRanges
             .Select(r => (Range: r, State: mu.Partitions[r]))
@@ -71,7 +75,6 @@ internal class Partitioner
         if (pendingRanges.Count == 0)
         {
             _log.WriteLine($"All {feedRanges.Count} ranges already completed for {spec.KeyspaceName}.{spec.TableName}", LogType.Info);
-            resources.BulkDrainSignal.TrySetResult();
             return true;
         }
 
