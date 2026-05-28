@@ -63,7 +63,18 @@ internal class DataCopyWorker
                 if (result.WorkChunk.IsCompleted)
                     SaveCheckpoint(current);
                 else
-                    _workerLog.WriteLine($"Checkpoint NOT advanced for {current.FullTableName} — page had failures", LogType.Warning);
+                {
+                    // Record on the persisted snapshot that this range
+                    // has unresolved write failures. The flag blocks
+                    // CompleteOffline / HandoffToReplay from advertising
+                    // the range as completed; Resume will then re-read
+                    // the failed page from the last good checkpoint and
+                    // re-attempt the rows. Without this the next empty
+                    // page silently flips BulkCompleted=true and the
+                    // failed rows are dropped (silent data loss).
+                    current.RecordPageFailures();
+                    _workerLog.WriteLine($"Checkpoint NOT advanced for {current.FullTableName} — page had failures (range marked HadFailures; will re-read on resume)", LogType.Warning);
+                }
 
                 DispatchAfterPage(current, result, ctx);
                 current.Tracker.UpdateMigrationUnit();

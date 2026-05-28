@@ -80,7 +80,7 @@ public class MigrationJobRunner
             if (job.IsOnline)
                 await RunOnlineTailLoopAsync(cancellationToken);
             else
-                await RunOfflineFinalizeAsync(job);
+                await RunOfflineFinalizeAsync(job, units);
         }
         catch (OperationCanceledException)
         {
@@ -100,8 +100,9 @@ public class MigrationJobRunner
 
     /// <summary>
     /// Phase 1 of <see cref="StartAsync"/>: provision destination
-    /// schema for every table serially. Failures are recorded on the
-    /// unit (<see cref="HandleMigrationUnitError"/>) and the unit ID
+    /// schema for every table in parallel (bounded by the job's
+    /// copy parallelism). Failures are recorded on the unit
+    /// (<see cref="HandleMigrationUnitError"/>) and the unit ID
     /// is returned so later phases skip it.
     /// </summary>
     private async Task<HashSet<string>> RunSchemaPhaseAsync(
@@ -113,24 +114,45 @@ public class MigrationJobRunner
             _log.WriteLine("Simulated run: skipping target schema provisioning.", LogType.Info);
             return failed;
         }
-        foreach (var mu in units)
-        {
-            ct.ThrowIfCancellationRequested();
-            if (MigrationJobContext.Instance.ControlledPauseRequested)
-                break;
-            if (Volatile.Read(ref _consecutiveAuthErrors) >= MigrationDefaults.MaxConsecutiveAuthErrors)
-                break;
 
-            try
+        // Schema provisioning is per-table independent (each table
+        // opens its own source + target sessions for one CREATE
+        // KEYSPACE / CREATE TYPE / CREATE TABLE round-trip). Running
+        // it serially blocked the entire copy phase for ~25s per
+        // table on Cosmos source clusters with high DDL latency
+        // (e.g. 11 tables took ~4.5 minutes before any data flowed).
+        // Cap parallelism at job.ParallelThreads so we don't
+        // overwhelm small clusters; keep at least 1.
+        int schemaParallelism = Math.Max(1, Math.Min(job.ParallelThreads, units.Count));
+        var failedLock = new object();
+
+        await Parallel.ForEachAsync(units, new ParallelOptions
             {
-                await ProvisionTargetSchemaAsync(job, mu);
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException)
+                MaxDegreeOfParallelism = schemaParallelism,
+                CancellationToken = ct
+            },
+            async (mu, token) =>
             {
-                HandleMigrationUnitError(mu, ex);
-                failed.Add(mu.Id);
-            }
-        }
+                if (MigrationJobContext.Instance.ControlledPauseRequested)
+                    return;
+                if (Volatile.Read(ref _consecutiveAuthErrors) >= MigrationDefaults.MaxConsecutiveAuthErrors)
+                    return;
+                token.ThrowIfCancellationRequested();
+
+                try
+                {
+                    await ProvisionTargetSchemaAsync(job, mu);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    lock (failedLock)
+                    {
+                        HandleMigrationUnitError(mu, ex);
+                        failed.Add(mu.Id);
+                    }
+                }
+            });
+
         return failed;
     }
 
@@ -273,10 +295,38 @@ public class MigrationJobRunner
     /// drain and exit, await pool completion, then mark the job
     /// completed if the run reached the terminal state cleanly.
     /// </summary>
-    private async Task RunOfflineFinalizeAsync(Job job)
+    private async Task RunOfflineFinalizeAsync(Job job, IReadOnlyList<TableMigration> units)
     {
         _pipeline!.CompletePartitionChannel();
         await _pipeline.WaitForCompletionAsync();
+
+        // Safety net: never mark a job Completed when there is
+        // evidence of unresolved write failures. The per-table
+        // BulkCopyPhase / CopyComplete path normally catches this,
+        // but defensive validation here closes the gap (e.g. resume
+        // paths that incorrectly mark all ranges complete despite
+        // unresolved failures — see issue #32).
+        var stalledTables = new List<string>();
+        foreach (var mu in units)
+        {
+            bool anyFailedRange = mu.Partitions?.Values
+                .Any(p => p.HadFailures) ?? false;
+            if (anyFailedRange)
+            {
+                stalledTables.Add($"{mu.KeyspaceName}.{mu.TableName}");
+            }
+        }
+        if (stalledTables.Count > 0)
+        {
+            _log.WriteLine(
+                $"Job {job.Id} has tables with unresolved write failures; " +
+                $"refusing to mark Completed: {string.Join(", ", stalledTables)}. " +
+                "Resume the job to re-attempt the failed rows.",
+                LogType.Error);
+            job.Status = JobStatus.Faulted;
+            MigrationJobContext.Instance.SaveMigrationJob(job);
+            return;
+        }
 
         if (job.IsOfflineCompleted
             && !MigrationJobContext.Instance.ControlledPauseRequested

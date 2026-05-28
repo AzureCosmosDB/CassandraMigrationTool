@@ -140,6 +140,24 @@ public sealed class Partition
     {
         if (token == null) return;
         Snapshot.ContinuationToken = Convert.ToBase64String(token);
+        // The checkpoint just advanced past the failed page, so the
+        // recorded failures have been re-attempted successfully.
+        // Clear the flag so the partition can complete normally when
+        // the reader exhausts the range.
+        Snapshot.HadFailures = false;
+    }
+
+    /// <summary>
+    /// Record that the most recent page on this range had write
+    /// failures whose rows must be re-attempted on Resume. The flag
+    /// is persisted on the snapshot and blocks
+    /// <see cref="CompleteOffline"/> / <see cref="HandoffToReplay"/>
+    /// from advertising the range as completed until a checkpoint
+    /// advance clears it.
+    /// </summary>
+    public void RecordPageFailures()
+    {
+        Snapshot.HadFailures = true;
     }
 
     /// <summary>
@@ -148,11 +166,22 @@ public sealed class Partition
     /// as the replay anchor. On the first writer the partition notifies
     /// <see cref="_table"/> so the table-level counter and drain
     /// signal advance — workers never touch table-level state directly.
+    ///
+    /// If the range has unresolved write failures
+    /// (<see cref="PartitionSnapshot.HadFailures"/>) the snapshot
+    /// keeps <c>BulkCompleted = false</c> so a Resume re-reads the
+    /// range from the last successfully-checkpointed token. The
+    /// table-level drain counter still advances (callers depend on
+    /// it for shutdown signalling) and the partition is
+    /// transitioned in-memory so the worker exits cleanly.
     /// </summary>
     public void HandoffToReplay()
     {
         if (Snapshot.BulkCompleted) return;
-        Snapshot.BulkCompleted = true;
+        if (!Snapshot.HadFailures)
+        {
+            Snapshot.BulkCompleted = true;
+        }
         _table.OnPartitionBulkCompleted();
     }
 
@@ -161,12 +190,22 @@ public sealed class Partition
     /// and clears <see cref="PartitionSnapshot.ContinuationToken"/> so resume
     /// skips the range entirely. On the first writer the partition
     /// notifies <see cref="_table"/>.
+    ///
+    /// If the range has unresolved write failures
+    /// (<see cref="PartitionSnapshot.HadFailures"/>) the snapshot
+    /// keeps <c>BulkCompleted = false</c> and preserves the
+    /// continuation token so a Resume re-reads the failed page and
+    /// re-attempts the rows. The table-level drain counter still
+    /// advances so the run can shut down without hanging.
     /// </summary>
     public void CompleteOffline()
     {
         if (Snapshot.BulkCompleted) return;
-        Snapshot.BulkCompleted = true;
-        Snapshot.ContinuationToken = null;
+        if (!Snapshot.HadFailures)
+        {
+            Snapshot.BulkCompleted = true;
+            Snapshot.ContinuationToken = null;
+        }
         _table.OnPartitionBulkCompleted();
     }
 
@@ -200,6 +239,19 @@ public sealed class Partition
         /// <see cref="ContinuationToken"/> as the replay anchor.
         /// </summary>
         public bool BulkCompleted { get; set; }
+
+        /// <summary>
+        /// True if any page in this range had write failures whose
+        /// rows were never re-attempted before the run ended. While
+        /// this flag is set we refuse to persist
+        /// <see cref="BulkCompleted"/> = true even when the reader
+        /// reaches an empty page, so a Resume re-reads the range
+        /// from <see cref="ContinuationToken"/> (the last
+        /// successfully-checkpointed token) and re-attempts the
+        /// failed rows. Cleared by <see cref="Partition.SaveCheckpoint"/>
+        /// once the checkpoint advances past the failed page.
+        /// </summary>
+        public bool HadFailures { get; set; }
 
         /// <summary>Serialize this snapshot to a JSON string.</summary>
         public string Serialize() => JsonConvert.SerializeObject(this);
