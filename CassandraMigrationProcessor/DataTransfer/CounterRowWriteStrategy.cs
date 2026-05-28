@@ -4,6 +4,7 @@ using CassandraMigrationProcessor.Infrastructure;
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace CassandraMigrationProcessor.DataTransfer;
@@ -93,16 +94,17 @@ internal sealed class CounterRowWriteStrategy : IRowWriteStrategy
             retryPolicy, counterBindCount, targetSelectByPk);
     }
 
-    public Task WriteRowAsync(object[] sourceRow, Action onFatal, WriteCounters counters, int rowIndex)
+    public Task WriteRowAsync(object[] sourceRow, Action onFatal, WriteCounters counters, int rowIndex, CancellationToken cancellationToken)
     {
         return RowWriteRetry.ExecuteAsync(
-            attempt: () => ReadModifyWriteAsync(sourceRow),
+            attempt: () => ReadModifyWriteAsync(sourceRow, cancellationToken),
             policy: _retryPolicy,
             log: _log, rowIndex: rowIndex, rowKind: "Counter row",
-            onFatal: onFatal, counters: counters);
+            onFatal: onFatal, counters: counters,
+            cancellationToken: cancellationToken);
     }
 
-    private async Task ReadModifyWriteAsync(object[] sourceRow)
+    private async Task ReadModifyWriteAsync(object[] sourceRow, CancellationToken cancellationToken)
     {
         // 1) SELECT current target counter values for this PK.
         var keyValues = new object[_bindOrderToSourceIndex.Length - _counterBindCount];
@@ -112,7 +114,7 @@ internal sealed class CounterRowWriteStrategy : IRowWriteStrategy
         var selectBound = _targetSelectByPk.Bind(keyValues);
         selectBound.SetReadTimeoutMillis(RowWriteRetry.WriteTimeoutMs);
         selectBound.SetConsistencyLevel(ConsistencyLevel.LocalQuorum);
-        var rs = await _targetSession.ExecuteAsync(selectBound);
+        var rs = await _targetSession.ExecuteAsync(selectBound).WaitAsync(cancellationToken);
         Row? targetRow = null;
         foreach (var r in rs) { targetRow = r; break; }
 
@@ -158,6 +160,6 @@ internal sealed class CounterRowWriteStrategy : IRowWriteStrategy
         var bound = _preparedInsert.Bind(bindValues);
         bound.SetReadTimeoutMillis(RowWriteRetry.WriteTimeoutMs);
         bound.SetConsistencyLevel(ConsistencyLevel.LocalQuorum);
-        await _targetSession.ExecuteAsync(bound);
+        await _targetSession.ExecuteAsync(bound).WaitAsync(cancellationToken);
     }
 }

@@ -42,6 +42,14 @@ internal sealed class JobPipeline : IDisposable
                 ReplayCooldownMs: pipelineConfig.ChangeFeedPollIntervalMs),
             new JobControlFlags());
 
+        // Wire fatal trip into our CTS so coordinators waiting on
+        // per-table BulkDrainSignal under this token unblock as soon
+        // as any worker raises a fatal error.
+        Context.Flags.TriggerFatalShutdown = () =>
+        {
+            try { _cts.Cancel(); } catch (ObjectDisposedException) { }
+        };
+
         _pool = new WorkerPool(_log, pipelineConfig.WorkerCount);
     }
 

@@ -95,7 +95,7 @@ internal class PageReader : IDisposable
         {
             try
             {
-                resultSet = await _sourceSession.ExecuteAsync(stmt);
+                resultSet = await _sourceSession.ExecuteAsync(stmt).WaitAsync(_ct);
                 break;
             }
             catch (System.Exception ex) when (attempt < _maxReadRetries

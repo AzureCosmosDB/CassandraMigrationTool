@@ -4,7 +4,6 @@ using System;
 using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
-
 namespace CassandraMigrationProcessor.DataTransfer;
 
 /// <summary>
@@ -30,10 +29,12 @@ internal static class RowWriteRetry
         int rowIndex,
         string rowKind,
         Action onFatal,
-        WriteCounters counters)
+        WriteCounters counters,
+        CancellationToken cancellationToken)
     {
         for (int n = 1; n <= policy.MaxAttempts; n++)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             var start = Stopwatch.GetTimestamp();
             try
             {
@@ -42,6 +43,10 @@ internal static class RowWriteRetry
                 Interlocked.Add(ref counters.LatencySum, elapsed);
                 Interlocked.Increment(ref counters.Done);
                 return;
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
             }
             catch (Exception ex)
             {
@@ -56,7 +61,7 @@ internal static class RowWriteRetry
 
                 if (ExceptionClassifier.IsTransient(ex) && n < policy.MaxAttempts)
                 {
-                    await Task.Delay(policy.DelayBeforeRetry(n));
+                    await Task.Delay(policy.DelayBeforeRetry(n), cancellationToken);
                     continue;
                 }
 

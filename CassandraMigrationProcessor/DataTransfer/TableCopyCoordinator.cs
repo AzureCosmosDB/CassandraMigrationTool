@@ -268,6 +268,12 @@ internal sealed class TableCopyCoordinator : IDisposable
         }
         catch (OperationCanceledException)
         {
+            // Distinguish fatal-driven cancel (worker tripped FatalErrorFlag,
+            // which cascaded into our CTS via JobControlFlags.TriggerFatalShutdown)
+            // from user-initiated cancel — the customer needs to see Abort,
+            // not "paused", when a worker has failed the job.
+            if (Volatile.Read(ref _pipeline.Context.Flags.FatalErrorFlag) != 0)
+                return TaskResult.Abort;
             return TaskResult.Canceled;
         }
         stopwatch.Stop();

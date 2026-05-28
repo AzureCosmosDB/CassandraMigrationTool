@@ -108,7 +108,7 @@ internal sealed class PageWriter : IDisposable
         var stopwatch = Stopwatch.StartNew();
         var counters = new WriteCounters();
         var writeTasks = new List<Task>(rows.Count);
-        Action onFatal = () => Interlocked.Exchange(ref ctx.Flags.FatalErrorFlag, 1);
+        Action onFatal = () => ctx.Flags.TripFatal();
 
         for (int i = 0; i < rows.Count; i++)
         {
@@ -116,7 +116,7 @@ internal sealed class PageWriter : IDisposable
                 || Volatile.Read(ref ctx.Flags.FatalErrorFlag) != 0)
                 break;
 
-            writeTasks.Add(strategy.WriteRowAsync(rows[i], onFatal, counters, i));
+            writeTasks.Add(strategy.WriteRowAsync(rows[i], onFatal, counters, i, _ct));
         }
 
         resources.Tracker.SetPipelineState(resources.Ranges.FeedRanges.Count

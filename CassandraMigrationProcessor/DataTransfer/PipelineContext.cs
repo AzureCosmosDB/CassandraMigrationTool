@@ -1,8 +1,10 @@
-using CassandraMigrationProcessor.CassandraDriver;
-using CassandraMigrationProcessor.Models;
+using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Threading;
 using System.Threading.Channels;
+using CassandraMigrationProcessor.CassandraDriver;
+using CassandraMigrationProcessor.Models;
 
 namespace CassandraMigrationProcessor.DataTransfer;
 
@@ -29,13 +31,33 @@ internal record RangeState(
 
 /// <summary>
 /// Job-level control flags shared by every worker: a fatal-error
-/// latch and the collected per-worker outcomes. Per-table progress
+/// latch, a hook that cancels the job-wide CTS when fatal is tripped,
+/// and the collected per-worker outcomes. Per-table progress
 /// counters live on <see cref="TableResources.Tracker"/>.
 /// </summary>
 internal class JobControlFlags
 {
     public int FatalErrorFlag;
     public ConcurrentBag<TaskResult> WorkerErrors { get; } = new();
+
+    /// <summary>
+    /// Wired by <see cref="JobPipeline"/> to cancel the job-wide CTS.
+    /// Workers invoke this together with setting <see cref="FatalErrorFlag"/>
+    /// so all coordinators waiting on per-table <c>BulkDrainSignal</c>
+    /// (under the pipeline CTS) unblock immediately instead of hanging
+    /// until external cancel.
+    /// </summary>
+    public Action? TriggerFatalShutdown { get; set; }
+
+    /// <summary>
+    /// Idempotent fatal trip: sets the latch and cancels the job CTS.
+    /// Safe to call from any worker / strategy.
+    /// </summary>
+    public void TripFatal()
+    {
+        Interlocked.Exchange(ref FatalErrorFlag, 1);
+        try { TriggerFatalShutdown?.Invoke(); } catch { }
+    }
 }
 
 public record ProgressConfig(

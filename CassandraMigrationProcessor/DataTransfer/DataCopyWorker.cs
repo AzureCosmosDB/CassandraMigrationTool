@@ -65,7 +65,7 @@ internal class DataCopyWorker
                 if (result == null)
                 {
                     _workerLog.WriteLine($"FATAL: Read failed for {current.Resources.TableId} — failing job", LogType.Error);
-                    Interlocked.Exchange(ref ctx.Flags.FatalErrorFlag, 1);
+                    ctx.Flags.TripFatal();
                     break;
                 }
 
@@ -93,7 +93,7 @@ internal class DataCopyWorker
             if (current == null || ExceptionClassifier.IsFatal(ex))
             {
                 _workerLog.WriteLine("FATAL — failing job", LogType.Error);
-                Interlocked.Exchange(ref ctx.Flags.FatalErrorFlag, 1);
+                ctx.Flags.TripFatal();
                 ctx.Flags.WorkerErrors.Add(TaskResult.Abort);
             }
             else
@@ -104,7 +104,17 @@ internal class DataCopyWorker
         finally
         {
             if (current != null) current.Resources.Tracker.UpdateMigrationUnit();
-            ctx.Partitions.Complete();
+            // Do NOT call ctx.Partitions.Complete() here. The shared
+            // partition channel is owned by JobPipeline; closing it from
+            // one worker's finally would cut off every other worker
+            // (potentially serving different tables) the instant ANY
+            // worker exits (planned, faulted, or cancelled). The
+            // orchestrator drives channel completion explicitly
+            // (CompletePartitionChannel in offline mode, _cts.Cancel
+            // in stop / fatal). Workers that pulled the last partition
+            // exit via TakeAsync returning null when the orchestrator
+            // completes the channel; faulted workers leave other workers
+            // alive so they can finish in-flight work.
             MigrationUtilities.SafeDispose(writer, "worker PageWriter");
             MigrationUtilities.SafeDispose(reader, "worker PageReader");
         }

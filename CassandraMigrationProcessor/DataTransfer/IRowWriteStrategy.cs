@@ -1,4 +1,5 @@
 using System;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace CassandraMigrationProcessor.DataTransfer;
@@ -19,7 +20,7 @@ namespace CassandraMigrationProcessor.DataTransfer;
 /// </summary>
 internal interface IRowWriteStrategy
 {
-    Task WriteRowAsync(object[] sourceRow, Action onFatal, WriteCounters counters, int rowIndex);
+    Task WriteRowAsync(object[] sourceRow, Action onFatal, WriteCounters counters, int rowIndex, CancellationToken cancellationToken);
 }
 
 /// <summary>
