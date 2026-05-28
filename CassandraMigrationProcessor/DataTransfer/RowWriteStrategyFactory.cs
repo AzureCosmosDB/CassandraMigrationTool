@@ -29,13 +29,14 @@ internal static class RowWriteStrategyFactory
     public static async Task<IRowWriteStrategy> CreateAsync(
         WorkerLog log, ISession targetSession,
         List<CassandraColumn> columns,
-        string targetKeyspace, string targetTable, int maxWriteRetries)
+        string targetKeyspace, string targetTable, int maxWriteRetries,
+        bool isCounterTable)
     {
         // One policy per worker, shared across rows and across strategy
         // variants. Linear 500ms × attempt matches the historical schedule.
         var retryPolicy = RetryPolicy.Linear(maxWriteRetries, TimeSpan.FromMilliseconds(500));
 
-        if (CassandraQueries.IsCounterTable(columns))
+        if (isCounterTable)
             return await CounterRowWriteStrategy.CreateAsync(log, targetSession, columns, targetKeyspace, targetTable, retryPolicy);
 
         return await RegularRowWriteStrategy.CreateAsync(log, targetSession, columns, targetKeyspace, targetTable, retryPolicy);

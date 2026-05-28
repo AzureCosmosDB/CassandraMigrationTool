@@ -19,7 +19,11 @@ namespace CassandraMigrationProcessor.DataTransfer;
 /// Carried as a record so the caller passes one capability instead of
 /// two loose ints.
 /// </summary>
-internal record WriterConfig(int PageSize, int MaxWriteRetries);
+/// <summary>
+/// Tunables for <see cref="PageWriter"/>: write retry budget. Page size
+/// is reader-only; writers don't page.
+/// </summary>
+internal record WriterConfig(int MaxWriteRetries);
 
 /// <summary>
 /// Writes extracted rows to the target cluster. The target session is
@@ -33,7 +37,6 @@ internal sealed class PageWriter : IDisposable
     private readonly WorkerLog _log;
     private readonly CancellationToken _ct;
     private readonly ISession _targetSession;
-    private readonly int _pageSize;
     private readonly int _maxWriteRetries;
     private readonly ISessionFactory _sessionFactory;
 
@@ -46,7 +49,6 @@ internal sealed class PageWriter : IDisposable
         _log = log;
         _ct = cancellationToken;
         _sessionFactory = sessionFactory;
-        _pageSize = config.PageSize;
         _maxWriteRetries = config.MaxWriteRetries;
         _targetSession = targetSession;
     }
@@ -61,13 +63,14 @@ internal sealed class PageWriter : IDisposable
 
     private Task<IRowWriteStrategy> GetStrategyAsync(Partition partition)
     {
-        return _strategyCache.GetOrAdd(partition.TableId, async _ =>
+        return _strategyCache.GetOrAdd(partition.FullTableName, async _ =>
         {
             await EnsureTargetUdtsRegisteredAsync(partition);
             return await RowWriteStrategyFactory.CreateAsync(
                 _log, _targetSession, partition.Columns,
                 partition.Spec.TargetKeyspaceName, partition.Spec.TargetTableName,
-                _maxWriteRetries);
+                _maxWriteRetries,
+                partition.IsCounterTable);
         });
     }
 
@@ -127,15 +130,12 @@ internal sealed class PageWriter : IDisposable
             writeTasks.Add(strategy.WriteRowAsync(rows[i], onFatal, counters, i, _ct));
         }
 
-        partition.Tracker.SetPipelineState(partition.TotalFeedRanges
-                - partition.BulkCompletedCount,
-            _pageSize);
         await Task.WhenAll(writeTasks);
 
         if (counters.Failed == 0) workChunk.IsCompleted = true;
         else
         {
-            _log.WriteLine($"{counters.Failed}/{rows.Count} writes failed for {partition.TableId} — checkpoint NOT advanced (will retry on resume)",
+            _log.WriteLine($"{counters.Failed}/{rows.Count} writes failed for {partition.FullTableName} — checkpoint NOT advanced (will retry on resume)",
                 LogType.Warning);
         }
 

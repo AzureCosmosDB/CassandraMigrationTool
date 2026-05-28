@@ -1,5 +1,3 @@
-using System;
-using System.Collections.Generic;
 using CassandraMigrationProcessor.CassandraDriver;
 using CassandraMigrationProcessor.Models;
 
@@ -39,40 +37,43 @@ internal class Partition
     /// Per-table state for the table that owns this partition. Kept
     /// private so workers go through typed pass-through accessors
     /// (<see cref="Spec"/>, <see cref="Columns"/>, <see cref="Tracker"/>,
-    /// <see cref="TableId"/>, <see cref="TotalFeedRanges"/>,
+    /// <see cref="FullTableName"/>, <see cref="TotalFeedRanges"/>,
     /// <see cref="BulkCompletedCount"/>) rather than reaching into a
     /// shared bag. This keeps the worker → table coupling explicit and
-    /// stops new code from grabbing the whole resources object.
+    /// stops new code from grabbing the whole table object.
     /// </summary>
-    private readonly TableResources _resources;
+    private readonly TableResources _table;
 
     /// <summary>Source/target table identifiers and column metadata.</summary>
-    public TableCopySpec Spec => _resources.Spec;
+    public TableCopySpec Spec => _table.Spec;
 
     /// <summary>Ordered column list used to materialize rows and bind writes.</summary>
-    public List<CassandraColumn> Columns => _resources.Columns;
+    public List<CassandraColumn> Columns => _table.Columns;
 
     /// <summary>Per-table progress / metrics sink.</summary>
-    public CopyProgressTracker Tracker => _resources.Tracker;
+    public CopyProgressTracker Tracker => _table.Tracker;
 
     /// <summary>Human-readable "keyspace.table" identifier for logs.</summary>
-    public string TableId => _resources.TableId;
+    public string FullTableName => _table.FullTableName;
 
     /// <summary>Total feed ranges across the owning table.</summary>
-    public int TotalFeedRanges => _resources.TotalFeedRanges;
+    public int TotalFeedRanges => _table.TotalFeedRanges;
 
     /// <summary>Feed ranges in the owning table whose bulk phase has completed.</summary>
-    public int BulkCompletedCount => _resources.BulkCompletedCount;
+    public int BulkCompletedCount => _table.BulkCompletedCount;
+
+    /// <summary>True iff the owning table is a counter table (cached on the table).</summary>
+    public bool IsCounterTable => _table.IsCounterTable;
 
     private readonly LinkedList<WorkChunk> _chunks = new();
     private readonly object _lock = new();
 
-    public Partition(PartitionState state, byte[]? initialPagingState, TableResources resources, PartitionPhase phase = PartitionPhase.Bulk)
+    public Partition(PartitionState state, byte[]? initialPagingState, TableResources table, PartitionPhase phase = PartitionPhase.Bulk)
     {
         State = state ?? throw new ArgumentNullException(nameof(state));
         LastPagingState = initialPagingState;
         Phase = phase;
-        _resources = resources;
+        _table = table;
 
         if (initialPagingState != null)
             _chunks.AddLast(new WorkChunk { ContinuationToken = initialPagingState, IsCompleted = true });
@@ -144,27 +145,27 @@ internal class Partition
     /// Online bulk → replay handoff. Sets <see cref="PartitionState.BulkCompleted"/>
     /// while preserving the current <see cref="PartitionState.ContinuationToken"/>
     /// as the replay anchor. On the first writer the partition notifies
-    /// <see cref="_resources"/> so the table-level counter and drain
+    /// <see cref="_table"/> so the table-level counter and drain
     /// signal advance — workers never touch table-level state directly.
     /// </summary>
     public void HandoffToReplay()
     {
         if (State.BulkCompleted) return;
         State.BulkCompleted = true;
-        _resources.OnPartitionBulkCompleted();
+        _table.OnPartitionBulkCompleted();
     }
 
     /// <summary>
     /// Offline final completion. Sets <see cref="PartitionState.BulkCompleted"/>
     /// and clears <see cref="PartitionState.ContinuationToken"/> so resume
     /// skips the range entirely. On the first writer the partition
-    /// notifies <see cref="_resources"/>.
+    /// notifies <see cref="_table"/>.
     /// </summary>
     public void CompleteOffline()
     {
         if (State.BulkCompleted) return;
         State.BulkCompleted = true;
         State.ContinuationToken = null;
-        _resources.OnPartitionBulkCompleted();
+        _table.OnPartitionBulkCompleted();
     }
 }

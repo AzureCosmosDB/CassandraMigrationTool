@@ -31,10 +31,6 @@ public class CopyProgressTracker
     private double _windowTime;
     private double _recentRowsPerSecond;
 
-    // Pipeline state (set by writer)
-    private int _activeRanges;
-    private int _adaptivePageSize;
-
     // --- TableMigration progress (moved from ProgressState / ProgressConfig) ---
     // Tracker owns progress state updates on this unit (CopyRowsCopied, CopyPercent, chunk stats)
     private readonly TableMigration _migrationUnit;
@@ -138,13 +134,6 @@ public class CopyProgressTracker
         _counters.AddWriteTime(ms, ops);
     }
 
-    /// <summary>Set active feed range count and adaptive page size.</summary>
-    public void SetPipelineState(int activeRanges, int pageSize)
-    {
-        Volatile.Write(ref _activeRanges, activeRanges);
-        Volatile.Write(ref _adaptivePageSize, pageSize);
-    }
-
     public void AddFailed(long count)
     {
         _counters.AddFailed(count);
@@ -240,16 +229,13 @@ public class CopyProgressTracker
         string throughput = mbps >= 1
             ? $"{mbps:F1} MB/s" : $"{mbps * 1024:F0} KB/s";
 
-        int ranges = Volatile.Read(ref _activeRanges);
-        int pageSize = Volatile.Read(ref _adaptivePageSize);
-
         string bottleneck = avgReadMs > avgWriteMs * 2
                 ? "READ-BOUND" :
             avgWriteMs > avgReadMs * 2
                 ? "WRITE-BOUND" :
                   "BALANCED";
 
-        _log.WriteLine($"Progress: {_keyspace}.{_table} [{ranges} ranges, pg={pageSize}] {copied:N0} rows ({speedStr}, {throughput}), " + $"{failed:N0} failed ({elapsed:F1}s) | read={avgRead}/page, write={avgWrite}/page | {bottleneck}", LogType.Debug);
+        _log.WriteLine($"Progress: {_keyspace}.{_table} {copied:N0} rows ({speedStr}, {throughput}), " + $"{failed:N0} failed ({elapsed:F1}s) | read={avgRead}/page, write={avgWrite}/page | {bottleneck}", LogType.Debug);
     }
 
     /// <summary>

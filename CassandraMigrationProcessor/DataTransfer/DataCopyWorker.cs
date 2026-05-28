@@ -57,7 +57,7 @@ internal class DataCopyWorker
                 var result = await reader.ReadAsync(current, ctx);
                 if (result == null)
                 {
-                    _workerLog.WriteLine($"FATAL: Read failed for {current.TableId} — failing job", LogType.Error);
+                    _workerLog.WriteLine($"FATAL: Read failed for {current.FullTableName} — failing job", LogType.Error);
                     ctx.Flags.TripFatal();
                     break;
                 }
@@ -67,7 +67,7 @@ internal class DataCopyWorker
                 if (result.WorkChunk.IsCompleted)
                     SaveCheckpoint(current);
                 else
-                    _workerLog.WriteLine($"Checkpoint NOT advanced for {current.TableId} — page had failures", LogType.Warning);
+                    _workerLog.WriteLine($"Checkpoint NOT advanced for {current.FullTableName} — page had failures", LogType.Warning);
 
                 DispatchAfterPage(current, result, ctx);
                 current.Tracker.UpdateMigrationUnit();
@@ -80,7 +80,7 @@ internal class DataCopyWorker
         }
         catch (Exception ex)
         {
-            string tag = current?.TableId ?? "init";
+            string tag = current?.FullTableName ?? "init";
             _workerLog.WriteLine($"Error on {tag}: {ex.GetType().Name}: {ex.Message}", LogType.Error);
 
             // Any escaped exception here means the inner retry layers
@@ -187,7 +187,7 @@ internal class DataCopyWorker
             // to express "expected during shutdown".
             if (!ctx.Partitions.TryRecycle(partition))
                 _workerLog.WriteLine(
-                    $"Cooldown recycle skipped for {partition.TableId}/{partition.FeedRange}: pool closed (shutdown).",
+                    $"Cooldown recycle skipped for {partition.FullTableName}/{partition.FeedRange}: pool closed (shutdown).",
                     LogType.Info);
         }, _ct);
     }

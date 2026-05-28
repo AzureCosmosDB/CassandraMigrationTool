@@ -24,6 +24,15 @@ internal sealed class TableResources
     public List<CassandraColumn> Columns { get; }
     public CopyProgressTracker Tracker { get; }
 
+    /// <summary>
+    /// True when the source table has at least one counter column.
+    /// Cached at construction — Cassandra forbids mixing counter and
+    /// non-counter regular columns in the same table, so this is a
+    /// fixed property of the schema and computing it per write would
+    /// be wasted work.
+    /// </summary>
+    public readonly bool IsCounterTable;
+
     /// <summary>Total number of feed ranges for this table.</summary>
     public int TotalFeedRanges { get; }
 
@@ -45,7 +54,7 @@ internal sealed class TableResources
     public TaskCompletionSource BulkDrainSignal { get; } =
         new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 
-    public string TableId => $"{Spec.KeyspaceName}.{Spec.TableName}";
+    public string FullTableName => $"{Spec.KeyspaceName}.{Spec.TableName}";
 
     public TableResources(
         TableCopySpec spec,
@@ -57,6 +66,7 @@ internal sealed class TableResources
         Columns = columns;
         Tracker = tracker;
         TotalFeedRanges = totalFeedRanges;
+        IsCounterTable = CassandraQueries.IsCounterTable(columns);
     }
 
     /// <summary>

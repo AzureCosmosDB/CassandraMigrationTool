@@ -35,7 +35,7 @@ internal sealed class JobPipeline : IDisposable
         bool enableReplay = MigrationUtilities.IsOnline(job);
         var partitions = new PartitionManager();
         var readerConfig = new ReaderConfig(pipelineConfig.PageSize, pipelineConfig.MaxReadRetries);
-        var writerConfig = new WriterConfig(pipelineConfig.PageSize, pipelineConfig.MaxWriteRetries);
+        var writerConfig = new WriterConfig(pipelineConfig.MaxWriteRetries);
 
         Context = new PipelineContext(
             partitions,
