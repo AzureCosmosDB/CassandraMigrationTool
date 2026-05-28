@@ -1,4 +1,9 @@
 namespace CassandraMigrationProcessor.Infrastructure;
+
+/// <summary>
+/// Compile-time default tuning constants shared across the migration
+/// pipeline (worker counts, retry limits, checkpoint cadence, page sizes).
+/// </summary>
 public static class MigrationDefaults
 {
     public const int WorkerMultiplier = 13;

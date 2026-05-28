@@ -2,6 +2,12 @@ using Newtonsoft.Json;
 using System.Collections.Generic;
 
 namespace CassandraMigrationProcessor.Models;
+
+/// <summary>
+/// Persistent root document for a migration run: source/target connection
+/// info, pipeline tuning knobs, lifecycle <see cref="JobStatus"/>, and the
+/// list of <see cref="TableMigrationSummary"/> children it owns.
+/// </summary>
 public class Job
 {
     // ── Identity ──

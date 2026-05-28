@@ -5,6 +5,11 @@ using System.Collections.Generic;
 using System.Threading;
 
 namespace CassandraMigrationProcessor.Models;
+
+/// <summary>
+/// Lightweight per-table snapshot embedded in <see cref="Job.Tables"/>:
+/// identity, status, and rolled-up copy / change-feed counters used by the UI.
+/// </summary>
 public class TableMigrationSummary
 {
     // ── Identity ──
@@ -53,6 +58,11 @@ public class TableMigrationSummary
     }
 }
 
+/// <summary>
+/// Full per-table migration document (persisted as <c>{unitId}.json</c>): extends
+/// the summary with bulk-copy phase, per-feed-range <see cref="PartitionState"/>,
+/// change-feed checkpoints, and live counters.
+/// </summary>
 public class TableMigration : TableMigrationSummary
 {
     // ── Bulk Copy State ──

@@ -2,6 +2,12 @@ using System;
 using System.IO;
 
 namespace CassandraMigrationProcessor.Infrastructure;
+
+/// <summary>
+/// Resolves the on-disk working folder used to persist job state and logs,
+/// honoring platform conventions (Windows ResourceDrive vs Linux app-scoped
+/// path) and the configured app ID.
+/// </summary>
 public static class DataDirectoryResolver
 {
     static string _workingFolder = string.Empty;

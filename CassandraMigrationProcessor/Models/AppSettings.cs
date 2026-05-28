@@ -2,6 +2,12 @@ using Newtonsoft.Json;
 using System;
 
 namespace CassandraMigrationProcessor.Models;
+
+/// <summary>
+/// Mutable user-facing application configuration (page sizes, change-feed
+/// poll interval, feed-range parallelism) with default-and-clamp semantics.
+/// Persistence is delegated to <see cref="Context.SettingsManager"/>.
+/// </summary>
 public class AppSettings : ICloneable
 {
     // Default values

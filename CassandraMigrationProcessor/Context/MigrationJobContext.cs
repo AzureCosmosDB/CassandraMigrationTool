@@ -12,6 +12,13 @@ using System.Threading.Tasks;
 using CassandraMigrationProcessor.Models;
 
 namespace CassandraMigrationProcessor.Context;
+
+/// <summary>
+/// Process-wide ambient state for the migration host: wires up persistence
+/// (<see cref="IDocumentStorage"/> + <see cref="ILogStorage"/>), tracks the
+/// currently active job, holds the <see cref="JobIndex"/>, and exposes
+/// thin facades over <see cref="JobStore"/> / <see cref="UnitStore"/>.
+/// </summary>
 public class MigrationJobContext
 {
     /// <summary>

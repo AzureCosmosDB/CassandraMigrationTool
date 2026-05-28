@@ -12,6 +12,12 @@ using System.Text.RegularExpressions;
 #pragma warning disable CS8604
 
 namespace CassandraMigrationProcessor.Infrastructure;
+
+/// <summary>
+/// Cross-cutting helper grab-bag used throughout the processor: job-mode
+/// predicates, ID generation, identifier validation, file logging, and
+/// safe-execute wrappers. Pure helpers with no migration state of their own.
+/// </summary>
 public static class MigrationUtilities
 {
     public static bool IsOnline(Job job)

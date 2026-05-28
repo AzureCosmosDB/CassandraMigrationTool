@@ -3,6 +3,11 @@ using CassandraMigrationProcessor.Models;
 using System;
 
 namespace CassandraMigrationProcessor.Context;
+
+/// <summary>
+/// Loads and saves the global <see cref="AppSettings"/> document (<c>config.json</c>)
+/// through <see cref="MigrationJobContext"/>'s document store.
+/// </summary>
 public static class SettingsManager
 {
     private static string GetFilePath()

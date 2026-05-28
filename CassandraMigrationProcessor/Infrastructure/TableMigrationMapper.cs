@@ -3,6 +3,12 @@ using System;
 using System.Threading;
 
 namespace CassandraMigrationProcessor.Infrastructure;
+
+/// <summary>
+/// Projects a full <see cref="TableMigration"/> down to the lightweight
+/// <see cref="TableMigrationSummary"/> stored on the parent <see cref="Job"/>,
+/// and keeps the embedded summary in sync when the unit changes.
+/// </summary>
 public static class TableMigrationMapper
 {
     private static readonly object _updateParentLock = new();

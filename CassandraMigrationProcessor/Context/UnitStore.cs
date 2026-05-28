@@ -6,6 +6,12 @@ using System.Linq;
 using CassandraMigrationProcessor.Infrastructure;
 using CassandraMigrationProcessor.Models;
 namespace CassandraMigrationProcessor.Context;
+
+/// <summary>
+/// Persistence gateway for <see cref="TableMigration"/> documents (one JSON
+/// file per unit under the job folder). Handles add / save / remove and
+/// keeps the parent <see cref="Job"/>'s table summaries in sync.
+/// </summary>
 public static class UnitStore
 {
     private static readonly object _writeMULock = new object();

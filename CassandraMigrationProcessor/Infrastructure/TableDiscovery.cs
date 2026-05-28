@@ -10,6 +10,12 @@ using System.Threading.Tasks;
 #pragma warning disable CS8604
 
 namespace CassandraMigrationProcessor.Infrastructure;
+
+/// <summary>
+/// Parses the user-supplied namespace specification (JSON or CSV) and
+/// expands it into the concrete list of <see cref="TableMapping"/> entries
+/// to migrate, querying source keyspaces/tables as needed.
+/// </summary>
 public static class TableDiscovery
 {
     /// <summary>

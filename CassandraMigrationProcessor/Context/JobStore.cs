@@ -6,6 +6,12 @@ using System.IO;
 using CassandraMigrationProcessor.Infrastructure;
 using CassandraMigrationProcessor.Models;
 namespace CassandraMigrationProcessor.Context;
+
+/// <summary>
+/// Persistence gateway for <see cref="Job"/> definitions: reads, writes, and
+/// in-memory caches per-job <c>jobdefinition.json</c> documents under the
+/// shared document store. Owns no migration logic.
+/// </summary>
 public static class JobStore
 {
     public const string JobsFolder = "migrationjobs";
