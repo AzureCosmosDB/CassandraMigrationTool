@@ -1,12 +1,7 @@
 using Cassandra;
-using CassandraMigrationProcessor.Infrastructure;
-using System;
 using System.Collections.Concurrent;
-using System.Collections.Generic;
-using System.Linq;
 using System.Reflection;
 using System.Reflection.Emit;
-using System.Threading.Tasks;
 
 namespace CassandraMigrationProcessor.CassandraDriver;
 
@@ -54,7 +49,7 @@ internal static class DynamicUdtRegistrar
     public static async Task RegisterAsync(ISession session, string keyspace,
         IReadOnlyList<SchemaManager.UserDefinedTypeDef>? udts = null)
     {
-        MigrationUtilities.ValidateCqlIdentifier(keyspace);
+        CqlIdentifier.Validate(keyspace);
 
         udts ??= await SchemaManager.GetUserDefinedTypesAsync(session, keyspace);
         if (udts.Count == 0) return;
@@ -76,12 +71,18 @@ internal static class DynamicUdtRegistrar
             }
             catch (ArgumentException)
             {
-                // The driver throws if the same UdtMap is registered twice on
-                // a session; idempotent re-registration is intended.
+                // The driver throws ArgumentException with a "already added"
+                // message when the same (keyspace, typeName) pair is defined
+                // twice on a session. Idempotent re-registration is intended
+                // (source + target registrars can both touch the same map),
+                // so this specific case is benign.
             }
-            catch (InvalidOperationException)
-            {
-            }
+            // NOTE: we deliberately do NOT catch InvalidOperationException
+            // here. The driver raises IOE for real misconfigurations — e.g.
+            // a CLR type that does not match the on-server UDT shape — and
+            // swallowing it would let column binds silently produce wrong
+            // data downstream. Let it propagate so the job fails fast at
+            // setup rather than corrupting rows mid-migration.
         }
     }
 

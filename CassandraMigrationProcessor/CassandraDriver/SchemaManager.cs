@@ -1,9 +1,5 @@
 using Cassandra;
 using CassandraMigrationProcessor.Infrastructure;
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Threading.Tasks;
 
 namespace CassandraMigrationProcessor.CassandraDriver;
 /// <summary>
@@ -19,20 +15,11 @@ public static class SchemaManager
     private const int ThrottleMaxRetries = 10;
 
     /// <summary>
-    /// Generate and register a CLR mapping per UDT in the given keyspace
-    /// on the supplied session. Required so that the driver decodes UDT
-    /// cells into typed instances (instead of raw byte[]) and so values
-    /// read on one session can be re-bound on another.
-    /// </summary>
-    public static Task RegisterDynamicUdtMappingsAsync(ISession session, string keyspace)
-        => DynamicUdtRegistrar.RegisterAsync(session, keyspace);
-
-    /// <summary>
     /// Synchronises the target schema with the source:
     /// ensure keyspace → check table exists → create or
     /// alter → return source column list.
     /// </summary>
-    public static async Task<List<(string Name, string Type, string Kind, string ClusteringOrder, int Position)>>
+    public static async Task
         SyncSchemaAsync(ISession sourceSession, ISession targetSession,
             string sourceKeyspace, string sourceTable,
             string targetKeyspace, string targetTable)
@@ -53,8 +40,6 @@ public static class SchemaManager
 
         await CreateTableFromSourceAsync(sourceSession, targetSession,
             sourceKeyspace, sourceTable, targetKeyspace, targetTable);
-
-        return sourceColumns;
     }
 
     /// <summary>
@@ -77,8 +62,8 @@ public static class SchemaManager
         string sourceKeyspace, string targetKeyspace,
         IReadOnlyList<UserDefinedTypeDef>? udtsToReplicate = null)
     {
-        MigrationUtilities.ValidateCqlIdentifier(sourceKeyspace);
-        MigrationUtilities.ValidateCqlIdentifier(targetKeyspace);
+        CqlIdentifier.Validate(sourceKeyspace);
+        CqlIdentifier.Validate(targetKeyspace);
 
         udtsToReplicate ??= await GetUserDefinedTypesAsync(sourceSession, sourceKeyspace);
         if (udtsToReplicate.Count == 0) return;
@@ -87,12 +72,12 @@ public static class SchemaManager
 
         foreach (var udt in ordered)
         {
-            MigrationUtilities.ValidateCqlIdentifier(udt.TypeName);
+            CqlIdentifier.Validate(udt.TypeName);
 
             var fieldDefs = new List<string>(udt.FieldNames.Count);
             for (int i = 0; i < udt.FieldNames.Count; i++)
             {
-                MigrationUtilities.ValidateCqlIdentifier(udt.FieldNames[i]);
+                CqlIdentifier.Validate(udt.FieldNames[i]);
                 fieldDefs.Add($"\"{udt.FieldNames[i]}\" {udt.FieldTypes[i]}");
             }
 
@@ -279,7 +264,7 @@ public static class SchemaManager
     /// </summary>
     public static async Task EnsureKeyspaceExistsAsync(ISession session, string keyspace, int replicationFactor = 1)
     {
-        MigrationUtilities.ValidateCqlIdentifier(keyspace);
+        CqlIdentifier.Validate(keyspace);
         if (!await KeyspaceExistsAsync(session, keyspace))
         {
             await session.ExecuteAsync(new SimpleStatement(
@@ -296,8 +281,8 @@ public static class SchemaManager
     /// </summary>
     public static async Task<bool> TableExistsAsync(ISession session, string keyspace, string table)
     {
-        MigrationUtilities.ValidateCqlIdentifier(keyspace);
-        MigrationUtilities.ValidateCqlIdentifier(table);
+        CqlIdentifier.Validate(keyspace);
+        CqlIdentifier.Validate(table);
         var tables = await CassandraQueries.ListTablesAsync(session, keyspace);
         if (!tables.Contains(table, StringComparer.OrdinalIgnoreCase))
             return false;
@@ -341,7 +326,7 @@ public static class SchemaManager
     /// clusteringOrder = "asc", "desc", or "none"
     /// position = ordinal within key group
     /// </summary>
-    public static async Task<List<(string Name, string Type, string Kind, string ClusteringOrder, int Position)>>
+    public static async Task<List<CassandraColumn>>
         GetTableColumnsAsync(ISession session, string keyspace, string table)
     {
         var statement = new SimpleStatement(
@@ -352,7 +337,9 @@ public static class SchemaManager
 
         var resultSet = await ExecuteWithTimeoutRetryAsync(() => session.ExecuteAsync(statement));
 
-        return resultSet.Select(r => (Name: r.GetValue<string>("column_name"), Type: r.GetValue<string>("type"),
+        return resultSet.Select(r => new CassandraColumn(
+            Name: r.GetValue<string>("column_name"),
+            Type: r.GetValue<string>("type"),
             Kind: r.GetValue<string>("kind"),
             ClusteringOrder: r.GetValue<string>("clustering_order") ?? "none",
             Position: r.GetValue<int>("position")
@@ -368,10 +355,10 @@ public static class SchemaManager
         string targetKeyspace,
         string targetTable)
     {
-        MigrationUtilities.ValidateCqlIdentifier(sourceKeyspace);
-        MigrationUtilities.ValidateCqlIdentifier(sourceTable);
-        MigrationUtilities.ValidateCqlIdentifier(targetKeyspace);
-        MigrationUtilities.ValidateCqlIdentifier(targetTable);
+        CqlIdentifier.Validate(sourceKeyspace);
+        CqlIdentifier.Validate(sourceTable);
+        CqlIdentifier.Validate(targetKeyspace);
+        CqlIdentifier.Validate(targetTable);
         var columns = await GetTableColumnsAsync(sourceSession, sourceKeyspace, sourceTable);
         if (columns.Count == 0)
             throw new InvalidOperationException($"Source table {sourceKeyspace}.{sourceTable} has no columns or does not exist.");
@@ -461,11 +448,11 @@ public static class SchemaManager
     /// </summary>
     public static async Task AlterTableAddMissingColumnsAsync(ISession targetSession, string targetKeyspace,
         string targetTable,
-        List<(string Name, string Type, string Kind, string ClusteringOrder, int Position)> sourceColumns,
-        List<(string Name, string Type, string Kind, string ClusteringOrder, int Position)> targetColumns)
+        List<CassandraColumn> sourceColumns,
+        List<CassandraColumn> targetColumns)
     {
-        MigrationUtilities.ValidateCqlIdentifier(targetKeyspace);
-        MigrationUtilities.ValidateCqlIdentifier(targetTable);
+        CqlIdentifier.Validate(targetKeyspace);
+        CqlIdentifier.Validate(targetTable);
         var targetColNames = new HashSet<string>(targetColumns.Select(c => c.Name),
             StringComparer.OrdinalIgnoreCase);
 
@@ -505,9 +492,7 @@ public static class SchemaManager
     /// column metadata. Returns empty string if no
     /// clustering columns or all are default (ASC).
     /// </summary>
-    private static string BuildClusteringOrderClause(List<(string Name, string Type,
-        string Kind, string ClusteringOrder,
-        int Position)> columns)
+    private static string BuildClusteringOrderClause(List<CassandraColumn> columns)
     {
         var clusteringCols = columns
             .Where(c => c.Kind == "clustering")

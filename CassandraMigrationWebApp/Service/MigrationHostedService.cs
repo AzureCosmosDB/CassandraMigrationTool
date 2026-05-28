@@ -1,9 +1,3 @@
-using Microsoft.Extensions.Hosting;
-using CassandraMigrationProcessor;
-using CassandraMigrationProcessor.Models;
-using CassandraMigrationProcessor.Context;
-using CassandraMigrationProcessor.Infrastructure;
-
 namespace CassandraMigrationWebApp.Service;
 /// <summary>
 /// Background service placeholder. Auto-resume has been
@@ -11,14 +5,11 @@ namespace CassandraMigrationWebApp.Service;
 /// </summary>
 public class MigrationHostedService : BackgroundService
 {
-    private readonly JobManager _jobManager;
     private readonly ILogger<MigrationHostedService> _logger;
 
     public MigrationHostedService(
-        JobManager jobManager,
         ILogger<MigrationHostedService> logger)
     {
-        _jobManager = jobManager;
         _logger = logger;
     }
 

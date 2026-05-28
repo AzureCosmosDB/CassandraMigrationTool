@@ -1,11 +1,13 @@
 using Newtonsoft.Json;
-using System;
-using System.Collections.Generic;
-using System.IO;
-using System.Linq;
 using CassandraMigrationProcessor.Infrastructure;
 using CassandraMigrationProcessor.Models;
 namespace CassandraMigrationProcessor.Context;
+
+/// <summary>
+/// Persistence gateway for <see cref="TableMigration"/> documents (one JSON
+/// file per unit under the job folder). Handles add / save / remove and
+/// keeps the parent <see cref="Job"/>'s table summaries in sync.
+/// </summary>
 public static class UnitStore
 {
     private static readonly object _writeMULock = new object();
@@ -117,8 +119,11 @@ public static class UnitStore
 
         foreach (var summary in job.Tables)
         {
-            if (!MigrationUtilities.IsMigrationUnitValid(summary)) continue;
-            if (summary.CopyComplete) continue;
+            if (!summary.IsValid) continue;
+            // For online jobs, include CopyComplete tables too — the
+            // merged DataCopyWorker re-seeds their feed ranges in
+            // Replay phase to keep tailing the change feed.
+            if (summary.CopyComplete && !job.IsOnline) continue;
             if (summary.SkippedDueToMaxRetries) continue;
 
             var mu = MigrationJobContext.Instance.GetMigrationUnit(summary.Id);
@@ -138,7 +143,7 @@ public static class UnitStore
     {
         var newUnits = unitsToAdd
             .Where(mu => !job.Tables
-                .Any(summary => summary.Id == MigrationUtilities.GenerateMigrationUnitId(
+                .Any(summary => summary.Id == TableMigration.GenerateId(
                     mu.KeyspaceName, mu.TableName)))
             .ToList();
 

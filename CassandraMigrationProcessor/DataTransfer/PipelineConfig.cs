@@ -1,6 +1,5 @@
 using CassandraMigrationProcessor.Infrastructure;
 using CassandraMigrationProcessor.Models;
-using System;
 
 namespace CassandraMigrationProcessor.DataTransfer;
 /// <summary>
@@ -12,9 +11,7 @@ namespace CassandraMigrationProcessor.DataTransfer;
 public record PipelineConfig(
     int WorkerCount,
     int PageSize,
-    int MaxFeedRangeParallelism,
     int ChangeFeedPollIntervalMs,
-    int CheckpointIntervalSeconds,
     int MaxReadRetries,
     int MaxWriteRetries)
 {
@@ -50,9 +47,7 @@ public record PipelineConfig(
         return new PipelineConfig(
             WorkerCount: workerCount,
             PageSize: pageSize,
-            MaxFeedRangeParallelism: Math.Max(1, job.MaxFeedRangeParallelism),
             ChangeFeedPollIntervalMs: cfPollMs,
-            CheckpointIntervalSeconds: MigrationDefaults.CheckpointIntervalSeconds,
             MaxReadRetries: maxReadRetries,
             MaxWriteRetries: maxWriteRetries);
     }
