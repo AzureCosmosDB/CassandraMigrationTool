@@ -209,62 +209,36 @@ For online jobs, ensure that the change feed retention of the source Cassandra i
 
 ### Get List of Tables
 
-Run  the below script in cqlsh  to lists all authorized keyspaces and tables in the format `keyspace.tablename`.
+Run the below CQL in `cqlsh` to list keyspaces and tables in the format `keyspace.tablename`.
 
-Set `currentOnly=true` to list tables from the current keyspace. To list tables across all keyspaces (excluding system tables and system keyspaces), set `currentOnly=false`.
+Use the per-keyspace `DESCRIBE TABLES` form to list tables from the current keyspace, or the cluster-wide `system_schema.tables` form to enumerate every user keyspace.
 
-```javascript
-// Optional boolean to restrict to current DB only
-const currentOnly = true;
+List tables across all user keyspaces (excluding system keyspaces):
 
-print("-------------------------------- ");
-
-function isSystemCollection(name) {
-    return name.startsWith("system.");
-}
-
-function isSystemDatabase(name) {
-    return (
-        name === "admin" ||
-        name === "config" ||
-        name === "local" ||
-        name.startsWith("system")
-    );
-}
-
-const result = [];
-
-function listCollectionsSafely(dbName) {
-    if (isSystemDatabase(dbName)) {
-        print(`⚠️ Skipping system keyspace: ${dbName}`);
-        return;
-    }
-    try {
-        const currentDb = db.getSiblingDB(dbName);
-        const tables = currentDb.getTableNames().filter(c => !isSystemCollection(c));
-        tables.forEach(c => result.push(`${dbName}.${c}`));
-    } catch (err) {
-        print(`⚠️ Skipping ${dbName}: ${err.message}`);
-    }
-}
-
-if (currentOnly) {
-    // Use only the current keyspace (skip if it’s system)
-    listCollectionsSafely(db.getName());
-} else {
-    // Enumerate all keyspaces
-    const dbs = db.adminCommand({ listDatabases: 1 }).keyspaces;
-    dbs.forEach(d => listCollectionsSafely(d.name));
-}
-
-print(" ");
-print("******OUTPUT****************");
-// Print result as CSV (ks.tbl,ks.tbl,...)
-print(result.join(","));
-print("-------------------------------- ");
-
-
+```cql
+SELECT keyspace_name, table_name
+FROM system_schema.tables
+WHERE keyspace_name NOT IN ('system', 'system_schema', 'system_auth',
+                            'system_distributed', 'system_traces',
+                            'system_virtual_schema', 'system_views')
+ALLOW FILTERING;
 ```
+
+To list tables from a specific keyspace only:
+
+```cql
+USE <your_keyspace>;
+DESCRIBE TABLES;
+```
+
+To list every keyspace on the cluster:
+
+```cql
+DESCRIBE KEYSPACES;
+```
+
+Format the output as `keyspace.tablename` entries to paste into the job
+creation form.
 
 #### Sequencing your tables
 
@@ -323,9 +297,9 @@ These settings are persisted per app instance and affect all jobs:
 
 - Cassandra tools download URL
         - Supports either:
-            - Single HTTPS ZIP URL (same package provides both `bulk copy` and `bulk copy`), or
+            - Single HTTPS ZIP URL (same package provides both `bulk copy` and `bulk restore`), or
             - JSON with separate URLs:
-                - `{"MongoDumpURL":"https://...dump.zip","MongoRestoreURL":"https://...restore.zip"}`
+                - `{"BulkCopyDumpURL":"https://...dump.zip","BulkCopyRestoreURL":"https://...restore.zip"}`
         - Use separate URLs when source compatibility requires different versions for dump vs restore (for example, migrations from older Cassandra versions).
         - If your app has no internet egress, upload ZIP file(s) alongside your app content and point to those hosted URLs.
         - URLs must start with `https://` and end with `.zip`.
@@ -363,7 +337,6 @@ These settings are persisted per app instance and affect all jobs:
     - Paste/upload the PEM (CA chain) if your source requires a custom CA to establish TLS.
 
 Advanced notes:
-- App setting `AllowMongoDump` (see `MongoMigrationWebApp/appsettings.json`) toggles whether the “Cassandra bulk copy” option is available in the UI.
 - The app’s working folder defaults to the system temp path, or to `%ResourceDrive%\home\` when present (e.g., on Azure App Service). It stores job state under `migrationjobs` and logs under `migrationlogs`.
 
 #### Exclusive dump/restore modes and tool version split
@@ -385,15 +358,15 @@ Set these variables in your hosting platform environment configuration:
 
 ##### Separate tool versions for dump and restore
 
-You can use different versions of `bulk copy` and `bulk copy` when source compatibility requires it (for example, older Cassandra sources).
+You can use different versions of `bulk copy` and `bulk restore` when source compatibility requires it (for example, older Cassandra sources).
 
 - **Azure Web App**
     - Configure **Cassandra tools download URL(s)** as JSON in settings:
-    - `{"MongoDumpURL":"https://...dump.zip","MongoRestoreURL":"https://...restore.zip"}`
+    - `{"BulkCopyDumpURL":"https://...dump.zip","BulkCopyRestoreURL":"https://...restore.zip"}`
     - See [WebApp/README.md](WebApp/README.md).
 
 - **Azure Container Apps (ACA)**
-    - Configure separate versions at image build time in Docker (`MongoDumpURL` and `MongoRestoreURL` build args).
+    - Configure separate versions at image build time in Docker (`BulkCopyDumpURL` and `BulkCopyRestoreURL` build args).
     - See [ACA/README.md](ACA/README.md).
 
 ## Job lifecycle controls in Job Viewer
