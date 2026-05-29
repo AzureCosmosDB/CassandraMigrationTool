@@ -356,10 +356,10 @@
             {
                 // Store connection strings if provided
                 if (!string.IsNullOrEmpty(sourceConnectionString))
-                    MigrationContext.SourceConnectionString[job.Id] = sourceConnectionString;
+                    MigrationContext.Credentials.SetSource(job.Id, sourceConnectionString);
 
                 if (!string.IsNullOrEmpty(targetConnectionString))
-                    MigrationContext.TargetConnectionString[job.Id] = targetConnectionString;
+                    MigrationContext.Credentials.SetTarget(job.Id, targetConnectionString);
 
                 MigrationContext.JobIndex.MigrationJobIds.Add(job.Id);
 

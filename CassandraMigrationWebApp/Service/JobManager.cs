@@ -219,12 +219,12 @@ public class JobManager
                 $"User requested {(isResume ? "RESUME" : "START")} for job {job.Id} (prior status={job.Status})",
                 LogType.Info);
             MigrationJobRunner = new MigrationJobRunner(_log);
+            _context.ActiveRunner = MigrationJobRunner;
             _migrationCts = new CancellationTokenSource();
             _runningJobId = job.Id;
         }
 
-        _context.SourceConnectionString[job.Id] = sourceConnectionString;
-        _context.TargetConnectionString[job.Id] = targetConnectionString;
+        _context.Credentials.Remember(job.Id, sourceConnectionString, targetConnectionString);
 
         // Clear Running status on all other jobs so stale flags don't
         // cause unwanted auto-resume after an app recycle.
@@ -301,6 +301,7 @@ public class JobManager
 
                 lock (_stateLock)
                 {
+                    _context.ActiveRunner = null;
                     MigrationJobRunner = null;
                     try { _migrationCts?.Dispose(); }
                     catch (ObjectDisposedException) { /* concurrent Stop won the race */ }

@@ -244,12 +244,13 @@ else if (@_showLogBackupFile)
     /// </summary>
     private string GetSourceConnectionString(Job job)
     {
-        if (MigrationContext.SourceConnectionString.TryGetValue(job.Id, out var val) && !string.IsNullOrEmpty(val))
+        var val = MigrationContext.Credentials.GetSource(job.Id);
+        if (!string.IsNullOrEmpty(val))
             return val;
         // Reconstruct from persisted job data
         var cs = job.SourceContactPoint ?? string.Empty;
         if (!string.IsNullOrEmpty(cs))
-            MigrationContext.SourceConnectionString[job.Id] = cs;
+            MigrationContext.Credentials.SetSource(job.Id, cs);
         return cs;
     }
 
@@ -258,11 +259,12 @@ else if (@_showLogBackupFile)
     /// </summary>
     private string GetTargetConnectionString(Job job)
     {
-        if (MigrationContext.TargetConnectionString.TryGetValue(job.Id, out var val) && !string.IsNullOrEmpty(val))
+        var val = MigrationContext.Credentials.GetTarget(job.Id);
+        if (!string.IsNullOrEmpty(val))
             return val;
         var cs = job.TargetContactPoint ?? string.Empty;
         if (!string.IsNullOrEmpty(cs))
-            MigrationContext.TargetConnectionString[job.Id] = cs;
+            MigrationContext.Credentials.SetTarget(job.Id, cs);
         return cs;
     }
 
@@ -703,10 +705,10 @@ else if (@_showLogBackupFile)
         mj.SourceUseAad = job.SourceUseAad;
 
         if (!string.IsNullOrEmpty(sourceConnectionString))
-            MigrationContext.SourceConnectionString[mj.Id] = sourceConnectionString;
+            MigrationContext.Credentials.SetSource(mj.Id, sourceConnectionString);
 
         if (!string.IsNullOrEmpty(targetConnectionString))
-            MigrationContext.TargetConnectionString[mj.Id] = targetConnectionString;
+            MigrationContext.Credentials.SetTarget(mj.Id, targetConnectionString);
 
         mj.Status = JobStatus.Running;
 
