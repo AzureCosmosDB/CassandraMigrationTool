@@ -161,11 +161,33 @@ public class JobManager
         }
     }
 
+    /// <summary>
+    /// True between the user clicking PAUSE and the next migration
+    /// start. Treated as a soft "user intent" flag — the actual work
+    /// stop is driven by cancelling <see cref="_migrationCts"/>, which
+    /// every running coordinator and worker already observes through
+    /// the normal cancellation-token path. The flag's only job is to
+    /// let the run-finished finally write back <see cref="JobStatus.Paused"/>
+    /// instead of <see cref="JobStatus.Pending"/> / <see cref="JobStatus.Faulted"/>.
+    /// </summary>
+    private volatile bool _pauseRequested;
+
     public void RequestControlledPause()
     {
         if (!string.IsNullOrEmpty(_runningJobId))
             _log.WriteLine($"User requested PAUSE for job {_runningJobId}", LogType.Info);
-        _context.RequestControlledPause();
+
+        // Pause = "cancel the running work, remember it was a pause."
+        // No need to plumb a separate signal through the pipeline /
+        // coordinator / worker stack: those already react to the job
+        // CTS being cancelled. The flag is read by the finally block
+        // below to write back JobStatus.Paused.
+        _pauseRequested = true;
+        lock (_stateLock)
+        {
+            try { _migrationCts?.Cancel(); }
+            catch (ObjectDisposedException) { /* finally already retired the job */ }
+        }
     }
 
     /// <summary>
@@ -194,7 +216,7 @@ public class JobManager
     /// </summary>
     public bool IsControlledPauseRequested()
     {
-        return _context.ControlledPauseRequested;
+        return _pauseRequested;
     }
 
     public Task StartMigration(Job job, string sourceConnectionString, string targetConnectionString, string namespacesToMigrate)
@@ -267,11 +289,14 @@ public class JobManager
             }
             finally
             {
-                // Determine final status
-                if (_context.ControlledPauseRequested)
+                // Determine final status. _pauseRequested is the only
+                // signal that distinguishes "user paused" from "user
+                // stopped" / "job faulted" — every other cancellation
+                // path produces an indistinguishable CTS trip.
+                if (_pauseRequested)
                 {
                     job.Status = JobStatus.Paused;
-                    _context.ResetControlledPause();
+                    _pauseRequested = false;
                 }
                 else if (job.Status == JobStatus.Running)
                 {

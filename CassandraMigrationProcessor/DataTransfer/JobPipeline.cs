@@ -1,5 +1,4 @@
 using CassandraMigrationProcessor.CassandraDriver;
-using CassandraMigrationProcessor.Context;
 using CassandraMigrationProcessor.Infrastructure;
 using CassandraMigrationProcessor.Models;
 
@@ -19,7 +18,6 @@ internal sealed class JobPipeline : IDisposable, IAsyncDisposable
     private readonly CancellationTokenSource _cts;
     private readonly WorkerPool _workerPool;
     private readonly CooldownScheduler _cooldown;
-    private readonly Action _pauseHandler;
     public PipelineContext Context { get; }
 
     public JobPipeline(MigrationLog log, Job job, PipelineConfig pipelineConfig, JobPartitioning partitioning, TokenRefreshManager? tokenRefreshManager, CancellationToken externalToken)
@@ -29,21 +27,6 @@ internal sealed class JobPipeline : IDisposable, IAsyncDisposable
         _cts = externalToken.CanBeCanceled
             ? CancellationTokenSource.CreateLinkedTokenSource(externalToken)
             : new CancellationTokenSource();
-
-        // Pause is a soft flag, so coordinators blocked on
-        // BulkDrainSignal.Task.WaitAsync(_cts.Token) would hang until
-        // the external cancellation token fires (i.e. forever, in
-        // practice). Cancel the pipeline CTS the moment a pause is
-        // requested so those waits unblock and the worker pool tears
-        // down promptly. JobManager already maps "cancelled while
-        // pause flag is set" to JobStatus.Paused.
-        var pipelineCts = _cts;
-        _pauseHandler = () =>
-        {
-            try { pipelineCts.Cancel(); }
-            catch (ObjectDisposedException) { /* job already torn down */ }
-        };
-        MigrationJobContext.Instance.PauseRequested += _pauseHandler;
 
         bool enableReplay = job.IsOnline;
         var partitions = new PartitionManager(partitioning.AllPartitions);
@@ -129,14 +112,19 @@ internal sealed class JobPipeline : IDisposable, IAsyncDisposable
 
     /// <summary>
     /// Pipeline-wide cancellation token. Linked to the external
-    /// (job-level) token, and additionally tripped by:
-    /// (a) <see cref="MigrationJobContext.PauseRequested"/>, and
-    /// (b) <see cref="JobControlFlags.TripFatal"/>.
-    /// Coordinators link their own CTS to this token so fatal trips
-    /// cascade into per-table drain waits; without this hop, the
-    /// fatal callback only cancels this pipeline's CTS while a
-    /// coordinator's sibling CTS (linked only to the external token)
-    /// would hang forever on <c>BulkDrainSignal.Task.WaitAsync</c>.
+    /// (job-level) token, and additionally tripped by
+    /// <see cref="JobControlFlags.TripFatal"/>. Coordinators link
+    /// their own CTS to this token so fatal trips cascade into
+    /// per-table drain waits; without this hop, the fatal callback
+    /// only cancels this pipeline's CTS while a coordinator's
+    /// sibling CTS (linked only to the external token) would hang
+    /// forever on <c>BulkDrainSignal.Task.WaitAsync</c>.
+    /// <para>
+    /// Pause uses the same external token: <c>JobManager.RequestControlledPause</c>
+    /// cancels the job CTS that this pipeline is linked from, which
+    /// trips this token automatically — no separate pause signal
+    /// needs to be plumbed through the pipeline.
+    /// </para>
     /// </summary>
     public CancellationToken Token => _cts.Token;
 
@@ -149,8 +137,6 @@ internal sealed class JobPipeline : IDisposable, IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
-        MigrationJobContext.Instance.PauseRequested -= _pauseHandler;
-
         // Stop the cooldown scheduler BEFORE we cancel/dispose so any
         // queued partitions are surfaced (logged) rather than vanishing
         // inside a torn-down task.

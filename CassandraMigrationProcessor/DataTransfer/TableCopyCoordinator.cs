@@ -22,7 +22,6 @@ internal sealed class TableCopyCoordinator : IDisposable
     private readonly CancellationTokenSource _cts;
     private readonly JobPipeline _jobPipeline;
     private readonly IReadOnlyList<TablePartitioning> _chunks;
-    private readonly Action _pauseHandler;
 
     public TableCopyCoordinator(
         MigrationLog log,
@@ -44,16 +43,11 @@ internal sealed class TableCopyCoordinator : IDisposable
             ? CancellationTokenSource.CreateLinkedTokenSource(externalToken)
             : new CancellationTokenSource();
 
-        // Pause must unblock our BulkDrainSignal wait or the table
-        // hangs until external cancellation. Workers stop pulling on
-        // pause, so the drain signal would never trip naturally.
-        var cts = _cts;
-        _pauseHandler = () =>
-        {
-            try { cts.Cancel(); }
-            catch (ObjectDisposedException) { /* already disposed */ }
-        };
-        MigrationJobContext.Instance.PauseRequested += _pauseHandler;
+        // Pause and stop both arrive as cancellation on the external
+        // token (JobManager.RequestControlledPause and
+        // JobManager.StopMigration both cancel the job CTS). The
+        // linked-CTS hop above means our token trips automatically;
+        // no separate pause signal is needed.
     }
 
     public void Cancel() => _cts?.Cancel();
@@ -115,11 +109,6 @@ internal sealed class TableCopyCoordinator : IDisposable
 
         foreach (var chunk in _chunks)
         {
-            if (MigrationJobContext.Instance.ControlledPauseRequested)
-            {
-                _migrationLog.WriteLine($"Controlled pause before chunk {chunk.ChunkIndex}", LogType.Info);
-                break;
-            }
             _cts.Token.ThrowIfCancellationRequested();
 
             var chunkResult = await ProcessChunkAsync(tableMigration, chunk);
@@ -134,7 +123,7 @@ internal sealed class TableCopyCoordinator : IDisposable
             }
         }
 
-        if (MigrationJobContext.Instance.ControlledPauseRequested)
+        if (_cts.Token.IsCancellationRequested)
             return TaskResult.Canceled;
 
         tableMigration.SourceCountDuringCopy = tableMigration.CopyChunks.Sum(c => c.SourceQueryRowCount);
@@ -218,8 +207,7 @@ internal sealed class TableCopyCoordinator : IDisposable
 
     private void MarkChunkComplete(TableMigration tableMigration, int chunkIndex)
     {
-        if (!_cts.Token.IsCancellationRequested
-            && !MigrationJobContext.Instance.ControlledPauseRequested)
+        if (!_cts.Token.IsCancellationRequested)
         {
             tableMigration.CopyChunks[chunkIndex].IsDownloaded = true;
         }
@@ -228,7 +216,6 @@ internal sealed class TableCopyCoordinator : IDisposable
 
     public void Dispose()
     {
-        MigrationJobContext.Instance.PauseRequested -= _pauseHandler;
         _cts?.Dispose();
     }
 }
