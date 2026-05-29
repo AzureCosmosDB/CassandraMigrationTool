@@ -1,4 +1,3 @@
-using Newtonsoft.Json;
 using System.Collections.Concurrent;
 using CassandraMigrationProcessor.Infrastructure;
 using CassandraMigrationProcessor.Models;
@@ -39,10 +38,7 @@ public static class JobStore
     /// </summary>
     private static void SerializeAndPersist(Job job)
     {
-        var filePath = GetJobDefinitionPath(job.Id);
-        string json = JsonConvert.SerializeObject(
-            job, Formatting.Indented);
-        MigrationJobContext.Instance.Store.Write(filePath, json);
+        JsonStore.Write(GetJobDefinitionPath(job.Id), job);
     }
 
     internal static Job? LoadJob(string jobId)
@@ -52,11 +48,8 @@ public static class JobStore
 
         return MigrationUtilities.SafeExecute(() =>
         {
-            var filePath = GetJobDefinitionPath(jobId);
-            var json = MigrationJobContext.Instance.Store.Read(
-                filePath);
-            var loadedObject =
-                JsonConvert.DeserializeObject<Job>(json);
+            var loadedObject = JsonStore.Read<Job>(
+                GetJobDefinitionPath(jobId));
             if (loadedObject == null)
                 return null;
             _jobs[jobId] = loadedObject;

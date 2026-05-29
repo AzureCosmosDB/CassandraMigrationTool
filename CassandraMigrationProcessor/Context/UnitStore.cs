@@ -1,4 +1,3 @@
-using Newtonsoft.Json;
 using CassandraMigrationProcessor.Infrastructure;
 using CassandraMigrationProcessor.Models;
 namespace CassandraMigrationProcessor.Context;
@@ -49,11 +48,7 @@ public static class UnitStore
                 var muFilePath = Path.Combine(
                     JobStore.JobsFolder, mu.JobId,
                     $"{mu.Id}.json");
-                string muJson =
-                    JsonConvert.SerializeObject(
-                        mu, Formatting.Indented);
-                MigrationJobContext.Instance.Store.Write(
-                    muFilePath, muJson);
+                JsonStore.Write(muFilePath, mu);
             }
 
             if (MigrationJobContext.Instance.CurrentlyActiveJob != null
@@ -104,10 +99,7 @@ public static class UnitStore
         {
             var filePath = Path.Combine(
                 JobStore.JobsFolder, jobId, $"{unitId}.json");
-            string json = MigrationJobContext.Instance.Store
-                .Read(filePath);
-            return JsonConvert
-                .DeserializeObject<TableMigration>(json);
+            return JsonStore.Read<TableMigration>(filePath);
         }, (TableMigration)null, $"GetFromStorage({jobId}, {unitId})");
     }
 
