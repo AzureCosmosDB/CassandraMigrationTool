@@ -101,6 +101,19 @@ internal sealed class JobPipeline : IDisposable, IAsyncDisposable
     /// <summary>Number of workers that completed with faults.</summary>
     public int FaultedWorkerCount => _workerPool.FaultedCount;
 
+    /// <summary>
+    /// Pipeline-wide cancellation token. Linked to the external
+    /// (job-level) token, and additionally tripped by:
+    /// (a) <see cref="MigrationJobContext.PauseRequested"/>, and
+    /// (b) <see cref="JobControlFlags.TripFatal"/>.
+    /// Coordinators link their own CTS to this token so fatal trips
+    /// cascade into per-table drain waits; without this hop, the
+    /// fatal callback only cancels this pipeline's CTS while a
+    /// coordinator's sibling CTS (linked only to the external token)
+    /// would hang forever on <c>BulkDrainSignal.Task.WaitAsync</c>.
+    /// </summary>
+    public CancellationToken Token => _cts.Token;
+
     public void Stop() => _cts.Cancel();
 
     public void Dispose()
