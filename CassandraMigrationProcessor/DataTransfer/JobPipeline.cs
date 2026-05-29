@@ -49,7 +49,33 @@ internal sealed class JobPipeline : IDisposable, IAsyncDisposable
         var partitions = new PartitionManager(partitioning.AllPartitions);
         var readerConfig = new ReaderConfig(pipelineConfig.PageSize, pipelineConfig.MaxReadRetries);
         var writerConfig = new WriterConfig(pipelineConfig.MaxWriteRetries);
-        _cooldown = new CooldownScheduler(log, partitions, pipelineConfig.ChangeFeedPollIntervalMs, _cts.Token);
+        _cooldown = new CooldownScheduler(
+            log,
+            partitions,
+            pipelineConfig.ChangeFeedPollIntervalMs,
+            _cts.Token);
+
+        // Observe the cooldown loop for self-faults: if its drain Task
+        // transitions to Faulted, tear down the pipeline so workers don't
+        // keep handing partitions to a dead queue (online jobs would
+        // otherwise park forever short of completion). Cancellation /
+        // RanToCompletion are normal teardown — only IsFaulted triggers
+        // the cascade. Using Task observation instead of an Action
+        // callback keeps fault policy here (where _cts and _log live)
+        // and uses the runtime's Task state as the source of truth.
+        _ = _cooldown.LoopTask.ContinueWith(t =>
+        {
+            if (!t.IsFaulted) return;
+            try
+            {
+                _log.WriteLine(
+                    $"JobPipeline: cooldown loop faulted ({t.Exception?.Flatten().InnerException?.GetType().Name}); cancelling pipeline.",
+                    LogType.Error);
+                _cts.Cancel();
+            }
+            catch (ObjectDisposedException) { /* already torn down */ }
+            catch { /* best-effort; don't crash the continuation */ }
+        }, TaskContinuationOptions.ExecuteSynchronously);
 
         // Wire fatal trip into our CTS at construction so coordinators
         // waiting on per-table BulkDrainSignal under this token unblock

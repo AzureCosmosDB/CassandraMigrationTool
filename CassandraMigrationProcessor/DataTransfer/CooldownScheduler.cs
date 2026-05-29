@@ -46,11 +46,35 @@ internal sealed class CooldownScheduler : IAsyncDisposable
     }
 
     /// <summary>
+    /// The background drain Task. Owners (JobPipeline) observe this for
+    /// fault propagation via ContinueWith — when the loop dies of its
+    /// own accord the Task transitions to Faulted, which is the signal
+    /// to tear down the rest of the pipeline. Exposing the Task instead
+    /// of taking an Action callback keeps fault policy in the owner and
+    /// uses standard Task semantics as the source of truth (no
+    /// volatile flag, no captured closure).
+    /// </summary>
+    public Task LoopTask => _loop;
+
+    /// <summary>
     /// Queue a partition for recycle after the configured cooldown.
     /// Returns immediately — never blocks the caller.
     /// </summary>
     public void Schedule(Partition partition)
     {
+        // Task.IsCompleted covers RanToCompletion, Faulted, and Canceled
+        // — the loop is gone in all three cases. Enqueueing here would
+        // leak the partition into a queue with no drainer. Recycle
+        // inline as best-effort instead.
+        if (_loop.IsCompleted)
+        {
+            _log.WriteLine(
+                $"CooldownScheduler: drain loop is no longer running ({_loop.Status}); recycling {partition.FullTableName}/{partition.FeedRange} inline.",
+                LogType.Warning);
+            try { _partitions.Recycle(partition); }
+            catch (InvalidOperationException) { /* pool closed */ }
+            return;
+        }
         long eligibleAt = Environment.TickCount64 + _cooldownMs;
         lock (_lock)
         {
@@ -77,9 +101,14 @@ internal sealed class CooldownScheduler : IAsyncDisposable
         }
         catch (Exception ex)
         {
+            // Let the exception propagate to the Task so observers
+            // (JobPipeline) see Faulted state. Log here so the root
+            // cause is in the job log even if no one inspects
+            // _loop.Exception.
             _log.WriteLine(
                 $"CooldownScheduler loop crashed: {ex.GetType().Name}: {ex.Message}",
                 LogType.Error);
+            throw;
         }
     }
 
