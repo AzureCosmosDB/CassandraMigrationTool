@@ -24,20 +24,16 @@ internal sealed class CooldownScheduler : IAsyncDisposable
     private readonly object _lock = new();
     private readonly SemaphoreSlim _wake = new(0, int.MaxValue);
     private readonly Task _loop;
-    private readonly Action? _onLoopFault;
-    private volatile bool _loopFaulted;
 
     public CooldownScheduler(
         MigrationLog log,
         PartitionManager partitions,
         int cooldownMs,
-        CancellationToken cancellationToken,
-        Action? onLoopFault = null)
+        CancellationToken cancellationToken)
     {
         _log = log;
         _partitions = partitions;
         _cooldownMs = cooldownMs;
-        _onLoopFault = onLoopFault;
         // Link the caller's cancellation with our own so StopAsync is
         // self-sufficient: the loop's only exit is _ct cancellation, and
         // we don't want DisposeAsync to deadlock waiting on the loop
@@ -49,19 +45,30 @@ internal sealed class CooldownScheduler : IAsyncDisposable
     }
 
     /// <summary>
+    /// The background drain Task. Owners (JobPipeline) observe this for
+    /// fault propagation via ContinueWith — when the loop dies of its
+    /// own accord the Task transitions to Faulted, which is the signal
+    /// to tear down the rest of the pipeline. Exposing the Task instead
+    /// of taking an Action callback keeps fault policy in the owner and
+    /// uses standard Task semantics as the source of truth (no
+    /// volatile flag, no captured closure).
+    /// </summary>
+    public Task LoopTask => _loop;
+
+    /// <summary>
     /// Queue a partition for recycle after the configured cooldown.
     /// Returns immediately — never blocks the caller.
     /// </summary>
     public void Schedule(Partition partition)
     {
-        if (_loopFaulted)
+        // Task.IsCompleted covers RanToCompletion, Faulted, and Canceled
+        // — the loop is gone in all three cases. Enqueueing here would
+        // leak the partition into a queue with no drainer. Recycle
+        // inline as best-effort instead.
+        if (_loop.IsCompleted)
         {
-            // The drain loop is gone; queueing further partitions would
-            // grow the queue without ever being recycled. Recycle inline
-            // so the partition still has a chance to make progress, and
-            // log loudly so the operator notices the scheduler is dead.
             _log.WriteLine(
-                $"CooldownScheduler: loop is faulted; recycling {partition.FullTableName}/{partition.FeedRange} inline.",
+                $"CooldownScheduler: drain loop is no longer running ({_loop.Status}); recycling {partition.FullTableName}/{partition.FeedRange} inline.",
                 LogType.Warning);
             try { _partitions.Recycle(partition); }
             catch (InvalidOperationException) { /* pool closed */ }
@@ -93,19 +100,14 @@ internal sealed class CooldownScheduler : IAsyncDisposable
         }
         catch (Exception ex)
         {
+            // Let the exception propagate to the Task so observers
+            // (JobPipeline) see Faulted state. Log here so the root
+            // cause is in the job log even if no one inspects
+            // _loop.Exception.
             _log.WriteLine(
                 $"CooldownScheduler loop crashed: {ex.GetType().Name}: {ex.Message}",
                 LogType.Error);
-            _loopFaulted = true;
-            // Surface to the owner so the rest of the pipeline tears
-            // down rather than silently stalling. Without this, Schedule
-            // would keep accepting partitions into a queue with no
-            // consumer; workers handing off empty replay pages would
-            // never see their partitions recycled, and the job would
-            // hang short of completion with no error visible at the
-            // worker level.
-            try { _onLoopFault?.Invoke(); }
-            catch { /* best-effort surface */ }
+            throw;
         }
     }
 
