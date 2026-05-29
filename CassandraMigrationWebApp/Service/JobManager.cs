@@ -2,6 +2,7 @@ using CassandraMigrationProcessor.Infrastructure;
 using CassandraMigrationProcessor.Models;
 using CassandraMigrationProcessor.DataTransfer;
 using CassandraMigrationProcessor.Context;
+using CassandraMigrationProcessor.CassandraDriver;
 
 namespace CassandraMigrationWebApp.Service;
 public class JobManager
@@ -372,11 +373,23 @@ public class JobManager
 
         foreach (var fullName in entries)
         {
-            int dotIdx = fullName.IndexOf('.');
-            if (dotIdx <= 0 || dotIdx == fullName.Length - 1) continue;
-
-            string keyspace = fullName.Substring(0, dotIdx).Trim();
-            string table = fullName.Substring(dotIdx + 1).Trim();
+            // CQL-aware split that tolerates quoted identifiers
+            // (e.g. '"My-KS".*' or 'foo."Mixed_Table-1"'). We do the
+            // split manually instead of going through
+            // CqlIdentifier.SplitQualifiedName because that helper
+            // rejects the wildcard '*' on the table side; here we
+            // need to allow it.
+            string keyspace, table;
+            try
+            {
+                (keyspace, table) = SplitKeyspaceAllowingWildcard(fullName);
+            }
+            catch (ArgumentException)
+            {
+                continue;
+            }
+            if (string.IsNullOrEmpty(keyspace) || string.IsNullOrEmpty(table))
+                continue;
 
             if (table == "*")
             {
@@ -460,6 +473,40 @@ public class JobManager
     public bool IsProcessRunning(string id)
     {
         return !string.IsNullOrEmpty(_runningJobId) && _runningJobId == id;
+    }
+
+    /// <summary>
+    /// Quote-aware split of 'keyspace.table' where the table side may be
+    /// the literal wildcard '*'. Both sides are returned in bare form
+    /// (surrounding "..." stripped, ""-escapes resolved).
+    /// </summary>
+    private static (string keyspace, string table) SplitKeyspaceAllowingWildcard(string fullName)
+    {
+        if (string.IsNullOrWhiteSpace(fullName))
+            throw new ArgumentException("Empty entry", nameof(fullName));
+
+        int pos = 0;
+        string keyspace = CqlIdentifier.ReadIdentifier(fullName, ref pos);
+        if (pos >= fullName.Length || fullName[pos] != '.')
+            throw new ArgumentException(
+                $"Expected '.' between keyspace and table in '{fullName}'", nameof(fullName));
+        pos++; // skip '.'
+
+        string table;
+        if (pos < fullName.Length && fullName[pos] == '*'
+            && (pos + 1 == fullName.Length))
+        {
+            table = "*";
+        }
+        else
+        {
+            table = CqlIdentifier.ReadIdentifier(fullName, ref pos);
+            if (pos != fullName.Length)
+                throw new ArgumentException(
+                    $"Unexpected trailing characters in '{fullName}'", nameof(fullName));
+        }
+
+        return (keyspace, table);
     }
 
     #endregion
