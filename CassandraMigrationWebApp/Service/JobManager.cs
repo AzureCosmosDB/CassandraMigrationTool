@@ -8,7 +8,7 @@ public class JobManager
 {
     private MigrationJobRunner? MigrationJobRunner { get; set; }
     private MigrationLog _log;
-    private CancellationTokenSource? _migrationCts;
+    private JobControl? _control;
     private string _runningJobId = string.Empty;
     private readonly object _stateLock = new();
 
@@ -154,40 +154,37 @@ public class JobManager
         {
             if (!string.IsNullOrEmpty(_runningJobId))
                 _log.WriteLine($"User requested CANCEL for job {_runningJobId}", LogType.Info);
-            try { _migrationCts?.Cancel(); }
-            catch (ObjectDisposedException) { /* finally already retired the job */ }
+            _control?.RequestStop();
             MigrationJobRunner?.Stop();
             _runningJobId = string.Empty;
         }
     }
 
     /// <summary>
-    /// True between the user clicking PAUSE and the next migration
-    /// start. Treated as a soft "user intent" flag — the actual work
-    /// stop is driven by cancelling <see cref="_migrationCts"/>, which
-    /// every running coordinator and worker already observes through
-    /// the normal cancellation-token path. The flag's only job is to
-    /// let the run-finished finally write back <see cref="JobStatus.Paused"/>
-    /// instead of <see cref="JobStatus.Pending"/> / <see cref="JobStatus.Faulted"/>.
+    /// Forceful pause: record pause intent <em>and</em> tear down the
+    /// pipeline immediately. The runner's finally will read
+    /// <see cref="JobCommand.PauseRequested"/> and write
+    /// <see cref="JobStatus.Paused"/>. Use this when the user wants
+    /// the work to stop now without waiting for the controlled-pause
+    /// hand-off to settle.
     /// </summary>
-    private volatile bool _pauseRequested;
+    public void PauseImmediate()
+    {
+        lock (_stateLock)
+        {
+            if (!string.IsNullOrEmpty(_runningJobId))
+                _log.WriteLine($"User requested IMMEDIATE PAUSE for job {_runningJobId}", LogType.Info);
+            _control?.RequestPause();
+            MigrationJobRunner?.Stop();
+            _runningJobId = string.Empty;
+        }
+    }
 
     public void RequestControlledPause()
     {
         if (!string.IsNullOrEmpty(_runningJobId))
             _log.WriteLine($"User requested PAUSE for job {_runningJobId}", LogType.Info);
-
-        // Pause = "cancel the running work, remember it was a pause."
-        // No need to plumb a separate signal through the pipeline /
-        // coordinator / worker stack: those already react to the job
-        // CTS being cancelled. The flag is read by the finally block
-        // below to write back JobStatus.Paused.
-        _pauseRequested = true;
-        lock (_stateLock)
-        {
-            try { _migrationCts?.Cancel(); }
-            catch (ObjectDisposedException) { /* finally already retired the job */ }
-        }
+        _control?.RequestPause();
     }
 
     /// <summary>
@@ -216,7 +213,7 @@ public class JobManager
     /// </summary>
     public bool IsControlledPauseRequested()
     {
-        return _pauseRequested;
+        return _control?.Requested == JobCommand.PauseRequested;
     }
 
     public Task StartMigration(Job job, string sourceConnectionString, string targetConnectionString)
@@ -240,7 +237,7 @@ public class JobManager
                 LogType.Info);
             MigrationJobRunner = new MigrationJobRunner(_log);
             _context.ActiveRunner = MigrationJobRunner;
-            _migrationCts = new CancellationTokenSource();
+            _control = new JobControl();
             _runningJobId = job.Id;
         }
 
@@ -266,67 +263,38 @@ public class JobManager
         SettingsManager.Load(config);
 
         // Background migration: stored so exceptions are observable and
-        // the task can be awaited during shutdown if needed.
+        // the task can be awaited during shutdown if needed. The runner
+        // is the sole writer of job.Status from this point on (it
+        // observes _control.Requested in its finally to distinguish
+        // Pause from Stop, and writes Faulted on exception).
         _ = Task.Run(async () =>
         {
-            // Capture any unhandled exception so the finally block can
-            // attribute the job correctly (Faulted, not Pending).
-            // Without this, an exception thrown from StartAsync was
-            // logged but lost — finally saw Status == Running and (with
-            // no per-table Failed markers, because the run never got
-            // far enough to set any) wrote Pending, making a hard
-            // failure look like a fresh job in the UI.
-            Exception? unhandledException = null;
             try
             {
-                await MigrationJobRunner.StartAsync(job, config, _migrationCts.Token);
+                await MigrationJobRunner.StartAsync(job, config, _control);
             }
             catch (Exception ex)
             {
-                unhandledException = ex;
-                Console.WriteLine($"Migration failed for Job ID: {job.Id}: {ex}");
-                _log.WriteLine($"Migration failed: {ex}", LogType.Error);
+                // Defensive: StartAsync handles its own failures and
+                // writes job.Status in its finally. This catch only
+                // exists to keep an unexpected escape from leaving the
+                // job stuck in Running.
+                Console.WriteLine($"Migration unexpectedly threw for Job ID: {job.Id}: {ex}");
+                _log.WriteLine($"Migration unexpectedly threw: {ex}", LogType.Error);
+                if (job.Status == JobStatus.Running)
+                {
+                    job.Status = JobStatus.Faulted;
+                    _context.SaveMigrationJob(job);
+                }
             }
             finally
             {
-                // Determine final status. Real failures (unhandled
-                // exception or any table marked Failed) outrank a
-                // user-requested pause — if the operator clicked Pause
-                // after the run had already faulted (race), we still
-                // want the badge to read Faulted so the failure is
-                // visible. Only after ruling out failures do we honour
-                // the pause flag; only after ruling out both do we fall
-                // through to the Running→Pending normalisation.
-                bool tableFailed = job.Tables?.Any(
-                    mu => mu.SourceStatus ==
-                        TableStatus.Failed) ?? false;
-                bool wasPauseRequested = _pauseRequested;
-                _pauseRequested = false;
-
-                if (unhandledException != null || tableFailed)
-                {
-                    job.Status = JobStatus.Faulted;
-                }
-                else if (wasPauseRequested)
-                {
-                    job.Status = JobStatus.Paused;
-                }
-                else if (job.Status == JobStatus.Running)
-                {
-                    job.Status = JobStatus.Pending;
-                }
-
-                _context.SaveMigrationJob(job);
-
                 // Retire per-job runtime state from the process-wide
-                // singletons. Without this every Start cycle leaks the
-                // runner reference and the CTS, and the connection
-                // strings / unit cache / loaded-job dictionary keep
-                // entries for finished jobs until the process restarts.
-                // Paused jobs intentionally keep their connection-string
-                // entries so Resume-with-Existing continues to work
-                // without re-prompting; terminal jobs (Completed /
-                // Faulted / Cancelled) drop everything.
+                // singletons. Paused jobs intentionally keep their
+                // connection-string entries so Resume-with-Existing
+                // continues to work without re-prompting; terminal
+                // jobs (Completed / Faulted / Cancelled) drop
+                // everything.
                 bool isTerminal = job.Status == JobStatus.Completed
                                || job.Status == JobStatus.Faulted
                                || job.Status == JobStatus.Cancelled;
@@ -335,9 +303,8 @@ public class JobManager
                 {
                     _context.ActiveRunner = null;
                     MigrationJobRunner = null;
-                    try { _migrationCts?.Dispose(); }
-                    catch (ObjectDisposedException) { /* concurrent Stop won the race */ }
-                    _migrationCts = null;
+                    _control?.Dispose();
+                    _control = null;
                     _runningJobId = string.Empty;
                 }
 

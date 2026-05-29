@@ -40,11 +40,14 @@ public class MigrationJobRunner
         _tokenRefreshManager = new TokenRefreshManager(migrationLog);
     }
 
-    public async Task StartAsync(Job job, AppSettings config,
-        CancellationToken cancellationToken)
+    public async Task StartAsync(Job job, AppSettings config, JobControl control)
     {
         ArgumentNullException.ThrowIfNull(job);
         ArgumentNullException.ThrowIfNull(config);
+        ArgumentNullException.ThrowIfNull(control);
+
+        var cancellationToken = control.Token;
+        Exception? failure = null;
 
         try
         {
@@ -85,8 +88,8 @@ public class MigrationJobRunner
 
             if (Volatile.Read(ref _consecutiveAuthErrors) >= MigrationDefaults.MaxConsecutiveAuthErrors)
             {
-                _log.WriteLine($"Aborting: {Volatile.Read(ref _consecutiveAuthErrors)} consecutive auth failures.", LogType.Error);
-                return;
+                throw new InvalidOperationException(
+                    $"Aborting: {Volatile.Read(ref _consecutiveAuthErrors)} consecutive auth failures.");
             }
 
             // All tables have either drained or completed. Online jobs
@@ -103,6 +106,7 @@ public class MigrationJobRunner
         }
         catch (Exception ex)
         {
+            failure = ex;
             _log.WriteLine($"Migration failed: {ex}", LogType.Error);
         }
         finally
@@ -110,7 +114,44 @@ public class MigrationJobRunner
             _tokenRefreshManager.StopTokenRefreshTimer();
             MigrationUtilities.SafeDispose(_pipeline, "JobPipeline");
             _pipeline = null;
+
+            WriteFinalJobStatus(job, control, failure);
         }
+    }
+
+    /// <summary>
+    /// Single writer of <see cref="Job.Status"/> for a run that
+    /// reached <see cref="StartAsync"/>. Failures outrank user intent
+    /// (a Faulted run is visible even if the operator clicked Pause
+    /// after the failure had already happened); user intent then
+    /// distinguishes Paused from Cancelled; otherwise the run is
+    /// either left at its already-terminal status (e.g. Completed
+    /// written by <see cref="RunOfflineFinalizeAsync"/>) or
+    /// normalised from Running to Pending.
+    /// </summary>
+    private static void WriteFinalJobStatus(Job job, JobControl control, Exception? failure)
+    {
+        bool tableFailed = job.Tables?.Any(
+            t => t.SourceStatus == TableStatus.Failed) ?? false;
+
+        if (failure != null || tableFailed)
+        {
+            job.Status = JobStatus.Faulted;
+        }
+        else if (control.Requested == JobCommand.StopRequested)
+        {
+            job.Status = JobStatus.Cancelled;
+        }
+        else if (control.Requested == JobCommand.PauseRequested)
+        {
+            job.Status = JobStatus.Paused;
+        }
+        else if (job.Status == JobStatus.Running)
+        {
+            job.Status = JobStatus.Pending;
+        }
+
+        MigrationJobContext.Instance.SaveMigrationJob(job);
     }
 
     /// <summary>
@@ -271,7 +312,8 @@ public class MigrationJobRunner
     /// Online change-feed mode keeps the shared worker pool alive
     /// indefinitely. If every worker has died (faults or fatal trip)
     /// the loop would otherwise wait forever while no rows are being
-    /// copied — silent data loss. Probe the pool each tick.
+    /// copied — silent data loss. Probe the pool each tick and throw
+    /// so the run is recorded as Faulted.
     /// </summary>
     private async Task RunOnlineTailLoopAsync(CancellationToken cancellationToken)
     {
@@ -281,15 +323,13 @@ public class MigrationJobRunner
             if (_pipeline!.AllWorkersExited)
             {
                 int faulted = _pipeline.FaultedWorkerCount;
-                _log.WriteLine(
-                    $"Online worker pool has stopped (faulted={faulted}). Aborting job.",
-                    LogType.Error);
-                return;
+                throw new InvalidOperationException(
+                    $"Online worker pool has stopped (faulted={faulted}).");
             }
             if (Volatile.Read(ref _pipeline.Context.Flags.FatalErrorFlag) == 1)
             {
-                _log.WriteLine("Fatal error tripped during online replay. Aborting job.", LogType.Error);
-                return;
+                throw new InvalidOperationException(
+                    "Fatal error tripped during online replay.");
             }
             await Task.Delay(2000, cancellationToken);
         }
@@ -298,16 +338,14 @@ public class MigrationJobRunner
     /// <summary>
     /// Offline finalize: complete the partition channel so workers
     /// drain and exit, await pool completion, then mark the job
-    /// completed if the run reached the terminal state cleanly.
+    /// completed if every unit reached the terminal state.
     /// </summary>
     private async Task RunOfflineFinalizeAsync(Job job)
     {
         _pipeline!.CompletePartitionChannel();
         await _pipeline.WaitForCompletionAsync();
 
-        if (job.IsOfflineCompleted
-            && job.Status != JobStatus.Cancelled
-            && job.Status != JobStatus.Paused)
+        if (job.IsOfflineCompleted)
         {
             _log.WriteLine($"Job {job.Id} Completed", LogType.Info);
             job.Status = JobStatus.Completed;

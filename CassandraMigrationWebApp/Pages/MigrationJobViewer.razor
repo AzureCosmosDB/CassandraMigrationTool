@@ -967,12 +967,7 @@ else if (@_showLogBackupFile)
         _errorMessage = string.Empty;
         try
         {
-            // Set status BEFORE stopping so the coordinator's
-            // FinalizeStatus won't downgrade Paused -> Pending
-            if (CurrentlyLoadedMigrationJob != null)
-                CurrentlyLoadedMigrationJob.Status = JobStatus.Paused;
-            MigrationContext.SaveMigrationJob(CurrentlyLoadedMigrationJob);
-            JobManager.StopMigration();
+            JobManager.PauseImmediate();
         }
         catch (Exception ex)
         {
