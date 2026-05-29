@@ -271,6 +271,14 @@ public class JobManager
         // the task can be awaited during shutdown if needed.
         _ = Task.Run(async () =>
         {
+            // Capture any unhandled exception so the finally block can
+            // attribute the job correctly (Faulted, not Pending).
+            // Without this, an exception thrown from StartAsync was
+            // logged but lost — finally saw Status == Running and (with
+            // no per-table Failed markers, because the run never got
+            // far enough to set any) wrote Pending, making a hard
+            // failure look like a fresh job in the UI.
+            Exception? unhandledException = null;
             try
             {
                 // Expand wildcards (e.g. "socialmedia.*") by connecting to source
@@ -284,29 +292,37 @@ public class JobManager
             }
             catch (Exception ex)
             {
+                unhandledException = ex;
                 Console.WriteLine($"Migration failed for Job ID: {job.Id}: {ex}");
                 _log.WriteLine($"Migration failed: {ex}", LogType.Error);
             }
             finally
             {
-                // Determine final status. _pauseRequested is the only
-                // signal that distinguishes "user paused" from "user
-                // stopped" / "job faulted" — every other cancellation
-                // path produces an indistinguishable CTS trip.
-                if (_pauseRequested)
+                // Determine final status. Real failures (unhandled
+                // exception or any table marked Failed) outrank a
+                // user-requested pause — if the operator clicked Pause
+                // after the run had already faulted (race), we still
+                // want the badge to read Faulted so the failure is
+                // visible. Only after ruling out failures do we honour
+                // the pause flag; only after ruling out both do we fall
+                // through to the Running→Pending normalisation.
+                bool tableFailed = job.Tables?.Any(
+                    mu => mu.SourceStatus ==
+                        TableStatus.Failed) ?? false;
+                bool wasPauseRequested = _pauseRequested;
+                _pauseRequested = false;
+
+                if (unhandledException != null || tableFailed)
+                {
+                    job.Status = JobStatus.Faulted;
+                }
+                else if (wasPauseRequested)
                 {
                     job.Status = JobStatus.Paused;
-                    _pauseRequested = false;
                 }
                 else if (job.Status == JobStatus.Running)
                 {
-                    bool hasFailed = job.Tables?.Any(
-                        mu => mu.SourceStatus ==
-                            TableStatus.Failed) ?? false;
-                    if (hasFailed)
-                        job.Status = JobStatus.Faulted;
-                    else
-                        job.Status = JobStatus.Pending;
+                    job.Status = JobStatus.Pending;
                 }
 
                 _context.SaveMigrationJob(job);
