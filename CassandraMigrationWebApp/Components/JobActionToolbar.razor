@@ -15,7 +15,7 @@
         {
             <div class="btn-group mx-2">
                 <button class="btn btn-primary dropdown-toggle" type="button" id="resumeJobDropdown" data-bs-toggle="dropdown" aria-expanded="false">
-                    Resume Job
+                    @(IsNeverStarted ? "Start Job" : "Resume Job")
                 </button>
                 <ul class="dropdown-menu" aria-labelledby="resumeJobDropdown">
                     <li><a class="dropdown-item" @onclick="OnResumeWithNewConnectionString">With Updated Connection Strings</a></li>
@@ -83,6 +83,7 @@
 @code {
     [Parameter] public Job? Job { get; set; }
     [Parameter] public bool IsResumeEnabled { get; set; }
+    [Parameter] public bool IsNeverStarted { get; set; }
     [Parameter] public bool IsPauseEnabled { get; set; }
     [Parameter] public bool IsRunning { get; set; }
     [Parameter] public bool IsLoadingCollections { get; set; }

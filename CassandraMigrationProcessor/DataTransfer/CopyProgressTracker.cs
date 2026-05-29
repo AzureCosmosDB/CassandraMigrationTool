@@ -192,9 +192,7 @@ public class CopyProgressTracker
         _windowCopied = copied;
         _windowTime = elapsed;
 
-        string speedStr = _recentRowsPerSecond >= 1000
-            ? $"{_recentRowsPerSecond / 1000:F1}k/s"
-            : $"{_recentRowsPerSecond:F0}/s";
+        string speedStr = FormatRowsPerSecond(_recentRowsPerSecond);
 
         long pages = _counters.ReadPages;
         long readTimeMs = _counters.ReadTimeMs;
@@ -231,8 +229,20 @@ public class CopyProgressTracker
         double elapsed = _stopwatch.Elapsed.TotalSeconds;
         double rps = elapsed > 0
             ? copied / elapsed : 0;
-        string speedStr = rps >= 1000
-            ? $"{rps / 1000:F1}k/s" : $"{rps:F0}/s";
+        string speedStr = FormatRowsPerSecond(rps);
         _log.WriteLine($"Bulk copy done: {_keyspaceName}.{_tableName} - {copied:N0} copied, " + $"{failed:N0} failed ({elapsed:F1}s, {speedStr})", LogType.Info);
+    }
+
+    /// <summary>
+    /// Render rows-per-second for a log line. Avoids the truncation
+    /// trap where a small table reads as <c>0/s</c> because the rate
+    /// is positive but less than 1 (e.g. 47 rows in 60s → 0.78 rps).
+    /// </summary>
+    private static string FormatRowsPerSecond(double rps)
+    {
+        if (rps >= 1000) return $"{rps / 1000:F1}k/s";
+        if (rps >= 1) return $"{rps:F0}/s";
+        if (rps > 0) return "<1/s";
+        return "0/s";
     }
 }
