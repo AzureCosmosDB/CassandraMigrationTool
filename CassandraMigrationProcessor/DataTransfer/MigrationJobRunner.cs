@@ -22,6 +22,18 @@ public class MigrationJobRunner
     private readonly TokenRefreshManager _tokenRefreshManager;
     private JobPipeline? _pipeline;
 
+    /// <summary>
+    /// Per-run in-memory cache of <see cref="TableMigration"/> documents
+    /// keyed by <c>jobId::unitId</c>. Lives for the duration of the
+    /// run — created with the runner, dropped when the parent
+    /// (<c>JobManager</c>) releases the runner reference. Replaces the
+    /// previous process-wide singleton on <c>MigrationJobContext</c>,
+    /// which leaked entries for every job ever run until the process
+    /// recycled.
+    /// </summary>
+    public TableMigrationCache MigrationUnitsCache { get; }
+        = new TableMigrationCache();
+
     public MigrationJobRunner(MigrationLog migrationLog)
     {
         _log = migrationLog;

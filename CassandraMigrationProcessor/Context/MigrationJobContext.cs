@@ -23,8 +23,17 @@ public class MigrationJobContext
 
     private readonly object _writeJobListLock = new object();
 
-    public TableMigrationCache MigrationUnitsCache
-    { get; set; }
+    /// <summary>
+    /// Per-run cache of <see cref="TableMigration"/> documents. Resolves
+    /// to <c>null</c> when no job is running. Ownership moved to
+    /// <see cref="DataTransfer.MigrationJobRunner.MigrationUnitsCache"/>
+    /// in the target architecture — its lifetime now matches the run
+    /// (created with the runner, gone when the runner reference is
+    /// dropped), so the previous process-wide singleton no longer
+    /// accumulates entries across job lifetimes.
+    /// </summary>
+    public TableMigrationCache? MigrationUnitsCache
+        => ActiveRunner?.MigrationUnitsCache;
 
     /// <summary>
     /// The single process-wide cache of per-job source/target
@@ -122,7 +131,9 @@ public class MigrationJobContext
         if (isTerminal)
         {
             Credentials.Forget(jobId);
-            MigrationUnitsCache?.RemoveAllForJob(jobId);
+            // MigrationUnitsCache was retired together with the runner
+            // (it now lives on MigrationJobRunner.MigrationUnitsCache).
+            // Nothing per-job to scrub here.
             JobStore.EvictFromCache(jobId);
         }
     }
@@ -174,11 +185,11 @@ public class MigrationJobContext
     }
 
     /// <summary>
-    /// Idempotent: loads the active job and primes the unit cache on
-    /// first access. Previously a side effect of the
-    /// <c>CurrentlyActiveJob</c> getter — a property read should not
-    /// mutate global state or lose a racy second instantiation of the
-    /// unit cache.
+    /// Idempotent: loads the active job on first access. Previously a
+    /// side effect of the <c>CurrentlyActiveJob</c> getter — a property
+    /// read should not mutate global state. (The unit-cache lazy
+    /// initialisation that used to live here moved with the cache to
+    /// <see cref="DataTransfer.MigrationJobRunner"/>.)
     /// </summary>
     private readonly object _activeJobLoadLock = new object();
     private void EnsureActiveJobLoaded()
@@ -187,8 +198,7 @@ public class MigrationJobContext
         if (string.IsNullOrEmpty(activeId)) return;
 
         if (JobStore.CachedActiveJob != null
-            && JobStore.CachedActiveJob.Id == activeId
-            && MigrationUnitsCache != null)
+            && JobStore.CachedActiveJob.Id == activeId)
             return;
 
         lock (_activeJobLoadLock)
@@ -198,8 +208,6 @@ public class MigrationJobContext
             {
                 JobStore.CachedActiveJob = JobStore.LoadJob(activeId);
             }
-            if (MigrationUnitsCache == null)
-                MigrationUnitsCache = new TableMigrationCache();
         }
     }
 
