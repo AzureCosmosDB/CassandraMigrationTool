@@ -22,6 +22,14 @@ public class MigrationJobRunner
     private readonly TokenRefreshManager _tokenRefreshManager;
     private JobPipeline? _pipeline;
 
+    /// <summary>
+    /// Per-run pause coordination. Owned by this runner — disposed
+    /// implicitly when the runner reference is dropped at the end
+    /// of the migration. Replaces the process-wide pause flag/event
+    /// that used to live on <see cref="MigrationJobContext"/>.
+    /// </summary>
+    public JobRunState State { get; } = new JobRunState();
+
     public MigrationJobRunner(MigrationLog migrationLog)
     {
         _log = migrationLog;

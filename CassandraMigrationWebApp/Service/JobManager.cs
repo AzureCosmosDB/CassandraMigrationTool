@@ -219,6 +219,7 @@ public class JobManager
                 $"User requested {(isResume ? "RESUME" : "START")} for job {job.Id} (prior status={job.Status})",
                 LogType.Info);
             MigrationJobRunner = new MigrationJobRunner(_log);
+            _context.ActiveRunner = MigrationJobRunner;
             _migrationCts = new CancellationTokenSource();
             _runningJobId = job.Id;
         }
@@ -300,6 +301,7 @@ public class JobManager
 
                 lock (_stateLock)
                 {
+                    _context.ActiveRunner = null;
                     MigrationJobRunner = null;
                     try { _migrationCts?.Dispose(); }
                     catch (ObjectDisposedException) { /* concurrent Stop won the race */ }
