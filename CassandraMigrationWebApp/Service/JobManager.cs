@@ -2,7 +2,6 @@ using CassandraMigrationProcessor.Infrastructure;
 using CassandraMigrationProcessor.Models;
 using CassandraMigrationProcessor.DataTransfer;
 using CassandraMigrationProcessor.Context;
-using CassandraMigrationProcessor.CassandraDriver;
 
 namespace CassandraMigrationWebApp.Service;
 public class JobManager
@@ -220,7 +219,7 @@ public class JobManager
         return _pauseRequested;
     }
 
-    public Task StartMigration(Job job, string sourceConnectionString, string targetConnectionString, string namespacesToMigrate)
+    public Task StartMigration(Job job, string sourceConnectionString, string targetConnectionString)
     {
         lock (_stateLock)
         {
@@ -235,9 +234,7 @@ public class JobManager
             _log = CreateLog();
             _log.Initialize(job.Id);
             _log.SetJob(job);
-            bool isResume = job.Status == JobStatus.Paused
-                || job.Status == JobStatus.Pending
-                || job.Status == JobStatus.Faulted;
+            bool isResume = job.Status is JobStatus.Paused or JobStatus.Pending or JobStatus.Faulted;
             _log.WriteLine(
                 $"User requested {(isResume ? "RESUME" : "START")} for job {job.Id} (prior status={job.Status})",
                 LogType.Info);
@@ -255,7 +252,7 @@ public class JobManager
         {
             if (otherId == job.Id) continue;
             var other = GetMigrationJobById(otherId);
-            if (other != null && other.Status == JobStatus.Running)
+            if (other is { Status: JobStatus.Running })
             {
                 other.Status = JobStatus.Pending;
                 _context.SaveMigrationJob(other);
@@ -282,13 +279,6 @@ public class JobManager
             Exception? unhandledException = null;
             try
             {
-                // Expand wildcards (e.g. "socialmedia.*") by connecting to source
-                if (job.Tables.Count == 0
-                    || job.Tables.Any(m => m.TableName == "*"))
-                {
-                    await ExpandWildcardTablesAsync(job, namespacesToMigrate);
-                }
-
                 await MigrationJobRunner.StartAsync(job, config, _migrationCts.Token);
             }
             catch (Exception ex)
@@ -360,151 +350,11 @@ public class JobManager
         return Task.CompletedTask;
     }
 
-    private async Task ExpandWildcardTablesAsync(Job job, string namespacesToMigrate)
-    {
-        if (string.IsNullOrWhiteSpace(namespacesToMigrate)) return;
-
-        var entries = namespacesToMigrate
-            .Split(new[] { ',', '\n', '\r', ';' })
-            .Select(s => s.Trim())
-            .Where(s => !string.IsNullOrEmpty(s));
-
-        List<TableMigration> expandedUnits = new List<TableMigration>();
-
-        foreach (var fullName in entries)
-        {
-            // CQL-aware split that tolerates quoted identifiers
-            // (e.g. '"My-KS".*' or 'foo."Mixed_Table-1"'). We do the
-            // split manually instead of going through
-            // CqlIdentifier.SplitQualifiedName because that helper
-            // rejects the wildcard '*' on the table side; here we
-            // need to allow it.
-            string keyspace, table;
-            try
-            {
-                (keyspace, table) = SplitKeyspaceAllowingWildcard(fullName);
-            }
-            catch (ArgumentException)
-            {
-                continue;
-            }
-            if (string.IsNullOrEmpty(keyspace) || string.IsNullOrEmpty(table))
-                continue;
-
-            if (table == "*")
-            {
-                // Connect to source and list all tables in this keyspace
-                try
-                {
-                    var session = CassandraMigrationProcessor.CassandraDriver.CassandraClientFactory
-                        .CreateSourceSession(_log, job);
-                    try
-                    {
-                        var tables = await CassandraMigrationProcessor.CassandraDriver.CassandraQueries
-                            .ListTablesAsync(session, keyspace);
-                        foreach (var tableName in tables)
-                        {
-                            // Validate table is accessible with retry for 429s
-                            bool accessible = false;
-                            for (int att = 1; att <= 10; att++)
-                            {
-                                try
-                                {
-                                    var probe = new Cassandra.SimpleStatement(
-                                        $"SELECT * FROM \"{keyspace}\".\"{tableName}\" WHERE COSMOS_CHANGEFEED_FROM_START() = true");
-                                    probe.SetPageSize(1);
-                                    probe.SetAutoPage(false);
-                                    probe.SetReadTimeoutMillis(15_000);
-                                    session.Execute(probe);
-                                    accessible = true;
-                                    break;
-                                }
-                                catch (Exception vex)
-                                {
-                                    if (CassandraMigrationProcessor.Infrastructure.ExceptionClassifier.IsThrottle(vex) && att < 10)
-                                    {
-                                        int delaySec = Math.Min(att * 3, 30);
-                                        Thread.Sleep(delaySec * 1000);
-                                        continue;
-                                    }
-                                    _log.WriteLine($"Skipping {keyspace}.{tableName}: {vex.Message}", LogType.Warning);
-                                }
-                            }
-                            if (!accessible) continue;
-
-                            var mu = new TableMigration(
-                                job, keyspace, tableName);
-                            mu.SourceStatus = TableStatus.OK;
-                            expandedUnits.Add(mu);
-                        }
-                    }
-                    finally
-                    {
-                        CassandraMigrationProcessor.Infrastructure.MigrationUtilities
-                            .SafeDisposeSession(session, $"JobManager table discovery session ({keyspace})");
-                    }
-                }
-                catch (Exception ex)
-                {
-                    _log.WriteLine($"Failed to discover tables in keyspace {keyspace}: {ex.Message}", LogType.Error);
-                }
-            }
-            else
-            {
-                var mu = new TableMigration(
-                    job, keyspace, table);
-                mu.SourceStatus = TableStatus.OK;
-                expandedUnits.Add(mu);
-            }
-        }
-
-        if (expandedUnits.Count > 0)
-        {
-            // Clear any wildcard entries
-            job.Tables?.RemoveAll(m => m.TableName == "*");
-            UnitStore.AddMigrationUnits(expandedUnits, job, _log);
-        }
-    }
-
     public string GetRunningJobId() => _runningJobId;
 
     public bool IsProcessRunning(string id)
     {
         return !string.IsNullOrEmpty(_runningJobId) && _runningJobId == id;
-    }
-
-    /// <summary>
-    /// Quote-aware split of 'keyspace.table' where the table side may be
-    /// the literal wildcard '*'. Both sides are returned in bare form
-    /// (surrounding "..." stripped, ""-escapes resolved).
-    /// </summary>
-    private static (string keyspace, string table) SplitKeyspaceAllowingWildcard(string fullName)
-    {
-        if (string.IsNullOrWhiteSpace(fullName))
-            throw new ArgumentException("Empty entry", nameof(fullName));
-
-        int pos = 0;
-        string keyspace = CqlIdentifier.ReadIdentifier(fullName, ref pos);
-        if (pos >= fullName.Length || fullName[pos] != '.')
-            throw new ArgumentException(
-                $"Expected '.' between keyspace and table in '{fullName}'", nameof(fullName));
-        pos++; // skip '.'
-
-        string table;
-        if (pos < fullName.Length && fullName[pos] == '*'
-            && (pos + 1 == fullName.Length))
-        {
-            table = "*";
-        }
-        else
-        {
-            table = CqlIdentifier.ReadIdentifier(fullName, ref pos);
-            if (pos != fullName.Length)
-                throw new ArgumentException(
-                    $"Unexpected trailing characters in '{fullName}'", nameof(fullName));
-        }
-
-        return (keyspace, table);
     }
 
     #endregion

@@ -736,8 +736,7 @@ else if (@_showLogBackupFile)
 
             await JobManager.StartMigration(mj,
                 GetSourceConnectionString(mj),
-                GetTargetConnectionString(mj),
-                mj.Namespaces ?? string.Empty);
+                GetTargetConnectionString(mj));
         });
 
         StartAutoRefresh();

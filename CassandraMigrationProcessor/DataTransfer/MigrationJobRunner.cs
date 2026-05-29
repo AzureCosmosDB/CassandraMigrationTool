@@ -48,6 +48,12 @@ public class MigrationJobRunner
 
         try
         {
+            if (job.Tables.Count == 0
+                || job.Tables.Any(m => m.TableName == "*"))
+            {
+                await ExpandWildcardTablesAsync(job, cancellationToken);
+            }
+
             var units = UnitStore.GetMigrationUnitsToMigrate(job);
             if (units.Count == 0)
             {
@@ -556,5 +562,156 @@ public class MigrationJobRunner
         MigrationUtilities.SafeDispose(_pipeline, "JobPipeline (Stop)");
         _pipeline = null;
         _tokenRefreshManager.StopTokenRefreshTimer();
+    }
+
+    /// <summary>
+    /// Resolves any "keyspace.*" wildcard entries in <c>job.Namespaces</c>
+    /// by connecting to the source and listing the keyspace's tables,
+    /// then probing each one to filter out those that cannot be read.
+    /// Resolved tables are appended to <c>job.Tables</c> via
+    /// <see cref="UnitStore.AddMigrationUnits"/>; wildcard placeholders
+    /// are removed from <c>job.Tables</c>.
+    /// </summary>
+    private async Task ExpandWildcardTablesAsync(Job job, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(job.Namespaces)) return;
+
+        var entries = job.Namespaces
+            .Split(new[] { ',', '\n', '\r', ';' })
+            .Select(s => s.Trim())
+            .Where(s => !string.IsNullOrEmpty(s));
+
+        var expandedUnits = new List<TableMigration>();
+
+        foreach (var fullName in entries)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            string keyspace, table;
+            try
+            {
+                (keyspace, table) = SplitKeyspaceAllowingWildcard(fullName);
+            }
+            catch (ArgumentException)
+            {
+                continue;
+            }
+            if (string.IsNullOrEmpty(keyspace) || string.IsNullOrEmpty(table))
+                continue;
+
+            if (table != "*")
+            {
+                var mu = new TableMigration(job, keyspace, table)
+                {
+                    SourceStatus = TableStatus.OK,
+                };
+                expandedUnits.Add(mu);
+                continue;
+            }
+
+            ISession? session = null;
+            try
+            {
+                session = CassandraClientFactory.CreateSourceSession(_log, job, _tokenRefreshManager);
+                var tables = await CassandraQueries.ListTablesAsync(session, keyspace);
+                foreach (var tableName in tables)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    if (await IsTableAccessibleAsync(session, keyspace, tableName, cancellationToken))
+                    {
+                        var mu = new TableMigration(job, keyspace, tableName)
+                        {
+                            SourceStatus = TableStatus.OK,
+                        };
+                        expandedUnits.Add(mu);
+                    }
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _log.WriteLine($"Failed to discover tables in keyspace {keyspace}: {ex.Message}", LogType.Error);
+            }
+            finally
+            {
+                MigrationUtilities.SafeDisposeSession(session, $"Wildcard table discovery session ({keyspace})");
+            }
+        }
+
+        if (expandedUnits.Count > 0)
+        {
+            job.Tables?.RemoveAll(m => m.TableName == "*");
+            UnitStore.AddMigrationUnits(expandedUnits, job, _log);
+        }
+    }
+
+    private async Task<bool> IsTableAccessibleAsync(
+        ISession session, string keyspace, string tableName, CancellationToken cancellationToken)
+    {
+        for (int att = 1; att <= 10; att++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            try
+            {
+                var probe = new SimpleStatement(
+                    $"SELECT * FROM \"{keyspace}\".\"{tableName}\" WHERE COSMOS_CHANGEFEED_FROM_START() = true");
+                probe.SetPageSize(1);
+                probe.SetAutoPage(false);
+                probe.SetReadTimeoutMillis(15_000);
+                session.Execute(probe);
+                return true;
+            }
+            catch (Exception vex)
+            {
+                if (ExceptionClassifier.IsThrottle(vex) && att < 10)
+                {
+                    int delaySec = Math.Min(att * 3, 30);
+                    await Task.Delay(TimeSpan.FromSeconds(delaySec), cancellationToken);
+                    continue;
+                }
+                _log.WriteLine($"Skipping {keyspace}.{tableName}: {vex.Message}", LogType.Warning);
+                return false;
+            }
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// Quote-aware split of 'keyspace.table' where the table side may
+    /// be the literal wildcard '*'. Both sides are returned in bare
+    /// form (surrounding "..." stripped, ""-escapes resolved).
+    /// <see cref="CqlIdentifier.SplitQualifiedName"/> is not used
+    /// because it rejects '*' on the table side.
+    /// </summary>
+    private static (string keyspace, string table) SplitKeyspaceAllowingWildcard(string fullName)
+    {
+        if (string.IsNullOrWhiteSpace(fullName))
+            throw new ArgumentException("Empty entry", nameof(fullName));
+
+        int pos = 0;
+        string keyspace = CqlIdentifier.ReadIdentifier(fullName, ref pos);
+        if (pos >= fullName.Length || fullName[pos] != '.')
+            throw new ArgumentException(
+                $"Expected '.' between keyspace and table in '{fullName}'", nameof(fullName));
+        pos++;
+
+        string table;
+        if (pos < fullName.Length && fullName[pos] == '*'
+            && (pos + 1 == fullName.Length))
+        {
+            table = "*";
+        }
+        else
+        {
+            table = CqlIdentifier.ReadIdentifier(fullName, ref pos);
+            if (pos != fullName.Length)
+                throw new ArgumentException(
+                    $"Unexpected trailing characters in '{fullName}'", nameof(fullName));
+        }
+
+        return (keyspace, table);
     }
 }
