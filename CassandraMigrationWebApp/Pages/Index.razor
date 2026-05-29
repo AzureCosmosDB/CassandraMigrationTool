@@ -1,6 +1,6 @@
 @page "/"
 @inject Service.JobManager JobManager
-@inject Service.MigrationContextService MigrationContext
+@inject CassandraMigrationProcessor.Context.MigrationJobContext MigrationContext
 @inject NavigationManager NavigationManager
 
 @using CassandraMigrationWebApp.Components
@@ -237,7 +237,7 @@
     private List<Job> GetMigrationsFromManager(bool silent)
     {
         var ids = JobManager.GetMigrationIds();
-        var result = MigrationContext.PopulateJobs(ids);
+        var result = MigrationContext.GetJobsById(ids);
         // Latest jobs first
         result.Reverse();
         return result;
@@ -364,7 +364,7 @@
                 MigrationContext.JobIndex.MigrationJobIds.Add(job.Id);
 
                 MigrationContext.PendingAutoStartJobIds.TryAdd(job.Id, 0);
-                MigrationContext.SaveJob(job);
+                MigrationContext.SaveMigrationJob(job);
                 MigrationContext.SaveJobList();
                 
                 ViewMigration(job.Id);

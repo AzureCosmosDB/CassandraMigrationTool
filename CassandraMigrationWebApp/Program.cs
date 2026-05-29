@@ -74,7 +74,6 @@ var migrationJobContext = new MigrationJobContext();
 migrationJobContext.Initialize(builder.Configuration);
 builder.Services.AddSingleton(migrationJobContext);
 
-builder.Services.AddSingleton<MigrationContextService>();
 builder.Services.AddSingleton<JobManager>();
 
 // Add authentication services

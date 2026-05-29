@@ -14,21 +14,19 @@ public class JobManager
 
     private DateTime _lastJobHeartBeat = DateTime.MinValue;
     private string _lastJobID = string.Empty;
-    private readonly MigrationContextService _ctx;
-    private readonly MigrationJobContext _migrationJobContext;
+    private readonly MigrationJobContext _context;
 
-    public JobManager(MigrationContextService ctx, MigrationJobContext migrationJobContext)
+    public JobManager(MigrationJobContext context)
     {
-        _ctx = ctx;
-        _migrationJobContext = migrationJobContext;
+        _context = context;
         _log = CreateLog();
     }
 
     private MigrationLog CreateLog()
     {
         var log = new MigrationLog();
-        if (_ctx.LogStore != null)
-            log.SetStorage(_migrationJobContext.CreateLogStorageCallbacks(_ctx.LogStore));
+        if (_context.LogStore != null)
+            log.SetStorage(_context.CreateLogStorageCallbacks(_context.LogStore));
         return log;
     }
 
@@ -62,7 +60,7 @@ public class JobManager
         {
             foreach (var mub in mj.Tables)
             {
-                var mu = _ctx.GetUnit(mub.Id, mj.Id);
+                var mu = _context.GetMigrationUnit(mub.Id, mj.Id);
                 if (mu != null)
                     units.Add(mu);
             }
@@ -73,23 +71,23 @@ public class JobManager
 
     public Job? GetMigrationJobById(string id)
     {
-        return _ctx.GetJob(id);
+        return _context.GetMigrationJob(id);
     }
 
     public List<string> GetMigrationIds()
     {
-        return _ctx.JobIndex.MigrationJobIds;
+        return _context.JobIndex.MigrationJobIds;
     }
 
     public void ClearJobFiles(string jobId)
     {
-        _ctx.JobIndex.MigrationJobIds?.Remove(jobId);
-        _ctx.SaveJobList();
+        _context.JobIndex.MigrationJobIds?.Remove(jobId);
+        _context.SaveJobList();
 
         Task.Run(() =>
         {
-            _ctx.Store.Delete($"{Path.Combine(JobStore.JobsFolder, jobId)}");
-            _ctx.LogStore.DeleteLogs(jobId);
+            _context.Store.Delete($"{Path.Combine(JobStore.JobsFolder, jobId)}");
+            _context.LogStore.DeleteLogs(jobId);
 
             string dumpPath = Path.Combine(DataDirectoryResolver.GetWorkingFolder(), "cassandradump", jobId);
             if (Directory.Exists(dumpPath))
@@ -166,7 +164,7 @@ public class JobManager
     {
         if (!string.IsNullOrEmpty(_runningJobId))
             _log.WriteLine($"User requested PAUSE for job {_runningJobId}", LogType.Info);
-        _ctx.RequestControlledPause();
+        _context.RequestControlledPause();
     }
 
     /// <summary>
@@ -195,7 +193,7 @@ public class JobManager
     /// </summary>
     public bool IsControlledPauseRequested()
     {
-        return _ctx.ControlledPauseRequested;
+        return _context.ControlledPauseRequested;
     }
 
     public Task StartMigration(Job job, string sourceConnectionString, string targetConnectionString, string namespacesToMigrate)
@@ -224,8 +222,8 @@ public class JobManager
             _runningJobId = job.Id;
         }
 
-        _ctx.SourceConnectionString[job.Id] = sourceConnectionString;
-        _ctx.TargetConnectionString[job.Id] = targetConnectionString;
+        _context.SourceConnectionString[job.Id] = sourceConnectionString;
+        _context.TargetConnectionString[job.Id] = targetConnectionString;
 
         // Clear Running status on all other jobs so stale flags don't
         // cause unwanted auto-resume after an app recycle.
@@ -236,11 +234,11 @@ public class JobManager
             if (other != null && other.Status == JobStatus.Running)
             {
                 other.Status = JobStatus.Pending;
-                _ctx.SaveJob(other);
+                _context.SaveMigrationJob(other);
             }
         }
 
-        _ctx.ActiveMigrationJobId = job.Id;
+        _context.ActiveMigrationJobId = job.Id;
         job.Status = JobStatus.Running;
 
         var config = new AppSettings();
@@ -269,10 +267,10 @@ public class JobManager
             finally
             {
                 // Determine final status
-                if (_ctx.ControlledPauseRequested)
+                if (_context.ControlledPauseRequested)
                 {
                     job.Status = JobStatus.Paused;
-                    _ctx.ResetControlledPause();
+                    _context.ResetControlledPause();
                 }
                 else if (job.Status == JobStatus.Running)
                 {
@@ -285,7 +283,7 @@ public class JobManager
                         job.Status = JobStatus.Pending;
                 }
 
-                _ctx.SaveJob(job);
+                _context.SaveMigrationJob(job);
                 _runningJobId = string.Empty;
             }
         });
