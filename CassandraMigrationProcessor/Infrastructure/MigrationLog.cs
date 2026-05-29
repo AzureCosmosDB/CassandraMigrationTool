@@ -85,13 +85,33 @@ public class MigrationLog : IDisposable
 
     public string Initialize(string id)
     {
+        // _initLock serialises Initialize against itself; _writeLock /
+        // _verboseLock cover the same fields WriteLine touches. Without
+        // both, an Initialize racing with an in-flight WriteLine could
+        // (a) reseat _logBucket while WriteLine was adding to the prior
+        //     instance, cross-contaminating the next job's bucket and
+        //     losing the writer's entry, or
+        // (b) call _verboseMessages.Clear() while WriteLine was
+        //     enumerating/adding under _verboseLock, throwing
+        //     InvalidOperationException: Collection was modified.
+        // The outer WriteLine catch swallowed (b) as a dropped log line;
+        // (a) was silent. Lock order matches WriteLine (_writeLock
+        // outer, _verboseLock inner) to avoid deadlock potential.
         lock (_initLock)
         {
             string logBackupFile = string.Empty;
             _currentId = id;
 
-            _logBucket = ReadLogFile(_currentId, out logBackupFile);
-            _verboseMessages.Clear();
+            var freshBucket = ReadLogFile(_currentId, out logBackupFile);
+
+            lock (_writeLock)
+            {
+                _logBucket = freshBucket;
+                lock (_verboseLock)
+                {
+                    _verboseMessages.Clear();
+                }
+            }
 
             return logBackupFile;
         }
