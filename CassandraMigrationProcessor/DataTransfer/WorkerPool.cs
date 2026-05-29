@@ -6,7 +6,7 @@ namespace CassandraMigrationProcessor.DataTransfer;
 /// Manages a pool of copy workers that process partitions
 /// from the partition pool channel.
 /// </summary>
-internal class WorkerPool : IDisposable
+internal sealed class WorkerPool : IDisposable
 {
     private readonly MigrationLog _log;
     private readonly int _workerCount;
@@ -22,7 +22,7 @@ internal class WorkerPool : IDisposable
     /// Starts all workers. Each worker creates its own sessions,
     /// takes partitions from the pool, reads pages, and writes rows.
     /// </summary>
-    public void Start(Func<int, Task> workerFactory)
+    internal void Start(Func<int, Task> workerFactory)
     {
         _workers = Enumerable.Range(0, _workerCount)
             .Select(id => Task.Run(() => workerFactory(id)))
@@ -33,7 +33,7 @@ internal class WorkerPool : IDisposable
     /// Waits for all workers to complete. Swallows cancellation
     /// exceptions (workers exit gracefully on cancel).
     /// </summary>
-    public async Task WaitForCompletionAsync()
+    internal async Task WaitForCompletionAsync()
     {
         if (_workers == null) return;
         try { await Task.WhenAll(_workers); }
@@ -70,10 +70,10 @@ internal class WorkerPool : IDisposable
     /// <summary>
     /// Number of workers that completed with faults.
     /// </summary>
-    public int FaultedCount => _workers?.Count(t => t.IsFaulted) ?? 0;
+    internal int FaultedCount => _workers?.Count(t => t.IsFaulted) ?? 0;
 
     /// <summary>True if every worker task has finished (success, fault, or cancel).</summary>
-    public bool AllExited => _workers != null && _workers.All(t => t.IsCompleted);
+    internal bool AllExited => _workers != null && _workers.All(t => t.IsCompleted);
 
     public void Dispose()
     {
