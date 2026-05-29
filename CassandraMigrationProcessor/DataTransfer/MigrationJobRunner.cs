@@ -450,12 +450,21 @@ public class MigrationJobRunner
         }
 
         var targetSession = await CassandraClientFactory.CreateTargetSessionAsync(_log, job);
-        // Keyspace-agnostic source session: SchemaManager queries hit system_schema with
-        // parameterized keyspace_name and all data CQL is fully qualified, so we avoid the
-        // extra USE keyspace round trip and per-keyspace metadata refresh.
-        var sourceSession = CassandraClientFactory.CreateSourceSession(_log, job, _tokenRefreshManager);
+        // Source session is created INSIDE the try so a CreateSourceSession
+        // failure (transient network/auth on source — exactly the case the
+        // factory exhausts retries on before throwing) still disposes the
+        // already-built target session via the finally. The previous order
+        // declared sourceSession outside the try, leaking the target's
+        // Cluster (and its socket / connection pool) on every Phase-1
+        // source-side failure — scaled by Tables count under WhenAll.
+        Cassandra.ISession? sourceSession = null;
         try
         {
+            // Keyspace-agnostic source session: SchemaManager queries hit system_schema with
+            // parameterized keyspace_name and all data CQL is fully qualified, so we avoid the
+            // extra USE keyspace round trip and per-keyspace metadata refresh.
+            sourceSession = CassandraClientFactory.CreateSourceSession(_log, job, _tokenRefreshManager);
+
             if (shouldDrop
                 && await SchemaManager.TableExistsAsync(targetSession, mu.KeyspaceName, mu.TableName))
             {
