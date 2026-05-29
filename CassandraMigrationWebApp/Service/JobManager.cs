@@ -154,7 +154,8 @@ public class JobManager
         {
             if (!string.IsNullOrEmpty(_runningJobId))
                 _log.WriteLine($"User requested CANCEL for job {_runningJobId}", LogType.Info);
-            _migrationCts?.Cancel();
+            try { _migrationCts?.Cancel(); }
+            catch (ObjectDisposedException) { /* finally already retired the job */ }
             MigrationJobRunner?.Stop();
             _runningJobId = string.Empty;
         }
@@ -284,7 +285,30 @@ public class JobManager
                 }
 
                 _context.SaveMigrationJob(job);
-                _runningJobId = string.Empty;
+
+                // Retire per-job runtime state from the process-wide
+                // singletons. Without this every Start cycle leaks the
+                // runner reference and the CTS, and the connection
+                // strings / unit cache / loaded-job dictionary keep
+                // entries for finished jobs until the process restarts.
+                // Paused jobs intentionally keep their connection-string
+                // entries so Resume-with-Existing continues to work
+                // without re-prompting; terminal jobs (Completed /
+                // Faulted / Cancelled) drop everything.
+                bool isTerminal = job.Status == JobStatus.Completed
+                               || job.Status == JobStatus.Faulted
+                               || job.Status == JobStatus.Cancelled;
+
+                lock (_stateLock)
+                {
+                    MigrationJobRunner = null;
+                    try { _migrationCts?.Dispose(); }
+                    catch (ObjectDisposedException) { /* concurrent Stop won the race */ }
+                    _migrationCts = null;
+                    _runningJobId = string.Empty;
+                }
+
+                _context.RetireJob(job.Id, isTerminal);
             }
         });
 

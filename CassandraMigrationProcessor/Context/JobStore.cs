@@ -125,4 +125,27 @@ public static class JobStore
             _cachedActiveJob = null;
         }
     }
+
+    /// <summary>
+    /// Evicts a single job from the process-wide loaded-job dictionary
+    /// (and from <see cref="CachedActiveJob"/> if it currently points at
+    /// the same job). Used by <see cref="MigrationJobContext.RetireJob"/>
+    /// when a job reaches a terminal state so its state is not retained
+    /// in memory across job lifetimes.
+    /// </summary>
+    internal static void EvictFromCache(string jobId)
+    {
+        if (string.IsNullOrEmpty(jobId)) return;
+
+        _jobs.TryRemove(jobId, out _);
+
+        lock (_cacheLock)
+        {
+            if (_cachedActiveJob != null
+                && string.Equals(_cachedActiveJob.Id, jobId, StringComparison.Ordinal))
+            {
+                _cachedActiveJob = null;
+            }
+        }
+    }
 }
