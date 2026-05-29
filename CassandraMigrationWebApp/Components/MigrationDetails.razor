@@ -47,7 +47,7 @@
                     <div class="row mb-2">
                         <div class="col-md-8">
                             <label for="sourceConnectionString" class="form-label">Contact Point</label>
-                            <input type="text" id="sourceConnectionString" placeholder="@(NewMode ? "e.g. myaccount.cassandra.cosmos.azure.com" : "")" class="form-control" @bind="sourceConnectionString" />
+                            <input type="text" id="sourceConnectionString" placeholder="@(NewMode ? "e.g. myaccount.cassandra.cosmos.azure.com" : "")" class="form-control" maxlength="1024" @bind="sourceConnectionString" />
                         </div>
                         <div class="col-md-4">
                             <label for="sourcePort" class="form-label">Port</label>
@@ -57,7 +57,7 @@
                     <div class="row mb-2">
                         <div class="col-md-6">
                             <label for="sourceUsername" class="form-label">Username</label>
-                            <input type="text" id="sourceUsername" placeholder="Account name or leave blank for AAD" class="form-control" @bind="sourceUsername" @bind:event="oninput" />
+                            <input type="text" id="sourceUsername" placeholder="Account name or leave blank for AAD" class="form-control" maxlength="256" @bind="sourceUsername" @bind:event="oninput" />
                         </div>
                         <div class="col-md-6">
                             <label for="sourcePassword" class="form-label">Password / AAD Token</label>
@@ -80,7 +80,7 @@
                     <div class="row mb-2">
                         <div class="col-md-8">
                             <label for="targetConnectionString" class="form-label">Contact Point</label>
-                            <input type="text" id="targetConnectionString" placeholder="@(NewMode ? "e.g. target-cluster-ip or hostname" : "")" class="form-control" @bind="targetConnectionString" />
+                            <input type="text" id="targetConnectionString" placeholder="@(NewMode ? "e.g. target-cluster-ip or hostname" : "")" class="form-control" maxlength="1024" @bind="targetConnectionString" />
                         </div>
                         <div class="col-md-4">
                             <label for="targetPort" class="form-label">Port</label>
@@ -90,7 +90,7 @@
                     <div class="row mb-3">
                         <div class="col-md-6">
                             <label for="targetUsername" class="form-label">Username</label>
-                            <input type="text" id="targetUsername" placeholder="Leave blank if no auth" class="form-control" @bind="targetUsername" />
+                            <input type="text" id="targetUsername" placeholder="Leave blank if no auth" class="form-control" maxlength="256" @bind="targetUsername" />
                         </div>
                         <div class="col-md-6">
                             <label for="targetPassword" class="form-label">Password</label>
@@ -100,7 +100,7 @@
 
                     <div class="mb-3">
                         <label for="nameSpaces" class="form-label">Tables To Migrate</label>
-                        <textarea id="nameSpaces" disabled="@(!NewMode || isFileUploaded)" rows="4" placeholder="e.g. ks1.table1,ks1.table2,ks2.table1 or use wildcards like keyspace.*. Max 1000 characters, use 'Upload File' for larger text." class="form-control" @bind="namespaces" @oninput="OnTextAreaInput"></textarea>
+                        <textarea id="nameSpaces" disabled="@(!NewMode || isFileUploaded)" rows="4" maxlength="1000" placeholder="e.g. ks1.table1,ks1.table2,ks2.table1 or use wildcards like keyspace.*. Max 1000 characters, use 'Upload File' for larger text." class="form-control" @bind="namespaces" @oninput="OnTextAreaInput"></textarea>
                         @if (NewMode)
                         {
                             <div class="mt-2">
@@ -494,6 +494,47 @@
         if (targetPort < 1 || targetPort > 65535)
         {
             errors.Add($"Target Port must be between 1 and 65535 (got {targetPort}).");
+        }
+
+        // Mirror the HTML5 min/max on the Advanced tab as a server-side
+        // guard — the browser caps are trivially bypassed (DevTools, a
+        // crafted form re-post) and 10 000 workers / 99 999-row pages
+        // produce silent over-allocation and a connection storm
+        // (issue #98). Allow null (= auto / default).
+        if (workerCount.HasValue && (workerCount.Value < 0 || workerCount.Value > 500))
+        {
+            errors.Add($"Shared workers must be between 0 and 500 (got {workerCount.Value}).");
+        }
+        if (pageSize.HasValue && (pageSize.Value < 1 || pageSize.Value > 10000))
+        {
+            errors.Add($"Page size must be between 1 and 10000 (got {pageSize.Value}).");
+        }
+
+        // The text inputs on the Basic tab all default to maxLength=-1,
+        // so a paste of 1.5 KB into the namespaces field (placeholder
+        // claims "Max 1000 characters") or megabytes into a contact
+        // point / username silently makes it into the persisted job
+        // record and downstream renderers. Re-check the same caps the
+        // HTML attributes advertise (issues #91, #94).
+        if (sourceConnectionString?.Length > 1024)
+        {
+            errors.Add("Source Contact Point can be at most 1024 characters.");
+        }
+        if (targetConnectionString?.Length > 1024)
+        {
+            errors.Add("Target Contact Point can be at most 1024 characters.");
+        }
+        if (sourceUsername?.Length > 256)
+        {
+            errors.Add("Source Username can be at most 256 characters.");
+        }
+        if (targetUsername?.Length > 256)
+        {
+            errors.Add("Target Username can be at most 256 characters.");
+        }
+        if (namespaces?.Length > 1000)
+        {
+            errors.Add($"Tables To Migrate must be at most 1000 characters (got {namespaces.Length}). Use 'Upload File' for larger lists.");
         }
 
         if (NewMode)
