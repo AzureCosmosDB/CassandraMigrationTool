@@ -218,6 +218,8 @@ public class JobManager
 
     public Task StartMigration(Job job, string sourceConnectionString, string targetConnectionString)
     {
+        MigrationLog runLog;
+        JobControl runControl;
         lock (_stateLock)
         {
             if (!string.IsNullOrEmpty(_runningJobId))
@@ -235,9 +237,16 @@ public class JobManager
             _log.WriteLine(
                 $"User requested {(isResume ? "RESUME" : "START")} for job {job.Id} (prior status={job.Status})",
                 LogType.Info);
-            MigrationJobRunner = new MigrationJobRunner(_log);
-            _context.ActiveRunner = MigrationJobRunner;
+            // MigrationJobRunner is published below, once its sessions
+            // are open: it is built via an async factory that we cannot
+            // await under this sync lock. Claiming _runningJobId here
+            // is enough to make concurrent StartMigration calls see the
+            // slot as taken; Pause/Stop arriving during the open window
+            // record their intent on _control, which the runner will
+            // observe as soon as StartAsync begins.
             _control = new JobControl();
+            runControl = _control;
+            runLog = _log;
             _runningJobId = job.Id;
         }
 
@@ -269,18 +278,26 @@ public class JobManager
         // Pause from Stop, and writes Faulted on exception).
         _ = Task.Run(async () =>
         {
+            MigrationJobRunner? runner = null;
             try
             {
-                await MigrationJobRunner.StartAsync(job, config, _control);
+                runner = await MigrationJobRunner.CreateAsync(runLog, job, config, runControl);
+                lock (_stateLock)
+                {
+                    MigrationJobRunner = runner;
+                    _context.ActiveRunner = runner;
+                }
+                await runner.StartAsync();
             }
             catch (Exception ex)
             {
                 // Defensive: StartAsync handles its own failures and
                 // writes job.Status in its finally. This catch only
-                // exists to keep an unexpected escape from leaving the
-                // job stuck in Running.
+                // exists to keep an unexpected escape (including any
+                // failure during CreateAsync session acquisition) from
+                // leaving the job stuck in Running.
                 Console.WriteLine($"Migration unexpectedly threw for Job ID: {job.Id}: {ex}");
-                _log.WriteLine($"Migration unexpectedly threw: {ex}", LogType.Error);
+                runLog.WriteLine($"Migration unexpectedly threw: {ex}", LogType.Error);
                 if (job.Status == JobStatus.Running)
                 {
                     job.Status = JobStatus.Faulted;
@@ -298,6 +315,11 @@ public class JobManager
                 bool isTerminal = job.Status == JobStatus.Completed
                                || job.Status == JobStatus.Faulted
                                || job.Status == JobStatus.Cancelled;
+
+                if (runner != null)
+                {
+                    await runner.DisposeAsync();
+                }
 
                 lock (_stateLock)
                 {
