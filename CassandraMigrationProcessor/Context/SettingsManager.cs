@@ -1,4 +1,3 @@
-using Newtonsoft.Json;
 using CassandraMigrationProcessor.Models;
 
 namespace CassandraMigrationProcessor.Context;
@@ -19,9 +18,7 @@ public static class SettingsManager
         var filePath = GetFilePath();
         if (MigrationJobContext.Instance.Store.Exists(filePath))
         {
-            string json = MigrationJobContext.Instance.Store.Read(filePath);
-            var loaded =
-                JsonConvert.DeserializeObject<AppSettings>(json);
+            var loaded = JsonStore.Read<AppSettings>(filePath);
             if (loaded != null)
             {
                 settings.ApplyLoaded(loaded);
@@ -43,9 +40,7 @@ public static class SettingsManager
 
         try
         {
-            string json = JsonConvert.SerializeObject(settings);
-            MigrationJobContext.Instance.Store.Write(
-                GetFilePath(), json);
+            JsonStore.Write(GetFilePath(), settings, indented: false);
             errorMessage = string.Empty;
             return true;
         }
