@@ -74,25 +74,37 @@ public static class MigrationUtilities
     }
 
     /// <summary>
-    /// Executes an action, returning a fallback on failure.
-    /// Shared helper for the repeated try/catch-warn-return pattern.
+    /// Executes a function, returning a fallback on failure. Shared helper
+    /// for the repeated try/catch-warn-return pattern across persistence
+    /// gateways (JobStore, UnitStore, DiskPersistence, LogPersistence,
+    /// SettingsManager). I/O exceptions are logged and swallowed.
     /// </summary>
+    /// <remarks>
+    /// <see cref="OperationCanceledException"/> is rethrown so cooperative
+    /// cancellation propagates to callers instead of being masked as a
+    /// silent fallback return (which would cause callers to treat a
+    /// cancelled save as a real persistence failure or, worse, ignore the
+    /// false result and silently lose the write).
+    /// </remarks>
     public static T SafeExecute<T>(Func<T> action, T fallback, string operation)
     {
         try { return action(); }
+        catch (OperationCanceledException) { throw; }
         catch (Exception ex)
         {
-            Console.WriteLine($"[WARN] {operation}: {ex.Message}");
+            Console.Error.WriteLine($"[WARN] {operation}: {ex.Message}");
             return fallback;
         }
     }
 
+    /// <inheritdoc cref="SafeExecute{T}"/>
     public static void SafeExecuteVoid(Action action, string operation)
     {
         try { action(); }
+        catch (OperationCanceledException) { throw; }
         catch (Exception ex)
         {
-            Console.WriteLine($"[WARN] {operation}: {ex.Message}");
+            Console.Error.WriteLine($"[WARN] {operation}: {ex.Message}");
         }
     }
 
