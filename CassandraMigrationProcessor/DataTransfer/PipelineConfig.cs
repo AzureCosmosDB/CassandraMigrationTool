@@ -20,7 +20,8 @@ public record PipelineConfig(
     /// Priority: Job > Settings > Defaults.
     /// </summary>
     public static PipelineConfig Resolve(Job job, AppSettings settings)
-    {        ArgumentNullException.ThrowIfNull(job);
+    {
+        ArgumentNullException.ThrowIfNull(job);
         ArgumentNullException.ThrowIfNull(settings);
 
         // No job-level override: size the shared worker pool to the host's

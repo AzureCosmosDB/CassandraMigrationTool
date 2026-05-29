@@ -10,8 +10,9 @@ namespace CassandraMigrationProcessor.DataTransfer;
 /// Task.Run is created. A single background loop drains the
 /// priority-ordered queue and recycles each partition through
 /// <see cref="PartitionManager.Recycle"/> when its eligibility time has
-/// passed. On <see cref="StopAsync"/> the loop drains its pending queue
-/// back into the partition pool so nothing is silently dropped.
+/// passed. On <see cref="StopAsync"/> any partitions still in cooldown
+/// are dropped from the in-memory queue and logged; they have a
+/// persisted checkpoint and will resume from it on the next run.
 /// </summary>
 internal sealed class CooldownScheduler : IAsyncDisposable
 {
@@ -125,9 +126,11 @@ internal sealed class CooldownScheduler : IAsyncDisposable
     }
 
     /// <summary>
-    /// Stop the scheduler and flush any queued partitions back into the
-    /// pool. Call this BEFORE completing the partition channel so
-    /// nothing is silently lost.
+    /// Stop the scheduler. Any partitions still waiting in cooldown are
+    /// cleared from the in-memory queue and logged — they have a
+    /// persisted checkpoint and resume from it on the next run.
+    /// Call this BEFORE completing the partition channel so workers
+    /// don't continue scheduling new entries into a dying queue.
     /// </summary>
     public async Task StopAsync()
     {

@@ -6,6 +6,12 @@ namespace CassandraMigrationProcessor.Infrastructure;
 /// </summary>
 public static class MigrationDefaults
 {
+    // Heuristic multiplier used to size the shared worker pool when
+    // Job.WorkerCount is not set: WorkerCount = max(MinWorkers,
+    // ProcessorCount * WorkerMultiplier). Cassandra workers spend most
+    // of their time awaiting network I/O (paged reads and writes), so
+    // heavy oversubscription per CPU core sustains throughput. Tuned
+    // empirically; override via Job.WorkerCount on small or shared hosts.
     public const int WorkerMultiplier = 13;
     public const int MinWorkers = 4;
     public const int MaxConsecutiveAuthErrors = 3;
