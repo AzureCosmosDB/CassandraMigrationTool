@@ -480,7 +480,14 @@ public class MigrationJobRunner
     private async Task RunCopyForUnitAsync(Job job, TableMigration mu, JobPartitioning partitioning, CancellationToken ct)
     {
         var chunks = partitioning.ForUnit(mu.Id);
-        using var coordinator = new TableCopyCoordinator(_log, job, _pipeline!, chunks, ct);
+        // Use the pipeline's token (not the raw external token) so a
+        // worker's TripFatal — which cancels JobPipeline._cts via the
+        // wired shutdown callback — also wakes this coordinator's
+        // BulkDrainSignal.Task.WaitAsync. Linking the coordinator's
+        // CTS only to the external token (a sibling, not a child of
+        // the pipeline CTS) left fatal-driven shutdowns hanging the
+        // coordinator until the operator manually stopped the job.
+        using var coordinator = new TableCopyCoordinator(_log, job, _pipeline!, chunks, _pipeline!.Token);
         ct.ThrowIfCancellationRequested();
 
         TaskResult result = await coordinator.MigrateTableAsync(mu);
