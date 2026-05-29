@@ -41,19 +41,18 @@ On completion: engine.StopOfflineOrInvokeChangeFeed()
 ```
 Loads: TableMigration from MigrationJobContext
 Creates: TableCopySpec(keyspace, table, targetKeyspace, targetTable, sourceSession)
-Ensures: at least one CopyChunk exists
 
-FOR EACH chunk (typically 1):
+Single bulk pass per table:
   └── RetryHelper.ExecuteTask(() => ProcessChunkAsync(...))
       └── On Canceled / Abort → returns to caller; finally-block FinalizeStatus(result)
 
-On all chunks complete:
+On completion:
   └── Sets CopyComplete = true, BulkCopyEndedOn
   └── changeFeedManager.AddTable(unit) ← starts replay for this table
   └── Saves unit to disk
 ```
 
-### `TableMigrationEngine.ProcessChunkAsync(unit, chunkIndex, context, ...)`
+### `TableMigrationEngine.ProcessChunkAsync(unit, context, ...)`
 ```
 1. Count rows: CassandraQueries.GetRowCountAsync(sourceSession, keyspace, table)
 2. Ensure target: SchemaManager.EnsureKeyspaceExistsAsync()

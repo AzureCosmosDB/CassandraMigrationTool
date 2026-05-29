@@ -433,8 +433,7 @@ public class JobManager
                             if (!accessible) continue;
 
                             var mu = new TableMigration(
-                                job, keyspace, tableName,
-                                new List<CopyChunk>());
+                                job, keyspace, tableName);
                             mu.SourceStatus = TableStatus.OK;
                             expandedUnits.Add(mu);
                         }
@@ -453,8 +452,7 @@ public class JobManager
             else
             {
                 var mu = new TableMigration(
-                    job, keyspace, table,
-                    new List<CopyChunk>());
+                    job, keyspace, table);
                 mu.SourceStatus = TableStatus.OK;
                 expandedUnits.Add(mu);
             }

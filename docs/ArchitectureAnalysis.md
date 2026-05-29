@@ -24,8 +24,6 @@ CassandraMigration.sln
 | `ConnectionOptions.cs` | Record: Host, Port, Username, Password, UseSsl, MaxConnectionsPerHost |
 | `PipelineRequest.cs` | Record bundling pipeline params (TableMigration, ChunkIndex, FeedRanges, etc.) |
 | `TableCopySpec.cs` | Per-table context: keyspace/table names, source session |
-| `CopyChunk.cs` | Chunk progress: row counts, segments list |
-| `ChunkSegment.cs` | Segment within a copy chunk and processing state |
 | `JobIndex.cs` | Lightweight index of migration job IDs |
 | `TableMapping.cs` | Source→target keyspace/table name mapping |
 | `CDCMode.cs` | Enum: change data capture modes |

@@ -30,11 +30,9 @@ public class CopyProgressTracker
     private double _recentRowsPerSecond;
 
     // --- TableMigration progress sink ---
-    // Tracker owns progress state updates on this unit (CopyRowsCopied, CopyPercent, chunk stats)
+    // Tracker owns progress state updates on this unit (CopyRowsCopied,
+    // CopyPercent, TargetFailedRowCount).
     private readonly TableMigration _migrationUnit;
-    private readonly int _chunkIndex;
-    private readonly double _initialPercent;
-    private readonly double _contributionFactor;
     private readonly long _totalRowCount;
     private long _lastCheckpointTicks;
     private int _forceCheckpointFlush;
@@ -56,7 +54,8 @@ public class CopyProgressTracker
 
     public CopyProgressTracker(MigrationLog log,
         long initialCopied,
-        TableMigration migration, ProgressConfig progressConfig)
+        TableMigration migration,
+        long totalRowCount)
     {
         _log = log;
         _keyspaceName = migration.KeyspaceName;
@@ -64,10 +63,7 @@ public class CopyProgressTracker
         _counters = new ProgressCounters(initialCopied);
         _windowCopied = initialCopied;
         _migrationUnit = migration;
-        _chunkIndex = progressConfig.ChunkIndex;
-        _initialPercent = progressConfig.InitialPercent;
-        _contributionFactor = progressConfig.ContributionFactor;
-        _totalRowCount = progressConfig.TotalRowCount;
+        _totalRowCount = totalRowCount;
         _lastCheckpointTicks = DateTime.UtcNow.Ticks;
         _stopwatch = Stopwatch.StartNew();
     }
@@ -146,17 +142,14 @@ public class CopyProgressTracker
     {
         long written = TotalCopied;
         long failed = TotalFailed;
-        var chunk = _migrationUnit.CopyChunks[_chunkIndex];
-        chunk.TargetInsertedRowCount = written;
-        chunk.TargetFailedRowCount = failed;
         _migrationUnit.CopyRowsCopied = written;
+        _migrationUnit.TargetFailedRowCount = failed;
         _migrationUnit.CopyRowsPerSecond = RecentSpeed;
         if (_totalRowCount > 0)
         {
-            _migrationUnit.CopyPercent = _initialPercent +
-                (Math.Min(MigrationDefaults.ProgressCapPercent,
-                    (double)written / _totalRowCount * 100)
-                * _contributionFactor);
+            _migrationUnit.CopyPercent = Math.Min(
+                MigrationDefaults.ProgressCapPercent,
+                (double)written / _totalRowCount * 100);
         }
         TableMigrationMapper.UpdateParentJob(_migrationUnit);
 

@@ -87,8 +87,7 @@ Job
 
 TableMigration : TableMigrationSummary
  ├── Per-table state: keyspace, table, copy progress, change feed counters
- ├── CopyChunks: List<CopyChunk>
- │    └── CopyChunk { RowCount, Segments: List<ChunkSegment> }
+ ├── BulkDownloaded, TargetFailedRowCount  (inline bulk-copy progress counters)
  ├── Partitions: Dictionary<string, Partition.PartitionSnapshot>
  │    └── Partition.PartitionSnapshot { FeedRange, CopyContinuationToken, ReplayContinuationToken, BulkCompleted }
  └── ParentJob: Job [JsonIgnore]

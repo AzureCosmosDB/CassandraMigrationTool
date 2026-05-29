@@ -3,16 +3,15 @@ using CassandraMigrationProcessor.Models;
 namespace CassandraMigrationProcessor.DataTransfer;
 
 /// <summary>
-/// Per-chunk partitioning result computed up front at job init. Captures
-/// every immutable piece a chunk needs: its <see cref="TableResources"/>
+/// Per-table partitioning result computed up front at job init. Captures
+/// every immutable piece a table needs: its <see cref="TableResources"/>
 /// (shared by all its partitions) and the readonly list of
 /// <see cref="Partition"/>s the workers will drain. The coordinator does
-/// not (re)build these at runtime — it only awaits each chunk's
+/// not (re)build these at runtime — it only awaits each table's
 /// <see cref="TableResources.BulkDrainSignal"/>.
 /// </summary>
 internal sealed record TablePartitioning(
     TableMigration Unit,
-    int ChunkIndex,
     TableResources Resources,
     IReadOnlyList<Partition> Partitions,
     bool AllRangesAlreadyComplete);
@@ -21,9 +20,9 @@ internal sealed record TablePartitioning(
 /// Job-wide partitioning snapshot. Built once by
 /// <see cref="MigrationJobRunner"/> after schema provisioning and
 /// handed to <see cref="JobPipeline"/> at construction. All partitions
-/// across all tables and chunks are flattened into
-/// <see cref="AllPartitions"/> so <see cref="PartitionManager"/> can be
-/// initialized in a single ctor call — there is no runtime "seed" path.
+/// across all tables are flattened into <see cref="AllPartitions"/> so
+/// <see cref="PartitionManager"/> can be initialized in a single ctor
+/// call — there is no runtime "seed" path.
 /// </summary>
 internal sealed class JobPartitioning
 {
@@ -37,8 +36,10 @@ internal sealed class JobPartitioning
     }
 
     /// <summary>
-    /// Chunks for a given migration unit, in ChunkIndex order.
+    /// Partitioning entries for a given migration unit. In current
+    /// code each unit produces exactly one entry; the list shape is
+    /// kept so callers can iterate without caring about cardinality.
     /// </summary>
     public IReadOnlyList<TablePartitioning> ForUnit(string unitId)
-        => Chunks.Where(c => c.Unit.Id == unitId).OrderBy(c => c.ChunkIndex).ToList();
+        => Chunks.Where(c => c.Unit.Id == unitId).ToList();
 }
