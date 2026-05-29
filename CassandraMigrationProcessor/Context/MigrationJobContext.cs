@@ -27,20 +27,20 @@ public class MigrationJobContext
     { get; set; }
 
     /// <summary>
-    /// In-memory storage for source connection strings, keyed by job ID.
-    /// In-memory only. Never persisted to disk.
-    /// Cleared on app restart — user must re-enter on resume.
+    /// The single process-wide cache of per-job source/target
+    /// connection credentials. In-memory only; never persisted to
+    /// disk. Cleared on app restart — user must re-enter on resume —
+    /// and per-job entries are removed by <see cref="RetireJob"/>
+    /// when a job reaches a terminal state.
+    /// <para>
+    /// In the target architecture (see
+    /// <c>docs/TargetArchitecture.md</c>) this is the only cross-job
+    /// dictionary that survives at the app level; every other piece
+    /// of per-job state moves into a per-run <see cref="DataTransfer.MigrationJobRunner"/>.
+    /// </para>
     /// </summary>
-    public ConcurrentDictionary<string, string> SourceConnectionString
-    { get; set; } = new();
-
-    /// <summary>
-    /// In-memory storage for target connection strings, keyed by job ID.
-    /// In-memory only. Never persisted to disk.
-    /// Cleared on app restart — user must re-enter on resume.
-    /// </summary>
-    public ConcurrentDictionary<string, string> TargetConnectionString
-    { get; set; } = new();
+    public ConnectionCredentialCache Credentials { get; }
+        = new ConnectionCredentialCache();
 
     /// <summary>
     /// In-memory set of job IDs that should auto-start when
@@ -98,15 +98,15 @@ public class MigrationJobContext
     /// <para>
     /// Terminal-only cleanup runs when <paramref name="isTerminal"/> is
     /// true (Completed / Faulted / Cancelled): credentials are removed
-    /// from <see cref="SourceConnectionString"/> and
-    /// <see cref="TargetConnectionString"/>, the unit cache is evicted
+    /// from <see cref="Credentials"/>, the unit cache is evicted
     /// for this job, and the loaded-job entry in <see cref="JobStore"/>
     /// is dropped so the next read comes from disk.
     /// </para>
     /// <para>
-    /// Paused jobs intentionally retain their entries in the connection
-    /// string dictionaries and the unit cache so "Resume with Existing
-    /// Connection Strings" continues to work without re-prompting.
+    /// Paused jobs intentionally retain their entries in
+    /// <see cref="Credentials"/> and the unit cache so "Resume with
+    /// Existing Connection Strings" continues to work without
+    /// re-prompting.
     /// </para>
     /// </summary>
     public void RetireJob(string jobId, bool isTerminal)
@@ -123,8 +123,7 @@ public class MigrationJobContext
 
         if (isTerminal)
         {
-            SourceConnectionString.TryRemove(jobId, out _);
-            TargetConnectionString.TryRemove(jobId, out _);
+            Credentials.Forget(jobId);
             MigrationUnitsCache?.RemoveAllForJob(jobId);
             JobStore.EvictFromCache(jobId);
         }

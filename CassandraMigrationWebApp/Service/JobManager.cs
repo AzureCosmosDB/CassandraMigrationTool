@@ -223,8 +223,7 @@ public class JobManager
             _runningJobId = job.Id;
         }
 
-        _context.SourceConnectionString[job.Id] = sourceConnectionString;
-        _context.TargetConnectionString[job.Id] = targetConnectionString;
+        _context.Credentials.Remember(job.Id, sourceConnectionString, targetConnectionString);
 
         // Clear Running status on all other jobs so stale flags don't
         // cause unwanted auto-resume after an app recycle.
