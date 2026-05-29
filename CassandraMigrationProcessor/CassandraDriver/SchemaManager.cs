@@ -273,8 +273,12 @@ public static class SchemaManager
         CqlIdentifier.Validate(keyspace);
         if (await KeyspaceExistsAsync(session, keyspace))
         {
+            // Schema phase calls this once per table, so for N tables in
+            // the same keyspace this is N-1 redundant "skipping" lines.
+            // Demoted to Debug — operators only need visibility when the
+            // tool actually creates a keyspace (the DDL log below).
             log?.WriteLine($"Target keyspace \"{keyspace}\" already exists; skipping schema mirror for keyspace.",
-                LogType.Info);
+                LogType.Debug);
             return;
         }
 
