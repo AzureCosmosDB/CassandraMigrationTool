@@ -154,25 +154,14 @@ else
     }
 
     private static string GetDuration(DateTime? start, DateTime? end)
-    {
-        if (!start.HasValue || !end.HasValue || start.Value == DateTime.MinValue || end.Value == DateTime.MinValue)
-            return "N/A";
-        var d = end.Value - start.Value;
-        return $"{(int)d.TotalHours}h {d.Minutes}m {d.Seconds}s";
-    }
+        => TableMigrationFormatting.GetDuration(start, end);
 
     private static bool HasTargetNamespaceMapping(TableMigration mu)
-    {
-        return !string.Equals(mu.KeyspaceName, mu.GetEffectiveTargetKeyspaceName(), StringComparison.OrdinalIgnoreCase)
-            || !string.Equals(mu.TableName, mu.GetEffectiveTargetTableName(), StringComparison.OrdinalIgnoreCase);
-    }
+        => TableMigrationFormatting.HasTargetNamespaceMapping(mu);
 
     private static string GetTargetNamespace(TableMigration mu)
-    {
-        return $"{mu.GetEffectiveTargetKeyspaceName()}.{mu.GetEffectiveTargetTableName()}";
-    }
+        => TableMigrationFormatting.GetTargetNamespace(mu);
 
-   
-
-    private static string FormatLong(long value) => string.Format(System.Globalization.CultureInfo.InvariantCulture, "{0:N0}", value);
+    private static string FormatLong(long value)
+        => TableMigrationFormatting.FormatLong(value);
 }
