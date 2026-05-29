@@ -42,51 +42,15 @@ internal sealed class TableCopyCoordinator : IDisposable
         _cts = externalToken.CanBeCanceled
             ? CancellationTokenSource.CreateLinkedTokenSource(externalToken)
             : new CancellationTokenSource();
-
-        // Pause and stop both arrive as cancellation on the external
-        // token (JobManager.RequestControlledPause and
-        // JobManager.StopMigration both cancel the job CTS). The
-        // linked-CTS hop above means our token trips automatically;
-        // no separate pause signal is needed.
     }
 
     public void Cancel() => _cts?.Cancel();
-
-    private void FinalizeStatus(TaskResult result)
-    {
-        switch (result)
-        {
-            case TaskResult.Canceled:
-                _migrationJob.Status = JobStatus.Paused;
-                break;
-            case TaskResult.Abort:
-                if (_migrationJob.Status == JobStatus.Running)
-                    _migrationJob.Status = JobStatus.Pending;
-                break;
-        }
-        MigrationJobContext.Instance.SaveMigrationJob(_migrationJob);
-    }
 
     public async Task<TaskResult> MigrateTableAsync(TableMigration tableMigration)
     {
         ArgumentNullException.ThrowIfNull(tableMigration);
         tableMigration.ParentJob = _migrationJob;
-
-        var result = TaskResult.Success;
-        try
-        {
-            result = await MigrateTableCoreAsync(tableMigration);
-            return result;
-        }
-        catch (OperationCanceledException)
-        {
-            result = TaskResult.Canceled;
-            throw;
-        }
-        finally
-        {
-            FinalizeStatus(result);
-        }
+        return await MigrateTableCoreAsync(tableMigration);
     }
 
     private async Task<TaskResult> MigrateTableCoreAsync(TableMigration tableMigration)
