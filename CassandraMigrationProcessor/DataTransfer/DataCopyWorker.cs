@@ -1,4 +1,3 @@
-using CassandraMigrationProcessor.Context;
 using CassandraMigrationProcessor.Infrastructure;
 using CassandraMigrationProcessor.Models;
 
@@ -44,8 +43,7 @@ internal class DataCopyWorker
             writer = await PageWriter.CreateAsync(_workerLog, ctx.SessionFactory, ctx.WriterConfig, _ct);
 
             while (!_ct.IsCancellationRequested
-                && Volatile.Read(ref ctx.Flags.FatalErrorFlag) == 0
-                && !MigrationJobContext.Instance.ControlledPauseRequested)
+                && Volatile.Read(ref ctx.Flags.FatalErrorFlag) == 0)
             {
                 current = await ctx.Partitions.TakeAsync(_ct);
                 if (current == null) break;

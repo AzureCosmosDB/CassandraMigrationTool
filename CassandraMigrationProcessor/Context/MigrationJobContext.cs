@@ -62,66 +62,21 @@ public class MigrationJobContext
     /// <c>null</c> when no job is running. Set by the host
     /// (<c>JobManager.StartMigration</c>) once the runner is
     /// constructed and cleared in the host's finally block after
-    /// the run returns. All per-run state — pause flag, pause event,
-    /// pipeline, coordinators, CTS — lives on this instance, so
-    /// dropping the reference is sufficient to retire the run; no
-    /// separate scrub of process-wide dictionaries is needed.
+    /// the run returns. All per-run state — pipeline, coordinators,
+    /// CTS — lives on this instance, so dropping the reference is
+    /// sufficient to retire the run; no separate scrub of
+    /// process-wide dictionaries is needed.
     /// </summary>
     /// <remarks>
     /// In the target architecture (see
     /// <c>docs/TargetArchitecture.md</c>) this property graduates to
-    /// <c>AppHost.ActiveRunner</c> and the pause forwarders below
-    /// are deleted in favour of callers writing
-    /// <c>ActiveRunner.State.Request()</c> directly.
+    /// <c>AppHost.ActiveRunner</c> and is the canonical "what's
+    /// running right now" hook the future <c>JobSupervisor</c> will
+    /// read.
     /// </remarks>
     public DataTransfer.MigrationJobRunner? ActiveRunner { get; set; }
 
-    /// <summary>
-    /// Forwards to the active runner's <see cref="JobRunState.ControlledPaused"/>;
-    /// returns <c>false</c> when no runner is active. Kept as a
-    /// facade so existing call sites do not have to know about
-    /// <see cref="ActiveRunner"/>.
-    /// </summary>
-    public bool ControlledPauseRequested
-        => ActiveRunner?.State.ControlledPaused ?? false;
-
-    /// <summary>
-    /// Backwards-compatible facade over the active runner's
-    /// <see cref="JobRunState.PauseRequested"/> event. Subscribing
-    /// here registers against the runner that is active at
-    /// subscribe time (which is what every existing in-tree
-    /// caller — <see cref="DataTransfer.JobPipeline"/> and
-    /// <see cref="DataTransfer.TableCopyCoordinator"/> — wants,
-    /// because they are constructed by the runner itself and the
-    /// runner is always the active one at that moment).
-    /// </summary>
-    public event Action PauseRequested
-    {
-        add
-        {
-            var runner = ActiveRunner;
-            if (runner != null)
-                runner.State.PauseRequested += value;
-        }
-        remove
-        {
-            var runner = ActiveRunner;
-            if (runner != null)
-                runner.State.PauseRequested -= value;
-        }
-    }
-
     public JobIndex JobIndex { get; private set; }
-
-    public void ResetControlledPause()
-    {
-        ActiveRunner?.State.Reset();
-    }
-
-    public void RequestControlledPause()
-    {
-        ActiveRunner?.State.Request();
-    }
 
     /// <summary>
     /// Symmetric teardown for a job whose background run has just

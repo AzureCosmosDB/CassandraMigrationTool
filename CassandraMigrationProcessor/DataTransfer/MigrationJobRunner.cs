@@ -22,14 +22,6 @@ public class MigrationJobRunner
     private readonly TokenRefreshManager _tokenRefreshManager;
     private JobPipeline? _pipeline;
 
-    /// <summary>
-    /// Per-run pause coordination. Owned by this runner — disposed
-    /// implicitly when the runner reference is dropped at the end
-    /// of the migration. Replaces the process-wide pause flag/event
-    /// that used to live on <see cref="MigrationJobContext"/>.
-    /// </summary>
-    public JobRunState State { get; } = new JobRunState();
-
     public MigrationJobRunner(MigrationLog migrationLog)
     {
         _log = migrationLog;
@@ -131,7 +123,7 @@ public class MigrationJobRunner
 
         await Task.WhenAll(units.Select(async mu =>
         {
-            if (MigrationJobContext.Instance.ControlledPauseRequested)
+            if (ct.IsCancellationRequested)
                 return;
             if (Volatile.Read(ref _consecutiveAuthErrors) >= MigrationDefaults.MaxConsecutiveAuthErrors)
                 return;
@@ -181,8 +173,6 @@ public class MigrationJobRunner
             foreach (var mu in units)
             {
                 ct.ThrowIfCancellationRequested();
-                if (MigrationJobContext.Instance.ControlledPauseRequested)
-                    break;
                 if (schemaFailed.Contains(mu.Id))
                     continue;
                 if (mu.CopyComplete && !job.IsOnline)
@@ -225,7 +215,7 @@ public class MigrationJobRunner
         // observably cancelled — never silently elided by a sibling.
         return Task.WhenAll(units.Select(async mu =>
         {
-            if (MigrationJobContext.Instance.ControlledPauseRequested)
+            if (cancellationToken.IsCancellationRequested)
                 return;
             if (schemaFailed.Contains(mu.Id))
                 return;
@@ -268,8 +258,7 @@ public class MigrationJobRunner
     private async Task RunOnlineTailLoopAsync(CancellationToken cancellationToken)
     {
         _log.WriteLine("All tables drained. Change feed replaying on shared worker pool.", LogType.Info);
-        while (!cancellationToken.IsCancellationRequested
-            && !MigrationJobContext.Instance.ControlledPauseRequested)
+        while (!cancellationToken.IsCancellationRequested)
         {
             if (_pipeline!.AllWorkersExited)
             {
@@ -299,7 +288,6 @@ public class MigrationJobRunner
         await _pipeline.WaitForCompletionAsync();
 
         if (job.IsOfflineCompleted
-            && !MigrationJobContext.Instance.ControlledPauseRequested
             && job.Status != JobStatus.Cancelled
             && job.Status != JobStatus.Paused)
         {

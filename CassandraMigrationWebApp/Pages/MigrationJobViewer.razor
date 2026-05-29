@@ -1060,7 +1060,7 @@ else if (@_showLogBackupFile)
         if (job.Status == JobStatus.Cancelled) return "Cancelled";
         if (IsJobRunning())
         {
-            if (MigrationContext.ControlledPauseRequested)
+            if (JobManager.IsControlledPauseRequested())
                 return "Pausing...";
             return "Running";
         }
@@ -1076,7 +1076,7 @@ else if (@_showLogBackupFile)
         if (job.Status == JobStatus.Cancelled) return "bg-secondary";
         if (IsJobRunning())
         {
-            if (MigrationContext.ControlledPauseRequested)
+            if (JobManager.IsControlledPauseRequested())
                 return "bg-warning text-dark";
             return "bg-primary";
         }
