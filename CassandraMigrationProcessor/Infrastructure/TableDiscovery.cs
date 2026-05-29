@@ -107,8 +107,7 @@ public static class TableDiscovery
                     && x.TableName == srcTbl))
                 {
                     var mu = new TableMigration(
-                        job, srcKs, srcTbl,
-                        new List<CopyChunk>());
+                        job, srcKs, srcTbl);
                     mu.TargetKeyspaceName = tgtKs;
                     mu.TargetTableName = tgtTbl;
                     mu.SourceStatus = TableStatus.OK;
@@ -142,8 +141,7 @@ public static class TableDiscovery
                     x.KeyspaceName == keyspace && x.TableName == table))
                 {
                     var mu = new TableMigration(
-                        job, keyspace, table,
-                        new List<CopyChunk>());
+                        job, keyspace, table);
                     mu.SourceStatus = TableStatus.OK;
                     unitsToAdd.Add(mu);
                 }

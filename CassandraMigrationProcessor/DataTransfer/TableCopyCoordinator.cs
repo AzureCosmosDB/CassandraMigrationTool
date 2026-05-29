@@ -117,7 +117,7 @@ internal sealed class TableCopyCoordinator : IDisposable
             if (chunkResult == TaskResult.Abort)
             {
                 _migrationLog.WriteLine(
-                    $"Copy failed for {tableMigration.KeyspaceName}.{tableMigration.TableName}[{chunk.ChunkIndex}].",
+                    $"Copy failed for {tableMigration.KeyspaceName}.{tableMigration.TableName}.",
                     LogType.Error);
                 return chunkResult;
             }
@@ -126,9 +126,8 @@ internal sealed class TableCopyCoordinator : IDisposable
         if (_cts.Token.IsCancellationRequested)
             return TaskResult.Canceled;
 
-        tableMigration.SourceCountDuringCopy = tableMigration.CopyChunks.Sum(c => c.SourceQueryRowCount);
-        long failed = tableMigration.CopyChunks.Sum(c => c.TargetFailedRowCount);
-        bool allChunksSucceeded = failed <= 0 && tableMigration.CopyChunks.All(c => c.IsDownloaded == true);
+        long failed = tableMigration.TargetFailedRowCount;
+        bool allChunksSucceeded = failed <= 0 && tableMigration.BulkDownloaded == true;
         if (allChunksSucceeded)
         {
             tableMigration.BulkCopyEndedOn = DateTime.UtcNow;
@@ -155,7 +154,7 @@ internal sealed class TableCopyCoordinator : IDisposable
     {
         if (chunk.AllRangesAlreadyComplete)
         {
-            MarkChunkComplete(tableMigration, chunk.ChunkIndex);
+            MarkBulkDownloaded(tableMigration);
             chunk.Resources.Tracker.UpdateMigrationUnit();
             return TaskResult.Success;
         }
@@ -190,7 +189,7 @@ internal sealed class TableCopyCoordinator : IDisposable
 
         var result = DetermineOutcome(_jobPipeline.Context.Flags, tracker.TotalFailed);
         if (result == TaskResult.Success)
-            MarkChunkComplete(tableMigration, chunk.ChunkIndex);
+            MarkBulkDownloaded(tableMigration);
         return result;
     }
 
@@ -205,11 +204,11 @@ internal sealed class TableCopyCoordinator : IDisposable
         return failedCount > 0 ? TaskResult.Retry : TaskResult.Success;
     }
 
-    private void MarkChunkComplete(TableMigration tableMigration, int chunkIndex)
+    private void MarkBulkDownloaded(TableMigration tableMigration)
     {
         if (!_cts.Token.IsCancellationRequested)
         {
-            tableMigration.CopyChunks[chunkIndex].IsDownloaded = true;
+            tableMigration.BulkDownloaded = true;
         }
         MigrationJobContext.Instance.SaveMigrationUnit(tableMigration, false);
     }
