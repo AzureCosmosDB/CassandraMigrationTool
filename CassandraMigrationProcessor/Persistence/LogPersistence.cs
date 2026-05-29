@@ -56,37 +56,10 @@ public class LogPersistence
 
         return MigrationUtilities.SafeExecute(() =>
         {
-            int count = 0;
             using var fs = FileSystem.OpenReadShared(binPath);
             if (fs == null) return 0;
             using var br = new BinaryReader(fs);
-
-            while (fs.Position < fs.Length)
-            {
-                try
-                {
-                    if (br.BaseStream.Position + 4 > br.BaseStream.Length)
-                        break;
-
-                    int msgLen = br.ReadInt32();
-                    if (msgLen < 0 || msgLen > MaxLogFileSize)
-                        break;
-
-                    long bytesToSkip = msgLen + 1 + 8;
-                    if (br.BaseStream.Position + bytesToSkip > br.BaseStream.Length)
-                        break;
-
-                    br.BaseStream.Seek(bytesToSkip, SeekOrigin.Current);
-                    count++;
-                }
-                catch (Exception ex)
-                {
-                    Console.Error.WriteLine($"LogPersistence read error: {ex.Message}");
-                    break;
-                }
-            }
-
-            return count;
+            return CollectEntryOffsets(br).Count;
         }, 0, $"GetLogCount({id})");
     }
 
@@ -95,7 +68,6 @@ public class LogPersistence
         var folder = Path.Combine(_storagePath, "migrationlogs");
         var binPath = Path.Combine(folder, $"{id}.bin");
         var logBucket = new LogBucket { Logs = new List<LogObject>() };
-        var offsets = new List<long>();
 
         if (!FileSystem.Exists(binPath))
             return Array.Empty<byte>();
@@ -106,56 +78,12 @@ public class LogPersistence
             if (fs == null) return;
             using var br = new BinaryReader(fs);
 
-            // First pass: collect all offsets
-            while (fs.Position < fs.Length)
-            {
-                long offset = fs.Position;
-                try
-                {
-                    if (br.BaseStream.Position + 4 > br.BaseStream.Length)
-                        break;
-
-                    int msgLen = br.ReadInt32();
-                    if (msgLen < 0 || msgLen > MaxLogFileSize)
-                        break;
-
-                    long bytesToSkip = msgLen + 1 + 8;
-                    if (br.BaseStream.Position + bytesToSkip > br.BaseStream.Length)
-                        break;
-
-                    br.BaseStream.Seek(bytesToSkip, SeekOrigin.Current);
-                    offsets.Add(offset);
-                }
-                catch (Exception ex)
-                {
-                    Console.Error.WriteLine($"LogPersistence read error: {ex.Message}");
-                    break;
-                }
-            }
-
-            // Apply skip/take pagination
+            var offsets = CollectEntryOffsets(br);
             var selectedOffsets = offsets.Skip(skip).Take(take).ToList();
-
-            // Second pass: read selected entries
-            foreach (var offset in selectedOffsets)
-            {
-                fs.Position = offset;
-                var logEntry = TryReadLogEntry(br);
-                if (logEntry != null)
-                    logBucket.Logs.Add(logEntry);
-            }
+            ReadEntriesAtOffsets(fs, br, selectedOffsets, logBucket.Logs);
         }, $"DownloadLogsPaginated({id})");
 
-        // Format logs
-        var sb = new StringBuilder();
-        foreach (var logEntry in logBucket.Logs)
-        {
-            char typeChar = FormatLogTypeChar(logEntry.Type);
-            string dateTime = logEntry.Datetime.ToString("MM/dd/yyyy HH:mm:ss");
-            sb.AppendLine($"{typeChar}|{dateTime}|{logEntry.Message}");
-        }
-
-        return Encoding.UTF8.GetBytes(sb.ToString());
+        return EncodeLogsAsBytes(logBucket.Logs);
     }
 
     public byte[] ExportLogsAsBytes(string id, int topEntries = 20, int bottomEntries = 230)
@@ -163,16 +91,7 @@ public class LogPersistence
         var folder = Path.Combine(_storagePath, "migrationlogs");
         var binPath = Path.Combine(folder, $"{id}.bin");
         var logs = ParseLogBinFile(binPath, topEntries, bottomEntries);
-
-        var sb = new StringBuilder();
-        foreach (var logEntry in logs.Logs)
-        {
-            char typeChar = FormatLogTypeChar(logEntry.Type);
-            string dateTime = logEntry.Datetime.ToString("MM/dd/yyyy HH:mm:ss");
-            sb.AppendLine($"{typeChar}|{dateTime}|{logEntry.Message}");
-        }
-
-        return Encoding.UTF8.GetBytes(sb.ToString());
+        return EncodeLogsAsBytes(logs.Logs);
     }
 
     public LogBucket ReadLogs(string id, out string fileName)
@@ -290,7 +209,6 @@ public class LogPersistence
     private LogBucket ParseLogBinFile(string binPath, int topCount = 20, int bottomCount = 280)
     {
         var logBucket = new LogBucket { Logs = new List<LogObject>() };
-        var offsets = new List<long>();
 
         if (!FileSystem.Exists(binPath))
             return logBucket;
@@ -301,34 +219,7 @@ public class LogPersistence
             if (fs == null) return;
             using var br = new BinaryReader(fs);
 
-            // First pass: collect offsets of valid log entries
-            while (fs.Position < fs.Length)
-            {
-                long offset = fs.Position;
-
-                try
-                {
-                    if (br.BaseStream.Position + 4 > br.BaseStream.Length)
-                        break;
-
-                    int msgLen = br.ReadInt32();
-
-                    if (msgLen < 0 || msgLen > MaxLogFileSize)
-                        break;
-
-                    long bytesToSkip = msgLen + 1 + 8;
-                    if (br.BaseStream.Position + bytesToSkip > br.BaseStream.Length)
-                        break;
-
-                    br.BaseStream.Seek(bytesToSkip, SeekOrigin.Current);
-                    offsets.Add(offset);
-                }
-                catch (Exception ex)
-                {
-                    Console.Error.WriteLine($"LogPersistence read error: {ex.Message}");
-                    break;
-                }
-            }
+            var offsets = CollectEntryOffsets(br);
 
             // Select top N and bottom M
             List<long> selectedOffsets;
@@ -356,17 +247,85 @@ public class LogPersistence
                 selectedOffsets = offsets;
             }
 
-            // Second pass: read selected entries
-            foreach (var offset in selectedOffsets)
-            {
-                fs.Position = offset;
-                var logEntry = TryReadLogEntry(br);
-                if (logEntry != null)
-                    logBucket.Logs.Add(logEntry);
-            }
+            ReadEntriesAtOffsets(fs, br, selectedOffsets, logBucket.Logs);
         }, "ParseLogBinFile");
 
         return logBucket;
+    }
+
+    /// <summary>
+    /// Walks the binary log starting at the reader's current position,
+    /// returning the file offset of each well-formed entry. Stops at the
+    /// first malformed record (length out of range, truncated payload,
+    /// or read error) — callers treat truncation as soft EOF.
+    /// </summary>
+    private List<long> CollectEntryOffsets(BinaryReader br)
+    {
+        var offsets = new List<long>();
+        var fs = br.BaseStream;
+
+        while (fs.Position < fs.Length)
+        {
+            long offset = fs.Position;
+            try
+            {
+                if (fs.Position + 4 > fs.Length)
+                    break;
+
+                int msgLen = br.ReadInt32();
+                if (msgLen < 0 || msgLen > MaxLogFileSize)
+                    break;
+
+                long bytesToSkip = msgLen + 1 + 8;
+                if (fs.Position + bytesToSkip > fs.Length)
+                    break;
+
+                fs.Seek(bytesToSkip, SeekOrigin.Current);
+                offsets.Add(offset);
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"LogPersistence read error: {ex.Message}");
+                break;
+            }
+        }
+
+        return offsets;
+    }
+
+    /// <summary>
+    /// Seeks to each offset in turn, decodes the entry there via
+    /// <see cref="TryReadLogEntry"/>, and appends successfully decoded
+    /// entries to <paramref name="destination"/>. Skips offsets that
+    /// fail to decode.
+    /// </summary>
+    private void ReadEntriesAtOffsets(
+        Stream fs, BinaryReader br, IEnumerable<long> offsets, List<LogObject> destination)
+    {
+        foreach (var offset in offsets)
+        {
+            fs.Position = offset;
+            var logEntry = TryReadLogEntry(br);
+            if (logEntry != null)
+                destination.Add(logEntry);
+        }
+    }
+
+    /// <summary>
+    /// Renders the decoded log entries as <c>typeChar|MM/dd/yyyy HH:mm:ss|message</c>
+    /// lines and returns the UTF-8 bytes. Shared by the paginated download
+    /// and the top/bottom export APIs.
+    /// </summary>
+    private static byte[] EncodeLogsAsBytes(List<LogObject> logs)
+    {
+        var sb = new StringBuilder();
+        foreach (var logEntry in logs)
+        {
+            char typeChar = FormatLogTypeChar(logEntry.Type);
+            string dateTime = logEntry.Datetime.ToString("MM/dd/yyyy HH:mm:ss");
+            sb.AppendLine($"{typeChar}|{dateTime}|{logEntry.Message}");
+        }
+        return Encoding.UTF8.GetBytes(sb.ToString());
     }
 
     private LogObject? TryReadLogEntry(BinaryReader br)
