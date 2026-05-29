@@ -449,21 +449,32 @@ public class MigrationJobRunner
             MigrationJobContext.Instance.SaveMigrationUnit(mu, true);
         }
 
-        var targetSession = await CassandraClientFactory.CreateTargetSessionAsync(_log, job);
-        // Source session is created INSIDE the try so a CreateSourceSession
-        // failure (transient network/auth on source — exactly the case the
-        // factory exhausts retries on before throwing) still disposes the
-        // already-built target session via the finally. The previous order
-        // declared sourceSession outside the try, leaking the target's
-        // Cluster (and its socket / connection pool) on every Phase-1
-        // source-side failure — scaled by Tables count under WhenAll.
+        // Open BOTH sessions inside the try, source first.
+        //
+        // Order rationale:
+        //   - Source is the read end and the only part needed for the
+        //     SchemaManager metadata queries (system_schema.*). Opening
+        //     it first lets a source-side failure short-circuit before
+        //     we spend an async round-trip building the target Cluster.
+        //   - Target is async (CreateTargetSessionAsync awaits cluster
+        //     init); source is sync. If source were second and target
+        //     first (the previous arrangement) any source failure would
+        //     leak the already-built target Cluster — its socket pool,
+        //     metadata listener, and IO threads — and Phase 1 fans out
+        //     under Task.WhenAll so the leak scales with table count.
+        //
+        // Declaring both nullable outside the try lets the finally
+        // dispose whichever ones got assigned, regardless of which
+        // construction throws.
         Cassandra.ISession? sourceSession = null;
+        Cassandra.ISession? targetSession = null;
         try
         {
             // Keyspace-agnostic source session: SchemaManager queries hit system_schema with
             // parameterized keyspace_name and all data CQL is fully qualified, so we avoid the
             // extra USE keyspace round trip and per-keyspace metadata refresh.
             sourceSession = CassandraClientFactory.CreateSourceSession(_log, job, _tokenRefreshManager);
+            targetSession = await CassandraClientFactory.CreateTargetSessionAsync(_log, job);
 
             if (shouldDrop
                 && await SchemaManager.TableExistsAsync(targetSession, mu.KeyspaceName, mu.TableName))
