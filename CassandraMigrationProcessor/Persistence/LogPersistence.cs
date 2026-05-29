@@ -234,12 +234,21 @@ public class LogPersistence
                         .OrderBy(i => i)
                         .ToList();
                 }
+                else if (topCount > 0)
+                {
+                    selectedOffsets = offsets.Take(topCount).ToList();
+                }
+                else if (bottomCount > 0)
+                {
+                    selectedOffsets = offsets.Skip(Math.Max(0, offsets.Count - bottomCount)).ToList();
+                }
                 else
                 {
-                    selectedOffsets = offsets
-                        .Distinct()
-                        .OrderBy(i => i)
-                        .ToList();
+                    // Caller asked for 0+0 — honour it and return nothing,
+                    // rather than reading the whole log into memory (which
+                    // for multi-hundred-MB binary logs would be the very
+                    // outcome the cap exists to prevent).
+                    selectedOffsets = new List<long>();
                 }
             }
             else
@@ -369,7 +378,11 @@ public class LogPersistence
         string directory = Path.GetDirectoryName(sourceFilePath) ?? string.Empty;
         string fileNameWithoutExtension = Path.GetFileNameWithoutExtension(sourceFilePath);
         string extension = Path.GetExtension(sourceFilePath);
-        string timestamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
+        // UTC stamp (trailing Z) to match the rest of the codebase
+        // (MigrationLog timestamps, BulkCopyStartedOn, change-feed start
+        // tokens) — otherwise on hosts configured to local time the
+        // backup filename is misaligned with the in-file UTC timestamps.
+        string timestamp = DateTime.UtcNow.ToString("yyyyMMdd_HHmmssZ");
         string newFileName = $"{fileNameWithoutExtension}_{timestamp}{extension}";
         string newFilePath = Path.Combine(directory, newFileName);
 
