@@ -25,12 +25,9 @@ public class MigrationJobContext
 
     /// <summary>
     /// Per-run cache of <see cref="TableMigration"/> documents. Resolves
-    /// to <c>null</c> when no job is running. Ownership moved to
-    /// <see cref="DataTransfer.MigrationJobRunner.MigrationUnitsCache"/>
-    /// in the target architecture — its lifetime now matches the run
-    /// (created with the runner, gone when the runner reference is
-    /// dropped), so the previous process-wide singleton no longer
-    /// accumulates entries across job lifetimes.
+    /// to <c>null</c> when no job is running. Owned by
+    /// <see cref="DataTransfer.MigrationJobRunner.MigrationUnitsCache"/>;
+    /// its lifetime matches the run.
     /// </summary>
     public TableMigrationCache? MigrationUnitsCache
         => ActiveRunner?.MigrationUnitsCache;
@@ -41,12 +38,6 @@ public class MigrationJobContext
     /// disk. Cleared on app restart — user must re-enter on resume —
     /// and per-job entries are removed by <see cref="RetireJob"/>
     /// when a job reaches a terminal state.
-    /// <para>
-    /// In the target architecture (see
-    /// <c>docs/TargetArchitecture.md</c>) this is the only cross-job
-    /// dictionary that survives at the app level; every other piece
-    /// of per-job state moves into a per-run <see cref="DataTransfer.MigrationJobRunner"/>.
-    /// </para>
     /// </summary>
     public ConnectionCredentialCache Credentials { get; }
         = new ConnectionCredentialCache();
@@ -131,9 +122,6 @@ public class MigrationJobContext
         if (isTerminal)
         {
             Credentials.Forget(jobId);
-            // MigrationUnitsCache was retired together with the runner
-            // (it now lives on MigrationJobRunner.MigrationUnitsCache).
-            // Nothing per-job to scrub here.
             JobStore.EvictFromCache(jobId);
         }
     }
@@ -185,11 +173,8 @@ public class MigrationJobContext
     }
 
     /// <summary>
-    /// Idempotent: loads the active job on first access. Previously a
-    /// side effect of the <c>CurrentlyActiveJob</c> getter — a property
-    /// read should not mutate global state. (The unit-cache lazy
-    /// initialisation that used to live here moved with the cache to
-    /// <see cref="DataTransfer.MigrationJobRunner"/>.)
+    /// Idempotent: loads the active job on first access without
+    /// mutating global state from a property getter.
     /// </summary>
     private readonly object _activeJobLoadLock = new object();
     private void EnsureActiveJobLoaded()

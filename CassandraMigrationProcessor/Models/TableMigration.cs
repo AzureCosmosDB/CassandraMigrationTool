@@ -1,5 +1,7 @@
 using CassandraMigrationProcessor.DataTransfer;
 using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
+using System.Runtime.Serialization;
 using System.Security.Cryptography;
 using System.Text;
 
@@ -83,7 +85,21 @@ public class TableMigration : TableMigrationSummary
     public DateTime? BulkCopyStartedOn { get; set; }
     public DateTime? BulkCopyEndedOn { get; set; }
 
-    public List<CopyChunk> CopyChunks { get; set; } = new();
+    /// <summary>
+    /// True once the bulk copy of this table has fully drained from
+    /// the source. Used to skip the bulk-drain wait on offline
+    /// resume after a process restart. <c>null</c> / <c>false</c>
+    /// means the table still needs a bulk pass.
+    /// </summary>
+    public bool? BulkDownloaded { get; set; }
+
+    /// <summary>
+    /// Bulk-copy failed row count. Mirrors
+    /// <see cref="TableMigrationSummary.CopyRowsCopied"/> (which
+    /// holds the success count) — together they form the totals
+    /// surfaced by <see cref="GetProcessedTotals"/>.
+    /// </summary>
+    public long TargetFailedRowCount { get; set; }
 
     public long EstimatedRowCount { get; set; }
     public long ActualRowCount { get; set; }
@@ -178,15 +194,13 @@ public class TableMigration : TableMigrationSummary
     public TableMigration(
         Job job,
         string keyspaceName,
-        string tableName,
-        List<CopyChunk> CopyChunks)
+        string tableName)
     {
         this.Id = GenerateId(keyspaceName, tableName);
         this.KeyspaceName = keyspaceName;
         this.TableName = tableName;
         this.TargetKeyspaceName = keyspaceName;
         this.TargetTableName = tableName;
-        this.CopyChunks = CopyChunks;
         if (job != null)
         {
             this.JobId = job.Id;
@@ -208,12 +222,56 @@ public class TableMigration : TableMigrationSummary
     }
 
     /// <summary>
-    /// Aggregates copy-chunk totals: <c>(Total, Inserted, Failed)</c>.
+    /// Aggregates bulk-copy totals: <c>(Total, Inserted, Failed)</c>.
+    /// Inserted comes from <see cref="TableMigrationSummary.CopyRowsCopied"/>
+    /// (the running success counter maintained by
+    /// <see cref="DataTransfer.CopyProgressTracker"/>); Failed comes
+    /// from <see cref="TargetFailedRowCount"/>.
     /// </summary>
     public (long Total, long Inserted, long Failed) GetProcessedTotals()
     {
-        long inserted = CopyChunks?.Sum(c => c.TargetInsertedRowCount) ?? 0;
-        long failed = CopyChunks?.Sum(c => c.TargetFailedRowCount) ?? 0;
+        long inserted = CopyRowsCopied;
+        long failed = TargetFailedRowCount;
         return (inserted + failed, inserted, failed);
+    }
+
+    // Migrates legacy per-table CopyChunks JSON onto the inline
+    // fields above. JsonExtensionData captures the unknown
+    // "CopyChunks" property when loading older job docs; the
+    // OnDeserialized callback folds the first chunk's values onto
+    // BulkDownloaded / CopyRowsCopied / TargetFailedRowCount /
+    // SourceCountDuringCopy, then removes the entry so subsequent
+    // saves emit only the new shape.
+
+    [JsonExtensionData]
+#pragma warning disable CS0649 // Populated via reflection by Newtonsoft.Json [JsonExtensionData].
+    private IDictionary<string, JToken>? _legacyFields;
+#pragma warning restore CS0649
+
+    [OnDeserialized]
+    private void MigrateLegacyCopyChunks(StreamingContext _)
+    {
+        if (_legacyFields == null) return;
+        if (!_legacyFields.TryGetValue("CopyChunks", out var token)) return;
+        if (token is JArray arr && arr.Count > 0 && arr[0] is JObject c)
+        {
+            BulkDownloaded ??= c["IsDownloaded"]?.ToObject<bool?>();
+            if (CopyRowsCopied == 0)
+            {
+                long v = c["TargetInsertedRowCount"]?.ToObject<long>() ?? 0;
+                if (v > 0) CopyRowsCopied = v;
+            }
+            if (TargetFailedRowCount == 0)
+            {
+                long v = c["TargetFailedRowCount"]?.ToObject<long>() ?? 0;
+                if (v > 0) TargetFailedRowCount = v;
+            }
+            if (SourceCountDuringCopy == 0)
+            {
+                long v = c["SourceQueryRowCount"]?.ToObject<long>() ?? 0;
+                if (v > 0) SourceCountDuringCopy = v;
+            }
+        }
+        _legacyFields.Remove("CopyChunks");
     }
 }

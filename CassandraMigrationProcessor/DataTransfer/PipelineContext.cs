@@ -55,12 +55,6 @@ internal class JobControlFlags
     }
 }
 
-public record ProgressConfig(
-    int ChunkIndex,
-    double InitialPercent,
-    double ContributionFactor,
-    long TotalRowCount);
-
 /// <summary>
 /// Shared (job-wide) state passed to every worker. Holds the
 /// <see cref="DataTransfer.PartitionManager"/> that all tables seed into and

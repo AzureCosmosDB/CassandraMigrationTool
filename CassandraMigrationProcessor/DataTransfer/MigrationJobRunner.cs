@@ -361,44 +361,44 @@ public class MigrationJobRunner
             return;
         }
 
-        var feedRanges = await CassandraQueries.GetFeedRangesAsync(sourceSession, mu.KeyspaceName, mu.TableName);
-        _log.WriteLine(
-            $"{mu.KeyspaceName}.{mu.TableName}: {feedRanges.Count} feed range(s)",
-            LogType.Info);
-
-        if (mu.CopyChunks == null || mu.CopyChunks.Count == 0)
-            mu.CopyChunks = new List<CopyChunk> { new CopyChunk() };
-
         bool isOnline = job.IsOnline;
+        if (mu.BulkDownloaded == true && !isOnline)
+            return;
+
         var spec = new TableCopySpec(
             mu.KeyspaceName, mu.TableName,
             mu.GetEffectiveTargetKeyspaceName(), mu.GetEffectiveTargetTableName());
 
-        for (int chunkIndex = 0; chunkIndex < mu.CopyChunks.Count; chunkIndex++)
+        long rowCount = await CassandraQueries.GetRowCountAsync(sourceSession, mu.KeyspaceName, mu.TableName);
+        if (rowCount > 0)
         {
-            var chunk = mu.CopyChunks[chunkIndex];
-            if (chunk.IsDownloaded == true && !isOnline)
-                continue;
-
-            long rowCount = await CassandraQueries.GetRowCountAsync(sourceSession, mu.KeyspaceName, mu.TableName);
-            if (rowCount > 0)
-            {
-                mu.EstimatedRowCount = rowCount;
-                TableMigrationMapper.UpdateParentJob(mu);
-            }
-            chunk.SourceQueryRowCount = rowCount;
-
-            double initialPercent = (100.0 / mu.CopyChunks.Count) * chunkIndex;
-            double contributionFactor = 1.0 / mu.CopyChunks.Count;
-
-            var tracker = new CopyProgressTracker(_log,
-                mu.CopyRowsCopied, mu,
-                new ProgressConfig(chunkIndex, initialPercent, contributionFactor, rowCount));
-            var resources = new TableResources(spec, columns, tracker, feedRanges.Count);
-            var result = partitioner.Partition(resources, mu, feedRanges, enableReplay: isOnline);
-
-            chunks.Add(new TablePartitioning(mu, chunkIndex, resources, result.Partitions, result.AllRangesAlreadyComplete));
+            mu.EstimatedRowCount = rowCount;
+            TableMigrationMapper.UpdateParentJob(mu);
         }
+        mu.SourceCountDuringCopy = rowCount;
+
+        var tracker = new CopyProgressTracker(_log, mu.CopyRowsCopied, mu, rowCount);
+
+        // Partitioner owns feed-range discovery and reconciliation
+        // (stored snapshots vs. source's current ranges) and hands
+        // back blueprints for still-pending ranges. TableResources
+        // and Partition materialization stay here so the partitioner
+        // does not need to know about per-table resource wiring.
+        var result = await partitioner.PartitionAsync(sourceSession, mu, enableReplay: isOnline);
+
+        var resources = new TableResources(spec, columns, tracker, result.TotalFeedRanges);
+        // Restore the bulk-completed counter on resume so PageWriter's
+        // ETA reads a correct "remaining ranges" count immediately, and
+        // the table-wide BulkDrainSignal trips automatically if every
+        // range was already finished in a prior run.
+        for (int i = 0; i < result.AlreadyCompletedCount; i++)
+            resources.OnPartitionBulkCompleted();
+
+        var partitions = new List<Partition>(result.PendingPartitions.Count);
+        foreach (var bp in result.PendingPartitions)
+            partitions.Add(new Partition(bp.Snapshot, bp.InitialPagingState, resources, bp.Phase));
+
+        chunks.Add(new TablePartitioning(mu, resources, partitions, result.AllRangesAlreadyComplete));
 
         MigrationJobContext.Instance.SaveMigrationUnit(mu, true);
     }
