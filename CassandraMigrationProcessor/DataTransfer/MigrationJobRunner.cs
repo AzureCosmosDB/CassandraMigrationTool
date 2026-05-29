@@ -23,6 +23,19 @@ public class MigrationJobRunner
     private JobPipeline? _pipeline;
 
     /// <summary>
+    /// Runner-wide source / target sessions. Opened once at the start
+    /// of <see cref="StartAsync"/> and reused across wildcard expansion,
+    /// schema provisioning, and partition discovery so a job with N
+    /// tables does not pay N x (cluster init + AAD token + SSL probe
+    /// + ARM credential discovery + connection-pool warmup) per phase.
+    /// Phase 3 workers still mint their own sessions via
+    /// <see cref="ISessionFactory"/> because they need dedicated
+    /// connection state for throughput isolation.
+    /// </summary>
+    private ISession? _sourceSession;
+    private ISession? _targetSession;
+
+    /// <summary>
     /// Per-run in-memory cache of <see cref="TableMigration"/> documents
     /// keyed by <c>jobId::unitId</c>. Lives for the duration of the
     /// run — created with the runner, dropped when the parent
@@ -51,6 +64,12 @@ public class MigrationJobRunner
 
         try
         {
+            // Source session is opened first because wildcard expansion
+            // needs it; target session is deferred until we know there
+            // is real work to do (no point paying cluster init for a
+            // resumed offline job whose tables are all CopyComplete).
+            _sourceSession = CassandraClientFactory.CreateSourceSession(_log, job, _tokenRefreshManager);
+
             if (job.Tables.Count == 0
                 || job.Tables.Any(m => m.TableName == "*"))
             {
@@ -62,6 +81,11 @@ public class MigrationJobRunner
             {
                 _log.WriteLine("No remaining migration units.", LogType.Warning);
                 return;
+            }
+
+            if (!job.IsSimulatedRun)
+            {
+                _targetSession = await CassandraClientFactory.CreateTargetSessionAsync(_log, job);
             }
 
             var pipelineConfig = PipelineConfig.Resolve(job, config);
@@ -86,15 +110,17 @@ public class MigrationJobRunner
             // concurrently and competes for those shared workers.
             await RunCopyPhaseAsync(job, units, partitioning, schemaFailed, cancellationToken);
 
-            if (Volatile.Read(ref _consecutiveAuthErrors) >= MigrationDefaults.MaxConsecutiveAuthErrors)
-            {
-                throw new InvalidOperationException(
-                    $"Aborting: {Volatile.Read(ref _consecutiveAuthErrors)} consecutive auth failures.");
-            }
-
             // All tables have either drained or completed. Online jobs
             // keep the shared pool alive for change-feed tailing; offline
             // jobs close the channel so workers exit.
+            //
+            // Auth-error handling: HandleMigrationUnitError already
+            // marked each affected table as Failed, so WriteFinalJobStatus
+            // (called from the finally block) will mark the whole job
+            // Faulted via its tableFailed check. The per-iteration
+            // _consecutiveAuthErrors guards in RunSchemaPhaseAsync /
+            // RunCopyPhaseAsync stop new work from spinning up against
+            // broken credentials; no additional throw is needed here.
             if (job.IsOnline)
                 await RunOnlineTailLoopAsync(cancellationToken);
             else
@@ -114,6 +140,16 @@ public class MigrationJobRunner
             _tokenRefreshManager.StopTokenRefreshTimer();
             MigrationUtilities.SafeDispose(_pipeline, "JobPipeline");
             _pipeline = null;
+
+            // Sessions are runner-owned: dispose after the pipeline so
+            // any still-cleaning worker code does not race with the
+            // shared cluster teardown. Workers hold their own sessions
+            // via ISessionFactory.CreateTargetSessionAsync / source
+            // overload and dispose those independently.
+            MigrationUtilities.SafeDisposeSession(_targetSession, "MigrationJobRunner target session");
+            MigrationUtilities.SafeDisposeSession(_sourceSession, "MigrationJobRunner source session");
+            _sourceSession = null;
+            _targetSession = null;
 
             WriteFinalJobStatus(job, control, failure);
         }
@@ -226,32 +262,28 @@ public class MigrationJobRunner
 
         _log.WriteLine($"=== Phase 2: Partition discovery ===", LogType.Info);
         var partitioner = new Partitioner(_log);
-        var sourceSession = CassandraClientFactory.CreateSourceSession(_log, job, _tokenRefreshManager);
-        try
-        {
-            foreach (var mu in units)
-            {
-                ct.ThrowIfCancellationRequested();
-                if (schemaFailed.Contains(mu.Id))
-                    continue;
-                if (mu.CopyComplete && !job.IsOnline)
-                    continue;
+        var sourceSession = _sourceSession
+            ?? throw new InvalidOperationException(
+                "Source session is not initialised; RunDiscoveryPhaseAsync called outside StartAsync.");
 
-                _log.WriteLine($"[Discovery] Discovering partitions for {mu.KeyspaceName}.{mu.TableName}", LogType.Info);
-                try
-                {
-                    await DiscoverUnitPartitioningAsync(job, mu, sourceSession, partitioner, chunks);
-                }
-                catch (Exception ex) when (ex is not OperationCanceledException)
-                {
-                    HandleMigrationUnitError(mu, ex);
-                    schemaFailed.Add(mu.Id);
-                }
-            }
-        }
-        finally
+        foreach (var mu in units)
         {
-            MigrationUtilities.SafeDisposeSession(sourceSession, "RunDiscoveryPhaseAsync source session");
+            ct.ThrowIfCancellationRequested();
+            if (schemaFailed.Contains(mu.Id))
+                continue;
+            if (mu.CopyComplete && !job.IsOnline)
+                continue;
+
+            _log.WriteLine($"[Discovery] Discovering partitions for {mu.KeyspaceName}.{mu.TableName}", LogType.Info);
+            try
+            {
+                await DiscoverUnitPartitioningAsync(job, mu, sourceSession, partitioner, chunks);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                HandleMigrationUnitError(mu, ex);
+                schemaFailed.Add(mu.Id);
+            }
         }
         return new JobPartitioning(chunks);
     }
@@ -501,52 +533,30 @@ public class MigrationJobRunner
             MigrationJobContext.Instance.SaveMigrationUnit(mu, true);
         }
 
-        // Open BOTH sessions inside the try, source first.
-        //
-        // Order rationale:
-        //   - Source is the read end and the only part needed for the
-        //     SchemaManager metadata queries (system_schema.*). Opening
-        //     it first lets a source-side failure short-circuit before
-        //     we spend an async round-trip building the target Cluster.
-        //   - Target is async (CreateTargetSessionAsync awaits cluster
-        //     init); source is sync. If source were second and target
-        //     first (the previous arrangement) any source failure would
-        //     leak the already-built target Cluster — its socket pool,
-        //     metadata listener, and IO threads — and Phase 1 fans out
-        //     under Task.WhenAll so the leak scales with table count.
-        //
-        // Declaring both nullable outside the try lets the finally
-        // dispose whichever ones got assigned, regardless of which
-        // construction throws.
-        Cassandra.ISession? sourceSession = null;
-        Cassandra.ISession? targetSession = null;
-        try
-        {
-            // Keyspace-agnostic source session: SchemaManager queries hit system_schema with
-            // parameterized keyspace_name and all data CQL is fully qualified, so we avoid the
-            // extra USE keyspace round trip and per-keyspace metadata refresh.
-            sourceSession = CassandraClientFactory.CreateSourceSession(_log, job, _tokenRefreshManager);
-            targetSession = await CassandraClientFactory.CreateTargetSessionAsync(_log, job);
+        // Sessions are runner-owned and reused across every table in
+        // this phase. Workers in Phase 3 hold their own connections;
+        // here we just need a single source for system_schema lookups
+        // and a single target for the DDL round-trip.
+        var sourceSession = _sourceSession
+            ?? throw new InvalidOperationException(
+                "Source session is not initialised; ProvisionTargetSchemaAsync called outside StartAsync.");
+        var targetSession = _targetSession
+            ?? throw new InvalidOperationException(
+                "Target session is not initialised; ProvisionTargetSchemaAsync called outside StartAsync (or on a simulated run).");
 
-            if (shouldDrop
-                && await SchemaManager.TableExistsAsync(targetSession, mu.KeyspaceName, mu.TableName))
-            {
-                _log.WriteLine($"Dropping target table {mu.KeyspaceName}.{mu.TableName}", LogType.Info);
-                await targetSession.ExecuteAsync(new SimpleStatement(
-                    $"DROP TABLE \"{mu.KeyspaceName}\".\"{mu.TableName}\""));
-            }
-
-            bool existed = await SchemaManager.TableExistsAsync(targetSession, mu.KeyspaceName, mu.TableName);
-            await SchemaManager.SyncSchemaAsync(sourceSession, targetSession,
-                mu.KeyspaceName, mu.TableName, mu.KeyspaceName, mu.TableName, _log);
-            if (!existed)
-                _log.WriteLine($"Created target table {mu.KeyspaceName}.{mu.TableName}", LogType.Info);
-        }
-        finally
+        if (shouldDrop
+            && await SchemaManager.TableExistsAsync(targetSession, mu.KeyspaceName, mu.TableName))
         {
-            MigrationUtilities.SafeDisposeSession(sourceSession, "ProvisionTargetSchemaAsync source session");
-            MigrationUtilities.SafeDisposeSession(targetSession, "ProvisionTargetSchemaAsync target session");
+            _log.WriteLine($"Dropping target table {mu.KeyspaceName}.{mu.TableName}", LogType.Info);
+            await targetSession.ExecuteAsync(new SimpleStatement(
+                $"DROP TABLE \"{mu.KeyspaceName}\".\"{mu.TableName}\""));
         }
+
+        bool existed = await SchemaManager.TableExistsAsync(targetSession, mu.KeyspaceName, mu.TableName);
+        await SchemaManager.SyncSchemaAsync(sourceSession, targetSession,
+            mu.KeyspaceName, mu.TableName, mu.KeyspaceName, mu.TableName, _log);
+        if (!existed)
+            _log.WriteLine($"Created target table {mu.KeyspaceName}.{mu.TableName}", LogType.Info);
     }
 
     private async Task RunCopyForUnitAsync(Job job, TableMigration mu, JobPartitioning partitioning, CancellationToken ct)
@@ -647,10 +657,11 @@ public class MigrationJobRunner
                 continue;
             }
 
-            ISession? session = null;
+            var session = _sourceSession
+                ?? throw new InvalidOperationException(
+                    "Source session is not initialised; ExpandWildcardTablesAsync called outside StartAsync.");
             try
             {
-                session = CassandraClientFactory.CreateSourceSession(_log, job, _tokenRefreshManager);
                 var tables = await CassandraQueries.ListTablesAsync(session, keyspace);
                 foreach (var tableName in tables)
                 {
@@ -672,10 +683,6 @@ public class MigrationJobRunner
             catch (Exception ex)
             {
                 _log.WriteLine($"Failed to discover tables in keyspace {keyspace}: {ex.Message}", LogType.Error);
-            }
-            finally
-            {
-                MigrationUtilities.SafeDisposeSession(session, $"Wildcard table discovery session ({keyspace})");
             }
         }
 
