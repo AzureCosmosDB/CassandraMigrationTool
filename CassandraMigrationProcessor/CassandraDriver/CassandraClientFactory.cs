@@ -219,8 +219,17 @@ public static class CassandraClientFactory
         {
             password = tokenRefreshManager?.GetFreshAadToken()
                 ?? TokenRefreshManager.AcquireAadToken();
-            // Cache it in memory (not persisted)
-            job.SourcePassword = password;
+            // SECURITY: do NOT write the AAD bearer token back into
+            // job.SourcePassword. Even though Job.SourcePassword is
+            // marked [JsonIgnore] (never persisted), it is still
+            // visible to the Blazor UI — and the Resume/"Update
+            // Connection Strings" modal echoed it straight into a
+            // password <input value="…">, leaking the Managed Identity
+            // bearer JWT (~1800-char Cosmos data-plane credential) to
+            // the browser DOM for any user who could open DevTools on
+            // the JobViewer page. Azure.Identity already caches tokens
+            // in-process, so re-acquiring per call is essentially free
+            // — we just keep the credential off the model object.
             job.SourceUseAad = true;
         }
 

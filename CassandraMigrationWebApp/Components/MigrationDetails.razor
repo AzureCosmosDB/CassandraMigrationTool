@@ -381,11 +381,20 @@
             targetConnectionString = Job?.TargetContactPoint ?? string.Empty;
             sourcePort = Job?.SourcePort ?? 10350;
             sourceUsername = Job?.SourceUsername ?? string.Empty;
-            sourcePassword = Job?.SourcePassword ?? string.Empty;
+            // SECURITY: never echo a previously-stored password / AAD
+            // token back into the modal's input. The Resume modal is
+            // designed so the user types fresh credentials (or leaves
+            // blank for AAD), and the in-memory Job.SourcePassword
+            // field has historically held a fully-decoded Managed
+            // Identity bearer JWT — rendering that into an
+            // <input value="…"> exposes it via the DOM (DevTools,
+            // browser extensions, screen-share). Always start blank.
+            sourcePassword = string.Empty;
             sourceUseAad = Job?.SourceUseAad ?? false;
             targetPort = Job?.TargetPort ?? 9042;
             targetUsername = Job?.TargetUsername ?? string.Empty;
-            targetPassword = Job?.TargetPassword ?? string.Empty;
+            // Same rationale as sourcePassword above.
+            targetPassword = string.Empty;
             namespaces = Job?.Namespaces ?? string.Empty;
             cdcMode = Job?.CDCMode ?? CDCMode.Offline;
             jobType = Job?.JobType ?? JobType.CqlCopy;
