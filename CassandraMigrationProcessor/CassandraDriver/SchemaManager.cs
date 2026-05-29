@@ -9,10 +9,7 @@ namespace CassandraMigrationProcessor.CassandraDriver;
 /// </summary>
 public static class SchemaManager
 {
-    private const int SchemaQueryTimeoutMs = 30_000;
     private const int ProbeTimeoutMs = 15_000;
-    private const int DefaultMaxRetries = 3;
-    private const int RetryBaseDelayMs = 2000;
     private const int ThrottleMaxRetries = 10;
 
     /// <summary>
@@ -89,7 +86,7 @@ public static class SchemaManager
                 string.Join(", ", fieldDefs) + ")";
 
             log?.WriteLine($"DDL on target: {cql}", LogType.Info);
-            await ExecuteWithTimeoutRetryAsync(() =>
+            await RetryExecutor.ExecuteAsync(() =>
                 targetSession.ExecuteAsync(new SimpleStatement(cql)));
         }
     }
@@ -105,9 +102,9 @@ public static class SchemaManager
             "SELECT type_name, field_names, field_types " +
             "FROM system_schema.types WHERE keyspace_name = ?",
             keyspace);
-        statement.SetReadTimeoutMillis(SchemaQueryTimeoutMs);
+        statement.SetReadTimeoutMillis(MigrationDefaults.SchemaQueryTimeoutMs);
 
-        var resultSet = await ExecuteWithTimeoutRetryAsync(() => session.ExecuteAsync(statement));
+        var resultSet = await RetryExecutor.ExecuteAsync(() => session.ExecuteAsync(statement));
 
         var udts = new List<UserDefinedTypeDef>();
         foreach (var row in resultSet)
@@ -401,9 +398,9 @@ public static class SchemaManager
             "SELECT column_name, type, kind, clustering_order, position " +
             "FROM system_schema.columns WHERE keyspace_name = ? AND table_name = ?",
             keyspace, table);
-        statement.SetReadTimeoutMillis(SchemaQueryTimeoutMs);
+        statement.SetReadTimeoutMillis(MigrationDefaults.SchemaQueryTimeoutMs);
 
-        var resultSet = await ExecuteWithTimeoutRetryAsync(() => session.ExecuteAsync(statement));
+        var resultSet = await RetryExecutor.ExecuteAsync(() => session.ExecuteAsync(statement));
 
         return resultSet.Select(r => new CassandraColumn(
             Name: r.GetValue<string>("column_name"),
@@ -587,26 +584,5 @@ public static class SchemaManager
             .ToList();
 
         return $" WITH CLUSTERING ORDER BY ({string.Join(", ", orderParts)})";
-    }
-
-    private static async Task<T> ExecuteWithTimeoutRetryAsync<T>(Func<Task<T>> operation,
-        int maxRetries = DefaultMaxRetries,
-        int baseDelayMs = RetryBaseDelayMs)
-    {
-        Exception? lastException = null;
-        for (int attempt = 1; attempt <= maxRetries; attempt++)
-        {
-            try
-            {
-                return await operation();
-            }
-            catch (Exception ex) when (attempt < maxRetries
-                && ExceptionClassifier.IsTransient(ex))
-            {
-                lastException = ex;
-                await Task.Delay(attempt * baseDelayMs);
-            }
-        }
-        throw lastException ?? new TimeoutException("Operation timed out after all retries");
     }
 }

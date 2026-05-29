@@ -21,4 +21,15 @@ public static class MigrationDefaults
     // Per-row write retry count when the target write fails transiently.
     // Used by PageWriter.
     public const int DefaultMaxWriteRetries = 5;
+
+    // Schema/query read timeout (ms) applied via SetReadTimeoutMillis on
+    // SimpleStatements that query system_schema / count rows.
+    public const int SchemaQueryTimeoutMs = 30_000;
+
+    // Default retry budget for the shared transient-fault retry helper
+    // (RetryExecutor.ExecuteAsync). Caller-agnostic — schema, query, and
+    // any other Cassandra-touching code paths can reuse these defaults
+    // or override per call site.
+    public const int TransientRetryMaxAttempts = 3;
+    public const int TransientRetryBaseDelayMs = 2000;
 }

@@ -10,34 +10,6 @@ namespace CassandraMigrationProcessor.CassandraDriver;
 /// </summary>
 public static class CassandraQueries
 {
-    // Retry/timeout constants
-    private const int SchemaQueryTimeoutMs = 30_000;
-    private const int DefaultMaxRetries = 3;
-    private const int RetryBaseDelayMs = 2000;
-
-    /// <summary>
-    /// Execute an async operation with retry on timeout errors.
-    /// </summary>
-    internal static async Task<T> ExecuteWithTimeoutRetryAsync<T>(Func<Task<T>> operation,
-        int maxRetries = DefaultMaxRetries,
-        int baseDelayMs = RetryBaseDelayMs)
-    {
-        Exception? lastException = null;
-        for (int attempt = 1; attempt <= maxRetries; attempt++)
-        {
-            try
-            {
-                return await operation();
-            }
-            catch (Exception ex) when (attempt < maxRetries
-                && ExceptionClassifier.IsTransient(ex))
-            {
-                lastException = ex;
-                await Task.Delay(attempt * baseDelayMs);
-            }
-        }
-        throw lastException ?? new TimeoutException("Operation timed out after all retries");
-    }
     /// <summary>
     /// List all keyspaces (excluding system keyspaces).
     /// </summary>
@@ -88,7 +60,7 @@ public static class CassandraQueries
         try
         {
             var statement = new SimpleStatement($"SELECT COUNT(*) FROM \"{keyspace}\".\"{table}\"");
-            statement.SetReadTimeoutMillis(SchemaQueryTimeoutMs);
+            statement.SetReadTimeoutMillis(MigrationDefaults.SchemaQueryTimeoutMs);
             statement.SetConsistencyLevel(ConsistencyLevel.One);
             var resultSet = await session.ExecuteAsync(statement);
             var row = resultSet.FirstOrDefault();
