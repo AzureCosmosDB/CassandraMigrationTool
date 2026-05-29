@@ -1,4 +1,5 @@
 using Newtonsoft.Json;
+using CassandraMigrationProcessor.CassandraDriver;
 using CassandraMigrationProcessor.Models;
 
 #pragma warning disable CS8600
@@ -49,14 +50,25 @@ public static class TableDiscovery
         var result = new List<TableMapping>();
         foreach (var fullName in entries)
         {
-            int dotIdx = fullName.IndexOf('.');
-            if (dotIdx <= 0 || dotIdx == fullName.Length - 1)
+            string keyspace;
+            string table;
+            try
+            {
+                // CQL-aware split: handles both bare 'foo.bar' and
+                // quoted forms like 'foo."MixedCase_Table-1"' or
+                // '"My-KS"."Some.Table"' — the surrounding "..." is
+                // stripped and ""-escapes are resolved.
+                (keyspace, table) = CqlIdentifier.SplitQualifiedName(fullName);
+            }
+            catch (ArgumentException)
+            {
                 return null; // invalid entry
+            }
 
             result.Add(new TableMapping
             {
-                KeyspaceName = fullName.Substring(0, dotIdx).Trim(),
-                TableName = fullName.Substring(dotIdx + 1).Trim()
+                KeyspaceName = keyspace,
+                TableName = table
             });
         }
         return result;
@@ -79,14 +91,16 @@ public static class TableDiscovery
         {
             foreach (var item in loadedObject)
             {
-                var srcKs = item.KeyspaceName.Trim();
-                var srcTbl = item.TableName.Trim();
+                // CqlIdentifier.Unquote strips surrounding "..." and
+                // resolves "" escapes; bare names pass through unchanged.
+                var srcKs = CqlIdentifier.Unquote(item.KeyspaceName);
+                var srcTbl = CqlIdentifier.Unquote(item.TableName);
                 var tgtKs =
                     string.IsNullOrWhiteSpace(item.TargetKeyspaceName)
-                    ? srcKs : item.TargetKeyspaceName.Trim();
+                    ? srcKs : CqlIdentifier.Unquote(item.TargetKeyspaceName);
                 var tgtTbl =
                     string.IsNullOrWhiteSpace(item.TargetTableName)
-                    ? srcTbl : item.TargetTableName.Trim();
+                    ? srcTbl : CqlIdentifier.Unquote(item.TargetTableName);
 
                 if (!unitsToAdd.Any(x =>
                     x.KeyspaceName == srcKs
@@ -112,12 +126,17 @@ public static class TableDiscovery
 
             foreach (var fullName in entries)
             {
-                int dotIdx = fullName.IndexOf('.');
-                if (dotIdx <= 0
-                    || dotIdx == fullName.Length - 1) continue;
-
-                string keyspace = fullName.Substring(0, dotIdx).Trim();
-                string table = fullName.Substring(dotIdx + 1).Trim();
+                string keyspace;
+                string table;
+                try
+                {
+                    // CQL-aware split: tolerates 'foo."MixedCase-1"' etc.
+                    (keyspace, table) = CqlIdentifier.SplitQualifiedName(fullName);
+                }
+                catch (ArgumentException)
+                {
+                    continue; // skip malformed entries
+                }
 
                 if (!unitsToAdd.Any(x =>
                     x.KeyspaceName == keyspace && x.TableName == table))
