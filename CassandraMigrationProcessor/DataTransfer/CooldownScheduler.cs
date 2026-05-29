@@ -24,16 +24,20 @@ internal sealed class CooldownScheduler : IAsyncDisposable
     private readonly object _lock = new();
     private readonly SemaphoreSlim _wake = new(0, int.MaxValue);
     private readonly Task _loop;
+    private readonly Action? _onLoopFault;
+    private volatile bool _loopFaulted;
 
     public CooldownScheduler(
         MigrationLog log,
         PartitionManager partitions,
         int cooldownMs,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Action? onLoopFault = null)
     {
         _log = log;
         _partitions = partitions;
         _cooldownMs = cooldownMs;
+        _onLoopFault = onLoopFault;
         // Link the caller's cancellation with our own so StopAsync is
         // self-sufficient: the loop's only exit is _ct cancellation, and
         // we don't want DisposeAsync to deadlock waiting on the loop
@@ -50,6 +54,19 @@ internal sealed class CooldownScheduler : IAsyncDisposable
     /// </summary>
     public void Schedule(Partition partition)
     {
+        if (_loopFaulted)
+        {
+            // The drain loop is gone; queueing further partitions would
+            // grow the queue without ever being recycled. Recycle inline
+            // so the partition still has a chance to make progress, and
+            // log loudly so the operator notices the scheduler is dead.
+            _log.WriteLine(
+                $"CooldownScheduler: loop is faulted; recycling {partition.FullTableName}/{partition.FeedRange} inline.",
+                LogType.Warning);
+            try { _partitions.Recycle(partition); }
+            catch (InvalidOperationException) { /* pool closed */ }
+            return;
+        }
         long eligibleAt = Environment.TickCount64 + _cooldownMs;
         lock (_lock)
         {
@@ -79,6 +96,16 @@ internal sealed class CooldownScheduler : IAsyncDisposable
             _log.WriteLine(
                 $"CooldownScheduler loop crashed: {ex.GetType().Name}: {ex.Message}",
                 LogType.Error);
+            _loopFaulted = true;
+            // Surface to the owner so the rest of the pipeline tears
+            // down rather than silently stalling. Without this, Schedule
+            // would keep accepting partitions into a queue with no
+            // consumer; workers handing off empty replay pages would
+            // never see their partitions recycled, and the job would
+            // hang short of completion with no error visible at the
+            // worker level.
+            try { _onLoopFault?.Invoke(); }
+            catch { /* best-effort surface */ }
         }
     }
 

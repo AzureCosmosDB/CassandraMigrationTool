@@ -49,7 +49,22 @@ internal sealed class JobPipeline : IDisposable, IAsyncDisposable
         var partitions = new PartitionManager(partitioning.AllPartitions);
         var readerConfig = new ReaderConfig(pipelineConfig.PageSize, pipelineConfig.MaxReadRetries);
         var writerConfig = new WriterConfig(pipelineConfig.MaxWriteRetries);
-        _cooldown = new CooldownScheduler(log, partitions, pipelineConfig.ChangeFeedPollIntervalMs, _cts.Token);
+        _cooldown = new CooldownScheduler(
+            log,
+            partitions,
+            pipelineConfig.ChangeFeedPollIntervalMs,
+            _cts.Token,
+            onLoopFault: () =>
+            {
+                // CooldownScheduler's background loop has crashed and
+                // can no longer drain its queue. If we let workers keep
+                // handing partitions to Schedule(), online jobs would
+                // park forever short of completion. Cancel the pipeline
+                // so workers exit and JobManager can either restart or
+                // surface the error.
+                try { _cts.Cancel(); }
+                catch (ObjectDisposedException) { /* already disposed */ }
+            });
 
         // Wire fatal trip into our CTS at construction so coordinators
         // waiting on per-table BulkDrainSignal under this token unblock
