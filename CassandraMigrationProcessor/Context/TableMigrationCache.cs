@@ -55,4 +55,23 @@ public class TableMigrationCache
                 _migrationUnits.TryRemove(key, out _);
         }
     }
+
+    /// <summary>
+    /// Evicts every cached unit that belongs to <paramref name="jobId"/>.
+    /// Called when a job reaches a terminal state so its per-table
+    /// runtime state (partition snapshots, counters) does not survive
+    /// in the process-wide cache.
+    /// </summary>
+    public void RemoveAllForJob(string jobId)
+    {
+        if (string.IsNullOrEmpty(jobId))
+            return;
+
+        var prefix = $"{jobId}::";
+        foreach (var key in _migrationUnits.Keys)
+        {
+            if (key.StartsWith(prefix, StringComparison.Ordinal))
+                _migrationUnits.TryRemove(key, out _);
+        }
+    }
 }

@@ -80,6 +80,56 @@ public class MigrationJobContext
         PauseRequested?.Invoke();
     }
 
+    /// <summary>
+    /// Symmetric teardown for a job whose background run has just
+    /// returned. Without this primitive the per-job entries in the
+    /// process-wide singletons (connection strings, unit cache, loaded
+    /// job, active-job pointer, auto-start hint) accumulate across job
+    /// lifetimes — credentials linger in memory after the job that owned
+    /// them has completed, and stale <c>ActiveMigrationJobId</c> /
+    /// <c>JobStore.CachedActiveJob</c> entries cause the next job to
+    /// observe state that belonged to its predecessor.
+    /// <para>
+    /// Always-on cleanup runs for every retirement (Paused included):
+    /// drop the auto-start hint, and if this job is the currently active
+    /// one, clear <see cref="ActiveMigrationJobId"/> and the active-job
+    /// cache so subsequent reads do not short-circuit through stale data.
+    /// </para>
+    /// <para>
+    /// Terminal-only cleanup runs when <paramref name="isTerminal"/> is
+    /// true (Completed / Faulted / Cancelled): credentials are removed
+    /// from <see cref="SourceConnectionString"/> and
+    /// <see cref="TargetConnectionString"/>, the unit cache is evicted
+    /// for this job, and the loaded-job entry in <see cref="JobStore"/>
+    /// is dropped so the next read comes from disk.
+    /// </para>
+    /// <para>
+    /// Paused jobs intentionally retain their entries in the connection
+    /// string dictionaries and the unit cache so "Resume with Existing
+    /// Connection Strings" continues to work without re-prompting.
+    /// </para>
+    /// </summary>
+    public void RetireJob(string jobId, bool isTerminal)
+    {
+        if (string.IsNullOrEmpty(jobId)) return;
+
+        PendingAutoStartJobIds.TryRemove(jobId, out _);
+
+        if (string.Equals(ActiveMigrationJobId, jobId, StringComparison.Ordinal))
+        {
+            ActiveMigrationJobId = string.Empty;
+            JobStore.ClearCache();
+        }
+
+        if (isTerminal)
+        {
+            SourceConnectionString.TryRemove(jobId, out _);
+            TargetConnectionString.TryRemove(jobId, out _);
+            MigrationUnitsCache?.RemoveAllForJob(jobId);
+            JobStore.EvictFromCache(jobId);
+        }
+    }
+
     public void UpdateLogLevel(
         LogType level, Job job)
     {
