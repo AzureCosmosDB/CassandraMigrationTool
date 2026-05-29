@@ -31,7 +31,7 @@
                     <!-- Basic Tab Fields -->
                     <div class="mb-3">
                         <label for="name" class="form-label">Name</label>
-                        <input type="text" id="name" class="form-control" disabled="@(!NewMode)" @bind="name" />
+                        <input type="text" id="name" class="form-control" maxlength="128" disabled="@(!NewMode)" @bind="name" />
                     </div>
                     @if (NewMode)
                     {
@@ -428,9 +428,21 @@
         // is predictable.
         var errors = new List<string>();
 
-        if (string.IsNullOrEmpty(name))
+        // Normalise the name once so every downstream check (and the
+        // persisted job record) sees the trimmed value. Trim only on
+        // create — for existing jobs the user can't edit the field.
+        if (NewMode)
         {
-            errors.Add("Name can't be empty.");
+            name = (name ?? string.Empty).Trim();
+        }
+
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            errors.Add("Name can't be empty or whitespace.");
+        }
+        else if (name.Length > 128)
+        {
+            errors.Add("Name can be at most 128 characters.");
         }
         else if (NewMode && CheckNameExists != null)
         {
