@@ -8,7 +8,7 @@
 @using System.Linq
 
 @inject Service.JobManager JobManager
-@inject Service.MigrationContextService MigrationContext
+@inject CassandraMigrationProcessor.Context.MigrationJobContext MigrationContext
 @inject NavigationManager NavigationManager
 @inject IJSRuntime JS
 @implements IDisposable
@@ -67,7 +67,7 @@
 }
 @if (_collectionDetailsDialogOpen && _selectedMigrationUnit != null)
 {
-    <CollectionDetails Job="@CurrentlyLoadedMigrationJob" TableMigration="@MigrationContext.GetUnit(_selectedMigrationUnit.Id, CurrentlyLoadedMigrationJob.Id)" OnClose="HandleCollectionDetailsClose" />
+    <CollectionDetails Job="@CurrentlyLoadedMigrationJob" TableMigration="@MigrationContext.GetMigrationUnit(_selectedMigrationUnit.Id, CurrentlyLoadedMigrationJob.Id)" OnClose="HandleCollectionDetailsClose" />
 }
 
 @* Collections Loading Spinner *@
@@ -233,7 +233,7 @@ else if (@_showLogBackupFile)
     public Job? CurrentlyLoadedMigrationJob
     {   get
         {
-            return MigrationContext.GetJob(JobId);
+            return MigrationContext.GetMigrationJob(JobId);
         }
     }
 
@@ -653,7 +653,7 @@ else if (@_showLogBackupFile)
                 // BB-1 fix: Tell user why job can't start
                 string activeId = JobManager?.GetRunningJobId() ?? string.Empty;
                 var activeJob = !string.IsNullOrEmpty(activeId)
-                    ? MigrationContext.GetJob(activeId)
+                    ? MigrationContext.GetMigrationJob(activeId)
                     : null;
                 string activeName = activeJob?.Name ?? activeId;
                 _errorMessage = $"Another migration job \"{activeName}\" is currently running. "
@@ -716,7 +716,7 @@ else if (@_showLogBackupFile)
         // Clear pending auto-start flag so it doesn't fire again
         MigrationContext.PendingAutoStartJobIds.TryRemove(mj.Id, out _);
 
-        MigrationContext.SaveJob(mj);
+        MigrationContext.SaveMigrationJob(mj);
         MigrationContext.SaveJobList();
 
 
@@ -889,7 +889,7 @@ else if (@_showLogBackupFile)
             foreach (var tobDel in delList)
             {
                 tobDel.ParentJob = CurrentlyLoadedMigrationJob;
-                MigrationContext.RemoveUnit(tobDel);
+                UnitStore.RemoveUnit(tobDel);
                 MigrationContext.MigrationUnitsCache?.RemoveMigrationUnit(tobDel.Id);//remove from cache
             }
 
@@ -916,7 +916,7 @@ else if (@_showLogBackupFile)
 
             CurrentlyLoadedMigrationJob.Namespaces = string.Join(",", migrationUnits.Select(mu => $"{mu.KeyspaceName}.{mu.TableName}"));
 
-            MigrationContext.SaveJob(CurrentlyLoadedMigrationJob);
+            MigrationContext.SaveMigrationJob(CurrentlyLoadedMigrationJob);
 
             Refresh(null);
         }
@@ -940,7 +940,7 @@ else if (@_showLogBackupFile)
                     CurrentlyLoadedMigrationJob.Status = JobStatus.Completed;
                 }
 
-                if (MigrationContext.SaveJob(CurrentlyLoadedMigrationJob))
+                if (MigrationContext.SaveMigrationJob(CurrentlyLoadedMigrationJob))
                     return;
 
                 _refreshTimer = null;
@@ -953,7 +953,7 @@ else if (@_showLogBackupFile)
                     CurrentlyLoadedMigrationJob.Status = JobStatus.Cancelled;
                 }
 
-                if (MigrationContext.SaveJob(CurrentlyLoadedMigrationJob))
+                if (MigrationContext.SaveMigrationJob(CurrentlyLoadedMigrationJob))
                     return;
 
                 _refreshTimer = null;
@@ -970,7 +970,7 @@ else if (@_showLogBackupFile)
             // FinalizeStatus won't downgrade Paused -> Pending
             if (CurrentlyLoadedMigrationJob != null)
                 CurrentlyLoadedMigrationJob.Status = JobStatus.Paused;
-            MigrationContext.SaveJob(CurrentlyLoadedMigrationJob);
+            MigrationContext.SaveMigrationJob(CurrentlyLoadedMigrationJob);
             JobManager.StopMigration();
         }
         catch (Exception ex)
@@ -985,7 +985,7 @@ else if (@_showLogBackupFile)
         try
         {
             JobManager.RequestControlledPause();
-            MigrationContext.SaveJob(CurrentlyLoadedMigrationJob);
+            MigrationContext.SaveMigrationJob(CurrentlyLoadedMigrationJob);
         }
         catch (Exception ex)
         {
@@ -999,7 +999,7 @@ else if (@_showLogBackupFile)
         string activeJob = JobManager?.GetRunningJobId() ?? string.Empty;
         if (activeJob != string.Empty && activeJob != JobId)
         {
-            var job = MigrationContext.GetJob(activeJob);
+            var job = MigrationContext.GetMigrationJob(activeJob);
             if (job != null && job.Status != JobStatus.Cancelled && job.Status != JobStatus.Completed)
                 return false;
             else

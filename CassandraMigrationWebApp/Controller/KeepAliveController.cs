@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Mvc;
+using CassandraMigrationProcessor.Context;
 using CassandraMigrationWebApp.Service;
 
 namespace CassandraMigrationWebApp.Controller;
@@ -7,12 +8,12 @@ namespace CassandraMigrationWebApp.Controller;
 public class KeepAliveController : ControllerBase
 {
     private readonly JobManager _jobManager;
-    private readonly MigrationContextService _ctx;
+    private readonly MigrationJobContext _context;
 
-    public KeepAliveController(JobManager jobManager, MigrationContextService ctx)
+    public KeepAliveController(JobManager jobManager, MigrationJobContext context)
     {
         _jobManager = jobManager;
-        _ctx = ctx;
+        _context = context;
     }
 
     /// <summary>
@@ -36,8 +37,8 @@ public class KeepAliveController : ControllerBase
             });
         }
 
-        // Get the active job from context service
-        var activeJob = _ctx.CurrentlyActiveJob;
+        // Get the active job from context
+        var activeJob = _context.CurrentlyActiveJob;
 
         if (activeJob == null || activeJob.Id != runningJobId)
         {
