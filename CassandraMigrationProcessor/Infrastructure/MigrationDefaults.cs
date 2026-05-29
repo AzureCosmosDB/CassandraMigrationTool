@@ -26,8 +26,10 @@ public static class MigrationDefaults
     // SimpleStatements that query system_schema / count rows.
     public const int SchemaQueryTimeoutMs = 30_000;
 
-    // Retry budget for the shared schema/query retry helper
-    // (RetryExecutor.ExecuteWithTimeoutRetryAsync).
-    public const int SchemaQueryMaxRetries = 3;
-    public const int SchemaQueryRetryBaseDelayMs = 2000;
+    // Default retry budget for the shared transient-fault retry helper
+    // (RetryExecutor.ExecuteAsync). Caller-agnostic — schema, query, and
+    // any other Cassandra-touching code paths can reuse these defaults
+    // or override per call site.
+    public const int TransientRetryMaxAttempts = 3;
+    public const int TransientRetryBaseDelayMs = 2000;
 }

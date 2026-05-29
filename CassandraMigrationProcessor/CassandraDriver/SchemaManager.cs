@@ -86,7 +86,7 @@ public static class SchemaManager
                 string.Join(", ", fieldDefs) + ")";
 
             log?.WriteLine($"DDL on target: {cql}", LogType.Info);
-            await RetryExecutor.ExecuteWithTimeoutRetryAsync(() =>
+            await RetryExecutor.ExecuteAsync(() =>
                 targetSession.ExecuteAsync(new SimpleStatement(cql)));
         }
     }
@@ -104,7 +104,7 @@ public static class SchemaManager
             keyspace);
         statement.SetReadTimeoutMillis(MigrationDefaults.SchemaQueryTimeoutMs);
 
-        var resultSet = await RetryExecutor.ExecuteWithTimeoutRetryAsync(() => session.ExecuteAsync(statement));
+        var resultSet = await RetryExecutor.ExecuteAsync(() => session.ExecuteAsync(statement));
 
         var udts = new List<UserDefinedTypeDef>();
         foreach (var row in resultSet)
@@ -400,7 +400,7 @@ public static class SchemaManager
             keyspace, table);
         statement.SetReadTimeoutMillis(MigrationDefaults.SchemaQueryTimeoutMs);
 
-        var resultSet = await RetryExecutor.ExecuteWithTimeoutRetryAsync(() => session.ExecuteAsync(statement));
+        var resultSet = await RetryExecutor.ExecuteAsync(() => session.ExecuteAsync(statement));
 
         return resultSet.Select(r => new CassandraColumn(
             Name: r.GetValue<string>("column_name"),
