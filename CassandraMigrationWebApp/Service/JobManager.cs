@@ -151,14 +151,49 @@ public class JobManager
 
     public void StopMigration()
     {
+        // Back-compat alias. New code paths should call RequestCancel()
+        // directly so the recorded user intent is unambiguous.
+        RequestCancel();
+    }
+
+    /// <summary>
+    /// User-initiated permanent stop. Records cancel intent so the
+    /// run-finished finally block writes <see cref="JobStatus.Cancelled"/>.
+    /// </summary>
+    public void RequestCancel()
+    {
         lock (_stateLock)
         {
-            if (!string.IsNullOrEmpty(_runningJobId))
-                _log.WriteLine($"User requested CANCEL for job {_runningJobId}", LogType.Info);
+            if (string.IsNullOrEmpty(_runningJobId))
+                return;
+            _log.WriteLine($"User requested CANCEL for job {_runningJobId}", LogType.Info);
+            _cancelRequested = true;
             try { _migrationCts?.Cancel(); }
             catch (ObjectDisposedException) { /* finally already retired the job */ }
             MigrationJobRunner?.Stop();
-            _runningJobId = string.Empty;
+        }
+    }
+
+    /// <summary>
+    /// User-initiated cutover on an Online/CDC job. Records cutover
+    /// intent so the run-finished finally block writes
+    /// <see cref="JobStatus.Completed"/> (terminal). Today the
+    /// pipeline drain is the same as Cancel — there is no separate
+    /// CDC-handshake yet — but the intent flag ensures the persisted
+    /// status and the UI label both reflect "cutover" rather than
+    /// "cancel".
+    /// </summary>
+    public void RequestCutover()
+    {
+        lock (_stateLock)
+        {
+            if (string.IsNullOrEmpty(_runningJobId))
+                return;
+            _log.WriteLine($"User requested CUTOVER for job {_runningJobId}", LogType.Info);
+            _cutoverRequested = true;
+            try { _migrationCts?.Cancel(); }
+            catch (ObjectDisposedException) { /* finally already retired the job */ }
+            MigrationJobRunner?.Stop();
         }
     }
 
@@ -172,6 +207,20 @@ public class JobManager
     /// instead of <see cref="JobStatus.Pending"/> / <see cref="JobStatus.Faulted"/>.
     /// </summary>
     private volatile bool _pauseRequested;
+
+    /// <summary>
+    /// True between the user clicking CANCEL and the runner exiting.
+    /// Honoured by the run-finished finally to write
+    /// <see cref="JobStatus.Cancelled"/>.
+    /// </summary>
+    private volatile bool _cancelRequested;
+
+    /// <summary>
+    /// True between the user clicking CUTOVER and the runner exiting.
+    /// Honoured by the run-finished finally to write
+    /// <see cref="JobStatus.Completed"/>.
+    /// </summary>
+    private volatile bool _cutoverRequested;
 
     public void RequestControlledPause()
     {
@@ -220,6 +269,60 @@ public class JobManager
         return _pauseRequested;
     }
 
+    /// <summary>
+    /// Single source-of-truth for what a job looks like to the UI.
+    /// Combines runtime intent flags (pause / cancel / cutover) with
+    /// the persisted <see cref="JobStatus"/> so every page derives
+    /// the same label and badge from one place. Callers MUST not
+    /// look at <see cref="Job.Status"/> or
+    /// <see cref="IsProcessRunning(string)"/> directly when rendering
+    /// status; use this instead.
+    /// </summary>
+    public LiveJobStatus GetLiveStatus(Job? job)
+    {
+        if (job == null) return LiveJobStatus.NotStarted;
+
+        // Process-live state takes priority over persisted Status —
+        // the runner is the source of truth while it's draining, and
+        // the intent flags reflect what the user just asked for.
+        if (IsProcessRunning(job.Id ?? string.Empty))
+        {
+            if (_cutoverRequested) return LiveJobStatus.CuttingOver;
+            if (_cancelRequested)  return LiveJobStatus.Cancelling;
+            if (_pauseRequested)   return LiveJobStatus.Pausing;
+            return LiveJobStatus.Running;
+        }
+
+        // Runner is idle — fall back to persisted Status.
+        switch (job.Status)
+        {
+            case JobStatus.Completed: return LiveJobStatus.Completed;
+            case JobStatus.Cancelled: return LiveJobStatus.Cancelled;
+            case JobStatus.Faulted:   return LiveJobStatus.Faulted;
+            case JobStatus.Paused:    return LiveJobStatus.Paused;
+            case JobStatus.Running:
+                // Persisted Running with no live runner = process
+                // crashed or host recycled mid-run before the finally
+                // block could normalise. Surface as Interrupted so the
+                // operator knows it's resumable, not "Stopped".
+                return LiveJobStatus.Interrupted;
+            case JobStatus.Pending:
+                return HasMadeProgress(job)
+                    ? LiveJobStatus.Interrupted
+                    : LiveJobStatus.NotStarted;
+            default:
+                return LiveJobStatus.NotStarted;
+        }
+    }
+
+    private static bool HasMadeProgress(Job job)
+    {
+        if (job.Tables == null) return false;
+        foreach (var mu in job.Tables)
+            if (mu.CopyRowsCopied > 0) return true;
+        return false;
+    }
+
     public Task StartMigration(Job job, string sourceConnectionString, string targetConnectionString, string namespacesToMigrate)
     {
         lock (_stateLock)
@@ -231,6 +334,13 @@ public class JobManager
                     LogType.Warning);
                 return Task.CompletedTask;
             }
+
+            // Reset all user-intent flags for the new run. Stale flags
+            // from a prior Pause/Cancel/Cutover cycle would otherwise
+            // be honoured by this run's finally block.
+            _pauseRequested = false;
+            _cancelRequested = false;
+            _cutoverRequested = false;
 
             _log = CreateLog();
             _log.Initialize(job.Id);
@@ -264,6 +374,14 @@ public class JobManager
 
         _context.ActiveMigrationJobId = job.Id;
         job.Status = JobStatus.Running;
+        if (!job.StartedOn.HasValue)
+            job.StartedOn = DateTime.UtcNow;
+        // Persist Running before launching the runner so list views
+        // and other consumers see the new status immediately, not
+        // only after the run completes (when finally writes the final
+        // status). This is the only synchronous Status write outside
+        // the finally block — required to keep disk == in-memory.
+        _context.SaveMigrationJob(job);
 
         var config = new AppSettings();
         SettingsManager.Load(config);
@@ -299,23 +417,41 @@ public class JobManager
             }
             finally
             {
-                // Determine final status. Real failures (unhandled
-                // exception or any table marked Failed) outrank a
-                // user-requested pause — if the operator clicked Pause
-                // after the run had already faulted (race), we still
-                // want the badge to read Faulted so the failure is
-                // visible. Only after ruling out failures do we honour
-                // the pause flag; only after ruling out both do we fall
-                // through to the Running→Pending normalisation.
+                // Single-source-of-truth for the final persisted Status.
+                // Precedence (most-significant wins):
+                //   1. Real failure (unhandled exception or per-table fault)
+                //      → Faulted, regardless of any user intent. If the
+                //        operator clicked Pause AFTER the run had already
+                //        faulted (race), we still want the badge to read
+                //        Faulted so the failure isn't hidden.
+                //   2. Cutover intent → Completed (terminal).
+                //   3. Cancel intent  → Cancelled (terminal).
+                //   4. Pause intent   → Paused.
+                //   5. Runner cleanly set Completed (offline finalize) →
+                //      keep it.
+                //   6. Otherwise Status was still Running → Pending
+                //      (interrupted; operator can resume).
                 bool tableFailed = job.Tables?.Any(
                     mu => mu.SourceStatus ==
                         TableStatus.Failed) ?? false;
                 bool wasPauseRequested = _pauseRequested;
+                bool wasCancelRequested = _cancelRequested;
+                bool wasCutoverRequested = _cutoverRequested;
                 _pauseRequested = false;
+                _cancelRequested = false;
+                _cutoverRequested = false;
 
                 if (unhandledException != null || tableFailed)
                 {
                     job.Status = JobStatus.Faulted;
+                }
+                else if (wasCutoverRequested)
+                {
+                    job.Status = JobStatus.Completed;
+                }
+                else if (wasCancelRequested)
+                {
+                    job.Status = JobStatus.Cancelled;
                 }
                 else if (wasPauseRequested)
                 {
@@ -325,6 +461,7 @@ public class JobManager
                 {
                     job.Status = JobStatus.Pending;
                 }
+                // else: runner set Completed via offline finalize — preserve.
 
                 _context.SaveMigrationJob(job);
 

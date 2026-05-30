@@ -4,6 +4,7 @@
 @inject NavigationManager NavigationManager
 
 @using CassandraMigrationWebApp.Components
+@using CassandraMigrationWebApp.Service
 @using CassandraMigrationProcessor
 @using CassandraMigrationProcessor.Infrastructure
 @using CassandraMigrationProcessor.Models
@@ -375,45 +376,8 @@
     }
 
     private string GetJobStatusLabel(Job job)
-    {
-        if (job.Status == JobStatus.Completed) return "Completed";
-        if (job.Status == JobStatus.Cancelled) return "Cancelled";
-        if (JobManager.IsProcessRunning(job.Id ?? string.Empty))
-            return "Running";
-        if (job.Status == JobStatus.Faulted) return "Faulted";
-        if (job.Status == JobStatus.Paused) return "Paused";
-        if (job.Status == JobStatus.Running) return "Stopped";
-        if (job.Status == JobStatus.Pending && HasMadeProgress(job)) return "Interrupted";
-        return "Not Started";
-    }
+        => JobLifecycle.Label(JobManager.GetLiveStatus(job));
 
     private string GetJobStatusBadge(Job job)
-    {
-        if (job.Status == JobStatus.Completed) return "bg-success";
-        if (job.Status == JobStatus.Cancelled) return "bg-secondary";
-        if (JobManager.IsProcessRunning(job.Id ?? string.Empty))
-            return "bg-primary";
-        if (job.Status == JobStatus.Faulted) return "bg-danger";
-        if (job.Status == JobStatus.Paused) return "bg-warning text-dark";
-        if (job.Status == JobStatus.Running) return "bg-info";
-        if (job.Status == JobStatus.Pending && HasMadeProgress(job)) return "bg-warning text-dark";
-        return "bg-secondary";
-    }
-
-    private static bool HasMadeProgress(Job job)
-    {
-        // A Pending job that already shows non-zero copied rows on any
-        // table is a job that was started, interrupted (process crash,
-        // host restart, ungraceful shutdown) before the status could be
-        // persisted, and is now sitting in the saved-state directory.
-        // Surfacing it as "Not Started" misleads the operator into
-        // thinking it is safe to discard or restart from zero.
-        var tables = job.Tables;
-        if (tables == null) return false;
-        foreach (var mu in tables)
-        {
-            if (mu.CopyRowsCopied > 0) return true;
-        }
-        return false;
-    }
+        => JobLifecycle.BadgeClass(JobManager.GetLiveStatus(job));
 }

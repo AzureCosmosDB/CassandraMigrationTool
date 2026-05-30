@@ -5,6 +5,7 @@
 @using CassandraMigrationProcessor.Infrastructure
 @using CassandraMigrationProcessor.Models
 @using CassandraMigrationProcessor.Context
+@using CassandraMigrationWebApp.Service
 @using System.Linq
 
 @inject Service.JobManager JobManager
@@ -20,7 +21,7 @@
                   IsLoadingCollections="_isLoadingCollections"
                   HasExistingConnectionStrings="@(CurrentlyLoadedMigrationJob != null && !string.IsNullOrEmpty(GetSourceConnectionString(CurrentlyLoadedMigrationJob)) && !string.IsNullOrEmpty(GetTargetConnectionString(CurrentlyLoadedMigrationJob)))"
                   IsControlledPauseApplicable="@(CurrentlyLoadedMigrationJob != null && JobManager.IsControlledPauseApplicable(CurrentlyLoadedMigrationJob.JobType, CurrentlyLoadedMigrationJob))"
-                  IsControlledPauseRequested="@(JobManager.IsControlledPauseRequested() && IsJobRunning())"
+                  IsControlledPauseRequested="@(JobManager.GetLiveStatus(CurrentlyLoadedMigrationJob) == LiveJobStatus.Pausing)"
                   CutoverReady="CheckCutoverReadiness()"
                   ChangeFeedLag="GetChangeFeedLag()"
                   ErrorMessage="@_errorMessage"
@@ -710,16 +711,13 @@ else if (@_showLogBackupFile)
         if (!string.IsNullOrEmpty(targetConnectionString))
             MigrationContext.Credentials.SetTarget(mj.Id, targetConnectionString);
 
-        mj.Status = JobStatus.Running;
-
-        if (!mj.StartedOn.HasValue)
-            mj.StartedOn = DateTime.UtcNow;
+        // Job.Status is owned by JobManager.StartMigration — do not
+        // write it from the FE. The Pending → Running flip + initial
+        // disk save happen inside StartMigration before the runner
+        // task launches, so list views see the new status immediately.
 
         // Clear pending auto-start flag so it doesn't fire again
         MigrationContext.PendingAutoStartJobIds.TryRemove(mj.Id, out _);
-
-        MigrationContext.SaveMigrationJob(mj);
-        MigrationContext.SaveJobList();
 
 
         // Check if we should show the loading spinner
@@ -931,35 +929,21 @@ else if (@_showLogBackupFile)
     {
         _yesNoDialogOpen = false;
 
-        if (result.IsConfirmed)
-        {     
-            if (result.DiaLogType == YesNoDialog.Category.CutoverNot
-                || result.DiaLogType == YesNoDialog.Category.CompleteNot)
-            {
-                JobManager.StopMigration();                
-                if (CurrentlyLoadedMigrationJob != null)
-                {
-                    CurrentlyLoadedMigrationJob.Status = JobStatus.Completed;
-                }
+        if (!result.IsConfirmed) return;
 
-                if (MigrationContext.SaveMigrationJob(CurrentlyLoadedMigrationJob))
-                    return;
-
-                _refreshTimer = null;
-            }
-            else if (result.DiaLogType == YesNoDialog.Category.CancelNot)
-            {
-                JobManager.StopMigration();                
-                if (CurrentlyLoadedMigrationJob != null)
-                {
-                    CurrentlyLoadedMigrationJob.Status = JobStatus.Cancelled;
-                }
-
-                if (MigrationContext.SaveMigrationJob(CurrentlyLoadedMigrationJob))
-                    return;
-
-                _refreshTimer = null;
-            }
+        // JobManager owns Job.Status writes — record user intent here
+        // and let the run-finished finally block persist the terminal
+        // status (Completed for cutover, Cancelled for cancel). This
+        // eliminates the FE/runner race that previously left jobs
+        // showing "Stopped" or flipping back to Running.
+        if (result.DiaLogType == YesNoDialog.Category.CutoverNot
+            || result.DiaLogType == YesNoDialog.Category.CompleteNot)
+        {
+            JobManager.RequestCutover();
+        }
+        else if (result.DiaLogType == YesNoDialog.Category.CancelNot)
+        {
+            JobManager.RequestCancel();
         }
     }
 
@@ -968,12 +952,8 @@ else if (@_showLogBackupFile)
         _errorMessage = string.Empty;
         try
         {
-            // Set status BEFORE stopping so the coordinator's
-            // FinalizeStatus won't downgrade Paused -> Pending
-            if (CurrentlyLoadedMigrationJob != null)
-                CurrentlyLoadedMigrationJob.Status = JobStatus.Paused;
-            MigrationContext.SaveMigrationJob(CurrentlyLoadedMigrationJob);
-            JobManager.StopMigration();
+            // Same path as controlled pause — JobManager owns Status.
+            JobManager.RequestControlledPause();
         }
         catch (Exception ex)
         {
@@ -1011,15 +991,18 @@ else if (@_showLogBackupFile)
             return true;
     }
 
-    private  bool  IsPauseEnabled()
+    private bool IsPauseEnabled()
     {
-        return CurrentlyLoadedMigrationJob != null && CurrentlyLoadedMigrationJob.Status != JobStatus.Cancelled && CurrentlyLoadedMigrationJob.Status != JobStatus.Completed && IsJobRunning() && NoOtherActiveJobs();
+        if (CurrentlyLoadedMigrationJob == null) return false;
+        return JobLifecycle.CanPause(JobManager.GetLiveStatus(CurrentlyLoadedMigrationJob))
+            && NoOtherActiveJobs();
     }
 
 
     private bool IsResumeEnabled()
     {
-        return CurrentlyLoadedMigrationJob != null && CurrentlyLoadedMigrationJob.Status != JobStatus.Completed && !IsJobRunning();
+        if (CurrentlyLoadedMigrationJob == null) return false;
+        return JobLifecycle.CanResume(JobManager.GetLiveStatus(CurrentlyLoadedMigrationJob));
     }
 
     private bool CanAutoStart()
@@ -1055,36 +1038,10 @@ else if (@_showLogBackupFile)
     }
 
     private string GetJobStatusLabel(Job job)
-    {
-        if (job.Status == JobStatus.Completed) return "Completed";
-        if (job.Status == JobStatus.Cancelled) return "Cancelled";
-        if (IsJobRunning())
-        {
-            if (JobManager.IsControlledPauseRequested())
-                return "Pausing...";
-            return "Running";
-        }
-        if (job.Status == JobStatus.Faulted) return "Faulted";
-        if (job.Status == JobStatus.Paused) return "Paused";
-        if (job.Status == JobStatus.Running) return "Stopped";
-        return "Not Started";
-    }
+        => JobLifecycle.Label(JobManager.GetLiveStatus(job));
 
     private string GetJobStatusBadge(Job job)
-    {
-        if (job.Status == JobStatus.Completed) return "bg-success";
-        if (job.Status == JobStatus.Cancelled) return "bg-secondary";
-        if (IsJobRunning())
-        {
-            if (JobManager.IsControlledPauseRequested())
-                return "bg-warning text-dark";
-            return "bg-primary";
-        }
-        if (job.Status == JobStatus.Faulted) return "bg-danger";
-        if (job.Status == JobStatus.Paused) return "bg-warning text-dark";
-        if (job.Status == JobStatus.Running) return "bg-info";
-        return "bg-secondary";
-    }
+        => JobLifecycle.BadgeClass(JobManager.GetLiveStatus(job));
 }
 
 @if (_showPaginatedDownloadDialog)

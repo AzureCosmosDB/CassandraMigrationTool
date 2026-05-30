@@ -52,41 +52,17 @@ internal sealed class TableCopyCoordinator : IDisposable
 
     public void Cancel() => _cts?.Cancel();
 
-    private void FinalizeStatus(TaskResult result)
-    {
-        switch (result)
-        {
-            case TaskResult.Canceled:
-                _migrationJob.Status = JobStatus.Paused;
-                break;
-            case TaskResult.Abort:
-                if (_migrationJob.Status == JobStatus.Running)
-                    _migrationJob.Status = JobStatus.Pending;
-                break;
-        }
-        MigrationJobContext.Instance.SaveMigrationJob(_migrationJob);
-    }
-
     public async Task<TaskResult> MigrateTableAsync(TableMigration tableMigration)
     {
         ArgumentNullException.ThrowIfNull(tableMigration);
         tableMigration.ParentJob = _migrationJob;
 
-        var result = TaskResult.Success;
-        try
-        {
-            result = await MigrateTableCoreAsync(tableMigration);
-            return result;
-        }
-        catch (OperationCanceledException)
-        {
-            result = TaskResult.Canceled;
-            throw;
-        }
-        finally
-        {
-            FinalizeStatus(result);
-        }
+        // Job.Status is owned by JobManager (WebApp) and the offline
+        // finalize path in MigrationJobRunner. The coordinator must
+        // never write it — doing so used to race with the run-finished
+        // finally block and could overwrite Paused/Cancelled/Completed
+        // with Pending mid-cancellation.
+        return await MigrateTableCoreAsync(tableMigration);
     }
 
     private async Task<TaskResult> MigrateTableCoreAsync(TableMigration tableMigration)
