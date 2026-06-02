@@ -6,27 +6,57 @@
 {
     var sj = Job;
     var allUnits = sj.Tables;
-    int totalTables = allUnits.Count;
-    int copyDone = allUnits.Count(u => u.CopyComplete);
-    int inProgress = allUnits.Count(u => !u.CopyComplete && u.CopyPercent > 0);
-    int failedTables = allUnits.Count(u => u.SourceStatus == TableStatus.Failed);
-    long totalRows = allUnits.Sum(u => (long)u.CopyRowsCopied);
-    long totalDocs = allUnits.Sum(u => (long)u.TotalRowCount);
-    double avgSpeed = allUnits.Where(u => u.CopyRowsPerSecond > 0).Select(u => u.CopyRowsPerSecond).DefaultIfEmpty(0).Sum();
+    var realUnits = allUnits.Where(u => u.TableName != "*").ToList();
+    int wildcardPending = allUnits.Count - realUnits.Count;
+    int totalTables = realUnits.Count;
+    int copyDone = realUnits.Count(u => u.CopyComplete);
+    bool onlineReplayActive = sj.IsOnline
+        && !sj.Status.IsTerminal()
+        && copyDone > 0;
+    int replayingTables = onlineReplayActive ? copyDone : 0;
+    int inProgress = realUnits.Count(u => !u.CopyComplete
+        && (u.CopyPercent > 0 || u.CopyRowsCopied > 0 || u.CopyRowsPerSecond > 0));
+    int failedTables = realUnits.Count(u => u.SourceStatus == TableStatus.Failed);
+    long bulkRows = realUnits.Sum(u => (long)u.CopyRowsCopied);
+    long replayRows = realUnits.Sum(u => (long)u.ChangeFeedRowsInserted);
+    long totalRows = bulkRows + replayRows;
+    long totalDocs = realUnits.Sum(u => (long)u.TotalRowCount);
+    double avgSpeed = realUnits.Where(u => u.CopyRowsPerSecond > 0).Select(u => u.CopyRowsPerSecond).DefaultIfEmpty(0).Sum();
+    bool showReplaySuffix = sj.IsOnline && replayRows > 0;
+    string rowsTooltip = showReplaySuffix
+        ? $"Bulk: {bulkRows:N0} · Replay (CDC): {replayRows:N0}"
+        : string.Empty;
+    bool denominatorStale = totalDocs > 0 && totalRows > totalDocs;
+
+    @if (sj.IsSimulatedRun)
+    {
+        <div class="alert alert-warning py-2 mb-2" role="alert">
+            <i class="bi bi-eye" aria-hidden="true"></i>
+            <strong>Simulation Mode</strong> — this job ran with target writes
+            disabled. No data was written to the target cluster. Use this as
+            an audit / dry-run only; promote to a real run by creating a new
+            job with Simulated unchecked.
+        </div>
+    }
 
     <div class="card mb-3 mt-2">
         <div class="card-body py-2">
             <div class="row align-items-center">
                 <div class="col-auto">
                     <span class="badge @StatusBadge fs-6">@StatusLabel</span>
+                    @if (sj.IsSimulatedRun)
+                    {
+                        <span class="badge bg-warning text-dark fs-6 ms-2" title="Simulation mode — no target writes happened.">
+                            <i class="bi bi-eye" aria-hidden="true"></i> Simulated
+                        </span>
+                    }
                 </div>
                 <div class="col">
                     <small class="text-muted">
                         <strong>Type:</strong> @sj.JobType
-                        @if (MigrationUtilities.IsOnline(sj)) { <span> · <strong>Mode:</strong> Online (CDC)</span> }
+                        @if (sj.IsOnline) { <span> · <strong>Mode:</strong> Online (CDC)</span> }
                         else { <span> · <strong>Mode:</strong> Offline</span> }
                         @if (sj.StartedOn.HasValue) { <span> · <strong>Started:</strong> @sj.StartedOn.Value.ToString("yyyy-MM-dd HH:mm:ss") UTC</span> }
-                        @if (sj.IsSimulatedRun) { <span class="badge bg-info ms-1">Simulated</span> }
                     </small>
                 </div>
             </div>
@@ -35,15 +65,45 @@
                 <div class="col-auto">
                     <small class="text-muted">
                         <i class="bi bi-table"></i>
-                        <strong>Tables:</strong> @copyDone/@totalTables done
+                        @if (onlineReplayActive)
+                        {
+                            <strong>Tables:</strong> <span>@copyDone/@totalTables bulk done</span>
+                            <span class="text-info ms-1"
+                                  title="Bulk copy has finished for these tables but CDC replay is still draining live source mutations. Until you click Cut Over, the job is NOT complete.">
+                                · @replayingTables in CDC replay (waiting for cut over)
+                            </span>
+                        }
+                        else
+                        {
+                            <strong>Tables:</strong> <span>@copyDone/@totalTables done</span>
+                        }
                         @if (inProgress > 0) { <span>, @inProgress active</span> }
                         @if (failedTables > 0) { <span class="text-danger">, @failedTables failed</span> }
+                        @if (wildcardPending > 0)
+                        {
+                            <span class="text-info ms-1"
+                                  title="One or more 'keyspace.*' wildcards are queued and will be expanded into individual tables during the schema phase. The count above does not include the wildcard itself.">
+                                (+@wildcardPending wildcard pending expansion)
+                            </span>
+                        }
+                        @if (sj.Status == JobStatus.Paused) { <span class="text-warning"> (paused)</span> }
                     </small>
                 </div>
                 <div class="col-auto">
-                    <small class="text-muted">
+                    <small class="text-muted" title="@rowsTooltip">
                         <i class="bi bi-files"></i>
-                        <strong>Rows copied:</strong> @totalRows.ToString("N0")@(totalDocs > 0 ? $" / {totalDocs:N0}" : "")
+                        <strong>Rows copied:</strong> @totalRows.ToString("N0")@(!denominatorStale && totalDocs > 0 ? $" / {totalDocs:N0}" : "")
+                        @if (denominatorStale)
+                        {
+                            <span class="text-warning ms-1" style="font-size: 0.75rem;"
+                                  title="@($"Source likely received writes during bulk copy: numerator ({totalRows:N0}) exceeded the pre-job estimate ({totalDocs:N0}). The / denominator is hidden to avoid showing > 100% completion.")">
+                                (estimate stale)
+                            </span>
+                        }
+                        @if (showReplaySuffix)
+                        {
+                            <span class="text-muted ms-1" style="font-size: 0.75rem;" title="@rowsTooltip">(+@replayRows.ToString("N0") CDC)</span>
+                        }
                     </small>
                 </div>
                 @if (totalDocs > 0)
@@ -59,8 +119,7 @@
                     <small class="text-muted">
                         <i class="bi bi-speedometer2"></i>
                         <strong>Speed:</strong>
-                        @{ var sp = avgSpeed; }
-                        @(sp >= 1000 ? $"{sp/1000:F1}k/s" : $"{sp:F0}/s")
+                        @(avgSpeed >= 1000 ? $"{avgSpeed/1000:F1}k/s" : $"{avgSpeed:F0}/s")
                     </small>
                 </div>
                 @if (avgSpeed > 0 && totalDocs > totalRows)
@@ -69,24 +128,16 @@
                     <small class="text-muted">
                         <i class="bi bi-clock-history"></i>
                         <strong>ETA:</strong>
-                        @{
-                            long remaining = totalDocs - totalRows;
-                            double etaSec = remaining / avgSpeed;
-                            string etaStr;
-                            if (etaSec < 60) etaStr = $"{etaSec:F0}s";
-                            else if (etaSec < 3600) etaStr = $"{etaSec/60:F0}m {etaSec%60:F0}s";
-                            else etaStr = $"{etaSec/3600:F0}h {(etaSec%3600)/60:F0}m";
-                        }
-                        @etaStr
+                        @JobLifecycle.FormatEta(totalDocs - totalRows, avgSpeed)
                     </small>
                 </div>
                 }
                 <div class="col-auto">
                     <small class="text-muted">
                         <i class="bi bi-cpu"></i>
-                        <strong>Workers/table:</strong> @(sj.MaxFeedRangeParallelism > 0 ? sj.MaxFeedRangeParallelism.ToString() : $"auto ({Math.Max(4, Environment.ProcessorCount * 15 / Math.Max(1, sj.ParallelThreads))})")
-                        · <strong>Parallel tables:</strong> @sj.ParallelThreads
-                        · <strong>Connections/host:</strong> @(sj.MaxConnectionsPerHost > 0 ? sj.MaxConnectionsPerHost.ToString() : "1")
+                        <strong>Shared workers:</strong> @(sj.WorkerCount > 0 ? sj.WorkerCount.ToString() : $"auto ({Math.Max(MigrationDefaults.MinWorkers, Environment.ProcessorCount * MigrationDefaults.WorkerMultiplier)})")
+                        · <strong>Source conn/host:</strong> @FormatConnPerHost(sj.SourceMaxConnectionsPerHost, sj.MaxConnectionsPerHost)
+                        · <strong>Target conn/host:</strong> @FormatConnPerHost(sj.TargetMaxConnectionsPerHost, sj.MaxConnectionsPerHost)
                         · <strong>Page size:</strong> @(sj.PageSize > 0 ? sj.PageSize.ToString() : "500")
                     </small>
                 </div>
@@ -108,6 +159,12 @@
                         <span class="badge bg-warning text-dark" title="Schema sync was skipped — target schema (keyspaces, tables, UDTs) was assumed to already exist.">Skip schema sync</span>
                     </div>
                 }
+                @if (sj.SkipSourceRowCount)
+                {
+                    <div class="col-auto">
+                        <span class="badge bg-warning text-dark" title="SELECT COUNT(*) on the source was skipped — per-table progress displays as '?%' until the migration completes.">Skip source COUNT(*)</span>
+                    </div>
+                }
                 @if (sj.AppendMode)
                 {
                     <div class="col-auto">
@@ -123,4 +180,10 @@
     [Parameter] public Job? Job { get; set; }
     [Parameter] public string StatusLabel { get; set; } = string.Empty;
     [Parameter] public string StatusBadge { get; set; } = string.Empty;
+
+    private static string FormatConnPerHost(int sideValue, int fallback)
+    {
+        int effective = sideValue > 0 ? sideValue : fallback;
+        return effective > 0 ? effective.ToString() : "driver default";
+    }
 }

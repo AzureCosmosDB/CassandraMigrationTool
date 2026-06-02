@@ -1,7 +1,12 @@
 using Newtonsoft.Json;
-using System.Collections.Generic;
 
 namespace CassandraMigrationProcessor.Models;
+
+/// <summary>
+/// Persistent root document for a migration run: source/target connection
+/// info, pipeline tuning knobs, lifecycle <see cref="JobStatus"/>, and the
+/// list of <see cref="TableMigrationSummary"/> children it owns.
+/// </summary>
 public class Job
 {
     // ── Identity ──
@@ -37,39 +42,44 @@ public class Job
     // ── Pipeline Config ──
 
     /// <summary>
-    /// Number of parallel threads for row copy operations.
+    /// Size of the shared worker pool that does row-level copy work
+    /// across all tables. 0 = auto from <see cref="Environment.ProcessorCount"/>.
     /// </summary>
-    public int ParallelThreads { get; set; } = 5;
+    public int WorkerCount { get; set; } = 0;
 
     /// <summary>
-    /// Max concurrent feed-range workers per table.
-    /// 0 = auto (CPU cores × 15 / parallel tables).
-    /// </summary>
-    public int MaxFeedRangeParallelism { get; set; } = 0;
-
-    /// <summary>
-    /// Max Cassandra driver connections per host.
-    /// 0 = default (1 per worker session).
+    /// Max Cassandra driver connections per host. Back-compat fallback
+    /// for source and target when their specific overrides are 0.
+    /// 0 here means: use the driver default.
     /// </summary>
     public int MaxConnectionsPerHost { get; set; } = 0;
 
     /// <summary>
-    /// Rows per page when reading from source.
-    /// 0 = default (500). Larger pages reduce round-trips
-    /// but consume more RU per request.
+    /// Source (reader) driver connections per host. 0 falls back to
+    /// <see cref="MaxConnectionsPerHost"/> then to the driver default.
+    /// </summary>
+    public int SourceMaxConnectionsPerHost { get; set; } = 0;
+
+    /// <summary>
+    /// Target (writer) driver connections per host. Same fallback
+    /// chain as <see cref="SourceMaxConnectionsPerHost"/>.
+    /// </summary>
+    public int TargetMaxConnectionsPerHost { get; set; } = 0;
+
+    /// <summary>
+    /// Rows per page when reading from source. 0 = default (500).
     /// </summary>
     public int PageSize { get; set; } = 0;
 
     /// <summary>
-    /// Max retries for a transient source-side page read failure
-    /// (e.g. read timeout, no host available, overloaded).
+    /// Max retries for a transient source-side page read failure.
     /// 0 = default (3).
     /// </summary>
     public int MaxReadRetries { get; set; } = 0;
 
     /// <summary>
-    /// Max retries for a transient target-side per-row write failure
-    /// (e.g. write timeout, overloaded). 0 = default (5).
+    /// Max retries for a transient target-side per-row write failure.
+    /// 0 = default (5).
     /// </summary>
     public int MaxWriteRetries { get; set; } = 0;
 
@@ -90,17 +100,19 @@ public class Job
     public bool DropTargetTableBeforeStart { get; set; }
 
     /// <summary>
-    /// When true, the migration tool does NOT create or modify schema
-    /// (keyspaces, tables, or User-Defined Types) on the target. An
-    /// identical schema is expected to have been provisioned on the
-    /// target before the job starts. Use this when target schema
-    /// management is owned by another process or when it must be
-    /// customised (e.g. different replication settings, table options,
-    /// or a subset of UDTs) and the tool's automatic replication is
-    /// not appropriate. Default is false (the tool replicates schema
-    /// automatically — see <see cref="CassandraDriver.SchemaManager.SyncSchemaAsync"/>).
+    /// When true, the tool does NOT create or modify schema on the
+    /// target — an identical schema must be provisioned beforehand.
+    /// Default is false.
     /// </summary>
     public bool SkipSchemaSync { get; set; }
+
+    /// <summary>
+    /// When true, the tool does NOT run a per-table <c>SELECT COUNT(*)</c>
+    /// during partitioning to learn the source row count. Progress
+    /// display shows "?%" for those tables. Useful when COUNT(*) is
+    /// expensive or disabled on the source. Default is false.
+    /// </summary>
+    public bool SkipSourceRowCount { get; set; }
 
     /// <summary>
     /// Minimum log level. Default is Info.
@@ -116,6 +128,13 @@ public class Job
 
     public DateTime? StartedOn { get; set; }
 
+    /// <summary>
+    /// UTC timestamp of the moment <see cref="Status"/> transitioned
+    /// to a terminal state (Completed, Faulted, or Cancelled).
+    /// Written by MigrationJobRunner.
+    /// </summary>
+    public DateTime? EndedOn { get; set; }
+
     [JsonProperty("MigrationUnitBasics")]
     public List<TableMigrationSummary> Tables { get; set; } = new();
 
@@ -124,34 +143,31 @@ public class Job
 
     public string? Namespaces { get; set; }
 
-    // ── Computed ──
-
+    /// <summary>
+    /// True when this job runs change-data-capture replay alongside bulk
+    /// copy. False for pure offline jobs which finish once bulk copy
+    /// completes.
+    /// </summary>
     [JsonIgnore]
-    public ConnectionOptions SourceConnection
+    public bool IsOnline => CDCMode != CDCMode.Offline;
+
+    /// <summary>
+    /// True iff every valid table in this offline job has finished bulk
+    /// copy. Always false for online jobs (they don't have a single
+    /// "done" moment — they tail change feeds forever).
+    /// </summary>
+    [JsonIgnore]
+    public bool IsOfflineCompleted
     {
         get
         {
-            // AAD on Cosmos DB Cassandra requires the account name as
-            // the username. When the user enables AAD without typing
-            // it, derive it from the contact point so that worker-side
-            // sessions (PageReader) get an authenticator just like the
-            // control-plane Job-based CreateSourceSession overload does.
-            string? user = SourceUsername;
-            if (string.IsNullOrWhiteSpace(user)
-                && SourceUseAad
-                && !string.IsNullOrEmpty(SourceContactPoint))
+            if (Tables.Count == 0) return false;
+            foreach (var t in Tables)
             {
-                user = SourceContactPoint.Split('.')[0];
+                if (!t.IsValid) continue;
+                if (!t.CopyComplete) return false;
             }
-            return new(
-                SourceContactPoint ?? "", SourcePort,
-                user, SourcePassword, true);
+            return true;
         }
     }
-
-    [JsonIgnore]
-    public ConnectionOptions TargetConnection => new(
-        TargetContactPoint ?? "", TargetPort,
-        TargetUsername, TargetPassword, true,
-        MaxConnectionsPerHost);
 }

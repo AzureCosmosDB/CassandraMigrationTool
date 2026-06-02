@@ -1,8 +1,6 @@
 using Cassandra;
-using System;
+using System.Diagnostics;
 using System.Security.Authentication;
-using System.Threading;
-using System.Threading.Tasks;
 using CassandraMigrationProcessor.Infrastructure;
 using CassandraMigrationProcessor.Models;
 namespace CassandraMigrationProcessor.CassandraDriver;
@@ -32,38 +30,38 @@ public static class CassandraClientFactory
         int port,
         string username,
         string password,
-        string keyspace,
-        TokenRefreshManager? tokenRefreshManager = null)
+        TokenRefreshManager? tokenRefreshManager = null,
+        int maxConnectionsPerHost = 0)
     {
         // Cache parameters for token refresh reconnection
         tokenRefreshManager?.CacheSourceConnectionParams(
-            contactPoint, port, username, keyspace);
+            contactPoint, port, username);
 
         // Source always uses SSL (Cosmos DB requires it)
         var builder = CreateBaseBuilder(
             contactPoint, port, username, password,
-            useSsl: true);
+            useSsl: true, maxConnectionsPerHost);
 
+        // Single connect+register success path. The loop covers all
+        // attempts; the `when (attempt < MaxRetries)` filter swallows
+        // transient failures only on attempts 1..MaxRetries-1, so on
+        // the final attempt any exception — transient or not —
+        // propagates out unhandled, matching the original "Final
+        // attempt — let exception propagate" semantics.
         const int MaxRetries = 5;
         for (int attempt = 1; attempt <= MaxRetries; attempt++)
         {
             try
             {
-                var session = ConnectCluster(builder, keyspace);
-
-                if (TokenRefreshManager.IsLikelyAadToken(password))
-                {
-                    tokenRefreshManager?.SetManagedSourceSession(session);
-                    tokenRefreshManager?.StartTokenRefreshTimer(password);
-                }
-
+                var session = ConnectCluster(builder);
+                RegisterAadTokenRefresh(session, password, tokenRefreshManager);
                 return session;
             }
             catch (Exception ex) when (
-                IsRetryableException(ex)
+                ExceptionClassifier.IsTransient(ex)
                 && attempt < MaxRetries)
             {
-                int delayMs = GetRetryDelayMs(ex, attempt);
+                int delayMs = ExceptionClassifier.GetRetryDelayMs(ex, attempt);
                 MigrationLog.WriteLine(
                     $"Source connect retry " +
                     $"{attempt}: {ex.Message}",
@@ -72,85 +70,38 @@ public static class CassandraClientFactory
             }
         }
 
-        // Final attempt — let exception propagate
-        var finalSession = ConnectCluster(builder, keyspace);
-
-        if (TokenRefreshManager.IsLikelyAadToken(password))
-        {
-            tokenRefreshManager?.SetManagedSourceSession(finalSession);
-            tokenRefreshManager?.StartTokenRefreshTimer(password);
-        }
-
-        return finalSession;
+        // Unreachable: the loop either returns on success or rethrows
+        // on the final attempt (the `when` filter is false when
+        // attempt == MaxRetries).
+        throw new UnreachableException();
     }
 
     /// <summary>
-    /// Determine if an exception is retryable (429, overload,
-    /// transient connection errors).
+    /// When <paramref name="password"/> looks like an AAD/JWT bearer
+    /// token and the caller wired up a <see cref="TokenRefreshManager"/>,
+    /// hand the freshly-connected <paramref name="session"/> off so the
+    /// proactive refresh timer can rotate the bearer before it expires.
+    /// No-op when the password is a static credential or the manager is
+    /// not supplied.
     /// </summary>
-    internal static bool IsRetryableException(Exception ex)
+    private static void RegisterAadTokenRefresh(
+        ISession session,
+        string password,
+        TokenRefreshManager? tokenRefreshManager)
     {
-        if (ex is global::Cassandra.OverloadedException)
-            return true;
-
-        var msg = ex.Message ?? string.Empty;
-        var inner = ex.InnerException?.Message ?? string.Empty;
-        var fullMsg = msg + " " + inner;
-
-        return fullMsg.Contains("429")
-            || fullMsg.Contains("TooManyRequests")
-            || fullMsg.Contains("OverloadedException")
-            || fullMsg.Contains("Request rate is large")
-            || fullMsg.Contains("RetryAfterMs")
-            || fullMsg.Contains("rate limit",
-                StringComparison.OrdinalIgnoreCase);
-    }
-
-    /// <summary>
-    /// Extract RetryAfterMs from error message if present,
-    /// otherwise use exponential backoff.
-    /// </summary>
-    internal static int GetRetryDelayMs(
-        Exception ex, int attempt)
-    {
-        // Try to extract RetryAfterMs=NNN from message
-        var msg = (ex.Message ?? "") + " "
-            + (ex.InnerException?.Message ?? "");
-        var idx = msg.IndexOf("RetryAfterMs=",
-            StringComparison.OrdinalIgnoreCase);
-        if (idx >= 0)
-        {
-            var start = idx + "RetryAfterMs=".Length;
-            var end = start;
-            while (end < msg.Length
-                && char.IsDigit(msg[end])) end++;
-            if (end > start
-                && int.TryParse(
-                    msg.Substring(start, end - start),
-                    out var retryMs)
-                && retryMs > 0)
-            {
-                // Add jitter: retryMs + 100-500ms
-                return retryMs + Random.Shared.Next(100, 500);
-            }
-        }
-
-        // Exponential backoff: 1s, 2s, 4s, 8s, 16s
-        return (int)(Math.Pow(2, attempt - 1) * 1000)
-            + Random.Shared.Next(100, 500);
+        if (!TokenRefreshManager.IsLikelyAadToken(password)) return;
+        tokenRefreshManager?.SetManagedSourceSession(session);
+        tokenRefreshManager?.StartTokenRefreshTimer(password);
     }
 
     /// <summary>
     /// Create a session to an OSS Apache Cassandra cluster.
     /// Tries SSL first, falls back to plain if SSL fails.
     /// </summary>
-    public static ISession CreateTargetSession(
-        MigrationLog MigrationLog,
-        string contactPoint,
+    private static ISession CreateTargetSession(string contactPoint,
         int port,
         string username,
         string password,
-        string keyspace,
         bool useSsl = true,
         int maxConnectionsPerHost = 0)
     {
@@ -163,8 +114,7 @@ public static class CassandraClientFactory
                 return ConnectCluster(
                     CreateBaseBuilder(
                         contactPoint, port, username, password,
-                        useSsl: true, maxConnectionsPerHost),
-                    keyspace);
+                        useSsl: true, maxConnectionsPerHost));
             }
             catch (Exception ex)
             {
@@ -177,11 +127,32 @@ public static class CassandraClientFactory
             return ConnectCluster(
                 CreateBaseBuilder(
                     contactPoint, port, username, password,
-                    useSsl: false, maxConnectionsPerHost),
-                keyspace);
+                    useSsl: false, maxConnectionsPerHost));
         }
         catch (Exception ex)
         {
+            // If either attempt failed for AuthenticationException-class
+            // reasons, surface that as the outer exception so
+            // ExceptionClassifier.IsAuth (which only checks the outer
+            // type) can flag it. The AggregateException wrapper below
+            // otherwise masks auth as a generic connect failure.
+            var authInner = UnwrapToAuthenticationException(sslException)
+                            ?? UnwrapToAuthenticationException(ex);
+            if (authInner != null)
+            {
+                var promoted = new Cassandra.AuthenticationException(
+                    $"Authentication failed connecting to {contactPoint}:{port}. " +
+                    $"SSL error: {sslException?.Message}. " +
+                    $"Plain error: {ex.Message}",
+                    authInner.Host);
+                // Cassandra.AuthenticationException has no (string, Exception)
+                // overload; stash original stacks on Data so logging
+                // surfaces upstream TLS / socket detail.
+                if (sslException != null)
+                    promoted.Data["SslError"] = sslException.ToString();
+                promoted.Data["PlainError"] = ex.ToString();
+                throw promoted;
+            }
             // Throw the SSL exception if both fail
             throw new AggregateException(
                 $"Failed to connect to {contactPoint}:{port}. " +
@@ -189,6 +160,44 @@ public static class CassandraClientFactory
                 $"Plain error: {ex.Message}",
                 sslException ?? ex, ex);
         }
+    }
+
+    /// <summary>
+    /// Walks an AggregateException / InnerException /
+    /// NoHostAvailableException chain looking for the first
+    /// <see cref="Cassandra.AuthenticationException"/>. The driver
+    /// typically wraps bad creds in NoHostAvailableException whose
+    /// per-host <see cref="NoHostAvailableException.Errors"/> dictionary
+    /// holds the actual AuthenticationException.
+    /// </summary>
+    private static Cassandra.AuthenticationException? UnwrapToAuthenticationException(Exception? ex)
+    {
+        for (int depth = 0; ex != null && depth < 8; depth++)
+        {
+            if (ex is Cassandra.AuthenticationException auth)
+                return auth;
+            if (ex is NoHostAvailableException nhae)
+            {
+                if (nhae.Errors != null)
+                {
+                    var found = nhae.Errors.Values
+                        .Select(UnwrapToAuthenticationException)
+                        .FirstOrDefault(a => a != null);
+                    if (found != null) return found;
+                }
+                return null;
+            }
+            if (ex is AggregateException agg)
+            {
+                var found = agg.InnerExceptions
+                    .Select(UnwrapToAuthenticationException)
+                    .FirstOrDefault(a => a != null);
+                if (found != null) return found;
+                return null;
+            }
+            ex = ex.InnerException;
+        }
+        return null;
     }
 
     private static Builder CreateBaseBuilder(
@@ -217,14 +226,15 @@ public static class CassandraClientFactory
         {
             var sslOptions = new SSLOptions(
                 SslProtocols.None, false,
-                (sender, certificate, chain, sslPolicyErrors) =>
-                {
-                    return true; // Azure MI certs may have chain+name issues
-                });
+                (_, _, _, _) => true);
             sslOptions.SetHostNameResolver(_ => contactPoint);
             builder = builder.WithSSL(sslOptions);
         }
 
+        // Apply pooling only when the caller explicitly opted in via
+        // maxConnectionsPerHost > 0. Otherwise leave the driver defaults
+        // alone — we do not silently impose Cosmos DB recommendations or
+        // any other tuning based on the endpoint.
         if (maxConnectionsPerHost > 0)
         {
             int localMax = maxConnectionsPerHost;
@@ -241,16 +251,15 @@ public static class CassandraClientFactory
         return builder;
     }
 
-    private static ISession ConnectCluster(
-        Builder builder, string keyspace)
+    private static ISession ConnectCluster(Builder builder)
     {
         Cluster? cluster = null;
         try
         {
             cluster = builder.Build();
-            return string.IsNullOrWhiteSpace(keyspace)
-                ? cluster.Connect()
-                : cluster.Connect(keyspace);
+            // Sessions are keyspace-agnostic: every query uses
+            // fully-qualified "keyspace"."table" identifiers.
+            return cluster.Connect();
         }
         catch
         {
@@ -266,7 +275,7 @@ public static class CassandraClientFactory
     /// token automatically.
     /// </summary>
     public static ISession CreateSourceSession(
-        MigrationLog MigrationLog, Job job, string keyspace,
+        MigrationLog MigrationLog, Job job,
         TokenRefreshManager? tokenRefreshManager = null)
     {
         if (string.IsNullOrEmpty(job.SourceContactPoint))
@@ -280,8 +289,12 @@ public static class CassandraClientFactory
         {
             password = tokenRefreshManager?.GetFreshAadToken()
                 ?? TokenRefreshManager.AcquireAadToken();
-            // Cache it in memory (not persisted)
-            job.SourcePassword = password;
+            // SECURITY: do NOT write the AAD bearer token back into
+            // job.SourcePassword — even though [JsonIgnore] keeps it
+            // off disk, the Blazor "Update Connection Strings" modal
+            // would echo it into a <input value="…"> and leak the
+            // bearer JWT to the browser DOM. Azure.Identity caches
+            // tokens in-process so re-acquiring per call is free.
             job.SourceUseAad = true;
         }
 
@@ -303,17 +316,30 @@ public static class CassandraClientFactory
             job.SourcePort,
             username,
             password,
-            keyspace,
-            tokenRefreshManager);
+            tokenRefreshManager,
+            maxConnectionsPerHost: ResolveMaxConnectionsPerHost(job.SourceMaxConnectionsPerHost, job.MaxConnectionsPerHost));
     }
+
+    /// <summary>
+    /// Per-side connection pool sizing. The per-side override
+    /// (<see cref="Job.SourceMaxConnectionsPerHost"/> /
+    /// <see cref="Job.TargetMaxConnectionsPerHost"/>) takes precedence
+    /// when positive; otherwise the job-level fallback
+    /// <see cref="Job.MaxConnectionsPerHost"/> applies to both sides.
+    /// </summary>
+    internal static int ResolveMaxConnectionsPerHost(int perSideOverride, int jobWideFallback)
+        => perSideOverride > 0 ? perSideOverride : jobWideFallback;
 
     /// <summary>
     /// Async version — Create target session from a Job's properties.
     /// Prefer this over the sync overload to avoid blocking on ARM discovery.
     /// </summary>
     public static async Task<ISession> CreateTargetSessionAsync(
-        MigrationLog MigrationLog, Job job, string keyspace)
+        MigrationLog MigrationLog, Job job)
     {
+        if (job.IsSimulatedRun)
+            return new NullSession();
+
         if (string.IsNullOrEmpty(job.TargetContactPoint))
             throw new ArgumentException("Target contact point is required", nameof(job));
 
@@ -330,18 +356,17 @@ public static class CassandraClientFactory
                         job.TargetContactPoint,
                         job.TargetPort);
 
-                if (armResult.AuthMethod == "None")
-                {
-                    username = string.Empty;
-                    password = string.Empty;
-                }
-                else if (!string.IsNullOrEmpty(armResult.Password))
+                if (armResult.AuthMethod != "None"
+                    && !string.IsNullOrEmpty(armResult.Password))
                 {
                     username = armResult.Username ?? username;
                     password = armResult.Password;
                 }
                 else
                 {
+                    // ARM said "no auth" or returned no usable
+                    // password — fall back to anonymous bind so the
+                    // session attempt below isn't authenticated.
                     username = string.Empty;
                     password = string.Empty;
                 }
@@ -352,47 +377,10 @@ public static class CassandraClientFactory
             }
         }
 
-        return CreateTargetSession(
-            MigrationLog,
-            job.TargetContactPoint,
+        return CreateTargetSession(job.TargetContactPoint,
             job.TargetPort,
             username,
             password,
-            keyspace,
-            maxConnectionsPerHost: job.MaxConnectionsPerHost);
-    }
-
-    /// <summary>
-    /// Create source session from ConnectionOptions.
-    /// </summary>
-    public static ISession CreateSourceSession(
-        MigrationLog log, ConnectionOptions conn, string keyspace,
-        TokenRefreshManager? tokenRefreshManager = null)
-    {
-        return CreateSourceSession(
-            log,
-            conn.Host,
-            conn.Port,
-            conn.Username ?? string.Empty,
-            conn.Password ?? string.Empty,
-            keyspace,
-            tokenRefreshManager);
-    }
-
-    /// <summary>
-    /// Create target session from ConnectionOptions.
-    /// </summary>
-    public static ISession CreateTargetSession(
-        MigrationLog log, ConnectionOptions conn, string keyspace)
-    {
-        return CreateTargetSession(
-            log,
-            conn.Host,
-            conn.Port,
-            conn.Username ?? string.Empty,
-            conn.Password ?? string.Empty,
-            keyspace,
-            conn.UseSsl,
-            conn.MaxConnectionsPerHost);
+            maxConnectionsPerHost: ResolveMaxConnectionsPerHost(job.TargetMaxConnectionsPerHost, job.MaxConnectionsPerHost));
     }
 }

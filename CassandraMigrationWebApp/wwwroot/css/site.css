@@ -62,7 +62,7 @@ a:hover { color: var(--az-brand-hover); text-decoration: underline; }
     background-color: var(--az-topbar);
     color: #ffffff;
     padding: 0 16px;
-    height: 40px;
+    min-height: 40px;
     display: flex;
     align-items: center;
     border-bottom: none;

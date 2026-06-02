@@ -1,17 +1,16 @@
 using Microsoft.AspNetCore.Mvc;
 using CassandraMigrationProcessor.Context;
-using CassandraMigrationWebApp.Service;
 using System.Text;
 
 [ApiController]
 [Route("api/[controller]")]
 public class FileController : ControllerBase
 {
-    private readonly MigrationContextService _ctx;
+    private readonly MigrationJobContext _context;
 
-    public FileController(MigrationContextService ctx)
+    public FileController(MigrationJobContext context)
     {
-        _ctx = ctx;
+        _context = context;
     }
 
     [HttpGet("download/TableMigration/{jobId}/{migrationUnitId}")]
@@ -19,12 +18,12 @@ public class FileController : ControllerBase
     {
         var filePath = Path.Combine(JobStore.JobsFolder, jobId, $"{migrationUnitId}.json");
 
-        if (_ctx.Store == null || !_ctx.Store.Exists(filePath))
+        if (_context.Store == null || !_context.Store.Exists(filePath))
         {
             return NotFound("Migration unit file not found.");
         }
 
-        var jsonContent = _ctx.Store.Read(filePath);
+        var jsonContent = _context.Store.Read(filePath);
 
         if (string.IsNullOrEmpty(jsonContent))
         {
@@ -43,7 +42,7 @@ public class FileController : ControllerBase
     [HttpGet("download/job/{jobId}")]
     public IActionResult DownloadJob(string jobId)
     {
-        var job = _ctx.GetJob(jobId);
+        var job = _context.GetMigrationJob(jobId);
 
         if (job == null)
         {

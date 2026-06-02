@@ -7,7 +7,7 @@
     <Nullable>enable</Nullable>
     <AssemblyName>CassandraMigrationProcessor</AssemblyName>
     <RootNamespace>CassandraMigrationProcessor</RootNamespace>
-    <NoWarn>CS8602;CS8603;CS8604;CS8618;CS1998;CS0219;CS0618;CS0105;CS8600;CS8625;CS8619;CS0168;CS8629;CS0472;NU1605</NoWarn>
+    <NoWarn>CS8602;CS8603;CS8604;CS8618;CS1998;CS0219;CS0618;CS0105;CS8600;CS8625;CS8619;CS0168;CS8629;CS0472;NU1605;CS1591;CS1573;CS1572;CS1574;CS1587;CS1734</NoWarn>
   </PropertyGroup>
 
   <ItemGroup>

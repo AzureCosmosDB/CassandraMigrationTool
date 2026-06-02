@@ -1,5 +1,6 @@
 @page "/jobreport/{JobId}"
 @using CassandraMigrationProcessor
+@using static CassandraMigrationWebApp.Components.TableMigrationFormatting
 @inject Service.JobManager JobManager
 @inject NavigationManager NavigationManager
 
@@ -24,6 +25,7 @@
 }
 else
 {
+    var migrationUnits = JobManager.GetMigrationUnits(Job) ?? new List<TableMigration>();
     <style>
         /* Printer friendly styles */
         @@page {
@@ -67,11 +69,11 @@ else
                 <tr><td class="nowrap">Job Name</td><td class="wrap">@Job.Name</td></tr>
                 <tr><td class="nowrap">Job Type</td><td>@GetToolName(Job.JobType)</td></tr>
                 <tr><td class="nowrap">Started On (UTC)</td><td>@(Job.StartedOn?.ToString() ?? "N/A")</td></tr>
-                <tr><td class="nowrap">Is Online</td><td>@(MigrationUtilities.IsOnline(Job) ? "Yes" : "No")</td></tr>
+                <tr><td class="nowrap">Is Online</td><td>@(Job.IsOnline ? "Yes" : "No")</td></tr>
                 <tr><td class="nowrap">Is Completed</td><td>@(Job.Status == JobStatus.Completed ? "Yes" : "No")</td></tr>
                 <tr><td class="nowrap">Source Contact Point</td><td class="wrap">@Job.SourceContactPoint</td></tr>
                 <tr><td class="nowrap">Target Contact Point</td><td class="wrap">@Job.TargetContactPoint</td></tr>
-                <tr><td class="nowrap">Collection Count</td><td>@(@JobManager.GetMigrationUnits(Job)?.Count ?? 0)</td></tr>
+                <tr><td class="nowrap">Collection Count</td><td>@migrationUnits.Count</td></tr>
             </tbody>
         </table>
     </div>
@@ -86,7 +88,7 @@ else
             </tr>
         </thead>
         <tbody>
-        @foreach (var mu in (@JobManager.GetMigrationUnits(Job) ?? new List<TableMigration>()))
+        @foreach (var mu in migrationUnits)
         {
             var duration = GetDuration(mu.BulkCopyStartedOn, mu.BulkCopyEndedOn);
             <tr>
@@ -107,7 +109,7 @@ else
                     <div><span class="lbl">Actual Count:</span> @FormatLong(mu.ActualRowCount)</div>
                     <div><span class="lbl">Count While Copying:</span> @FormatLong(mu.SourceCountDuringCopy)</div>
                     @{
-                        var totals = MigrationUtilities.GetProcessedTotals(mu);
+                        var totals = mu.GetProcessedTotals();
                     }
                     <div><span class="lbl">Processed Total:</span> @FormatLong(totals.Total)</div>
                     <div><span class="lbl">Insert:</span> @FormatLong(totals.Inserted)</div>
@@ -152,27 +154,4 @@ else
             _ => "NA"
         };
     }
-
-    private static string GetDuration(DateTime? start, DateTime? end)
-    {
-        if (!start.HasValue || !end.HasValue || start.Value == DateTime.MinValue || end.Value == DateTime.MinValue)
-            return "N/A";
-        var d = end.Value - start.Value;
-        return $"{(int)d.TotalHours}h {d.Minutes}m {d.Seconds}s";
-    }
-
-    private static bool HasTargetNamespaceMapping(TableMigration mu)
-    {
-        return !string.Equals(mu.KeyspaceName, mu.GetEffectiveTargetKeyspaceName(), StringComparison.OrdinalIgnoreCase)
-            || !string.Equals(mu.TableName, mu.GetEffectiveTargetTableName(), StringComparison.OrdinalIgnoreCase);
-    }
-
-    private static string GetTargetNamespace(TableMigration mu)
-    {
-        return $"{mu.GetEffectiveTargetKeyspaceName()}.{mu.GetEffectiveTargetTableName()}";
-    }
-
-   
-
-    private static string FormatLong(long value) => string.Format(System.Globalization.CultureInfo.InvariantCulture, "{0:N0}", value);
 }

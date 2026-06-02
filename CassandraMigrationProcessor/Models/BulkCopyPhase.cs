@@ -13,7 +13,7 @@ namespace CassandraMigrationProcessor.Models;
 public enum BulkCopyPhase
 {
     NotStarted = 0,
-    PreparingSchema = 1,
+    InitializingDestination = 1,
     Copying = 2,
     Completed = 3,
 }

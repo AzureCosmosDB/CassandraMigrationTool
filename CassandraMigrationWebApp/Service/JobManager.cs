@@ -1,10 +1,3 @@
-using System;
-using System.Collections.Generic;
-using System.IO;
-using System.Linq;
-using System.Threading;
-using System.Threading.Tasks;
-using CassandraMigrationProcessor;
 using CassandraMigrationProcessor.Infrastructure;
 using CassandraMigrationProcessor.Models;
 using CassandraMigrationProcessor.DataTransfer;
@@ -13,51 +6,31 @@ using CassandraMigrationProcessor.Context;
 namespace CassandraMigrationWebApp.Service;
 public class JobManager
 {
-    private MigrationWorker? MigrationWorker { get; set; }
+    private MigrationJobRunner? MigrationJobRunner { get; set; }
     private MigrationLog _log;
-    private CancellationTokenSource? _migrationCts;
+    private JobControl? _control;
     private string _runningJobId = string.Empty;
     private readonly object _stateLock = new();
-    private Task? _migrationTask;
 
     private DateTime _lastJobHeartBeat = DateTime.MinValue;
     private string _lastJobID = string.Empty;
-    private readonly IConfiguration _configuration;
-    private readonly MigrationContextService _ctx;
-    private readonly MigrationJobContext _migrationJobContext;
-    private string? _webAppBaseUrl = null;
+    private readonly MigrationJobContext _context;
 
-    public JobManager(IConfiguration configuration, MigrationContextService ctx, MigrationJobContext migrationJobContext)
+    public JobManager(MigrationJobContext context)
     {
-        _configuration = configuration;
-        _ctx = ctx;
-        _migrationJobContext = migrationJobContext;
+        _context = context;
         _log = CreateLog();
-
-        MigrationUtilities.LogToFile("JobManager initialized");
     }
 
     private MigrationLog CreateLog()
     {
         var log = new MigrationLog();
-        if (_ctx.LogStore != null)
-            log.SetStorage(_migrationJobContext.CreateLogStorageCallbacks(_ctx.LogStore));
+        if (_context.LogStore != null)
+            log.SetStorage(_context.CreateLogStorageCallbacks(_context.LogStore));
         return log;
     }
 
     #region Configuration Management
-
-    /// <summary>
-    /// Updates the WebAppBaseUrl from browser context. Called from Index.razor on first load.
-    /// </summary>
-    public void UpdateWebAppBaseUrlFromBrowser(string baseUri)
-    {
-        if (string.IsNullOrEmpty(baseUri))
-            return;
-
-        _webAppBaseUrl = baseUri.TrimEnd('/');
-        MigrationUtilities.LogToFile($"WebAppBaseUrl updated from browser: {_webAppBaseUrl}");
-    }
 
     public bool UpdateConfig(CassandraMigrationProcessor.Models.AppSettings updated_config, out string errorMessage)
     {
@@ -87,7 +60,7 @@ public class JobManager
         {
             foreach (var mub in mj.Tables)
             {
-                var mu = _ctx.GetUnit(mub.Id, mj.Id);
+                var mu = _context.GetMigrationUnit(mub.Id, mj.Id);
                 if (mu != null)
                     units.Add(mu);
             }
@@ -96,25 +69,25 @@ public class JobManager
     }
 
 
-    public Job? GetMigrationJobById(string id, bool active = true)
+    public Job? GetMigrationJobById(string id)
     {
-        return _ctx.GetJob(id);
+        return _context.GetMigrationJob(id);
     }
 
     public List<string> GetMigrationIds()
     {
-        return _ctx.JobIndex.MigrationJobIds;
+        return _context.JobIndex.MigrationJobIds;
     }
 
     public void ClearJobFiles(string jobId)
     {
-        _ctx.JobIndex.MigrationJobIds?.Remove(jobId);
-        _ctx.SaveJobList();
+        _context.JobIndex.MigrationJobIds?.Remove(jobId);
+        _context.SaveJobList();
 
         Task.Run(() =>
         {
-            _ctx.Store.Delete($"{Path.Combine(JobStore.JobsFolder, jobId)}");
-            _ctx.LogStore.DeleteLogs(jobId);
+            _context.Store.Delete($"{Path.Combine(JobStore.JobsFolder, jobId)}");
+            _context.LogStore.DeleteLogs(jobId);
 
             string dumpPath = Path.Combine(DataDirectoryResolver.GetWorkingFolder(), "cassandradump", jobId);
             if (Directory.Exists(dumpPath))
@@ -173,16 +146,59 @@ public class JobManager
 
     #endregion
 
-    #region Migration Worker Management
+    #region Migration Job Runner Management
 
-    public void StopMigration()
+    /// <summary>
+    /// Common preamble for user-initiated lifecycle intents. Captures
+    /// <see cref="_runningJobId"/> under the state lock, returns false
+    /// when no job is running, and emits the standard audit log line.
+    /// </summary>
+    private bool TryClaimRunningJob(string action, out string jobId)
+    {
+        jobId = _runningJobId ?? string.Empty;
+        if (string.IsNullOrEmpty(jobId)) return false;
+        _log.WriteLine($"User requested {action} for job {jobId}", LogType.Info);
+        return true;
+    }
+
+    public void StopMigration() =>
+        // _runningJobId is cleared by the runner's finally so the
+        // UI keeps showing "Cancelling..." while the pipeline drains.
+        TerminateRun("CANCEL", c => c.RequestStop());
+
+    /// <summary>
+    /// User-initiated cutover on an Online/CDC job. Records cutover
+    /// intent so the run-finished finally block writes Completed
+    /// (terminal). Pipeline drain is the same as Cancel.
+    /// </summary>
+    public void RequestCutover() =>
+        TerminateRun("CUTOVER", c => c.RequestCutover());
+
+    /// <summary>
+    /// Shared terminate-run preamble for <see cref="StopMigration"/>
+    /// and <see cref="RequestCutover"/>. Holds the state lock, claims
+    /// the running job (no-op if none), signals the supplied intent on
+    /// <see cref="JobControl"/>, then eagerly tears the pipeline down.
+    /// </summary>
+    private void TerminateRun(string action, Action<JobControl> requestOnControl)
     {
         lock (_stateLock)
         {
-            _migrationCts?.Cancel();
-            MigrationWorker?.Stop();
-            _runningJobId = string.Empty;
+            if (!TryClaimRunningJob(action, out _)) return;
+            if (_control != null) requestOnControl(_control);
+            MigrationJobRunner?.Stop();
         }
+    }
+
+    /// <summary>
+    /// User-initiated pause: cancels the JobControl token. The runner's
+    /// finally reads <see cref="JobCommand.PauseRequested"/> and writes
+    /// <see cref="JobStatus.Paused"/>.
+    /// </summary>
+    public void RequestControlledPause()
+    {
+        TryClaimRunningJob("PAUSE", out _);
+        _control?.RequestPause();
     }
 
     /// <summary>
@@ -207,15 +223,59 @@ public class JobManager
     }
 
     /// <summary>
-    /// Gets whether controlled pause is currently requested
+    /// Single source-of-truth for what a job looks like to the UI.
+    /// Combines runtime intent (<see cref="JobControl.Requested"/>)
+    /// with the persisted <see cref="JobStatus"/> so transient states
+    /// (Pausing / Cancelling / CuttingOver) stay coherent.
     /// </summary>
-    public bool IsControlledPauseRequested()
+    public LiveJobStatus GetLiveStatus(Job? job)
     {
-        return _ctx.ControlledPauseRequested;
+        if (job == null) return LiveJobStatus.NotStarted;
+
+        // Process-live state takes priority over persisted Status.
+        if (IsProcessRunning(job.Id ?? string.Empty))
+        {
+            return _control?.Requested switch
+            {
+                JobCommand.CutoverRequested => LiveJobStatus.CuttingOver,
+                JobCommand.StopRequested    => LiveJobStatus.Cancelling,
+                JobCommand.PauseRequested   => LiveJobStatus.Pausing,
+                _                           => LiveJobStatus.Running,
+            };
+        }
+
+        // Runner is idle — fall back to persisted Status.
+        return job.Status switch
+        {
+            JobStatus.Completed => LiveJobStatus.Completed,
+            JobStatus.Cancelled => LiveJobStatus.Cancelled,
+            JobStatus.Faulted   => LiveJobStatus.Faulted,
+            JobStatus.Paused    => LiveJobStatus.Paused,
+            // Persisted Running with no live runner = process crashed
+            // before the finally block could normalise. Surface as
+            // Interrupted so the operator knows it's resumable.
+            JobStatus.Running   => LiveJobStatus.Interrupted,
+            JobStatus.Pending   => HasMadeProgress(job)
+                                       ? LiveJobStatus.Interrupted
+                                       : LiveJobStatus.NotStarted,
+            _                   => LiveJobStatus.NotStarted,
+        };
     }
 
-    public Task StartMigration(Job job, string sourceConnectionString, string targetConnectionString, string namespacesToMigrate, CassandraMigrationProcessor.Models.JobType jobType, bool trackChangeStreams)
+    private static bool HasMadeProgress(Job job)
     {
+        if (job.Tables == null) return false;
+        return job.Tables.Any(mu => mu.CopyRowsCopied > 0);
+    }
+
+    public Task StartMigration(Job job, string sourceConnectionString, string targetConnectionString)
+    {
+        MigrationLog runLog;
+        JobControl runControl;
+        // Single source-of-truth for "user resumed from a non-terminal-but-
+        // not-fresh state" — drives both the audit-log verb (RESUME vs
+        // START) and the EndedOn reset below, so the two stay in lockstep.
+        bool isResume = job.Status is JobStatus.Paused or JobStatus.Pending or JobStatus.Faulted;
         lock (_stateLock)
         {
             if (!string.IsNullOrEmpty(_runningJobId))
@@ -229,13 +289,21 @@ public class JobManager
             _log = CreateLog();
             _log.Initialize(job.Id);
             _log.SetJob(job);
-            MigrationWorker = new MigrationWorker(_log);
-            _migrationCts = new CancellationTokenSource();
+            _log.WriteLine(
+                $"User requested {(isResume ? "RESUME" : "START")} for job {job.Id} (prior status={job.Status})",
+                LogType.Info);
+            // MigrationJobRunner is published below, once its sessions
+            // are open (built via async factory). Claiming _runningJobId
+            // here is enough to make concurrent StartMigration calls
+            // see the slot as taken; Pause/Stop arriving during the
+            // open window record intent on _control.
+            _control = new JobControl();
+            runControl = _control;
+            runLog = _log;
             _runningJobId = job.Id;
         }
 
-        _ctx.SourceConnectionString[job.Id] = sourceConnectionString;
-        _ctx.TargetConnectionString[job.Id] = targetConnectionString;
+        _context.Credentials.Remember(job.Id, sourceConnectionString, targetConnectionString);
 
         // Clear Running status on all other jobs so stale flags don't
         // cause unwanted auto-resume after an app recycle.
@@ -243,164 +311,108 @@ public class JobManager
         {
             if (otherId == job.Id) continue;
             var other = GetMigrationJobById(otherId);
-            if (other != null && other.Status == JobStatus.Running)
+            if (other is { Status: JobStatus.Running })
             {
                 other.Status = JobStatus.Pending;
-                _ctx.SaveJob(other);
+                _context.SaveMigrationJob(other);
             }
         }
 
-        _ctx.ActiveMigrationJobId = job.Id;
+        _context.ActiveMigrationJobId = job.Id;
+        // Clear EndedOn on resume from a terminal/terminal-ish state
+        // so a Faulted → Resume → Completed path doesn't leave EndedOn
+        // stamped at the original fault time.
+        if (isResume)
+            job.EndedOn = null;
         job.Status = JobStatus.Running;
 
         var config = new AppSettings();
         SettingsManager.Load(config);
 
-        // Background migration: stored so exceptions are observable and
-        // the task can be awaited during shutdown if needed.
-        _migrationTask = Task.Run(async () =>
+        // Background migration: stored so exceptions are observable.
+        // The runner is the sole writer of job.Status from this point
+        // on (observes _control.Requested in finally to distinguish
+        // Pause from Stop, writes Faulted on exception).
+        _ = Task.Run(async () =>
         {
+            MigrationJobRunner? runner = null;
             try
             {
-                MigrationUtilities.LogToFile($"Task.Run started for job {job.Id}");
-
-                // Expand wildcards (e.g. "socialmedia.*") by connecting to source
-                if (job.Tables.Count == 0
-                    || job.Tables.Any(m => m.TableName == "*"))
+                runner = await MigrationJobRunner.CreateAsync(runLog, job, config, runControl);
+                lock (_stateLock)
                 {
-                    MigrationUtilities.LogToFile($"Expanding wildcards for job {job.Id}, namespaces={namespacesToMigrate}");
-                    await ExpandWildcardTablesAsync(job, namespacesToMigrate);
-                    MigrationUtilities.LogToFile($"After expand: {job.Tables.Count} units");
+                    MigrationJobRunner = runner;
+                    _context.ActiveRunner = runner;
                 }
-
-                MigrationUtilities.LogToFile($"Calling MigrationWorker.StartAsync for job {job.Id}");
-                await MigrationWorker.StartAsync(job, config, _migrationCts.Token);
-                MigrationUtilities.LogToFile($"MigrationWorker.StartAsync completed for job {job.Id}");
+                await runner.StartAsync();
             }
             catch (Exception ex)
             {
-                MigrationUtilities.LogToFile($"Migration failed for Job ID: {job.Id}: {ex}");
-                Console.WriteLine($"Migration failed for Job ID: {job.Id}: {ex}");
-                _log.WriteLine($"Migration failed: {ex}", LogType.Error);
+                // Defensive: StartAsync handles its own failures. This
+                // catch only exists to keep an unexpected escape (e.g.
+                // failure during CreateAsync session acquisition) from
+                // leaving the job stuck in Running.
+                Console.WriteLine($"Migration unexpectedly threw for Job ID: {job.Id}: {ex}");
+                runLog.WriteLine($"Migration unexpectedly threw: {ex}", LogType.Error);
+                if (job.Status == JobStatus.Running)
+                {
+                    job.Status = JobStatus.Faulted;
+                    // Stamp EndedOn here too: if CreateAsync throws
+                    // before StartAsync runs, the runner's
+                    // StampEndedOnIfTerminal never fires.
+                    if (!job.EndedOn.HasValue)
+                        job.EndedOn = DateTime.UtcNow;
+                    _context.SaveMigrationJob(job);
+                }
             }
             finally
             {
-                // Determine final status
-                if (_ctx.ControlledPauseRequested)
-                {
-                    job.Status = JobStatus.Paused;
-                    _ctx.ResetControlledPause();
-                }
-                else if (job.Status == JobStatus.Running)
-                {
-                    bool hasFailed = job.Tables?.Any(
-                        mu => mu.SourceStatus ==
-                            TableStatus.Failed) ?? false;
-                    if (hasFailed)
-                        job.Status = JobStatus.Faulted;
-                    else
-                        job.Status = JobStatus.Pending;
-                }
+                // Retire per-job runtime state. Paused jobs keep their
+                // connection-string entries so Resume-with-Existing
+                // works without re-prompting; terminal jobs drop
+                // everything.
+                bool isTerminal = job.Status.IsTerminal();
 
-                _ctx.SaveJob(job);
-                _runningJobId = string.Empty;
+                // Cleanup must always run even if runner.DisposeAsync
+                // throws — otherwise dispose failure would leak
+                // _runningJobId / ActiveMigrationJobId for the rest of
+                // the process lifetime.
+                try
+                {
+                    if (runner != null)
+                    {
+                        await runner.DisposeAsync();
+                    }
+                }
+                catch (Exception disposeEx)
+                {
+                    Console.WriteLine($"[Manager] Runner DisposeAsync threw for {job.Id}: {disposeEx}");
+                    try { runLog.WriteLine($"[Manager] Runner dispose threw (state cleared regardless): {disposeEx.Message}", LogType.Warning); }
+                    catch { /* logging is best-effort during shutdown */ }
+                }
+                finally
+                {
+                    lock (_stateLock)
+                    {
+                        _context.ActiveRunner = null;
+                        MigrationJobRunner = null;
+                        _control?.Dispose();
+                        _control = null;
+                        _runningJobId = string.Empty;
+                    }
+
+                    try { _context.RetireJob(job.Id, isTerminal); }
+                    catch (Exception retireEx)
+                    {
+                        Console.WriteLine($"[Manager] RetireJob threw for {job.Id}: {retireEx}");
+                    }
+                }
             }
         });
 
-        MigrationUtilities.LogToFile($"Started migration task for Job ID: {job.Id}");
         Console.WriteLine($"Started migration for Job ID: {job.Id}");
 
         return Task.CompletedTask;
-    }
-
-    private async Task ExpandWildcardTablesAsync(Job job, string namespacesToMigrate)
-    {
-        if (string.IsNullOrWhiteSpace(namespacesToMigrate)) return;
-
-        var entries = namespacesToMigrate
-            .Split(new[] { ',', '\n', '\r', ';' })
-            .Select(s => s.Trim())
-            .Where(s => !string.IsNullOrEmpty(s));
-
-        List<TableMigration> expandedUnits = new List<TableMigration>();
-
-        foreach (var fullName in entries)
-        {
-            int dotIdx = fullName.IndexOf('.');
-            if (dotIdx <= 0 || dotIdx == fullName.Length - 1) continue;
-
-            string keyspace = fullName.Substring(0, dotIdx).Trim();
-            string table = fullName.Substring(dotIdx + 1).Trim();
-
-            if (table == "*")
-            {
-                // Connect to source and list all tables in this keyspace
-                try
-                {
-                    using (var session = CassandraMigrationProcessor.CassandraDriver.CassandraClientFactory
-                        .CreateSourceSession(_log, job, keyspace))
-                    {
-                        var tables = await CassandraMigrationProcessor.CassandraDriver.CassandraQueries
-                            .ListTablesAsync(session, keyspace);
-                        foreach (var tableName in tables)
-                        {
-                            // Validate table is accessible with retry for 429s
-                            bool accessible = false;
-                            for (int att = 1; att <= 10; att++)
-                            {
-                                try
-                                {
-                                    var probe = new Cassandra.SimpleStatement(
-                                        $"SELECT * FROM \"{keyspace}\".\"{tableName}\" WHERE COSMOS_CHANGEFEED_FROM_START() = true");
-                                    probe.SetPageSize(1);
-                                    probe.SetAutoPage(false);
-                                    probe.SetReadTimeoutMillis(15_000);
-                                    session.Execute(probe);
-                                    accessible = true;
-                                    break;
-                                }
-                                catch (Exception vex)
-                                {
-                                    if (CassandraMigrationProcessor.Infrastructure.ExceptionClassifier.IsThrottle(vex) && att < 10)
-                                    {
-                                        int delaySec = Math.Min(att * 3, 30);
-                                        Thread.Sleep(delaySec * 1000);
-                                        continue;
-                                    }
-                                    _log.WriteLine($"Skipping {keyspace}.{tableName}: {vex.Message}", LogType.Warning);
-                                }
-                            }
-                            if (!accessible) continue;
-
-                            var mu = new TableMigration(
-                                job, keyspace, tableName,
-                                new List<CopyChunk>());
-                            mu.SourceStatus = TableStatus.OK;
-                            expandedUnits.Add(mu);
-                        }
-                    }
-                }
-                catch (Exception ex)
-                {
-                    _log.WriteLine($"Failed to discover tables in keyspace {keyspace}: {ex.Message}", LogType.Error);
-                }
-            }
-            else
-            {
-                var mu = new TableMigration(
-                    job, keyspace, table,
-                    new List<CopyChunk>());
-                mu.SourceStatus = TableStatus.OK;
-                expandedUnits.Add(mu);
-            }
-        }
-
-        if (expandedUnits.Count > 0)
-        {
-            // Clear any wildcard entries
-            job.Tables?.RemoveAll(m => m.TableName == "*");
-            UnitStore.AddMigrationUnits(expandedUnits, job, _log);
-        }
     }
 
     public string GetRunningJobId() => _runningJobId;
@@ -408,6 +420,37 @@ public class JobManager
     public bool IsProcessRunning(string id)
     {
         return !string.IsNullOrEmpty(_runningJobId) && _runningJobId == id;
+    }
+
+    /// <summary>
+    /// Append a "Resume requested by operator" entry to the persistent
+    /// log file for <paramref name="jobId"/>. Used as immediate
+    /// feedback before <see cref="StartMigration"/> is invoked.
+    /// </summary>
+    public void LogOperatorResumeRequest(string jobId, string note = "")
+    {
+        if (string.IsNullOrEmpty(jobId)) return;
+        try
+        {
+            string msg = $"[Manager] Resume requested by operator{(string.IsNullOrEmpty(note) ? "" : " — " + note)}";
+
+            // Only write to the live in-flight log when this is the
+            // same job running; otherwise scope a transient log to the
+            // target jobId so the entry lands in the right file.
+            if (IsProcessRunning(jobId))
+            {
+                _log.WriteLine(msg, LogType.Info);
+                return;
+            }
+
+            using var transient = CreateLog();
+            transient.Initialize(jobId);
+            transient.WriteLine(msg, LogType.Info);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[Manager] LogOperatorResumeRequest failed for {jobId}: {ex.Message}");
+        }
     }
 
     #endregion

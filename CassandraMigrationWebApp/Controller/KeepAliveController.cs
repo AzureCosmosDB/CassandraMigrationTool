@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Mvc;
+using CassandraMigrationProcessor.Context;
 using CassandraMigrationWebApp.Service;
 
 namespace CassandraMigrationWebApp.Controller;
@@ -7,12 +8,12 @@ namespace CassandraMigrationWebApp.Controller;
 public class KeepAliveController : ControllerBase
 {
     private readonly JobManager _jobManager;
-    private readonly MigrationContextService _ctx;
+    private readonly MigrationJobContext _context;
 
-    public KeepAliveController(JobManager jobManager, MigrationContextService ctx)
+    public KeepAliveController(JobManager jobManager, MigrationJobContext context)
     {
         _jobManager = jobManager;
-        _ctx = ctx;
+        _context = context;
     }
 
     /// <summary>
@@ -25,40 +26,20 @@ public class KeepAliveController : ControllerBase
         var runningJobId = _jobManager.GetRunningJobId();
 
         if (string.IsNullOrEmpty(runningJobId))
-        {
-            return Ok(new
-            {
-                Status = "NoActiveJob",
-                Timestamp = DateTime.UtcNow,
-                RunningJobId = (string?)null,
-                RuntimeSeconds = 0,
-                RuntimeFormatted = "N/A"
-            });
-        }
+            return InactiveResponse("NoActiveJob", runningJobId: null);
 
-        // Get the active job from context service
-        var activeJob = _ctx.CurrentlyActiveJob;
+        var activeJob = _context.CurrentlyActiveJob;
 
         if (activeJob == null || activeJob.Id != runningJobId)
-        {
-            return Ok(new
-            {
-                Status = "JobNotFound",
-                Timestamp = DateTime.UtcNow,
-                RunningJobId = runningJobId,
-                RuntimeSeconds = 0,
-                RuntimeFormatted = "N/A"
-            });
-        }
+            return InactiveResponse("JobNotFound", runningJobId);
 
         // Calculate runtime since job started
-        TimeSpan runtime = TimeSpan.Zero;
         double runtimeSeconds = 0;
         string runtimeFormatted = "N/A";
 
         if (activeJob.StartedOn.HasValue)
         {
-            runtime = DateTime.UtcNow - activeJob.StartedOn.Value;
+            var runtime = DateTime.UtcNow - activeJob.StartedOn.Value;
             runtimeSeconds = runtime.TotalSeconds;
             runtimeFormatted = FormatTimeSpan(runtime);
         }
@@ -77,23 +58,29 @@ public class KeepAliveController : ControllerBase
         return Ok(response);
     }
 
-    private string FormatTimeSpan(TimeSpan timeSpan)
+    /// <summary>
+    /// Shared payload shape for the two "no live runtime" branches
+    /// (no job running, or the running id no longer resolves to a
+    /// loaded job). Keeps both responses byte-identical in field
+    /// order and type so monitoring consumers see one stable schema.
+    /// </summary>
+    private IActionResult InactiveResponse(string status, string? runningJobId) => Ok(new
+    {
+        Status = status,
+        Timestamp = DateTime.UtcNow,
+        RunningJobId = runningJobId,
+        RuntimeSeconds = 0,
+        RuntimeFormatted = "N/A"
+    });
+
+    private static string FormatTimeSpan(TimeSpan timeSpan)
     {
         if (timeSpan.TotalDays >= 1)
-        {
             return $"{(int)timeSpan.TotalDays}d {timeSpan.Hours}h {timeSpan.Minutes}m";
-        }
-        else if (timeSpan.TotalHours >= 1)
-        {
+        if (timeSpan.TotalHours >= 1)
             return $"{(int)timeSpan.TotalHours}h {timeSpan.Minutes}m {timeSpan.Seconds}s";
-        }
-        else if (timeSpan.TotalMinutes >= 1)
-        {
+        if (timeSpan.TotalMinutes >= 1)
             return $"{(int)timeSpan.TotalMinutes}m {timeSpan.Seconds}s";
-        }
-        else
-        {
-            return $"{(int)timeSpan.TotalSeconds}s";
-        }
+        return $"{(int)timeSpan.TotalSeconds}s";
     }
 }

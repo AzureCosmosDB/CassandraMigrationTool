@@ -1,16 +1,9 @@
-using System.Collections.Generic;
-using System.IO;
-using System.Linq;
-
 namespace CassandraMigrationProcessor.Persistence;
 /// <summary>
-/// Abstraction for file system operations. Supports
-/// local disk only (blob storage flag is always false).
+/// Abstraction for file system operations. Local disk only.
 /// </summary>
 public static class FileSystem
 {
-    public static bool UseBlobStorage => false;
-
     public static void EnsureDirectoryExists(string path)
     {
         if (!string.IsNullOrEmpty(path)

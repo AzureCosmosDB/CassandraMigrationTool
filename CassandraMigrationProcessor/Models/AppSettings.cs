@@ -1,8 +1,11 @@
-using Newtonsoft.Json;
-using System;
-
 namespace CassandraMigrationProcessor.Models;
-public class AppSettings : ICloneable
+
+/// <summary>
+/// Mutable user-facing application configuration (page sizes, change-feed
+/// poll interval, feed-range parallelism) with default-and-clamp semantics.
+/// Persistence is delegated to <see cref="Context.SettingsManager"/>.
+/// </summary>
+public class AppSettings
 {
     // Default values
     internal const int DefaultCqlCopyPageSize = 500;
@@ -22,12 +25,13 @@ public class AppSettings : ICloneable
     {
     }
 
-    public object Clone()
-    {
-        var json = JsonConvert.SerializeObject(this);
-        return JsonConvert.DeserializeObject<AppSettings>(json)
-            ?? new AppSettings();
-    }
+    /// <summary>
+    /// Returns a shallow copy. The type only holds value-type fields,
+    /// so MemberwiseClone is a complete and correct copy — and it
+    /// avoids the JSON round-trip that the previous ICloneable
+    /// implementation paid on every settings edit.
+    /// </summary>
+    public AppSettings Copy() => (AppSettings)MemberwiseClone();
 
     private static int DefaultOrValue(int loaded, int defaultVal)
         => loaded == 0 ? defaultVal : loaded;
@@ -41,6 +45,7 @@ public class AppSettings : ICloneable
         ChangeFeedPollIntervalMs = DefaultChangeFeedPollIntervalMs;
         MaxFeedRangeParallelism = DefaultParallelism();
         LogPageSize = DefaultLogPageSize;
+        ClampValues();
     }
 
     internal void ClampValues()

@@ -1,11 +1,12 @@
-using Newtonsoft.Json;
-using System;
-using System.Collections.Generic;
-using System.IO;
-using System.Linq;
 using CassandraMigrationProcessor.Infrastructure;
 using CassandraMigrationProcessor.Models;
 namespace CassandraMigrationProcessor.Context;
+
+/// <summary>
+/// Persistence gateway for <see cref="TableMigration"/> documents (one JSON
+/// file per unit under the job folder). Handles add / save / remove and
+/// keeps the parent <see cref="Job"/>'s table summaries in sync.
+/// </summary>
 public static class UnitStore
 {
     private static readonly object _writeMULock = new object();
@@ -44,14 +45,8 @@ public static class UnitStore
 
             lock (_writeMULock)
             {
-                var muFilePath = Path.Combine(
-                    JobStore.JobsFolder, mu.JobId,
-                    $"{mu.Id}.json");
-                string muJson =
-                    JsonConvert.SerializeObject(
-                        mu, Formatting.Indented);
-                MigrationJobContext.Instance.Store.Write(
-                    muFilePath, muJson);
+                JsonStore.Write(
+                    JobStore.GetUnitDocumentPath(mu.JobId, mu.Id), mu);
             }
 
             if (MigrationJobContext.Instance.CurrentlyActiveJob != null
@@ -86,9 +81,7 @@ public static class UnitStore
             if (!MigrationJobContext.Instance.SaveMigrationJob(job))
                 return false;
 
-            var filePath = Path.Combine(
-                JobStore.JobsFolder, unit.JobId,
-                $"{unit.Id}.json");
+            var filePath = JobStore.GetUnitDocumentPath(unit.JobId, unit.Id);
             MigrationJobContext.Instance.Store.Delete(filePath);
 
             return true;
@@ -100,12 +93,8 @@ public static class UnitStore
     {
         return MigrationUtilities.SafeExecute(() =>
         {
-            var filePath = Path.Combine(
-                JobStore.JobsFolder, jobId, $"{unitId}.json");
-            string json = MigrationJobContext.Instance.Store
-                .Read(filePath);
-            return JsonConvert
-                .DeserializeObject<TableMigration>(json);
+            return JsonStore.Read<TableMigration>(
+                JobStore.GetUnitDocumentPath(jobId, unitId));
         }, (TableMigration)null, $"GetFromStorage({jobId}, {unitId})");
     }
 
@@ -117,11 +106,14 @@ public static class UnitStore
 
         foreach (var summary in job.Tables)
         {
-            if (!MigrationUtilities.IsMigrationUnitValid(summary)) continue;
-            if (summary.CopyComplete) continue;
+            if (!summary.IsValid) continue;
+            // For online jobs, include CopyComplete tables too — the
+            // merged DataCopyWorker re-seeds their feed ranges in
+            // Replay phase to keep tailing the change feed.
+            if (summary.CopyComplete && !job.IsOnline) continue;
             if (summary.SkippedDueToMaxRetries) continue;
 
-            var mu = MigrationJobContext.Instance.GetMigrationUnit(summary.Id);
+            var mu = GetUnit(summary.Id);
             if (mu != null)
             {
                 mu.ParentJob = job;
@@ -138,7 +130,7 @@ public static class UnitStore
     {
         var newUnits = unitsToAdd
             .Where(mu => !job.Tables
-                .Any(summary => summary.Id == MigrationUtilities.GenerateMigrationUnitId(
+                .Any(summary => summary.Id == TableMigration.GenerateId(
                     mu.KeyspaceName, mu.TableName)))
             .ToList();
 

@@ -1,11 +1,8 @@
 using Microsoft.AspNetCore.Components;
-using Microsoft.AspNetCore.Components.Web;
 using CassandraMigrationWebApp.Service;
-using CassandraMigrationProcessor;
 using Microsoft.AspNetCore.Components.Authorization;
 using CassandraMigrationProcessor.Infrastructure;
 using CassandraMigrationProcessor.Context;
-using CassandraMigrationProcessor.CassandraDriver;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -70,20 +67,13 @@ if (!string.IsNullOrEmpty(useLocalDisk))
 
 builder.Services.AddRazorPages();
 builder.Services.AddServerSideBlazor();
-builder.Services.AddSingleton(builder.Configuration);
-builder.Services.AddSingleton<ICassandraSessionFactory, CassandraSessionFactory>();
 
 // Create and initialize the MigrationJobContext singleton
 var migrationJobContext = new MigrationJobContext();
 migrationJobContext.Initialize(builder.Configuration);
 builder.Services.AddSingleton(migrationJobContext);
 
-builder.Services.AddSingleton<MigrationContextService>();
 builder.Services.AddSingleton<JobManager>();
-
-// Background service: keeps migration alive across
-// IIS app pool recycles and auto-resumes jobs.
-builder.Services.AddHostedService<MigrationHostedService>();
 
 // Add authentication services
 builder.Services.AddSingleton<PasswordManager>();

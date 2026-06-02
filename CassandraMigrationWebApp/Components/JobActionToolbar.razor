@@ -4,8 +4,8 @@
 
 <div class="d-flex justify-content-between align-items-center mb-3">
     <h3>
-        <button class="btn btn-light" @onclick="OnGoBack" title="Back to Job List" style="border: none; background: transparent;">
-            <i class="bi bi-arrow-left"></i>
+        <button class="btn btn-light" @onclick="OnGoBack" title="Back to Job List" aria-label="Back to job list" style="border: none; background: transparent;">
+            <i class="bi bi-arrow-left" aria-hidden="true"></i>
         </button>
         @Job?.Name - Job Status
     </h3>
@@ -13,16 +13,37 @@
 
         @if (IsResumeEnabled && !IsLoadingCollections)
         {
+            @* Split button: primary click resumes immediately (mirrors Pause's
+               single-click UX); the chevron toggles the dropdown only for the
+               "Updated Connection Strings" rotation flow. Previously the whole
+               button was a hidden dropdown-toggle with no caret — operators
+               clicked it repeatedly with no visible effect because Bootstrap
+               just opens/closes the menu instead of taking action. *@
             <div class="btn-group mx-2">
-                <button class="btn btn-primary dropdown-toggle" type="button" id="resumeJobDropdown" data-bs-toggle="dropdown" aria-expanded="false">
-                    Resume Job
+                <button class="btn btn-primary" type="button"
+                        disabled="@_resumeInFlight"
+                        title="@(IsNeverStarted
+                                  ? "Start this job"
+                                  : (HasExistingConnectionStrings
+                                      ? "Resume with the stored connection strings (single-click)"
+                                      : "Resume; connection strings will need to be re-entered"))"
+                        @onclick="OnPrimaryResumeClick">
+                    <i class="bi bi-play-circle"></i>
+                    @(IsNeverStarted ? "Start Job" : "Resume Job")
+                </button>
+                <button class="btn btn-primary dropdown-toggle dropdown-toggle-split"
+                        type="button" id="resumeJobDropdown"
+                        data-bs-toggle="dropdown" aria-expanded="false"
+                        disabled="@_resumeInFlight"
+                        title="More resume options">
+                    <span class="visually-hidden">Toggle Resume Options</span>
                 </button>
                 <ul class="dropdown-menu" aria-labelledby="resumeJobDropdown">
-                    <li><a class="dropdown-item" @onclick="OnResumeWithNewConnectionString">With Updated Connection Strings</a></li>
                     @if (HasExistingConnectionStrings)
                     {
-                        <li><a class="dropdown-item" @onclick="OnResumeWithExistingConnectionString">With Existing Connection Strings</a></li>
+                        <li><button type="button" class="dropdown-item" @onclick="OnResumeWithExistingConnectionString">With Existing Connection Strings</button></li>
                     }
+                    <li><button type="button" class="dropdown-item" @onclick="OnResumeWithNewConnectionString">With Updated Connection Strings</button></li>
                 </ul>
             </div>
         }
@@ -40,7 +61,7 @@
                 </span>
             }
             
-            @if (Job != null && MigrationUtilities.IsOnline(Job))
+            @if (Job != null && Job.IsOnline)
             {
                 var lagInfo = ChangeFeedLag;
                 <span class="badge @(lagInfo.IsLow ? "bg-success" : "bg-warning text-dark") me-1"
@@ -56,15 +77,17 @@
                 <i class="bi bi-x-circle"></i> Cancel
             </button>
 
-            <button class="btn btn-toolbar" title="Refresh" @onclick="OnRefresh">
-                <i class="bi bi-arrow-repeat"></i>
+            <button class="btn btn-toolbar" title="Refresh" aria-label="Refresh job status now" @onclick="OnRefresh">
+                <i class="bi bi-arrow-repeat" aria-hidden="true"></i>
             </button>
 
-            <button class="btn btn-sm @((Job?.AutoRefreshEnabled ?? true) ? "btn-outline-success" : "btn-outline-secondary") ms-2" 
-                    @onclick="OnToggleAutoRefresh" 
-                    title="@((Job?.AutoRefreshEnabled ?? true) ? "Auto-refresh is ON - Click to pause UI updates" : "Auto-refresh is OFF - Click to resume UI updates")"
+            var autoRefreshOn = Job?.AutoRefreshEnabled ?? true;
+            <button class="btn btn-sm @(autoRefreshOn ? "btn-outline-success" : "btn-outline-secondary") ms-2"
+                    @onclick="OnToggleAutoRefresh"
+                    title="@(autoRefreshOn ? "Auto-refresh is ON - Click to pause UI updates" : "Auto-refresh is OFF - Click to resume UI updates")"
+                    aria-label="@(autoRefreshOn ? "Pause auto-refresh" : "Resume auto-refresh")"
                     style="border: 1px solid;">
-                <i class="bi @((Job?.AutoRefreshEnabled ?? true) ? "bi-play-fill" : "bi-pause-fill")"></i>
+                <i class="bi @(autoRefreshOn ? "bi-play-fill" : "bi-pause-fill")" aria-hidden="true"></i>
             </button>
         }
 
@@ -83,6 +106,7 @@
 @code {
     [Parameter] public Job? Job { get; set; }
     [Parameter] public bool IsResumeEnabled { get; set; }
+    [Parameter] public bool IsNeverStarted { get; set; }
     [Parameter] public bool IsPauseEnabled { get; set; }
     [Parameter] public bool IsRunning { get; set; }
     [Parameter] public bool IsLoadingCollections { get; set; }
@@ -95,7 +119,6 @@
 
     [Parameter] public EventCallback OnResumeWithNewConnectionString { get; set; }
     [Parameter] public EventCallback OnResumeWithExistingConnectionString { get; set; }
-    [Parameter] public EventCallback OnPauseImmediate { get; set; }
     [Parameter] public EventCallback OnPauseControlled { get; set; }
     [Parameter] public EventCallback OnCancel { get; set; }
     [Parameter] public EventCallback OnComplete { get; set; }
@@ -103,4 +126,36 @@
     [Parameter] public EventCallback OnToggleAutoRefresh { get; set; }
     [Parameter] public EventCallback OnGoBack { get; set; }
     [Parameter] public EventCallback OnDismissError { get; set; }
+
+    /// <summary>
+    /// Single-click Resume handler. Defaults to the existing-connection-strings
+    /// flow when stored credentials are present (the case 99% of operators hit
+    /// after Pause); falls back to the "Updated Connection Strings" flow only
+    /// when there is nothing to reuse — that path opens the connection-string
+    /// dialog, so a click still produces a visible response.
+    /// </summary>
+    private bool _resumeInFlight;
+
+    private async Task OnPrimaryResumeClick()
+    {
+        // In-flight guard: the resume handlers open a dialog with
+        // await Task.Delay before any state mutation; without this
+        // gate a fast double-click can fire two parallel
+        // Task.Run(StartMigration) calls before IsResumeEnabled
+        // flips. Promoting to a single primary click materially
+        // increases that risk vs the prior dropdown shape.
+        if (_resumeInFlight) return;
+        _resumeInFlight = true;
+        try
+        {
+            if (HasExistingConnectionStrings)
+                await OnResumeWithExistingConnectionString.InvokeAsync();
+            else
+                await OnResumeWithNewConnectionString.InvokeAsync();
+        }
+        finally
+        {
+            _resumeInFlight = false;
+        }
+    }
 }

@@ -1,37 +1,33 @@
 using Cassandra;
-using CassandraMigrationProcessor.Infrastructure;
-using System;
 using System.Collections.Concurrent;
-using System.Collections.Generic;
-using System.Linq;
 using System.Reflection;
 using System.Reflection.Emit;
-using System.Threading.Tasks;
 
 namespace CassandraMigrationProcessor.CassandraDriver;
 
 /// <summary>
-/// Discovers the user-defined types declared in a keyspace and registers a
-/// <see cref="UdtMap"/> for each one on the supplied <see cref="ISession"/>.
+/// Discovers user-defined types declared in a keyspace and registers a
+/// <see cref="UdtMap"/> for each one on the supplied
+/// <see cref="ISession"/>. Without a registered UdtMap the driver
+/// surfaces UDT cells as raw <c>byte[]</c>, which cannot be bound back
+/// into a prepared statement parameter on another session.
 ///
-/// The DataStax C# Cassandra driver decodes a UDT-typed column only when a
-/// <see cref="UdtMap"/> has been registered against the session for that UDT;
-/// otherwise the cell is surfaced as a raw <c>byte[]</c> and cannot be bound
-/// back into a prepared statement parameter on another session, which causes
-/// a protocol-level serialization failure on write.
-///
-/// Because target schemas are not known at compile time, a backing CLR type
-/// is generated at runtime for each UDT shape (one property per field, using
-/// CLR types compatible with the driver's automap). The same generated type
-/// is reused for the matching UDT on both the source and target sessions so
-/// that values read from the source can be bound on the target without any
-/// intermediate conversion.
+/// Because target schemas are not known at compile time, a backing CLR
+/// type is generated at runtime for each UDT shape. The same generated
+/// type is reused on source and target sessions so values round-trip
+/// without intermediate conversion.
 /// </summary>
 internal static class DynamicUdtRegistrar
 {
     private static readonly object _moduleLock = new();
     private static ModuleBuilder? _module;
-    private static readonly ConcurrentDictionary<string, Type> _typeCache = new(StringComparer.OrdinalIgnoreCase);
+
+    // Lazy<T> with ExecutionAndPublication ensures the factory runs
+    // exactly once even when two workers race to first-touch the same
+    // UDT — without it both would call DefineType with the same name
+    // and one would throw "Duplicate type name".
+    private static readonly ConcurrentDictionary<string, Lazy<Type>> _typeCache
+        = new(StringComparer.OrdinalIgnoreCase);
 
     private static ModuleBuilder GetModule()
     {
@@ -48,13 +44,12 @@ internal static class DynamicUdtRegistrar
     /// <summary>
     /// Registers a <see cref="UdtMap"/> on <paramref name="session"/> for every
     /// user-defined type in <paramref name="keyspace"/>. UDTs are processed in
-    /// dependency order so that nested UDT references resolve to previously
     /// generated CLR types. Safe to call repeatedly on the same session.
     /// </summary>
     public static async Task RegisterAsync(ISession session, string keyspace,
         IReadOnlyList<SchemaManager.UserDefinedTypeDef>? udts = null)
     {
-        MigrationUtilities.ValidateCqlIdentifier(keyspace);
+        CqlIdentifier.Validate(keyspace);
 
         udts ??= await SchemaManager.GetUserDefinedTypesAsync(session, keyspace);
         if (udts.Count == 0) return;
@@ -66,22 +61,15 @@ internal static class DynamicUdtRegistrar
         {
             var clrType = GetOrCreateClrType(keyspace, udt, known);
             known[udt.TypeName] = clrType;
-            try
-            {
-                var map = (UdtMap)typeof(UdtMap)
-                    .GetMethod(nameof(UdtMap.For))!
-                    .MakeGenericMethod(clrType)
-                    .Invoke(null, new object?[] { udt.TypeName, keyspace })!;
-                session.UserDefinedTypes.Define(map);
-            }
-            catch (ArgumentException)
-            {
-                // The driver throws if the same UdtMap is registered twice on
-                // a session; idempotent re-registration is intended.
-            }
-            catch (InvalidOperationException)
-            {
-            }
+            // The driver de-dupes UdtMap definitions internally so
+            // re-defining the same (keyspace, typeName) is a no-op. Let
+            // any genuine ArgumentException / InvalidOperationException
+            // (shape mismatch etc.) propagate.
+            var map = (UdtMap)typeof(UdtMap)
+                .GetMethod(nameof(UdtMap.For))!
+                .MakeGenericMethod(clrType)
+                .Invoke(null, new object?[] { udt.TypeName, keyspace })!;
+            session.UserDefinedTypes.Define(map);
         }
     }
 
@@ -89,13 +77,26 @@ internal static class DynamicUdtRegistrar
         SchemaManager.UserDefinedTypeDef udt,
         IReadOnlyDictionary<string, Type> known)
     {
-        // Cache key includes the field signature so two UDTs that share a
-        // name across keyspaces (or across runs with altered shapes) do not
-        // collide. The same generated type must be reused on the source and
-        // target sessions for cross-session bind to succeed.
+        // Cache key includes the field signature so two UDTs with the
+        // same name across keyspaces (or altered shapes across runs)
+        // don't collide. The same generated type is reused on both
+        // sessions for cross-session bind to succeed.
         var sig = udt.TypeName + "|" + string.Join(",",
             udt.FieldNames.Zip(udt.FieldTypes, (n, t) => n + ":" + t));
-        return _typeCache.GetOrAdd(sig, _ => BuildClrType(keyspace, udt, known));
+        var lazy = _typeCache.GetOrAdd(sig, key => new Lazy<Type>(
+            () => BuildClrType(keyspace, udt, known),
+            LazyThreadSafetyMode.ExecutionAndPublication));
+        try
+        {
+            return lazy.Value;
+        }
+        catch
+        {
+            // Don't poison the cache with a faulted Lazy. Remove only
+            // when the entry is still our faulted instance.
+            _typeCache.TryRemove(KeyValuePair.Create(sig, lazy));
+            throw;
+        }
     }
 
     private static Type BuildClrType(string keyspace,
@@ -116,7 +117,10 @@ internal static class DynamicUdtRegistrar
 
         for (int i = 0; i < udt.FieldNames.Count; i++)
         {
-            var clrType = MapCqlTypeToClr(udt.FieldTypes[i], known);
+            // UDT fields are individually nullable in CQL. Map scalar
+            // value types to Nullable<T> so a null source cell stays
+            // null instead of becoming default(T).
+            var clrType = MapCqlTypeToClr(udt.FieldTypes[i], known, nullable: true);
             DefineAutoProperty(typeBuilder, udt.FieldNames[i], clrType);
         }
 
@@ -156,7 +160,15 @@ internal static class DynamicUdtRegistrar
     /// <see cref="object"/>, which the driver accepts for collection-of-UDT
     /// values that are bound back positionally.
     /// </summary>
-    private static Type MapCqlTypeToClr(string cqlType, IReadOnlyDictionary<string, Type> known)
+    /// <param name="cqlType">The CQL type string.</param>
+    /// <param name="nullable">
+    /// When true, scalar CQL value types (int, bigint, boolean, …) are
+    /// returned as <see cref="Nullable{T}"/> so a null source cell can
+    /// deserialize as null instead of <c>default(T)</c>. Reference types
+    /// and generated UDT class types are unaffected.
+    /// </param>
+    private static Type MapCqlTypeToClr(string cqlType, IReadOnlyDictionary<string, Type> known,
+        bool nullable = false)
     {
         var t = cqlType.Trim();
 
@@ -172,18 +184,19 @@ internal static class DynamicUdtRegistrar
             return typeof(object);
         }
 
-        // tuple<...> requires a strongly-typed System.Tuple<T1,T2,...>; the
-        // driver's UDT field mapper rejects `object` for tuple fields with
-        // "No converter is available from System.Object to System.Tuple`N".
+        // tuple<...> requires a strongly-typed System.Tuple<T1,T2,...>;
+        // the driver rejects `object` for tuple fields.
         if (StartsWithCi(t, "tuple<") && t.EndsWith(">"))
         {
             var inner = t.Substring(6, t.Length - 7);
             var parts = SplitTopLevel(inner);
+            // Tuple element nullability is independent of the field's
+            // outer nullability; keep elements non-nullable.
             var argTypes = parts.Select(p => MapCqlTypeToClr(p, known)).ToArray();
             return BuildSystemTupleType(argTypes);
         }
 
-        return t.ToLowerInvariant() switch
+        Type baseType = t.ToLowerInvariant() switch
         {
             "ascii" or "text" or "varchar" => typeof(string),
             "inet" => typeof(System.Net.IPAddress),
@@ -204,6 +217,10 @@ internal static class DynamicUdtRegistrar
             "varint" => typeof(System.Numerics.BigInteger),
             _ => typeof(object)
         };
+
+        if (nullable && baseType.IsValueType)
+            return typeof(Nullable<>).MakeGenericType(baseType);
+        return baseType;
     }
 
     private static bool StartsWithCi(string s, string prefix)

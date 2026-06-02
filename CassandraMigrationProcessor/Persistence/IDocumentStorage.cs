@@ -1,4 +1,3 @@
-using System.Collections.Generic;
 namespace CassandraMigrationProcessor.Persistence;
 /// <summary>
 /// Contract for document CRUD operations.

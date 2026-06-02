@@ -1,6 +1,4 @@
 using CassandraMigrationProcessor.Models;
-using System;
-using System.Collections.Generic;
 
 namespace CassandraMigrationProcessor.Infrastructure;
 public class LogBucket
@@ -66,34 +64,42 @@ public class MigrationLog : IDisposable
 
                 var reversedList = new List<LogObject>(_verboseMessages);
                 reversedList.Reverse();
-
-                while (reversedList.Count < MonitorMessageMinCount)
-                {
-                    reversedList.Add(new LogObject(LogType.Info, ""));
-                }
-                return reversedList;
+                return PadToMonitorMin(reversedList);
             }
             catch
             {
-                var blankList = new List<LogObject>();
-                for (int i = 0; i < MonitorMessageMinCount; i++)
-                {
-                    blankList.Add(new LogObject(LogType.Info, ""));
-                }
-                return blankList;
+                return PadToMonitorMin(new List<LogObject>());
             }
         }
     }
 
+    private static List<LogObject> PadToMonitorMin(List<LogObject> list)
+    {
+        while (list.Count < MonitorMessageMinCount)
+            list.Add(new LogObject(LogType.Info, ""));
+        return list;
+    }
+
     public string Initialize(string id)
     {
+        // _initLock serialises Initialize; _writeLock / _verboseLock
+        // cover the same fields WriteLine touches. Lock order matches
+        // WriteLine (_writeLock outer, _verboseLock inner).
         lock (_initLock)
         {
             string logBackupFile = string.Empty;
             _currentId = id;
 
-            _logBucket = ReadLogFile(_currentId, out logBackupFile);
-            _verboseMessages.Clear();
+            var freshBucket = ReadLogFile(_currentId, out logBackupFile);
+
+            lock (_writeLock)
+            {
+                _logBucket = freshBucket;
+                lock (_verboseLock)
+                {
+                    _verboseMessages.Clear();
+                }
+            }
 
             return logBackupFile;
         }
@@ -111,9 +117,18 @@ public class MigrationLog : IDisposable
     {
         try
         {
+            // A WriteLine issued before Initialize() falls back to
+            // Console for Errors and Warnings so operational signal
+            // is never silently dropped.
+            if (_currentId == string.Empty)
+            {
+                if (logType == LogType.Error || logType == LogType.Warning)
+                    Console.WriteLine($"[MigrationLog uninitialized] {logType}: {message}");
+                return;
+            }
             // Filter based on minimum MigrationLog level - only MigrationLog if the message type is at or below the minimum level
-            // Lower numeric values = more severe (Error=0, Message=1, Warning=2, Info=3, Debug=4, Verbose=5)
-            if (_currentId == string.Empty || (CurrentlyActiveJob != null && (int)logType > (int)CurrentlyActiveJob.LogLevel))
+            // Lower numeric values = more severe (Error=0, Warning=2, Info=3, Debug=4, Verbose=5)
+            if (CurrentlyActiveJob != null && (int)logType > (int)CurrentlyActiveJob.LogLevel)
             {
                 return; // Skip this MigrationLog entry
             }
@@ -160,11 +175,21 @@ public class MigrationLog : IDisposable
 
     public LogBucket GetCurrentLogBucket(string id)
     {
-        if (_currentId == id)
+        if (_currentId != id)
+            return new LogBucket();
+
+        // Return a defensive snapshot. _logBucket.Logs is mutated by
+        // WriteLine under _writeLock; UI enumeration on the live list
+        // would race.
+        lock (_writeLock)
         {
-            return _logBucket;
+            return new LogBucket
+            {
+                Logs = _logBucket.Logs != null
+                    ? new List<LogObject>(_logBucket.Logs)
+                    : new List<LogObject>(),
+            };
         }
-        return new LogBucket();
     }
 
     public byte[] ExportLogsAsBytes(string id, int topEntries = 20, int bottomEntries = 230)

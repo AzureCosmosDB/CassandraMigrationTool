@@ -69,6 +69,19 @@
     padding: 8px;
 }
 
+/* Issue #153: log Message cells silently rendered as "empty" when the
+   entry contained newlines (stack traces, multi-line exception text)
+   because <td>'s default white-space collapsed the body. Preserve
+   newlines and break long tokens so the operator always sees the full
+   message inline. */
+.table.console-output td.log-message-cell,
+.table.message-output td.log-message-cell {
+    white-space: pre-wrap;
+    word-break: break-word;
+    overflow-wrap: anywhere;
+    font-family: inherit;
+}
+
 .table.console-output th, .table.message-output th {
     background-color: #333;
 }

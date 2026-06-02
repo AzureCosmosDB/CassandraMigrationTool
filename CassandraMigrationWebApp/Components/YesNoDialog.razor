@@ -10,39 +10,13 @@
                 <p>@Message</p>
             </div>
             <div class="modal-footer">
-                @switch (Type)
+                @{
+                    var btns = GetButtons(Type);
+                }
+                <button type="button" class="@btns.OkClass" @onclick=@Ok>@btns.OkLabel</button>
+                @if (btns.CancelLabel != null)
                 {
-                    case Category.Okay:
-                        <button type="button" class="btn btn-primary" @onclick=@Ok>OK</button>
-                        break;
-                    case Category.CutoverNot:
-                        <button type="button" class="btn btn-primary" @onclick=@Ok>Cutover</button>
-                        <button type="button" class="btn btn-secondary" @onclick="@Cancel">Don't Cutover</button>
-                        break;
-                    case Category.CompleteNot:
-                        <button type="button" class="btn btn-primary" @onclick=@Ok>Complete</button>
-                        <button type="button" class="btn btn-secondary" @onclick="@Cancel">Don't Complete</button>
-                        break;
-                    case Category.SyncBackNot:
-                        <button type="button" class="btn btn-primary" @onclick=@Ok>Start Sync Back</button>
-                        <button type="button" class="btn btn-secondary" @onclick="@Cancel">Don't Cutover</button>
-                        break;
-                    case Category.DeleteNot:
-                        <button type="button" class="btn btn-primary" @onclick=@Ok>Delete</button>
-                        <button type="button" class="btn btn-secondary" @onclick="@Cancel">Don't Delete</button>
-                        break;
-                    case Category.RecoverNot:
-                        <button type="button" class="btn btn-primary" @onclick=@Ok>Recover</button>
-                        <button type="button" class="btn btn-secondary" @onclick="@Cancel">Don't Recover</button>
-                        break;
-                    case Category.RunComparisonNot:
-                        <button type="button" class="btn btn-primary" @onclick=@Ok>Run Comparison</button>
-                        <button type="button" class="btn btn-secondary" @onclick="@Cancel">Don't Run Comparison</button>
-                        break;
-                    case Category.CancelNot:
-                        <button type="button" class="btn btn-danger" @onclick=@Ok>Cancel Job</button>
-                        <button type="button" class="btn btn-secondary" @onclick="@Cancel">Keep Running</button>
-                        break;
+                    <button type="button" class="btn btn-secondary" @onclick="@Cancel">@btns.CancelLabel</button>
                 }
             </div>
         </div>
@@ -79,6 +53,23 @@
         CancelNot
 
     }
+
+    private sealed record DialogButtons(string OkLabel, string OkClass, string? CancelLabel);
+
+    private const string PrimaryBtn = "btn btn-primary";
+
+    private static DialogButtons GetButtons(Category c) => c switch
+    {
+        Category.Okay             => new("OK",              PrimaryBtn,         null),
+        Category.CutoverNot       => new("Cutover",         PrimaryBtn,         "Don't Cutover"),
+        Category.CompleteNot      => new("Complete",        PrimaryBtn,         "Don't Complete"),
+        Category.SyncBackNot      => new("Start Sync Back", PrimaryBtn,         "Don't Cutover"),
+        Category.DeleteNot        => new("Delete",          PrimaryBtn,         "Don't Delete"),
+        Category.RecoverNot       => new("Recover",         PrimaryBtn,         "Don't Recover"),
+        Category.RunComparisonNot => new("Run Comparison",  PrimaryBtn,         "Don't Run Comparison"),
+        Category.CancelNot        => new("Cancel Job",      "btn btn-danger",   "Keep Running"),
+        _                         => new("OK",              PrimaryBtn,         null),
+    };
 
     public class YesNoDialogResult
     {
