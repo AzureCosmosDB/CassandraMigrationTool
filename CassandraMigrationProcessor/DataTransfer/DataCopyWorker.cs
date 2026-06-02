@@ -253,11 +253,7 @@ internal class DataCopyWorker
             if (ex is OutOfMemoryException) return true;
             if (ex is AggregateException agg)
             {
-                foreach (var inner in agg.Flatten().InnerExceptions)
-                {
-                    if (IsOutOfMemory(inner)) return true;
-                }
-                return false;
+                return agg.Flatten().InnerExceptions.Any(IsOutOfMemory);
             }
             ex = ex.InnerException;
         }

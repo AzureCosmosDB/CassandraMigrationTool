@@ -108,17 +108,17 @@
                                 { copyStatus = "Failed"; barColor = "bg-danger"; pct = 100; }
                                 else if (mu.SkippedDueToMaxRetries)
                                 { copyStatus = "Skipped (Max Retries)"; barColor = "bg-warning"; pct = 100; }
-                                else if (mu.CopyComplete && Job != null
+                                else if (mu.CopyComplete
                                     && Job.IsOnline
                                     && Job.Status == JobStatus.Paused)
                                 { copyStatus = "Replay Paused"; barColor = "bg-warning"; pct = 100; }
-                                else if (mu.CopyComplete && Job != null
+                                else if (mu.CopyComplete
                                     && Job.IsOnline
                                     && Job.Status == JobStatus.Running)
                                 { copyStatus = "Replaying"; barColor = "bg-info"; pct = 100; }
                                 else if (mu.CopyComplete)
                                 { copyStatus = "Complete"; barColor = "bg-success"; pct = 100; }
-                                else if (Job != null && Job.Status == JobStatus.Paused && (mu.CopyPercent > 0 || mu.CopyRowsCopied > 0))
+                                else if (Job.Status == JobStatus.Paused && (mu.CopyPercent > 0 || mu.CopyRowsCopied > 0))
                                 {
                                     pct = mu.CopyPercent > 0 ? Math.Min(mu.CopyPercent, 99.9) : 5;
                                     copyStatus = mu.CopyPercent > 0 ? $"Bulk Paused ({pct:F1}%)" : "Bulk Paused";
@@ -160,7 +160,7 @@
                                 long bulkRows = mu.CopyRowsCopied;
                                 long replayRows = mu.ChangeFeedRowsInserted;
                                 long totalRows = bulkRows + replayRows;
-                                bool showReplay = Job != null && Job.IsOnline && replayRows > 0;
+                                bool showReplay = Job.IsOnline && replayRows > 0;
                                 string tip = showReplay
                                     ? $"Bulk: {bulkRows:N0} · Replay: {replayRows:N0}"
                                     : "";
@@ -179,7 +179,7 @@
                             }
                         </td>
 
-                        @if (Job != null && Job.IsOnline)
+                        @if (Job.IsOnline)
                         {
                             <td title="Avg Read Latency: @mu.ChangeFeedAvgReadLatencyInMS.ToString("F2") ms | Avg Write Latency: @mu.ChangeFeedAvgWriteLatencyInMS.ToString("F2") ms">                           
                                 @(mu.ChangeFeedLastChecked.HasValue ? MigrationUtilities.GetTimestampDiff(mu.ChangeFeedLastChecked.Value) : "NA")

@@ -9,7 +9,14 @@
                 <button type="button" class="btn-close" aria-label="Close" @onclick="@Cancel"></button>
             </div>
             <div class="modal-body">
-                <!-- Tab Navigation -->
+                <!-- Tab Navigation. The previous "Online / ChangeStream"
+                     tab was intentionally removed in v2: every online-pipeline
+                     knob (poll interval, parallelism, replay-batch sizing) is
+                     now sourced from AppSettings + per-job Job.* fields and
+                     surfaced on the Job form, so this dialog only carries the
+                     handful of true app-level settings. Do not reintroduce
+                     the tab without first confirming there is a setting that
+                     belongs here. -->
                 <ul class="nav nav-tabs mb-3">
                     <li class="nav-item">
                         <button class="nav-link @(activeTab == OfflineDataMovementTab ? "active" : "")" @onclick="@(() => activeTab = OfflineDataMovementTab)">Offline</button>

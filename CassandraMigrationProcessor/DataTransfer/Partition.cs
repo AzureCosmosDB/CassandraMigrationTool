@@ -136,11 +136,8 @@ public sealed class Partition
     {
         lock (_chunksLock)
         {
-            foreach (var chunk in _chunks)
-            {
-                if (!chunk.IsCompleted) return chunk.ContinuationToken;
-            }
-            return _chunks.Last?.Value.ContinuationToken;
+            var firstIncomplete = _chunks.FirstOrDefault(c => !c.IsCompleted);
+            return firstIncomplete?.ContinuationToken ?? _chunks.Last?.Value.ContinuationToken;
         }
     }
 

@@ -784,6 +784,10 @@ public class MigrationJobRunner : IAsyncDisposable
             _log.WriteLine($"Copy paused for {mu.KeyspaceName}.{mu.TableName}", LogType.Info);
         else if (result == TaskResult.Abort)
         {
+            // No coordinator-level log: an abort is always the
+            // downstream consequence of a worker-reported fault, which
+            // is already logged at the source via JobControl. A second
+            // line here would double-report the same failure.
         }
         else
             _log.WriteLine($"Copy failed for {mu.KeyspaceName}.{mu.TableName} — will retry on resume", LogType.Error);

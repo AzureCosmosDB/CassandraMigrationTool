@@ -1,8 +1,10 @@
 namespace CassandraMigrationProcessor.Infrastructure;
 
 /// <summary>
-/// honoring platform conventions (Windows ResourceDrive vs Linux app-scoped
-/// path) and the configured app ID.
+/// Resolves the working folder where the processor reads and writes
+/// migration state (job registry, jobdefinition.json, logs), honoring
+/// platform conventions (Windows <c>ResourceDrive</c> vs Linux
+/// app-scoped path) and the configured app ID.
 /// </summary>
 public static class DataDirectoryResolver
 {

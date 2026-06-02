@@ -24,7 +24,8 @@ internal sealed record TablePartitioning(
 /// <see cref="PartitionManager"/> can be initialized in a single ctor
 /// call — there is no runtime "seed" path. <see cref="FailedUnitIds"/>
 /// records units whose partitioning threw (e.g. source table dropped
-/// running a copy loop against a missing chunk.
+/// mid-discovery) so the runner can skip them instead of running a
+/// copy loop against a missing chunk.
 /// </summary>
 internal sealed class JobPartitioning
 {

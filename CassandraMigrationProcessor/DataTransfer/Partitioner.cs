@@ -113,13 +113,10 @@ internal sealed class Partitioner
         IReadOnlyList<string> working;
         lock (mu.Partitions)
         {
-            foreach (var range in sourceRanges)
+            foreach (var range in sourceRanges.Where(r => !mu.Partitions.ContainsKey(r)))
             {
-                if (!mu.Partitions.ContainsKey(range))
-                {
-                    mu.Partitions[range] = new PartitionSnapshot { FeedRange = range };
-                    addedFromSource++;
-                }
+                mu.Partitions[range] = new PartitionSnapshot { FeedRange = range };
+                addedFromSource++;
             }
             working = mu.Partitions.Keys.ToList();
         }
