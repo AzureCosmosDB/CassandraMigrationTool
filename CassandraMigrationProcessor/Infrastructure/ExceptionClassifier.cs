@@ -1,7 +1,4 @@
 using Cassandra;
-using System;
-using System.Collections.Generic;
-using System.Linq;
 
 namespace CassandraMigrationProcessor.Infrastructure;
 /// <summary>
@@ -11,7 +8,11 @@ namespace CassandraMigrationProcessor.Infrastructure;
 /// </summary>
 public static class ExceptionClassifier
 {
-    private static readonly HashSet<Type> _transientTypes = new()
+    // Subclass-aware list (matched via IsInstanceOfType, not type
+    // equality) so a future driver release that introduces a more
+    // specific subclass — e.g. ServerOverloadedException : OverloadedException —
+    // continues to classify as transient without code changes.
+    private static readonly Type[] _transientBases = new[]
     {
         typeof(NoHostAvailableException),
         typeof(WriteTimeoutException),
@@ -24,7 +25,7 @@ public static class ExceptionClassifier
         typeof(ObjectDisposedException),
     };
 
-    private static readonly HashSet<Type> _fatalTypes = new()
+    private static readonly Type[] _fatalBases = new[]
     {
         typeof(AuthenticationException),
         typeof(UnauthorizedException),
@@ -32,8 +33,13 @@ public static class ExceptionClassifier
         typeof(SyntaxError),
     };
 
-    public static void RegisterTransient(Type exceptionType) => _transientTypes.Add(exceptionType);
-    public static void RegisterFatal(Type exceptionType) => _fatalTypes.Add(exceptionType);
+    private static bool IsKindOf(Exception ex, Type[] bases)
+    {
+        for (int i = 0; i < bases.Length; i++)
+            if (bases[i].IsInstanceOfType(ex))
+                return true;
+        return false;
+    }
 
     /// <summary>
     /// Transient errors that should be retried.
@@ -42,16 +48,23 @@ public static class ExceptionClassifier
     {
         var inner = UnwrapAggregate(ex);
 
-        if (_transientTypes.Contains(inner.GetType()))
+        // Fatal short-circuits FIRST. The previous fallthrough
+        // evaluated IsThrottle(ex) on the original aggregate after
+        // UnwrapAggregate had already picked a fatal inner — so an
+        // aggregate that contained {fatal, throttle} returned true
+        // here and RetryExecutor would retry a fatal failure
+        // indefinitely. Classify off the unwrapped exception only,
+        // and gate throttle behind the fatal check.
+        if (IsKindOf(inner, _fatalBases)) return false;
+
+        if (IsKindOf(inner, _transientBases))
             return true;
 
-        // Cosmos DB 429 throttling (message-based, not type-based)
-        var msg = inner.Message ?? string.Empty;
-        if (msg.Contains("429")
-            || msg.Contains("TooManyRequests", StringComparison.OrdinalIgnoreCase))
-            return true;
-
-        return false;
+        // Throttle markers may live in outer or inner exception text
+        // (e.g. NoHostAvailableException wrapping a 429 response from
+        // Cosmos DB). Check the unwrapped chain — but only after the
+        // fatal short-circuit above.
+        return IsThrottle(inner);
     }
 
     /// <summary>
@@ -60,7 +73,7 @@ public static class ExceptionClassifier
     public static bool IsFatal(Exception ex)
     {
         var inner = UnwrapAggregate(ex);
-        return _fatalTypes.Contains(inner.GetType());
+        return IsKindOf(inner, _fatalBases);
     }
 
     /// <summary>
@@ -83,19 +96,113 @@ public static class ExceptionClassifier
     }
 
     /// <summary>
-    /// Whether the error is a rate-limit / throttle.
+    /// Whether the error is a rate-limit / throttle. Detects both
+    /// typed <see cref="OverloadedException"/> and message-level markers
+    /// (Cosmos DB exposes 429s via NoHostAvailable / DriverException
+    /// with the throttle text in the message chain).
     /// </summary>
     public static bool IsThrottle(Exception ex)
     {
-        if (ex is OverloadedException) return true;
+        if (UnwrapAggregate(ex) is OverloadedException) return true;
 
-        var msg = ex.Message ?? string.Empty;
-        return msg.Contains("429")
+        var msg = BuildMessageChain(ex);
+        return msg.Contains("429", StringComparison.Ordinal)
             || msg.Contains("TooManyRequests", StringComparison.OrdinalIgnoreCase)
-            || msg.Contains("rate is large", StringComparison.OrdinalIgnoreCase);
+            || msg.Contains("OverloadedException", StringComparison.OrdinalIgnoreCase)
+            || msg.Contains("Request rate is large", StringComparison.OrdinalIgnoreCase)
+            || msg.Contains("RetryAfterMs", StringComparison.OrdinalIgnoreCase)
+            || msg.Contains("rate limit", StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// Whether the error is an authentication / authorisation failure.
+    /// Handles direct <see cref="AuthenticationException"/>, wrapping via
+    /// <see cref="Exception.InnerException"/>, and Cassandra driver's
+    /// <see cref="NoHostAvailableException"/> that aggregates per-host
+    /// errors in its <c>Errors</c> dictionary.
+    /// </summary>
+    public static bool IsAuth(Exception ex)
+    {
+        if (ex is AuthenticationException) return true;
+        if (ex.InnerException is AuthenticationException) return true;
+        if (ex is NoHostAvailableException nhae)
+            return nhae.Errors?.Values?.Any(e => e is AuthenticationException) ?? false;
+        return false;
+    }
+
+    /// <summary>
+    /// Compute the recommended retry delay for an attempt. If the error
+    /// carries a <c>RetryAfterMs=NNN</c> hint (Cosmos DB throttle
+    /// response) honour it with small jitter; otherwise fall back to
+    /// capped exponential backoff (1s, 2s, 4s, …) with jitter.
+    /// The exponent is clamped at <see cref="MaxExponentAttempt"/> so a
+    /// long-lived job whose attempt counter climbs past 10 doesn't
+    /// schedule a multi-day sleep on the next backoff.
+    /// </summary>
+    private const int MaxExponentAttempt = 10;
+    private const int MaxBackoffMs = 30_000;
+
+    public static int GetRetryDelayMs(Exception ex, int attempt)
+    {
+        var msg = BuildMessageChain(ex);
+        var idx = msg.IndexOf("RetryAfterMs=", StringComparison.OrdinalIgnoreCase);
+        if (idx >= 0)
+        {
+            var start = idx + "RetryAfterMs=".Length;
+            var end = start;
+            while (end < msg.Length && char.IsDigit(msg[end])) end++;
+            if (end > start
+                && int.TryParse(msg.AsSpan(start, end - start), out var retryMs)
+                && retryMs > 0)
+            {
+                return retryMs + Random.Shared.Next(100, 500);
+            }
+        }
+
+        var clamped = Math.Min(Math.Max(attempt, 1), MaxExponentAttempt);
+        var backoff = (int)(Math.Pow(2, clamped - 1) * 1000)
+            + Random.Shared.Next(100, 500);
+        return Math.Min(backoff, MaxBackoffMs);
     }
 
     private static Exception UnwrapAggregate(Exception ex)
-        => ex is AggregateException agg && agg.InnerException != null
-            ? agg.InnerException : ex;
+    {
+        // Walk until we leave the AggregateException chain. Task.WhenAll
+        // of nested Task.Run can wrap an Aggregate inside an Aggregate;
+        // a single Unwrap missed the real inner type and the caller
+        // received a generic Exception classification.
+        while (ex is AggregateException ae)
+        {
+            // Defensive: a manually-constructed AggregateException
+            // can carry zero inners. Indexing [0] would throw
+            // IndexOutOfRangeException from inside a catch-when
+            // filter, silently re-evaluating the filter to false
+            // and masking the real failure. Return the aggregate
+            // itself in that case so the classifier sees *something*
+            // and the caller's handlers fire normally.
+            if (ae.InnerExceptions.Count == 0)
+                return ae;
+            if (ae.InnerExceptions.Count == 1)
+            {
+                ex = ae.InnerExceptions[0];
+                continue;
+            }
+            // Multi-inner aggregate: prefer the most specific known
+            // classification (auth > fatal > throttle > transient).
+            var preferred =
+                ae.InnerExceptions.FirstOrDefault(e => IsKindOf(e, _fatalBases))
+                ?? ae.InnerExceptions.FirstOrDefault(IsThrottle)
+                ?? ae.InnerExceptions.FirstOrDefault(e => IsKindOf(e, _transientBases))
+                ?? ae.InnerExceptions[0];
+            return preferred;
+        }
+        return ex;
+    }
+
+    private static string BuildMessageChain(Exception ex)
+    {
+        if (ex.InnerException == null)
+            return ex.Message ?? string.Empty;
+        return (ex.Message ?? string.Empty) + " " + (ex.InnerException.Message ?? string.Empty);
+    }
 }

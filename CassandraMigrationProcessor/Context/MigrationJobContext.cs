@@ -1,17 +1,32 @@
 using Microsoft.Extensions.Configuration;
 using Newtonsoft.Json;
 using CassandraMigrationProcessor.Infrastructure;
-using CassandraMigrationProcessor.Context;
 using CassandraMigrationProcessor.Persistence;
-using System;
 using System.Collections.Concurrent;
-using System.Collections.Generic;
-using System.IO;
-using System.Threading;
-using System.Threading.Tasks;
 using CassandraMigrationProcessor.Models;
 
 namespace CassandraMigrationProcessor.Context;
+
+/// <summary>
+/// One attempt at reading <c>JobRegistry.json</c> from disk. Returned
+/// by <see cref="MigrationJobContext.TryLoadJobListOnce"/> and consumed
+/// by the retry loop in <see cref="MigrationJobContext.LoadJobList"/>.
+/// </summary>
+/// <param name="Result">Parsed registry, or <c>null</c> on miss/error.</param>
+/// <param name="FileExists">
+/// <c>true</c> when the file is present but unreadable (retry-eligible);
+/// <c>false</c> when it has not been written yet (terminal — no retry).
+/// </param>
+/// <param name="Error">Human-readable failure message; empty on success.</param>
+internal sealed record JobListLoadAttempt(
+    JobIndex? Result, bool FileExists, string Error);
+
+/// <summary>
+/// Process-wide ambient state for the migration host: wires up persistence
+/// (<see cref="IDocumentStorage"/> + <see cref="ILogStorage"/>), tracks the
+/// currently active job, holds the <see cref="JobIndex"/>, and exposes
+/// thin facades over <see cref="JobStore"/> / <see cref="UnitStore"/>.
+/// </summary>
 public class MigrationJobContext
 {
     /// <summary>
@@ -21,26 +36,25 @@ public class MigrationJobContext
     public static MigrationJobContext Instance { get; private set; }
 
     private readonly object _writeJobListLock = new object();
-    private MigrationLog _log;
-
-    public TableMigrationCache MigrationUnitsCache
-    { get; set; }
 
     /// <summary>
-    /// In-memory storage for source connection strings, keyed by job ID.
-    /// In-memory only. Never persisted to disk.
-    /// Cleared on app restart — user must re-enter on resume.
+    /// Per-run cache of <see cref="TableMigration"/> documents. Resolves
+    /// to <c>null</c> when no job is running. Owned by
+    /// <see cref="DataTransfer.MigrationJobRunner.MigrationUnitsCache"/>;
+    /// its lifetime matches the run.
     /// </summary>
-    public ConcurrentDictionary<string, string> SourceConnectionString
-    { get; set; } = new();
+    public TableMigrationCache? MigrationUnitsCache
+        => ActiveRunner?.MigrationUnitsCache;
 
     /// <summary>
-    /// In-memory storage for target connection strings, keyed by job ID.
-    /// In-memory only. Never persisted to disk.
-    /// Cleared on app restart — user must re-enter on resume.
+    /// The single process-wide cache of per-job source/target
+    /// connection credentials. In-memory only; never persisted to
+    /// disk. Cleared on app restart — user must re-enter on resume —
+    /// and per-job entries are removed by <see cref="RetireJob"/>
+    /// when a job reaches a terminal state.
     /// </summary>
-    public ConcurrentDictionary<string, string> TargetConnectionString
-    { get; set; } = new();
+    public ConnectionCredentialCache Credentials { get; }
+        = new ConnectionCredentialCache();
 
     /// <summary>
     /// In-memory set of job IDs that should auto-start when
@@ -57,51 +71,60 @@ public class MigrationJobContext
         set => _activeMigrationJobId = value;
     }
 
-    private volatile bool _controlledPauseRequested;
-    public bool ControlledPauseRequested
-        => _controlledPauseRequested;
+    /// <summary>
+    /// The job runner that currently owns the active migration, or
+    /// <c>null</c> when no job is running. Set by the host
+    /// (<c>JobManager.StartMigration</c>) once the runner is
+    /// constructed; cleared in the host's finally block. All per-run
+    /// state lives on this instance, so dropping the reference is
+    /// sufficient to retire the run.
+    /// </summary>
+    public DataTransfer.MigrationJobRunner? ActiveRunner { get; set; }
 
     public JobIndex JobIndex { get; private set; }
 
-    public void ResetControlledPause()
+    /// <summary>
+    /// Symmetric teardown for a job whose background run has just
+    /// returned. Always drops the auto-start hint and (if this is the
+    /// active job) clears <see cref="ActiveMigrationJobId"/> and the
+    /// active-job cache. Terminal retirements (Completed / Faulted /
+    /// Cancelled) also evict credentials and the unit cache; Paused
+    /// jobs retain them so "Resume with Existing Connection Strings"
+    /// works without re-prompting.
+    /// </summary>
+    public void RetireJob(string jobId, bool isTerminal)
     {
-        AddVerboseLog("Resetting controlled pause request.");
-        _controlledPauseRequested = false;
-    }
+        if (string.IsNullOrEmpty(jobId)) return;
 
-    public void RequestControlledPause(string location)
-    {
-        _log?.WriteLine(
-            $"{location} caused controlled pause.", LogType.Warning);
-        _controlledPauseRequested = true;
+        PendingAutoStartJobIds.TryRemove(jobId, out _);
+
+        if (string.Equals(ActiveMigrationJobId, jobId, StringComparison.Ordinal))
+        {
+            ActiveMigrationJobId = string.Empty;
+            JobStore.ClearCache();
+        }
+
+        if (isTerminal)
+        {
+            Credentials.Forget(jobId);
+            JobStore.EvictFromCache(jobId);
+        }
     }
 
     public void UpdateLogLevel(
         LogType level, Job job)
     {
-        if (CurrentlyActiveJob == null
+        // When a live run owns the job document, write the level
+        // through that instance so the runner sees the change on its
+        // next log call. Otherwise the caller's copy is the
+        // authoritative one (job already terminal, or no live run).
+        var target = CurrentlyActiveJob is null
             || CurrentlyActiveJob.Status == JobStatus.Cancelled
-            || CurrentlyActiveJob.Status == JobStatus.Completed)
-        {
-            job.LogLevel = level;
-            SaveMigrationJob(job);
-        }
-        else
-        {
-            CurrentlyActiveJob.LogLevel = level;
-            SaveMigrationJob(CurrentlyActiveJob);
-        }
-    }
-
-    public void AddVerboseLog(string message)
-    {
-        if (_log == null
-            || CurrentlyActiveJob == null
-            || CurrentlyActiveJob.Status == JobStatus.Cancelled
-            || CurrentlyActiveJob.Status == JobStatus.Completed)
-            return;
-
-        _log?.WriteLine(message, LogType.Verbose);
+            || CurrentlyActiveJob.Status == JobStatus.Completed
+                ? job
+                : CurrentlyActiveJob;
+        target.LogLevel = level;
+        SaveMigrationJob(target);
     }
 
     public LogStorageCallbacks CreateLogStorageCallbacks(
@@ -128,25 +151,32 @@ public class MigrationJobContext
     {
         get
         {
-            if (JobStore.CachedActiveJob != null
-                && !string.IsNullOrEmpty(ActiveMigrationJobId)
-                && JobStore.CachedActiveJob.Id
-                    == ActiveMigrationJobId)
-            {
-                return JobStore.CachedActiveJob;
-            }
+            EnsureActiveJobLoaded();
+            return JobStore.CachedActiveJob;
+        }
+    }
 
-            if (!string.IsNullOrEmpty(ActiveMigrationJobId))
-            {
-                JobStore.CachedActiveJob =
-                    JobStore.LoadJob(ActiveMigrationJobId);
-                if (MigrationUnitsCache == null)
-                    MigrationUnitsCache =
-                        new TableMigrationCache();
-                return JobStore.CachedActiveJob;
-            }
+    /// <summary>
+    /// Idempotent: loads the active job on first access without
+    /// mutating global state from a property getter.
+    /// </summary>
+    private readonly object _activeJobLoadLock = new object();
+    private void EnsureActiveJobLoaded()
+    {
+        var activeId = ActiveMigrationJobId;
+        if (string.IsNullOrEmpty(activeId)) return;
 
-            return null;
+        if (JobStore.CachedActiveJob != null
+            && JobStore.CachedActiveJob.Id == activeId)
+            return;
+
+        lock (_activeJobLoadLock)
+        {
+            if (JobStore.CachedActiveJob == null
+                || JobStore.CachedActiveJob.Id != activeId)
+            {
+                JobStore.CachedActiveJob = JobStore.LoadJob(activeId);
+            }
         }
     }
 
@@ -157,7 +187,6 @@ public class MigrationJobContext
     public void Initialize(IConfiguration configuration)
     {
         Instance = this;
-        MigrationUtilities.LogToFile("MigrationJobContext.Initialize started");
 
         var stateStoreCSorPath = ReadConfig(configuration);
         InitializePersistence(stateStoreCSorPath);
@@ -166,19 +195,13 @@ public class MigrationJobContext
 
     private string ReadConfig(IConfiguration configuration)
     {
-        try
-        {
-            var path = configuration["StateStore:ConnectionStringOrPath"];
-            var appId = configuration["StateStore:AppID"];
-            AppId = appId;
-            DataDirectoryResolver.SetAppId(appId);
-            return path ?? string.Empty;
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"[WARN] Initialize config read failed: {ex.Message}");
-            return string.Empty;
-        }
+        // Fail fast on configuration access failure rather than
+        // silently pointing persistence at the wrong store.
+        var path = configuration["StateStore:ConnectionStringOrPath"];
+        var appId = configuration["StateStore:AppID"];
+        AppId = appId;
+        DataDirectoryResolver.SetAppId(appId);
+        return path ?? string.Empty;
     }
 
     private void InitializePersistence(string stateStoreCSorPath)
@@ -226,10 +249,6 @@ public class MigrationJobContext
     public bool SaveMigrationJob(Job job)
         => JobStore.SaveJob(job);
 
-    // Facade: delegates to JobStore
-    public void ClearCurrentlyActiveJobCache()
-        => JobStore.ClearCache();
-
     // Facade: delegates to UnitStore
     public bool SaveMigrationUnit(
         TableMigration mu, bool updateParent)
@@ -240,11 +259,6 @@ public class MigrationJobContext
         string key, string jobId = null)
         => UnitStore.GetUnit(key, jobId);
 
-    // Facade: delegates to UnitStore
-    public TableMigration GetMigrationUnitFromStorage(
-        string jobId, string unitId)
-        => UnitStore.GetFromStorage(jobId, unitId);
-
     // -- JobIndex (stays here: global state) --
 
     private JobIndex LoadJobList(
@@ -252,24 +266,23 @@ public class MigrationJobContext
     {
         errorMessage = string.Empty;
         notFound = false;
-        string path = $"{JobStore.JobsFolder}\\JobRegistry.json";
 
         for (int i = 0; i < 5; i++)
         {
-            var (result, found, error) = TryLoadJobListOnce(path);
-            if (result != null)
+            var attempt = TryLoadJobListOnce(JobStore.JobRegistryPath);
+            if (attempt.Result != null)
             {
-                JobIndex = result;
-                return result;
+                JobIndex = attempt.Result;
+                return attempt.Result;
             }
-            if (!found)
+            if (!attempt.FileExists)
             {
                 notFound = true;
-                errorMessage = error;
+                errorMessage = attempt.Error;
                 return null;
             }
-            if (!string.IsNullOrEmpty(error))
-                errorMessage = error;
+            if (!string.IsNullOrEmpty(attempt.Error))
+                errorMessage = attempt.Error;
 
             Thread.Sleep(200);
         }
@@ -279,27 +292,30 @@ public class MigrationJobContext
     }
 
     /// <summary>
-    /// Attempts a single load of the job list from disk.
-    /// Returns (result, fileExists, errorMessage).
+    /// Attempts a single load of the job list from disk. Returns a
+    /// <see cref="JobListLoadAttempt"/>: <c>Result</c> is the parsed
+    /// <see cref="JobIndex"/> or <c>null</c>; <c>FileExists</c>
+    /// distinguishes "not yet written" from "present but unreadable"
+    /// (the retry loop only retries the latter); <c>Error</c> carries
+    /// the human-readable failure message when <c>Result</c> is null.
     /// </summary>
-    private (JobIndex? result, bool fileExists, string error) TryLoadJobListOnce(string path)
+    private JobListLoadAttempt TryLoadJobListOnce(string path)
     {
         try
         {
             if (!Store.Exists(path))
-                return (null, false, "Job list not found.");
+                return new JobListLoadAttempt(null, false, "Job list not found.");
 
-            string json = Store.Read(path);
-            var obj = JsonConvert.DeserializeObject<JobIndex>(json);
-            return (obj, true, string.Empty);
+            var loaded = JsonStore.Read<JobIndex>(path);
+            return new JobListLoadAttempt(loaded, true, string.Empty);
         }
         catch (JsonException ex)
         {
-            return (null, true, $"Error deserializing: {ex}");
+            return new JobListLoadAttempt(null, true, $"Error deserializing: {ex}");
         }
         catch (Exception ex)
         {
-            return (null, true, $"Error: {ex}");
+            return new JobListLoadAttempt(null, true, $"Error: {ex}");
         }
     }
 
@@ -311,12 +327,7 @@ public class MigrationJobContext
             {
                 lock (_writeJobListLock)
                 {
-                    var filePath = Path.Combine(
-                        JobStore.JobsFolder, "JobRegistry.json");
-                    string json =
-                        JsonConvert.SerializeObject(
-                            JobIndex, Formatting.Indented);
-                    Store.Write(filePath, json);
+                    JsonStore.Write(JobStore.JobRegistryPath, JobIndex);
                 }
             }
             return true;

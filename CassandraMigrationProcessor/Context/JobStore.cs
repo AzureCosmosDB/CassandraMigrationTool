@@ -1,15 +1,34 @@
-using Newtonsoft.Json;
-using System;
 using System.Collections.Concurrent;
-using System.Collections.Generic;
-using System.IO;
 using CassandraMigrationProcessor.Infrastructure;
 using CassandraMigrationProcessor.Models;
 namespace CassandraMigrationProcessor.Context;
+
+/// <summary>
+/// Persistence gateway for <see cref="Job"/> definitions: reads, writes, and
+/// in-memory caches per-job <c>jobdefinition.json</c> documents under the
+/// shared document store. Owns no migration logic.
+/// </summary>
 public static class JobStore
 {
     public const string JobsFolder = "migrationjobs";
     private const string JobDefinitionFile = "jobdefinition.json";
+    private const string JobRegistryFile = "JobRegistry.json";
+    private const string ConfigFile = "config.json";
+
+    /// <summary>
+    /// Canonical path to the per-job-index file
+    /// (<c>migrationjobs/JobRegistry.json</c>). Single source of truth
+    /// so loaders and writers cannot drift.
+    /// </summary>
+    internal static string JobRegistryPath { get; } =
+        Path.Combine(JobsFolder, JobRegistryFile);
+
+    /// <summary>
+    /// Canonical path to the global <c>config.json</c> document under
+    /// <see cref="JobsFolder"/>. Used by <see cref="SettingsManager"/>.
+    /// </summary>
+    internal static string ConfigPath { get; } =
+        Path.Combine(JobsFolder, ConfigFile);
 
     private static readonly object _writeJobLock = new object();
     private static readonly object _cacheLock = new();
@@ -32,14 +51,19 @@ public static class JobStore
         Path.Combine(JobsFolder, jobId, JobDefinitionFile);
 
     /// <summary>
+    /// Build the canonical path to a per-table unit document
+    /// (<c>migrationjobs/{jobId}/{unitId}.json</c>). Routed through
+    /// here so the path scheme can change in one place.
+    /// </summary>
+    internal static string GetUnitDocumentPath(string jobId, string unitId) =>
+        Path.Combine(JobsFolder, jobId, $"{unitId}.json");
+
+    /// <summary>
     /// Serialize a job and persist it to storage (caller must hold _writeJobLock).
     /// </summary>
     private static void SerializeAndPersist(Job job)
     {
-        var filePath = GetJobDefinitionPath(job.Id);
-        string json = JsonConvert.SerializeObject(
-            job, Formatting.Indented);
-        MigrationJobContext.Instance.Store.Write(filePath, json);
+        JsonStore.Write(GetJobDefinitionPath(job.Id), job);
     }
 
     internal static Job? LoadJob(string jobId)
@@ -49,11 +73,8 @@ public static class JobStore
 
         return MigrationUtilities.SafeExecute(() =>
         {
-            var filePath = GetJobDefinitionPath(jobId);
-            var json = MigrationJobContext.Instance.Store.Read(
-                filePath);
-            var loadedObject =
-                JsonConvert.DeserializeObject<Job>(json);
+            var loadedObject = JsonStore.Read<Job>(
+                GetJobDefinitionPath(jobId));
             if (loadedObject == null)
                 return null;
             _jobs[jobId] = loadedObject;
@@ -127,6 +148,29 @@ public static class JobStore
         lock (_cacheLock)
         {
             _cachedActiveJob = null;
+        }
+    }
+
+    /// <summary>
+    /// Evicts a single job from the process-wide loaded-job dictionary
+    /// (and from <see cref="CachedActiveJob"/> if it currently points at
+    /// the same job). Used by <see cref="MigrationJobContext.RetireJob"/>
+    /// when a job reaches a terminal state so its state is not retained
+    /// in memory across job lifetimes.
+    /// </summary>
+    internal static void EvictFromCache(string jobId)
+    {
+        if (string.IsNullOrEmpty(jobId)) return;
+
+        _jobs.TryRemove(jobId, out _);
+
+        lock (_cacheLock)
+        {
+            if (_cachedActiveJob != null
+                && string.Equals(_cachedActiveJob.Id, jobId, StringComparison.Ordinal))
+            {
+                _cachedActiveJob = null;
+            }
         }
     }
 }

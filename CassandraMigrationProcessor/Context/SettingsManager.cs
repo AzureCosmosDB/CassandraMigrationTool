@@ -1,28 +1,22 @@
-using Newtonsoft.Json;
 using CassandraMigrationProcessor.Models;
-using System;
 
 namespace CassandraMigrationProcessor.Context;
+
+/// <summary>
+/// Loads and saves the global <see cref="AppSettings"/> document (<c>config.json</c>)
+/// through <see cref="MigrationJobContext"/>'s document store.
+/// </summary>
 public static class SettingsManager
 {
-    private static string GetFilePath()
-        => $"{JobStore.JobsFolder}\\config.json";
-
     public static void Load(AppSettings settings)
     {
         if (MigrationJobContext.Instance.Store == null) return;
 
-        var filePath = GetFilePath();
-        if (MigrationJobContext.Instance.Store.Exists(filePath))
+        var loaded = JsonStore.Read<AppSettings>(JobStore.ConfigPath);
+        if (loaded != null)
         {
-            string json = MigrationJobContext.Instance.Store.Read(filePath);
-            var loaded =
-                JsonConvert.DeserializeObject<AppSettings>(json);
-            if (loaded != null)
-            {
-                settings.ApplyLoaded(loaded);
-                return;
-            }
+            settings.ApplyLoaded(loaded);
+            return;
         }
 
         settings.ApplyDefaults();
@@ -39,9 +33,7 @@ public static class SettingsManager
 
         try
         {
-            string json = JsonConvert.SerializeObject(settings);
-            MigrationJobContext.Instance.Store.Write(
-                GetFilePath(), json);
+            JsonStore.Write(JobStore.ConfigPath, settings, indented: false);
             errorMessage = string.Empty;
             return true;
         }

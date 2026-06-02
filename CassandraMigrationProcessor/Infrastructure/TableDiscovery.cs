@@ -1,15 +1,18 @@
 using Newtonsoft.Json;
+using CassandraMigrationProcessor.CassandraDriver;
 using CassandraMigrationProcessor.Models;
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Threading.Tasks;
 
 #pragma warning disable CS8600
 #pragma warning disable CS8602
 #pragma warning disable CS8604
 
 namespace CassandraMigrationProcessor.Infrastructure;
+
+/// <summary>
+/// Parses the user-supplied namespace specification (JSON or CSV) and
+/// expands it into the concrete list of <see cref="TableMapping"/> entries
+/// to migrate, querying source keyspaces/tables as needed.
+/// </summary>
 public static class TableDiscovery
 {
     /// <summary>
@@ -47,14 +50,25 @@ public static class TableDiscovery
         var result = new List<TableMapping>();
         foreach (var fullName in entries)
         {
-            int dotIdx = fullName.IndexOf('.');
-            if (dotIdx <= 0 || dotIdx == fullName.Length - 1)
+            string keyspace;
+            string table;
+            try
+            {
+                // CQL-aware split: handles both bare 'foo.bar' and
+                // quoted forms like 'foo."MixedCase_Table-1"' or
+                // '"My-KS"."Some.Table"' — the surrounding "..." is
+                // stripped and ""-escapes are resolved.
+                (keyspace, table) = CqlIdentifier.SplitQualifiedName(fullName);
+            }
+            catch (ArgumentException)
+            {
                 return null; // invalid entry
+            }
 
             result.Add(new TableMapping
             {
-                KeyspaceName = fullName.Substring(0, dotIdx).Trim(),
-                TableName = fullName.Substring(dotIdx + 1).Trim()
+                KeyspaceName = keyspace,
+                TableName = table
             });
         }
         return result;
@@ -77,22 +91,23 @@ public static class TableDiscovery
         {
             foreach (var item in loadedObject)
             {
-                var srcKs = item.KeyspaceName.Trim();
-                var srcTbl = item.TableName.Trim();
+                // CqlIdentifier.Unquote strips surrounding "..." and
+                // resolves "" escapes; bare names pass through unchanged.
+                var srcKs = CqlIdentifier.Unquote(item.KeyspaceName);
+                var srcTbl = CqlIdentifier.Unquote(item.TableName);
                 var tgtKs =
                     string.IsNullOrWhiteSpace(item.TargetKeyspaceName)
-                    ? srcKs : item.TargetKeyspaceName.Trim();
+                    ? srcKs : CqlIdentifier.Unquote(item.TargetKeyspaceName);
                 var tgtTbl =
                     string.IsNullOrWhiteSpace(item.TargetTableName)
-                    ? srcTbl : item.TargetTableName.Trim();
+                    ? srcTbl : CqlIdentifier.Unquote(item.TargetTableName);
 
                 if (!unitsToAdd.Any(x =>
                     x.KeyspaceName == srcKs
                     && x.TableName == srcTbl))
                 {
                     var mu = new TableMigration(
-                        job, srcKs, srcTbl,
-                        new List<CopyChunk>());
+                        job, srcKs, srcTbl);
                     mu.TargetKeyspaceName = tgtKs;
                     mu.TargetTableName = tgtTbl;
                     mu.SourceStatus = TableStatus.OK;
@@ -110,19 +125,23 @@ public static class TableDiscovery
 
             foreach (var fullName in entries)
             {
-                int dotIdx = fullName.IndexOf('.');
-                if (dotIdx <= 0
-                    || dotIdx == fullName.Length - 1) continue;
-
-                string keyspace = fullName.Substring(0, dotIdx).Trim();
-                string table = fullName.Substring(dotIdx + 1).Trim();
+                string keyspace;
+                string table;
+                try
+                {
+                    // CQL-aware split: tolerates 'foo."MixedCase-1"' etc.
+                    (keyspace, table) = CqlIdentifier.SplitQualifiedName(fullName);
+                }
+                catch (ArgumentException)
+                {
+                    continue; // skip malformed entries
+                }
 
                 if (!unitsToAdd.Any(x =>
                     x.KeyspaceName == keyspace && x.TableName == table))
                 {
                     var mu = new TableMigration(
-                        job, keyspace, table,
-                        new List<CopyChunk>());
+                        job, keyspace, table);
                     mu.SourceStatus = TableStatus.OK;
                     unitsToAdd.Add(mu);
                 }
@@ -137,12 +156,20 @@ public static class TableDiscovery
     {
         if (string.IsNullOrWhiteSpace(input))
             return Tuple.Create(false, string.Empty,
-                    "Namespaces cannot be null or empty.");
+                    "Tables To Migrate cannot be empty.");
 
             var parsed = ParseNamespaceEntries(input);
         if (parsed == null)
             return Tuple.Create(false, string.Empty,
-                "Invalid format. Expected JSON array or CSV of keyspace.table entries.");
+                "Tables To Migrate: invalid format. Expected JSON array or CSV of 'keyspace.table' entries.");
+
+        // Reject inputs that *look* well-formed (commas, semicolons,
+        // whitespace) but parse to zero entries — e.g. ",,,,", "   ;",
+        // "\n,\n". Without this guard the form would accept the input
+        // and silently create a job with no tables.
+        if (parsed.Count == 0)
+            return Tuple.Create(false, string.Empty,
+                "Tables To Migrate: no 'keyspace.table' entries found. Provide at least one (e.g. 'mykeyspace.mytable').");
 
         foreach (var item in parsed)
         {
@@ -150,7 +177,7 @@ public static class TableDiscovery
                 || string.IsNullOrWhiteSpace(item.TableName))
             {
                 return Tuple.Create(false, string.Empty,
-                    "Each entry must have KeyspaceName and TableName.");
+                    "Tables To Migrate: each entry must have a keyspace and a table name (format 'keyspace.table').");
             }
         }
 

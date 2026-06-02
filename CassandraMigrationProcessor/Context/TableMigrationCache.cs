@@ -1,9 +1,12 @@
-using CassandraMigrationProcessor.Context;
-using System;
 using System.Collections.Concurrent;
 using CassandraMigrationProcessor.Models;
 
 namespace CassandraMigrationProcessor.Context;
+
+/// <summary>
+/// In-memory cache of <see cref="TableMigration"/> instances keyed by
+/// (jobId, migrationUnitId), with read-through to <see cref="UnitStore"/>.
+/// </summary>
 public class TableMigrationCache
 {
     private readonly ConcurrentDictionary<string, TableMigration> _migrationUnits = new();
@@ -24,7 +27,7 @@ public class TableMigrationCache
         if (_migrationUnits.TryGetValue(cacheKey, out TableMigration? cachedMigrationUnit))
             return cachedMigrationUnit;
 
-        var mu = MigrationJobContext.Instance.GetMigrationUnitFromStorage(jobId, migrationUnitId);
+        var mu = UnitStore.GetFromStorage(jobId, migrationUnitId);
         if (mu != null)
             _migrationUnits[cacheKey] = mu;
 

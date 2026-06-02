@@ -1,10 +1,7 @@
 using Cassandra;
 using Cassandra.DataStax.Graph;
 using Cassandra.Metrics;
-using System;
-using System.Collections.Generic;
 using System.Net;
-using System.Threading.Tasks;
 
 namespace CassandraMigrationProcessor.CassandraDriver;
 
@@ -16,11 +13,14 @@ namespace CassandraMigrationProcessor.CassandraDriver;
 /// </summary>
 internal sealed class NullSession : ISession
 {
-    public ICluster Cluster => throw new NotSupportedException("NullSession has no cluster");
+    private static NotSupportedException Unsupported(string what) =>
+        new($"NullSession {what}");
+
+    public ICluster Cluster => throw Unsupported("has no cluster");
     public int BinaryProtocolVersion => 4;
     public bool IsDisposed => false;
     public string Keyspace => string.Empty;
-    public UdtMappingDefinitions UserDefinedTypes => throw new NotSupportedException("NullSession has no UDT mappings");
+    public UdtMappingDefinitions UserDefinedTypes => throw Unsupported("has no UDT mappings");
     public string SessionName => "NullSession";
 
     // ── Execute (no-op) ──
@@ -37,35 +37,23 @@ internal sealed class NullSession : ISession
 
     // ── Prepare (not supported) ──
 
-    public PreparedStatement Prepare(string cqlQuery) =>
-        throw new NotSupportedException("NullSession cannot prepare statements");
-    public PreparedStatement Prepare(string cqlQuery, IDictionary<string, byte[]> customPayload) =>
-        throw new NotSupportedException("NullSession cannot prepare statements");
-    public PreparedStatement Prepare(string cqlQuery, string keyspace) =>
-        throw new NotSupportedException("NullSession cannot prepare statements");
-    public PreparedStatement Prepare(string cqlQuery, string keyspace, IDictionary<string, byte[]> customPayload) =>
-        throw new NotSupportedException("NullSession cannot prepare statements");
+    public PreparedStatement Prepare(string cqlQuery) => throw Unsupported("cannot prepare statements");
+    public PreparedStatement Prepare(string cqlQuery, IDictionary<string, byte[]> customPayload) => throw Unsupported("cannot prepare statements");
+    public PreparedStatement Prepare(string cqlQuery, string keyspace) => throw Unsupported("cannot prepare statements");
+    public PreparedStatement Prepare(string cqlQuery, string keyspace, IDictionary<string, byte[]> customPayload) => throw Unsupported("cannot prepare statements");
 
-    public Task<PreparedStatement> PrepareAsync(string cqlQuery) =>
-        throw new NotSupportedException("NullSession cannot prepare statements");
-    public Task<PreparedStatement> PrepareAsync(string cqlQuery, IDictionary<string, byte[]> customPayload) =>
-        throw new NotSupportedException("NullSession cannot prepare statements");
-    public Task<PreparedStatement> PrepareAsync(string cqlQuery, string keyspace) =>
-        throw new NotSupportedException("NullSession cannot prepare statements");
-    public Task<PreparedStatement> PrepareAsync(string cqlQuery, string keyspace, IDictionary<string, byte[]> customPayload) =>
-        throw new NotSupportedException("NullSession cannot prepare statements");
+    public Task<PreparedStatement> PrepareAsync(string cqlQuery) => throw Unsupported("cannot prepare statements");
+    public Task<PreparedStatement> PrepareAsync(string cqlQuery, IDictionary<string, byte[]> customPayload) => throw Unsupported("cannot prepare statements");
+    public Task<PreparedStatement> PrepareAsync(string cqlQuery, string keyspace) => throw Unsupported("cannot prepare statements");
+    public Task<PreparedStatement> PrepareAsync(string cqlQuery, string keyspace, IDictionary<string, byte[]> customPayload) => throw Unsupported("cannot prepare statements");
 
     // ── APM pattern (not supported) ──
 
-    public IAsyncResult BeginExecute(IStatement statement, AsyncCallback callback, object state) =>
-        throw new NotSupportedException();
-    public IAsyncResult BeginExecute(string cqlQuery, ConsistencyLevel consistency, AsyncCallback callback, object state) =>
-        throw new NotSupportedException();
+    public IAsyncResult BeginExecute(IStatement statement, AsyncCallback callback, object state) => throw Unsupported("does not support BeginExecute (APM)");
+    public IAsyncResult BeginExecute(string cqlQuery, ConsistencyLevel consistency, AsyncCallback callback, object state) => throw Unsupported("does not support BeginExecute (APM)");
     public RowSet EndExecute(IAsyncResult ar) => new RowSet();
-    public IAsyncResult BeginPrepare(string cqlQuery, AsyncCallback callback, object state) =>
-        throw new NotSupportedException();
-    public PreparedStatement EndPrepare(IAsyncResult ar) =>
-        throw new NotSupportedException();
+    public IAsyncResult BeginPrepare(string cqlQuery, AsyncCallback callback, object state) => throw Unsupported("does not support BeginPrepare (APM)");
+    public PreparedStatement EndPrepare(IAsyncResult ar) => throw Unsupported("does not support EndPrepare (APM)");
 
     // ── Keyspace management (no-op) ──
 
@@ -82,18 +70,14 @@ internal sealed class NullSession : ISession
 
     // ── Graph (not supported) ──
 
-    public GraphResultSet ExecuteGraph(IGraphStatement statement) =>
-        throw new NotSupportedException("NullSession does not support graph queries");
-    public GraphResultSet ExecuteGraph(IGraphStatement statement, string executionProfileName) =>
-        throw new NotSupportedException("NullSession does not support graph queries");
-    public Task<GraphResultSet> ExecuteGraphAsync(IGraphStatement statement) =>
-        throw new NotSupportedException("NullSession does not support graph queries");
-    public Task<GraphResultSet> ExecuteGraphAsync(IGraphStatement statement, string executionProfileName) =>
-        throw new NotSupportedException("NullSession does not support graph queries");
+    public GraphResultSet ExecuteGraph(IGraphStatement statement) => throw Unsupported("does not support graph queries");
+    public GraphResultSet ExecuteGraph(IGraphStatement statement, string executionProfileName) => throw Unsupported("does not support graph queries");
+    public Task<GraphResultSet> ExecuteGraphAsync(IGraphStatement statement) => throw Unsupported("does not support graph queries");
+    public Task<GraphResultSet> ExecuteGraphAsync(IGraphStatement statement, string executionProfileName) => throw Unsupported("does not support graph queries");
 
     // ── Metrics / Shutdown ──
 
-    public IDriverMetrics GetMetrics() => throw new NotSupportedException("NullSession has no metrics");
+    public IDriverMetrics GetMetrics() => throw Unsupported("has no metrics");
     public Task ShutdownAsync() => Task.CompletedTask;
 
     // ── IDisposable ──

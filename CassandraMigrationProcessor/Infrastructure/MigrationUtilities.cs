@@ -1,36 +1,23 @@
-using CassandraMigrationProcessor.Models;
-using System;
-using System.Collections.Generic;
-using System.IO;
-using System.Linq;
-using System.Security.Cryptography;
-using System.Text;
-using System.Text.RegularExpressions;
-
 #pragma warning disable CS8600
 #pragma warning disable CS8602
 #pragma warning disable CS8604
 
 namespace CassandraMigrationProcessor.Infrastructure;
+
+/// <summary>
+/// Cross-cutting helpers for process-wide concerns: file logging,
+/// safe-dispose/execute wrappers, and the UI-side timestamp formatter.
+/// </summary>
 public static class MigrationUtilities
 {
-    public static bool IsOnline(Job job)
-    {
-        if (job == null) return false;
-        return job.CDCMode != CDCMode.Offline;
-    }
-
-    public static bool IsMigrationUnitValid(TableMigrationSummary mu)
-    {
-        // Allow both OK and Failed status — Failed tables
-        // are retried on resume (e.g. after token expiry).
-        // Only NotFound tables are truly invalid.
-        return mu.SourceStatus == TableStatus.OK
-            || mu.SourceStatus == TableStatus.Failed;
-    }
-
     #region Logging
 
+    /// <summary>
+    /// Out-of-band file trace used only where the structured
+    /// <see cref="MigrationLog"/> isn't available yet or has itself
+    /// failed (working-folder discovery, persistence-layer crash
+    /// fallback). Do not use for regular tracing.
+    /// </summary>
     public static void LogToFile(
         string message,
         string fileName = "AutoStartLog.txt")
@@ -66,15 +53,40 @@ public static class MigrationUtilities
     }
 
     /// <summary>
-    /// Executes an action, returning a fallback on failure.
-    /// Shared helper for the repeated try/catch-warn-return pattern.
+    /// Disposes a Cassandra session AND its owning Cluster. The
+    /// driver's connection pool is owned by Cluster, not Session —
+    /// disposing only the session leaks sockets. Skips
+    /// <see cref="NullSession"/> (simulated run) whose Cluster property
+    /// throws on access.
     /// </summary>
+    public static void SafeDisposeSession(Cassandra.ISession? session, string name)
+    {
+        if (session == null) return;
+        if (session is CassandraDriver.NullSession) return;
+        try { session.Cluster?.Dispose(); }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[WARN] {name} cluster dispose failed: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Executes a function, returning a fallback on failure. Shared
+    /// for the try/catch-warn-return pattern across persistence
+    /// gateways. I/O exceptions are logged and swallowed.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="OperationCanceledException"/> is rethrown so
+    /// cooperative cancellation isn't masked as a silent fallback
+    /// return.
+    /// </remarks>
     public static T SafeExecute<T>(Func<T> action, T fallback, string operation)
     {
         try { return action(); }
+        catch (OperationCanceledException) { throw; }
         catch (Exception ex)
         {
-            Console.WriteLine($"[WARN] {operation}: {ex.Message}");
+            Console.Error.WriteLine($"[WARN] {operation}: {ex.Message}");
             return fallback;
         }
     }
@@ -82,79 +94,24 @@ public static class MigrationUtilities
     public static void SafeExecuteVoid(Action action, string operation)
     {
         try { action(); }
+        catch (OperationCanceledException) { throw; }
         catch (Exception ex)
         {
-            Console.WriteLine($"[WARN] {operation}: {ex.Message}");
+            Console.Error.WriteLine($"[WARN] {operation}: {ex.Message}");
         }
     }
 
     #endregion
 
-    public static string GenerateMigrationUnitId(
-        string keyspaceName, string tableName)
-    {
-        using (var sha = SHA256.Create())
-        {
-            byte[] hashBytes = sha.ComputeHash(
-                Encoding.UTF8.GetBytes(
-                    $"{keyspaceName}.{tableName}"));
-            return BitConverter.ToString(hashBytes)
-                .Replace("-", "").Substring(0, 16).ToLower();
-        }
-    }
-
-    public static (long Total, long Inserted, long Failed)
-        GetProcessedTotals(TableMigration mu)
-    {
-        long inserted = mu.CopyChunks?
-            .Sum(c => c.TargetInsertedRowCount) ?? 0;
-        long failed = mu.CopyChunks?
-            .Sum(c => c.TargetFailedRowCount) ?? 0;
-        long total = inserted + failed;
-        return (total, inserted, failed);
-    }
-
+    /// <summary>
+    /// UI-side lag formatter ("X sec / X min / Xh Xm").
+    /// </summary>
     public static string GetTimestampDiff(DateTime timestamp)
     {
         var lag = DateTime.UtcNow - timestamp;
         if (lag.TotalSeconds < 0) return "Invalid";
-        if (lag.TotalSeconds < 60)
-            return $"{(int)lag.TotalSeconds} sec";
-        else if (lag.TotalMinutes < 60)
-            return $"{(int)lag.TotalMinutes} min {(int)lag.Seconds} sec";
-        else
-            return $"{(int)lag.TotalHours}h {(int)lag.Minutes}m";
-    }
-
-    public static bool IsOfflineJobCompleted(Job job)
-    {
-        if (job == null || job.Tables.Count == 0)
-            return false;
-
-        return job.Tables
-            .Where(mu => IsMigrationUnitValid(mu))
-            .All(mu => mu.CopyComplete);
-    }
-
-    public static bool AnyValidTable(Job job)
-    {
-        if (job == null)
-            return false;
-        return job.Tables
-            .Any(mu => IsMigrationUnitValid(mu));
-    }
-
-    /// <summary>
-    /// Validates that a string is a safe CQL identifier
-    /// (alphanumeric, underscore, or hyphen only).
-    /// Throws ArgumentException if invalid.
-    /// </summary>
-    public static string ValidateCqlIdentifier(string identifier)
-    {
-        if (string.IsNullOrWhiteSpace(identifier))
-            throw new ArgumentException("CQL identifier cannot be empty");
-        if (!Regex.IsMatch(identifier, @"^[a-zA-Z0-9_\-]+$"))
-            throw new ArgumentException($"Invalid CQL identifier: {identifier}");
-        return identifier;
+        if (lag.TotalSeconds < 60) return $"{(int)lag.TotalSeconds} sec";
+        if (lag.TotalMinutes < 60) return $"{(int)lag.TotalMinutes} min {lag.Seconds} sec";
+        return $"{(int)lag.TotalHours}h {lag.Minutes}m";
     }
 }

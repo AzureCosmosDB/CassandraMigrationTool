@@ -1,7 +1,9 @@
-using System;
-using System.IO;
-
 namespace CassandraMigrationProcessor.Infrastructure;
+
+/// <summary>
+/// honoring platform conventions (Windows ResourceDrive vs Linux app-scoped
+/// path) and the configured app ID.
+/// </summary>
 public static class DataDirectoryResolver
 {
     static string _workingFolder = string.Empty;
@@ -48,6 +50,21 @@ public static class DataDirectoryResolver
         {
             _workingFolder = Path.GetTempPath();
             MigrationUtilities.LogToFile($"WorkingFolder (Temp): {_workingFolder}");
+            return _workingFolder;
+        }
+
+        // Azure App Service (Windows) -- only D:\home\ is writable.
+        // Operators on App Service who don't override StateStoreConnectionStringOrPath
+        // would otherwise land in C:\Users\... (no access) and the
+        // host process exits with 0xe0434352 before serving a request.
+        // Detect via WEBSITE_INSTANCE_ID (set on every App Service worker)
+        // and pick the writable scratch directory automatically.
+        var websiteInstanceId = Environment.GetEnvironmentVariable("WEBSITE_INSTANCE_ID");
+        if (!string.IsNullOrEmpty(websiteInstanceId))
+        {
+            _workingFolder = "D:\\home\\MigrationDrive\\";
+            MigrationUtilities.LogToFile(
+                $"WorkingFolder (Azure App Service Windows): {_workingFolder} (WEBSITE_INSTANCE_ID={websiteInstanceId})");
             return _workingFolder;
         }
 
