@@ -1,0 +1,45 @@
+<Project>
+  <PropertyGroup>
+    <!--
+      Run code-style analyzers (IDE0005, IDE0051, IDE0052, IDE0060, ...)
+      during every build, not just inside the IDE. Without this, IDE rules
+      are silently ignored at build time.
+    -->
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+    <!--
+      IDE0005 ("Using directive is unnecessary") requires
+      GenerateDocumentationFile=true to be reported by the build. This is a
+      known Roslyn quirk: https://github.com/dotnet/roslyn/issues/41640
+    -->
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <!--
+      The XML-docs warnings (CS1591 etc.) are noise for an internal app,
+      so silence them. We only enabled GenerateDocumentationFile to make
+      IDE0005 fire.
+    -->
+    <NoWarn>$(NoWarn);CS1591;CS1573;CS1572;CS1574;CS1587;CS1734</NoWarn>
+    <!--
+      Anonymise source file paths recorded in the PDB. Without this every
+      exception stack trace shown in the customer-visible job log leaks
+      the developer's local checkout path, e.g.
+      `at Foo.Bar() in C:\Users\<dev>\source\repos\CassandraMigrationToolInternal\src\Foo.cs:line 42`.
+      PathMap rewrites the repo root to `/_/` at compile time, so stack
+      traces become
+      `at Foo.Bar() in /_/src/Foo.cs:line 42`.
+      Fixes #79 — keeps the stack trace useful for diagnostics while
+      stripping the leaked username and internal repo name.
+    -->
+    <PathMap>$(MSBuildThisFileDirectory)=/_/</PathMap>
+    <!--
+      The .NET SDK auto-generates a SourceLink JSON document inside the
+      PDB that maps the local path (e.g. `Q:\src\CassandraMigrationTool-clean\*`)
+      to a public GitHub URL. That mapping bakes the developer's
+      checkout drive and directory back into the binary, undoing the
+      PathMap fix above. We don't ship symbols to customers, so
+      SourceLink has no value here.
+    -->
+    <EnableSourceLink>false</EnableSourceLink>
+    <EnableSourceControlManagerQueries>false</EnableSourceControlManagerQueries>
+    <PublishRepositoryUrl>false</PublishRepositoryUrl>
+  </PropertyGroup>
+</Project>
