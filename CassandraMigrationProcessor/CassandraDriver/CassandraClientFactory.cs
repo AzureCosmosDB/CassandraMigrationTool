@@ -180,21 +180,19 @@ public static class CassandraClientFactory
             {
                 if (nhae.Errors != null)
                 {
-                    foreach (var hostErr in nhae.Errors.Values)
-                    {
-                        var found = UnwrapToAuthenticationException(hostErr);
-                        if (found != null) return found;
-                    }
+                    var found = nhae.Errors.Values
+                        .Select(UnwrapToAuthenticationException)
+                        .FirstOrDefault(a => a != null);
+                    if (found != null) return found;
                 }
                 return null;
             }
             if (ex is AggregateException agg)
             {
-                foreach (var inner in agg.InnerExceptions)
-                {
-                    var found = UnwrapToAuthenticationException(inner);
-                    if (found != null) return found;
-                }
+                var found = agg.InnerExceptions
+                    .Select(UnwrapToAuthenticationException)
+                    .FirstOrDefault(a => a != null);
+                if (found != null) return found;
                 return null;
             }
             ex = ex.InnerException;

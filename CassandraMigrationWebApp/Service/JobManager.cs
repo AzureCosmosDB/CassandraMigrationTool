@@ -265,9 +265,7 @@ public class JobManager
     private static bool HasMadeProgress(Job job)
     {
         if (job.Tables == null) return false;
-        foreach (var mu in job.Tables)
-            if (mu.CopyRowsCopied > 0) return true;
-        return false;
+        return job.Tables.Any(mu => mu.CopyRowsCopied > 0);
     }
 
     public Task StartMigration(Job job, string sourceConnectionString, string targetConnectionString)

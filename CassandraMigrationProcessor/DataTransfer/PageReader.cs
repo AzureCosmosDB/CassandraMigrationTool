@@ -184,8 +184,15 @@ internal class PageReader : IDisposable
     {
         CqlIdentifier.Validate(context.KeyspaceName);
         CqlIdentifier.Validate(context.TableName);
+        // Defensive: feed-range tokens currently come from
+        // system_cosmos.feedranges (server-managed, never contain a
+        // single quote), but the column is plain text — escape per
+        // CQL string-literal rules (double up apostrophes) so a future
+        // schema change in that system table cannot turn the
+        // interpolation into invalid CQL or an injection surface.
+        var escapedRange = range.Replace("'", "''");
         return
             $"SELECT * FROM \"{context.KeyspaceName}\".\"{context.TableName}\"" +
-            $" WHERE COSMOS_CHANGEFEED_FROM_START() = true AND COSMOS_FEEDRANGE() = '{range}'";
+            $" WHERE COSMOS_CHANGEFEED_FROM_START() = true AND COSMOS_FEEDRANGE() = '{escapedRange}'";
     }
 }

@@ -71,8 +71,8 @@ else
                 <tr><td class="nowrap">Started On (UTC)</td><td>@(Job.StartedOn?.ToString() ?? "N/A")</td></tr>
                 <tr><td class="nowrap">Is Online</td><td>@(Job.IsOnline ? "Yes" : "No")</td></tr>
                 <tr><td class="nowrap">Is Completed</td><td>@(Job.Status == JobStatus.Completed ? "Yes" : "No")</td></tr>
-                <tr><td class="nowrap">Source Connection String</td><td class="wrap">@Job.SourceContactPoint</td></tr>
-                <tr><td class="nowrap">Target Connection String</td><td class="wrap">@Job.TargetContactPoint</td></tr>
+                <tr><td class="nowrap">Source Contact Point</td><td class="wrap">@Job.SourceContactPoint</td></tr>
+                <tr><td class="nowrap">Target Contact Point</td><td class="wrap">@Job.TargetContactPoint</td></tr>
                 <tr><td class="nowrap">Collection Count</td><td>@migrationUnits.Count</td></tr>
             </tbody>
         </table>

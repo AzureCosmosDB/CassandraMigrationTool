@@ -83,10 +83,12 @@ public static class JobLifecycle
     /// <summary>
     /// True when every table in the job has either drained its bulk
     /// copy or never existed at the source — i.e. the operator can
-    /// safely cutover without leaving rows un-migrated.
+    /// safely cutover without leaving rows un-migrated. Returns false
+    /// for a job with zero tables (All() over an empty list would
+    /// otherwise vacuously enable cutover on an invalid job).
     /// </summary>
     public static bool IsCutoverReady(Job? job) =>
-        job != null && job.Tables.All(mu =>
+        job != null && job.Tables.Count > 0 && job.Tables.All(mu =>
             mu.SourceStatus == TableStatus.NotFound || mu.CopyComplete);
 
     /// <summary>

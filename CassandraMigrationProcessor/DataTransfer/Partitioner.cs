@@ -66,9 +66,8 @@ internal sealed class Partitioner
 
         var pending = new List<PendingPartition>(feedRanges.Count);
         int resumedCount = 0;
-        foreach (var range in feedRanges)
+        foreach (var state in feedRanges.Select(range => mu.Partitions[range]))
         {
-            var state = mu.Partitions[range];
             if (!enableReplay && state.BulkCompleted) continue;
 
             var phase = state.BulkCompleted ? PartitionPhase.Replay : PartitionPhase.Bulk;
