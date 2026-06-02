@@ -5,28 +5,29 @@
 @using CassandraMigrationProcessor.Infrastructure
 @using CassandraMigrationProcessor.Models
 @using CassandraMigrationProcessor.Context
+@using CassandraMigrationWebApp.Service
 @using System.Linq
 
 @inject Service.JobManager JobManager
-@inject Service.MigrationContextService MigrationContext
+@inject CassandraMigrationProcessor.Context.MigrationJobContext MigrationContext
 @inject NavigationManager NavigationManager
 @inject IJSRuntime JS
 @implements IDisposable
 
 <JobActionToolbar Job="CurrentlyLoadedMigrationJob"
                   IsResumeEnabled="IsResumeEnabled()"
+                  IsNeverStarted="@(CurrentlyLoadedMigrationJob != null && !CurrentlyLoadedMigrationJob.StartedOn.HasValue)"
                   IsPauseEnabled="IsPauseEnabled()"
                   IsRunning="IsJobRunning()"
                   IsLoadingCollections="_isLoadingCollections"
-                  HasExistingConnectionStrings="@(CurrentlyLoadedMigrationJob != null && !string.IsNullOrEmpty(GetSourceConnectionString(CurrentlyLoadedMigrationJob)) && !string.IsNullOrEmpty(GetTargetConnectionString(CurrentlyLoadedMigrationJob)))"
+                  HasExistingConnectionStrings="@HasCachedCredentials(CurrentlyLoadedMigrationJob)"
                   IsControlledPauseApplicable="@(CurrentlyLoadedMigrationJob != null && JobManager.IsControlledPauseApplicable(CurrentlyLoadedMigrationJob.JobType, CurrentlyLoadedMigrationJob))"
-                  IsControlledPauseRequested="@(JobManager.IsControlledPauseRequested() && IsJobRunning())"
-                  CutoverReady="CheckCutoverReadiness()"
+                  IsControlledPauseRequested="@(JobManager.GetLiveStatus(CurrentlyLoadedMigrationJob) == LiveJobStatus.Pausing)"
+                  CutoverReady="JobLifecycle.IsCutoverReady(CurrentlyLoadedMigrationJob)"
                   ChangeFeedLag="GetChangeFeedLag()"
                   ErrorMessage="@_errorMessage"
                   OnResumeWithNewConnectionString="ResumeJobWithNewConnectionString"
                   OnResumeWithExistingConnectionString="ResumeJobWithExistingConnectionString"
-                  OnPauseImmediate="PauseJobImmediate"
                   OnPauseControlled="PauseJobControlled"
                   OnCancel="ConfirmCancelJob"
                   OnComplete="CompleteJob"
@@ -38,9 +39,10 @@
 @* ── Job Status Summary Card ── *@
 @if (CurrentlyLoadedMigrationJob != null && !_isLoadingCollections)
 {
+    var viewerLiveStatus = JobManager.GetLiveStatus(CurrentlyLoadedMigrationJob);
     <JobSummaryCard Job="CurrentlyLoadedMigrationJob"
-                    StatusLabel="@GetJobStatusLabel(CurrentlyLoadedMigrationJob)"
-                    StatusBadge="@GetJobStatusBadge(CurrentlyLoadedMigrationJob)" />
+                    StatusLabel="@JobLifecycle.Label(viewerLiveStatus)"
+                    StatusBadge="@JobLifecycle.BadgeClass(viewerLiveStatus)" />
 }
 
 
@@ -61,13 +63,9 @@
     <ManageCollections Job="@CurrentlyLoadedMigrationJob" MigrationUnits="@JobManager.GetMigrationUnits(CurrentlyLoadedMigrationJob)" SourceConnectionString="@GetSourceConnectionString(CurrentlyLoadedMigrationJob)" OnCollectionsUpdated="@OnCollectionsUpdated" />
 }
 
-@if (_resetChangeStreamDialogOpen && CurrentlyLoadedMigrationJob != null)
-{
-    <ResetChangeStream MigrationUnits="@((@JobManager.GetMigrationUnits(CurrentlyLoadedMigrationJob) ?? new List<TableMigration>()).Where(mu => MigrationUtilities.IsMigrationUnitValid(mu)).ToList())" OnCollectionsUpdated="@OnCSReset" />
-}
 @if (_collectionDetailsDialogOpen && _selectedMigrationUnit != null)
 {
-    <CollectionDetails Job="@CurrentlyLoadedMigrationJob" TableMigration="@MigrationContext.GetUnit(_selectedMigrationUnit.Id, CurrentlyLoadedMigrationJob.Id)" OnClose="HandleCollectionDetailsClose" />
+    <CollectionDetails Job="@CurrentlyLoadedMigrationJob" TableMigration="@MigrationContext.GetMigrationUnit(_selectedMigrationUnit.Id, CurrentlyLoadedMigrationJob.Id)" OnClose="HandleCollectionDetailsClose" />
 }
 
 @* Collections Loading Spinner *@
@@ -96,12 +94,6 @@
 {
     <div class="d-flex align-items-center mb-3 mt-4">
         <button class="btn btn-primary mx-2" title="You can add or remove collections from this job. Be sure to pause the job before doing so." @onclick="ManageCollections" disabled="@_isLoadingCollections">Update Tables</button>
-        @if (CurrentlyLoadedMigrationJob != null && MigrationUtilities.IsOnline(CurrentlyLoadedMigrationJob))
-        {
-            <button class="btn btn-warning mx-2" title="Reset the change feed checkpoint." @onclick="ResetChangeStream">
-                Reset Change Feed
-            </button>
-        }
     
     </div>
 }
@@ -138,8 +130,8 @@
 {
     <div class="d-flex justify-content-between align-items-center pt-4">
         <h5 class="mb-0">
-            <button class="btn btn-light" @onclick="DownloadFile" title="Download Log File" style="border: none; background: transparent;">
-                <i class="bi bi-download"></i>
+            <button class="btn btn-light" @onclick="DownloadFile" title="Download log file" aria-label="Download log file" style="border: none; background: transparent;">
+                <i class="bi bi-download" aria-hidden="true"></i>
             </button> Logs (@LogBucket.Logs.Count entries)
         </h5>
         <div class="d-flex align-items-center">
@@ -156,6 +148,19 @@
             </select>
         </div>
     </div>
+    @if ((int)(CurrentlyLoadedMigrationJob?.LogLevel ?? LogType.Info) < (int)LogType.Verbose)
+    {
+        @* Surface the LogLevel filter so operators know Verbose / Debug
+           traces are being dropped. *@
+        <div class="alert alert-info py-1 px-2 mt-2 mb-0 small d-flex align-items-center" role="status">
+            <i class="bi bi-info-circle me-2"></i>
+            <span>
+                <strong>Showing @(CurrentlyLoadedMigrationJob?.LogLevel ?? LogType.Info) and higher.</strong>
+                Diagnostic traces below this level (e.g. per-cycle CDC heartbeats, retry attempts) are filtered out.
+                Switch <strong>Level</strong> to <em>All (Verbose)</em> if you are troubleshooting a stalled job and need full visibility.
+            </span>
+        </div>
+    }
 
 
     <table class="table console-output mt-2">
@@ -178,7 +183,7 @@
                 <tr class="@GetRowClass(logObject.Type.ToString(),logObject.Message)">
                     <td class="log-icon-cell">@GetLogIcon(logObject.Type)</td>
                     <td>@logObject.Datetime</td>
-                    <td>@logObject.Message</td>
+                    <td class="log-message-cell" title="@logObject.Message">@RenderLogMessage(logObject.Message)</td>
                 </tr>
             }                
 
@@ -198,7 +203,7 @@
                     <tr class="@GetRowClass(logObject.Type.ToString(),logObject.Message)">
                         <td class="log-icon-cell">@GetLogIcon(logObject.Type)</td>
                         <td style="width: 120px;">@logObject.Datetime</td>
-                        <td>@logObject.Message</td>
+                        <td class="log-message-cell" title="@logObject.Message">@RenderLogMessage(logObject.Message)</td>
                     </tr>
                 }
             }
@@ -233,7 +238,7 @@ else if (@_showLogBackupFile)
     public Job? CurrentlyLoadedMigrationJob
     {   get
         {
-            return MigrationContext.GetJob(JobId);
+            return MigrationContext.GetMigrationJob(JobId);
         }
     }
 
@@ -244,13 +249,34 @@ else if (@_showLogBackupFile)
     /// </summary>
     private string GetSourceConnectionString(Job job)
     {
-        if (MigrationContext.SourceConnectionString.TryGetValue(job.Id, out var val) && !string.IsNullOrEmpty(val))
+        var val = MigrationContext.Credentials.GetSource(job.Id);
+        if (!string.IsNullOrEmpty(val))
             return val;
         // Reconstruct from persisted job data
         var cs = job.SourceContactPoint ?? string.Empty;
         if (!string.IsNullOrEmpty(cs))
-            MigrationContext.SourceConnectionString[job.Id] = cs;
+            MigrationContext.Credentials.SetSource(job.Id, cs);
         return cs;
+    }
+
+    /// <summary>
+    /// True iff actual in-memory credentials (NOT contact-point
+    /// fallback) are cached for this job. GetSource/GetTarget above
+    /// silently materialise the persisted contact point into the
+    /// cache, which means a post-restart click that has never seen
+    /// the password would otherwise route through the
+    /// "existing-credentials" Resume path with no password attached.
+    /// This check goes straight to TryGet and requires both halves
+    /// to be non-empty so the operator gets the credential-rotation
+    /// dialog when there's nothing real to reuse.
+    /// </summary>
+    private bool HasCachedCredentials(Job? job)
+    {
+        if (job == null) return false;
+        if (!MigrationContext.Credentials.TryGet(job.Id, out var creds))
+            return false;
+        return !string.IsNullOrEmpty(creds.SourceConnectionString)
+            && !string.IsNullOrEmpty(creds.TargetConnectionString);
     }
 
     /// <summary>
@@ -258,11 +284,12 @@ else if (@_showLogBackupFile)
     /// </summary>
     private string GetTargetConnectionString(Job job)
     {
-        if (MigrationContext.TargetConnectionString.TryGetValue(job.Id, out var val) && !string.IsNullOrEmpty(val))
+        var val = MigrationContext.Credentials.GetTarget(job.Id);
+        if (!string.IsNullOrEmpty(val))
             return val;
         var cs = job.TargetContactPoint ?? string.Empty;
         if (!string.IsNullOrEmpty(cs))
-            MigrationContext.TargetConnectionString[job.Id] = cs;
+            MigrationContext.Credentials.SetTarget(job.Id, cs);
         return cs;
     }
 
@@ -273,11 +300,16 @@ else if (@_showLogBackupFile)
     private string _logFilter = string.Empty;
     private bool _migrationDetailsPopUpOpen;
     private Timer? _refreshTimer;
+    /// <summary>
+    /// Cancels every background <c>Task.Delay</c> the component
+    /// schedules. Without this a Task.Run started by the component
+    /// would outlive navigation and mutate disposed fields.
+    /// </summary>
+    private readonly CancellationTokenSource _componentCts = new();
     private string _message = string.Empty;
     private bool _yesNoDialogOpen;
     private YesNoDialog.Category _yesNoDiaLogType= YesNoDialog.Category.CutoverNot;
     private bool _manageCollectionDialogOpen;
-    private bool _resetChangeStreamDialogOpen;
     private bool _collectionDetailsDialogOpen;
 
     private bool _showLogBackupFile = false;
@@ -307,12 +339,10 @@ else if (@_showLogBackupFile)
     private string GetRowClass(string type, string message)
     {
         // Return CSS class based on LogType
-        // Treat deprecated "Message" as "Info"
         return type switch
         {
             "Error" => "error-row",
             "Warning" => "warning-row",
-            "Message" => "info-row",  // Deprecated, treat as Info
             "Info" => "info-row",
             "Debug" => "debug-row",
             "Verbose" => "verbose-row",
@@ -332,6 +362,20 @@ else if (@_showLogBackupFile)
             LogType.Verbose => new MarkupString("<i class='bi bi-chat-dots-fill'></i>"),
             _ => new MarkupString("")
         };
+    }
+
+    /// <summary>
+    /// Project a single log message into safe display text for the
+    /// Logs grid. Whitespace-only or null messages render as
+    /// "(empty entry)"; multi-line messages render with the
+    /// log-message-cell CSS class (white-space: pre-wrap) so the full
+    /// body is visible inline.
+    /// </summary>
+    private string RenderLogMessage(string? message)
+    {
+        if (string.IsNullOrWhiteSpace(message))
+            return "(empty entry)";
+        return message;
     }
 
     private void GoBack()
@@ -385,10 +429,12 @@ else if (@_showLogBackupFile)
         _showLogBackupFile = false;
         _logBackupFile = string.Empty;  
 
-        if (CurrentlyLoadedMigrationJob != null && CurrentlyLoadedMigrationJob.Status == JobStatus.Running)
+        if (CurrentlyLoadedMigrationJob != null
+            && CurrentlyLoadedMigrationJob.Status != JobStatus.Completed
+            && CurrentlyLoadedMigrationJob.Status != JobStatus.Cancelled)
         {
             // Only start timer if AutoRefreshEnabled is true (default)
-            if (CurrentlyLoadedMigrationJob.AutoRefreshEnabled)
+            if (CurrentlyLoadedMigrationJob.AutoRefreshEnabled && _refreshTimer == null)
             {
                 _refreshTimer = new Timer(Refresh, null, 0, 5000); // Update every 5 seconds
             }
@@ -477,7 +523,11 @@ else if (@_showLogBackupFile)
 
             return JobManager.GetLogCount(jobId);
         }
-        catch { }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine(
+                $"GetLogCount({jobId}) failed: {ex.GetType().Name}: {ex.Message}");
+        }
 
         return 0;
     }
@@ -494,10 +544,53 @@ else if (@_showLogBackupFile)
         // Marshal ALL component state changes to the UI thread to prevent cross-thread access issues
         InvokeAsync(() =>
         {
+            // Disposed-component race: System.Threading.Timer's
+            // parameterless Dispose() does not wait for in-flight
+            // callbacks. A tick that fires immediately before
+            // Dispose() queues this InvokeAsync continuation onto the
+            // renderer; without this gate it would mutate
+            // _refreshTimer / _logBackupFile / LogBucket /
+            // VerboseMessages and call StateHasChanged() on a
+            // disposed ComponentBase. IsCancellationRequested is safe
+            // to read post-Dispose() (unlike .Token).
+            if (_componentCts.IsCancellationRequested)
+                return;
 
-            if (CurrentlyLoadedMigrationJob != null && (CurrentlyLoadedMigrationJob.Status == JobStatus.Running || JobManager.DidMigrationJobExitRecently(JobId)) && !_showLogBackupFile)
+            if (CurrentlyLoadedMigrationJob == null)
+                return;
+
+            var status = CurrentlyLoadedMigrationJob.Status;
+
+            // Terminal-status retire: only stop refreshing once the
+            // job has truly finished (and any recent-exit grace
+            // window is over). For paused / pending / faulted /
+            // intermediate states the operator is still on the page
+            // expecting transitions to surface — Pause→Paused,
+            // Resume→Running, etc. The previous gate disposed the
+            // timer as soon as Status flipped to Paused, which froze
+            // the UI on "Pausing..." until manual refresh. See the
+            // page-not-reactive-after-Pause regression.
+            bool isTerminal = (status == JobStatus.Completed
+                            || status == JobStatus.Cancelled)
+                            && !JobManager.DidMigrationJobExitRecently(JobId);
+            if (isTerminal)
             {
-                // Check if we should hide loading spinner
+                _refreshTimer?.Dispose();
+                _refreshTimer = null;
+                return;
+            }
+
+            if (_showLogBackupFile)
+                return;
+
+            // Live-log fetch only when the runner is actually
+            // alive — for Paused / Pending the in-process log
+            // buffer is empty, so skipping the fetch avoids a
+            // pointless dictionary hit while still re-rendering.
+            bool runnerLive = status == JobStatus.Running
+                           || JobManager.DidMigrationJobExitRecently(JobId);
+            if (runnerLive)
+            {
                 if (_isLoadingCollections && @CurrentlyLoadedMigrationJob.Tables.Count > 0)
                 {
                     _isLoadingCollections = false;
@@ -530,58 +623,95 @@ else if (@_showLogBackupFile)
                     _errorMessage = string.Empty;
                     _ = ResumeJob();
                 }
+            }
 
-                StateHasChanged();
-            }
-            else
-            {    
-                _refreshTimer?.Dispose();
-            }
+            // Always re-render so pause→paused, resume→running,
+            // controlled-pause-badge changes etc. surface promptly.
+            StateHasChanged();
         });
     }
 
     private async Task UpdateTimerStatus(string id, int seconds)
     {
-        await Task.Delay(TimeSpan.FromSeconds(seconds)); // Wait for the specified seconds before processing
+        // Snapshot the token ONCE up-front. CTS.Token's getter throws
+        // ObjectDisposedException after Dispose; the captured value
+        // type is safe to keep using post-dispose — it observes
+        // Canceled.
+        CancellationToken ct;
+        try { ct = _componentCts.Token; }
+        catch (ObjectDisposedException) { return; }
+        try
+        {
+            // Honour _componentCts so navigating away or otherwise
+            // tearing down the component immediately wakes this delay
+            // instead of letting it run to completion and mutating
+            // disposed fields below.
+            await Task.Delay(TimeSpan.FromSeconds(seconds), ct);
+        }
+        catch (OperationCanceledException)
+        {
+            return;
+        }
 
-        if (id!= JobId)
+        if (ct.IsCancellationRequested)
+            return;
+
+        if (id != JobId)
         {
             return; // Exit if the JobId does not match
         }
 
-        if (CurrentlyLoadedMigrationJob != null && CurrentlyLoadedMigrationJob.Status == JobStatus.Running)
+        // Marshal every state mutation through InvokeAsync so the
+        // Blazor renderer sees the change on its own dispatcher
+        // (matching how the UI thread mutates _refreshTimer /
+        // _logBackupFile everywhere else in this component).
+        await InvokeAsync(() =>
         {
-            LogBucket = JobManager.GetLogBucket(id, out string logBackup, out bool isLive);
-            if (!string.IsNullOrEmpty(logBackup) && logBackup != JobId)
-                _logBackupFile = logBackup;
+            if (ct.IsCancellationRequested)
+                return;
 
-            if (!isLive)               
+            if (CurrentlyLoadedMigrationJob != null && CurrentlyLoadedMigrationJob.Status == JobStatus.Running)
             {
-                _refreshTimer?.Dispose(); // Stop the timer if not live
-                _refreshTimer = null;
-                //_showLogBackupFile = false;
-            }
-        }
+                LogBucket = JobManager.GetLogBucket(id, out string logBackup, out bool isLive);
+                if (!string.IsNullOrEmpty(logBackup) && logBackup != JobId)
+                    _logBackupFile = logBackup;
 
+                if (!isLive)
+                {
+                    _refreshTimer?.Dispose(); // Stop the timer if not live
+                    _refreshTimer = null;
+                }
+            }
+        });
     }
 
     private void ScheduleUpdateTimerStatus(string id, int seconds)
     {
-        _ = Task.Run(async () => await UpdateTimerStatus(id, seconds));
+        CancellationToken token;
+        try { token = _componentCts.Token; }
+        catch (ObjectDisposedException) { return; }
+        if (token.IsCancellationRequested) return;
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await UpdateTimerStatus(id, seconds);
+            }
+            catch (OperationCanceledException)
+            {
+                // Component torn down mid-flight; nothing to do.
+            }
+            catch (ObjectDisposedException)
+            {
+                // CTS disposed between Task.Run queue and lambda exec.
+            }
+        }, token);
     }
 
     private Task<bool> CheckIfNameExistsAsync(string name)
     {
         //always false as we are not checking for duplicate names in this case
         return Task.FromResult(false);
-    }
-
-    private bool CheckCutoverReadiness()
-    {
-        if (CurrentlyLoadedMigrationJob == null)
-            return false;
-        return CurrentlyLoadedMigrationJob.Tables.All(mu =>
-            mu.SourceStatus == TableStatus.NotFound || mu.CopyComplete);
     }
 
     /// <summary>
@@ -651,7 +781,7 @@ else if (@_showLogBackupFile)
                 // BB-1 fix: Tell user why job can't start
                 string activeId = JobManager?.GetRunningJobId() ?? string.Empty;
                 var activeJob = !string.IsNullOrEmpty(activeId)
-                    ? MigrationContext.GetJob(activeId)
+                    ? MigrationContext.GetMigrationJob(activeId)
                     : null;
                 string activeName = activeJob?.Name ?? activeId;
                 _errorMessage = $"Another migration job \"{activeName}\" is currently running. "
@@ -701,12 +831,10 @@ else if (@_showLogBackupFile)
         mj.SourceUseAad = job.SourceUseAad;
 
         if (!string.IsNullOrEmpty(sourceConnectionString))
-            MigrationContext.SourceConnectionString[mj.Id] = sourceConnectionString;
+            MigrationContext.Credentials.SetSource(mj.Id, sourceConnectionString);
 
         if (!string.IsNullOrEmpty(targetConnectionString))
-            MigrationContext.TargetConnectionString[mj.Id] = targetConnectionString;
-
-        mj.Status = JobStatus.Running;
+            MigrationContext.Credentials.SetTarget(mj.Id, targetConnectionString);
 
         if (!mj.StartedOn.HasValue)
             mj.StartedOn = DateTime.UtcNow;
@@ -714,7 +842,7 @@ else if (@_showLogBackupFile)
         // Clear pending auto-start flag so it doesn't fire again
         MigrationContext.PendingAutoStartJobIds.TryRemove(mj.Id, out _);
 
-        MigrationContext.SaveJob(mj);
+        MigrationContext.SaveMigrationJob(mj);
         MigrationContext.SaveJobList();
 
 
@@ -732,29 +860,13 @@ else if (@_showLogBackupFile)
 
             await JobManager.StartMigration(mj,
                 GetSourceConnectionString(mj),
-                GetTargetConnectionString(mj),
-                mj.Namespaces ?? string.Empty,
-                mj.JobType,
-                MigrationUtilities.IsOnline(mj));
+                GetTargetConnectionString(mj));
         });
 
         StartAutoRefresh();
         return true;
     }
 
-    private void ResetChangeStream()
-    {
-        _errorMessage = string.Empty;
-
-        if (IsResumeEnabled())
-        {
-            _resetChangeStreamDialogOpen = true;
-        }
-        else
-        {
-            _errorMessage = "Please pause the job before resetting change stream.";
-        }
-    }
     private void ManageCollections()
     {
         _errorMessage = string.Empty;
@@ -782,6 +894,12 @@ else if (@_showLogBackupFile)
 
     private async Task ResumeJobWithExistingConnectionString()
     {
+        // The runner's finally is the single source of truth for
+        // clearing the active-job handle.
+        if (!string.IsNullOrEmpty(JobId))
+        {
+            JobManager?.LogOperatorResumeRequest(JobId, "with existing connection strings");
+        }
         if (IsResumeEnabled() && NoOtherActiveJobs())
         {
             if (CurrentlyLoadedMigrationJob != null)
@@ -801,6 +919,17 @@ else if (@_showLogBackupFile)
     private async Task DecideAndResumeJob(bool showDialog=false)
     {
         _errorMessage = string.Empty;
+
+        // Log the Resume click into the persistent log of THIS job
+        // so operators see evidence the click was received.
+        if (!string.IsNullOrEmpty(JobId))
+        {
+            var liveStatus = CurrentlyLoadedMigrationJob != null
+                ? JobManager.GetLiveStatus(CurrentlyLoadedMigrationJob).ToString()
+                : "unknown";
+            JobManager?.LogOperatorResumeRequest(JobId, $"prior live status={liveStatus}");
+        }
+
         if (IsResumeEnabled() && NoOtherActiveJobs())
         {
             if(showDialog)
@@ -812,7 +941,11 @@ else if (@_showLogBackupFile)
                     if (CurrentlyLoadedMigrationJob != null)
                         await OnMigrationDetailsPopUpSubmit(CurrentlyLoadedMigrationJob, string.Empty, string.Empty);
                 }
-
+                else
+                {
+                    _errorMessage = "Resume cannot auto-start because the source or target credentials are not in memory. "
+                        + "Please use 'Resume Job → With Updated Connection Strings' to re-enter the credentials.";
+                }
             }
         }
         else
@@ -867,11 +1000,6 @@ else if (@_showLogBackupFile)
         _selectedMigrationUnit = null;     
     }
 
-    private void OnCSReset(List<TableMigration> migrationUnits)
-    {
-        _resetChangeStreamDialogOpen = false;
-    }
-
 
     private async Task OnCollectionsUpdated(List<TableMigration> migrationUnits)
     {
@@ -889,7 +1017,7 @@ else if (@_showLogBackupFile)
             foreach (var tobDel in delList)
             {
                 tobDel.ParentJob = CurrentlyLoadedMigrationJob;
-                MigrationContext.RemoveUnit(tobDel);
+                UnitStore.RemoveUnit(tobDel);
                 MigrationContext.MigrationUnitsCache?.RemoveMigrationUnit(tobDel.Id);//remove from cache
             }
 
@@ -898,16 +1026,6 @@ else if (@_showLogBackupFile)
                 mu.ParentJob = CurrentlyLoadedMigrationJob;                
             }
 
-            // Add new units that don’t exist in existingUnits
-            // foreach (var mu in migrationUnits)
-            // {
-            //     if (!CurrentlyLoadedMigrationJob.Tables.Any(x => x.DatabaseName == mu.DatabaseName && x.CollectionName == mu.CollectionName))
-            //     {
-            //         MigrationContext.SaveUnit(mu,false);
-            //         //CurrentlyLoadedMigrationJob.Tables.Add(mu.GetBasic());
-            //         Helper.AddMigrationUnit(mu, CurrentlyLoadedMigrationJob);
-            //     }
-            // }
             if (!UnitStore.AddMigrationUnits(migrationUnits, CurrentlyLoadedMigrationJob))
             {
                 _errorMessage = "Target namespace clash detected. Multiple source collections cannot map to the same target collection.";
@@ -916,7 +1034,7 @@ else if (@_showLogBackupFile)
 
             CurrentlyLoadedMigrationJob.Namespaces = string.Join(",", migrationUnits.Select(mu => $"{mu.KeyspaceName}.{mu.TableName}"));
 
-            MigrationContext.SaveJob(CurrentlyLoadedMigrationJob);
+            MigrationContext.SaveMigrationJob(CurrentlyLoadedMigrationJob);
 
             Refresh(null);
         }
@@ -929,55 +1047,19 @@ else if (@_showLogBackupFile)
     {
         _yesNoDialogOpen = false;
 
-        if (result.IsConfirmed)
-        {     
-            if (result.DiaLogType == YesNoDialog.Category.CutoverNot
-                || result.DiaLogType == YesNoDialog.Category.CompleteNot)
-            {
-                MigrationContext.AddVerboseLog($"YesNoDialogSubmit Cutover {result.DiaLogType}");
-                JobManager.StopMigration();                
-                if (CurrentlyLoadedMigrationJob != null)
-                {
-                    CurrentlyLoadedMigrationJob.Status = JobStatus.Completed;
-                }
+        if (!result.IsConfirmed) return;
 
-                if (MigrationContext.SaveJob(CurrentlyLoadedMigrationJob))
-                    return;
-
-                _refreshTimer = null;
-            }
-            else if (result.DiaLogType == YesNoDialog.Category.CancelNot)
-            {
-                MigrationContext.AddVerboseLog($"YesNoDialogSubmit Cancel {result.DiaLogType}");
-                JobManager.StopMigration();                
-                if (CurrentlyLoadedMigrationJob != null)
-                {
-                    CurrentlyLoadedMigrationJob.Status = JobStatus.Cancelled;
-                }
-
-                if (MigrationContext.SaveJob(CurrentlyLoadedMigrationJob))
-                    return;
-
-                _refreshTimer = null;
-            }
-        }
-    }
-
-    private void PauseJobImmediate()
-    {
-        _errorMessage = string.Empty;
-        try
+        // JobManager owns Job.Status writes — record user intent here
+        // and let the runner's finally persist the terminal status
+        // (Completed for cutover, Cancelled for cancel).
+        if (result.DiaLogType == YesNoDialog.Category.CutoverNot
+            || result.DiaLogType == YesNoDialog.Category.CompleteNot)
         {
-            // Set status BEFORE stopping so StopProcessing
-            // won't downgrade from Paused to Pending
-            if (CurrentlyLoadedMigrationJob != null)
-                CurrentlyLoadedMigrationJob.Status = JobStatus.Paused;
-            MigrationContext.SaveJob(CurrentlyLoadedMigrationJob);
+            JobManager.RequestCutover();
+        }
+        else if (result.DiaLogType == YesNoDialog.Category.CancelNot)
+        {
             JobManager.StopMigration();
-        }
-        catch (Exception ex)
-        {
-            _errorMessage = $"Pause failed: {ex.Message}";
         }
     }
 
@@ -986,8 +1068,7 @@ else if (@_showLogBackupFile)
         _errorMessage = string.Empty;
         try
         {
-            MigrationContext.RequestControlledPause("UI Button Click");
-            MigrationContext.SaveJob(CurrentlyLoadedMigrationJob);
+            JobManager.RequestControlledPause();
         }
         catch (Exception ex)
         {
@@ -1001,7 +1082,7 @@ else if (@_showLogBackupFile)
         string activeJob = JobManager?.GetRunningJobId() ?? string.Empty;
         if (activeJob != string.Empty && activeJob != JobId)
         {
-            var job = MigrationContext.GetJob(activeJob);
+            var job = MigrationContext.GetMigrationJob(activeJob);
             if (job != null && job.Status != JobStatus.Cancelled && job.Status != JobStatus.Completed)
                 return false;
             else
@@ -1011,15 +1092,18 @@ else if (@_showLogBackupFile)
             return true;
     }
 
-    private  bool  IsPauseEnabled()
+    private bool IsPauseEnabled()
     {
-        return CurrentlyLoadedMigrationJob != null && CurrentlyLoadedMigrationJob.Status != JobStatus.Cancelled && CurrentlyLoadedMigrationJob.Status != JobStatus.Completed && IsJobRunning() && NoOtherActiveJobs();
+        if (CurrentlyLoadedMigrationJob == null) return false;
+        return JobLifecycle.CanPause(JobManager.GetLiveStatus(CurrentlyLoadedMigrationJob))
+            && NoOtherActiveJobs();
     }
 
 
     private bool IsResumeEnabled()
     {
-        return CurrentlyLoadedMigrationJob != null && CurrentlyLoadedMigrationJob.Status != JobStatus.Completed && !IsJobRunning();
+        if (CurrentlyLoadedMigrationJob == null) return false;
+        return JobLifecycle.CanResume(JobManager.GetLiveStatus(CurrentlyLoadedMigrationJob));
     }
 
     private bool CanAutoStart()
@@ -1044,46 +1128,14 @@ else if (@_showLogBackupFile)
 
     public void Dispose()
     {
+        // Cancel + dispose the component CTS first so any in-flight
+        // ScheduleUpdateTimerStatus probe wakes immediately and skips
+        // its post-delay mutations on disposed fields.
+        try { _componentCts.Cancel(); } catch (ObjectDisposedException) { }
+        _componentCts.Dispose();
+
         _refreshTimer?.Dispose();
         _refreshTimer = null;
-    }
-
-    // Response model for log count API
-    public class LogCountResponse
-    {
-        public int count { get; set; }
-    }
-
-    private string GetJobStatusLabel(Job job)
-    {
-        if (job.Status == JobStatus.Completed) return "Completed";
-        if (job.Status == JobStatus.Cancelled) return "Cancelled";
-        if (IsJobRunning())
-        {
-            if (MigrationContext.ControlledPauseRequested)
-                return "Pausing...";
-            return "Running";
-        }
-        if (job.Status == JobStatus.Faulted) return "Faulted";
-        if (job.Status == JobStatus.Paused) return "Paused";
-        if (job.Status == JobStatus.Running) return "Stopped";
-        return "Not Started";
-    }
-
-    private string GetJobStatusBadge(Job job)
-    {
-        if (job.Status == JobStatus.Completed) return "bg-success";
-        if (job.Status == JobStatus.Cancelled) return "bg-secondary";
-        if (IsJobRunning())
-        {
-            if (MigrationContext.ControlledPauseRequested)
-                return "bg-warning text-dark";
-            return "bg-primary";
-        }
-        if (job.Status == JobStatus.Faulted) return "bg-danger";
-        if (job.Status == JobStatus.Paused) return "bg-warning text-dark";
-        if (job.Status == JobStatus.Running) return "bg-info";
-        return "bg-secondary";
     }
 }
 

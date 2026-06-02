@@ -12,17 +12,17 @@
     <div class="modal-dialog bg-dark">
         <div class="modal-content">
             <div class="modal-header">
-       <h4 class="modal-title">@(NewMode ? "New Job Details" : "Update Contact Points")</h4>
+       <h4 class="modal-title">@(NewMode ? "New Job Details" : "Update Connection Strings")</h4>
            <button type="button" class="btn-close" aria-label="Close" @onclick="@Cancel"></button>
  </div>
        <div class="modal-body">
                 <!-- Tab Navigation -->
                 <ul class="nav nav-tabs mb-3">
                     <li class="nav-item">
-                        <button class="nav-link @(activeTab == "Basic" ? "active" : "")" @onclick="SwitchToBasicTab">Basic</button>
+                        <button class="nav-link @(activeTab == "Basic" ? "active" : "")" @onclick='() => activeTab = "Basic"'>Basic</button>
                     </li>
                     <li class="nav-item">
-                        <button class="nav-link @(activeTab == "Advanced" ? "active" : "")" @onclick="SwitchToAdvancedTab">Advanced</button>
+                        <button class="nav-link @(activeTab == "Advanced" ? "active" : "")" @onclick='() => activeTab = "Advanced"'>Advanced</button>
                     </li>
                 </ul>
 
@@ -31,7 +31,7 @@
                     <!-- Basic Tab Fields -->
                     <div class="mb-3">
                         <label for="name" class="form-label">Name</label>
-                        <input type="text" id="name" class="form-control" disabled="@(!NewMode)" @bind="name" />
+                        <input type="text" id="name" class="form-control" maxlength="128" disabled="@(!NewMode)" @bind="name" />
                     </div>
                     @if (NewMode)
                     {
@@ -46,18 +46,18 @@
                     <h6 class="mt-3 mb-2 text-muted">Source (Cosmos DB Cassandra)</h6>
                     <div class="row mb-2">
                         <div class="col-md-8">
-                            <label for="sourceConnectionString" class="form-label">Contact Point</label>
-                            <input type="text" id="sourceConnectionString" placeholder="@(NewMode ? "e.g. myaccount.cassandra.cosmos.azure.com" : "")" class="form-control" @bind="sourceConnectionString" />
+                            <label for="sourceConnectionString" class="form-label">Connection String</label>
+                            <input type="text" id="sourceConnectionString" placeholder="@(NewMode ? "e.g. myaccount.cassandra.cosmos.azure.com" : "")" class="form-control" maxlength="1024" @bind="sourceConnectionString" />
                         </div>
                         <div class="col-md-4">
                             <label for="sourcePort" class="form-label">Port</label>
-                            <input type="number" id="sourcePort" class="form-control" @bind="sourcePort" />
+                            <input type="number" id="sourcePort" class="form-control" min="1" max="65535" @bind="sourcePort" />
                         </div>
                     </div>
                     <div class="row mb-2">
                         <div class="col-md-6">
                             <label for="sourceUsername" class="form-label">Username</label>
-                            <input type="text" id="sourceUsername" placeholder="Account name or leave blank for AAD" class="form-control" @bind="sourceUsername" @bind:event="oninput" />
+                            <input type="text" id="sourceUsername" placeholder="Account name or leave blank for AAD" class="form-control" maxlength="256" @bind="sourceUsername" @bind:event="oninput" />
                         </div>
                         <div class="col-md-6">
                             <label for="sourcePassword" class="form-label">Password / AAD Token</label>
@@ -79,28 +79,28 @@
                     <h6 class="mt-3 mb-2 text-muted">Target (Cassandra MI / OSS)</h6>
                     <div class="row mb-2">
                         <div class="col-md-8">
-                            <label for="targetConnectionString" class="form-label">Contact Point</label>
-                            <input type="text" id="targetConnectionString" placeholder="@(NewMode ? "e.g. target-cluster-ip or hostname" : "")" class="form-control" @bind="targetConnectionString" />
+                            <label for="targetConnectionString" class="form-label">Connection String</label>
+                            <input type="text" id="targetConnectionString" placeholder="@(NewMode ? "e.g. target-cluster-ip or hostname" : "")" class="form-control" maxlength="1024" @bind="targetConnectionString" />
                         </div>
                         <div class="col-md-4">
                             <label for="targetPort" class="form-label">Port</label>
-                            <input type="number" id="targetPort" class="form-control" @bind="targetPort" />
+                            <input type="number" id="targetPort" class="form-control" min="1" max="65535" @bind="targetPort" />
                         </div>
                     </div>
                     <div class="row mb-3">
                         <div class="col-md-6">
                             <label for="targetUsername" class="form-label">Username</label>
-                            <input type="text" id="targetUsername" placeholder="Leave blank if no auth" class="form-control" @bind="targetUsername" />
+                            <input type="text" id="targetUsername" placeholder="Required for Cassandra MI (leave blank only if target accepts unauthenticated)" class="form-control" maxlength="256" @bind="targetUsername" />
                         </div>
                         <div class="col-md-6">
                             <label for="targetPassword" class="form-label">Password</label>
-                            <input type="password" id="targetPassword" placeholder="Leave blank if no auth" class="form-control" @bind="targetPassword" @bind:event="oninput" />
+                            <input type="password" id="targetPassword" placeholder="Required for Cassandra MI (leave blank only if target accepts unauthenticated)" class="form-control" @bind="targetPassword" @bind:event="oninput" />
                         </div>
                     </div>
 
                     <div class="mb-3">
                         <label for="nameSpaces" class="form-label">Tables To Migrate</label>
-                        <textarea id="nameSpaces" disabled="@(!NewMode || isFileUploaded)" rows="4" placeholder="e.g. ks1.table1,ks1.table2,ks2.table1 or use wildcards like keyspace.*. Max 1000 characters, use 'Upload File' for larger text." class="form-control" @bind="namespaces" @oninput="OnTextAreaInput"></textarea>
+                        <textarea id="nameSpaces" disabled="@(!NewMode || isFileUploaded)" rows="4" maxlength="1000" placeholder="e.g. keyspace.* (wildcard) or ks1.table1,ks1.table2,ks2.table1 (explicit list). Max 1000 characters, use 'Upload File' for larger text." class="form-control" @bind="namespaces" @oninput="OnTextAreaInput"></textarea>
                         @if (NewMode)
                         {
                             <div class="mt-2">
@@ -170,22 +170,26 @@
                             Skip schema sync (target schema must already exist)
                         </label>
                     </div>
+                    <div class="mb-3">
+                        <label for="skipSourceRowCount" class="form-label" title="Skip the per-table SELECT COUNT(*) probe during partition discovery. Progress will display as '?%' for affected tables. Use this when the source is a very large Cassandra cluster where COUNT(*) routinely times out, when the source operator has disabled range scans for cost / blast-radius reasons, or when the cumulative COUNT(*) cost across many tables delays bulk-copy start.">
+                            <input type="checkbox" id="skipSourceRowCount" disabled="@(!NewMode)" @bind="skipSourceRowCount" />
+                            Don't run COUNT(*) on source (faster start; per-table ETA / percent will display as ?)
+                        </label>
+                    </div>
                     @if (jobType == JobType.CqlCopy)
                     {
                         <div class="row mb-3">
                             <div class="col-md-6">
-                                <label for="parallelThreads" class="form-label" title="Number of tables to copy in parallel. Higher values copy more tables concurrently but use more connections. Default = ProcessorCount * 5.">Parallel tables</label>
-                                <input type="number" id="parallelThreads" class="form-control" @bind="parallelThreads" min="1" max="500" placeholder="@($"Default ({defaultParallelThreads})")"/>
+                                <label for="workerCount" class="form-label" title="Size of the shared worker pool that does row-level copy work across all tables. Leave blank for auto = max(MinWorkers, ProcessorCount × WorkerMultiplier).">Shared workers</label>
+                                <input type="number" id="workerCount" class="form-control" @bind="workerCount" min="0" max="500" placeholder="@($"Auto ({Math.Max(MigrationDefaults.MinWorkers, Environment.ProcessorCount * MigrationDefaults.WorkerMultiplier)})")"/>
                             </div>
                             <div class="col-md-6">
-                                <label for="feedRangeWorkers" class="form-label" title="Workers per table. 0 = auto (CPU cores × 15 / parallel tables).">Feed range workers</label>
-                                <input type="number" id="feedRangeWorkers" class="form-control" @bind="feedRangeWorkers" min="0" max="500" placeholder="Auto"/>
+                                <label for="sourceConnectionsPerHost" class="form-label" title="Source (reader) Cassandra driver connections per host. 0 = driver default.">Source connections per host</label>
+                                <input type="number" id="sourceConnectionsPerHost" class="form-control" @bind="sourceConnectionsPerHost" min="0" max="128" placeholder="Driver default"/>
                             </div>
-                        </div>
-                        <div class="row mb-3">
                             <div class="col-md-6">
-                                <label for="connectionsPerHost" class="form-label" title="Cassandra driver connections per host per worker. 0 = default (1).">Connections per host</label>
-                                <input type="number" id="connectionsPerHost" class="form-control" @bind="connectionsPerHost" min="0" max="128" placeholder="Default (1)"/>
+                                <label for="targetConnectionsPerHost" class="form-label" title="Target (writer) Cassandra driver connections per host. 0 = driver default.">Target connections per host</label>
+                                <input type="number" id="targetConnectionsPerHost" class="form-control" @bind="targetConnectionsPerHost" min="0" max="128" placeholder="Driver default"/>
                             </div>
                         </div>
                         <div class="row mb-3">
@@ -197,11 +201,11 @@
                         <div class="row mb-3">
                             <div class="col-md-6">
                                 <label for="maxReadRetries" class="form-label" title="Per-page retry count when the source SELECT fails transiently (read timeout, no host available, 429). Default = 3.">Max read retries</label>
-                                <input type="number" id="maxReadRetries" class="form-control" @bind="maxReadRetries" min="0" max="100" placeholder="Default (3)"/>
+                                <input type="number" id="maxReadRetries" class="form-control" @bind="maxReadRetries" min="0" placeholder="Default (3)"/>
                             </div>
                             <div class="col-md-6">
                                 <label for="maxWriteRetries" class="form-label" title="Per-row retry count when the target write fails transiently (write timeout, overloaded). Default = 5.">Max write retries</label>
-                                <input type="number" id="maxWriteRetries" class="form-control" @bind="maxWriteRetries" min="0" max="100" placeholder="Default (5)"/>
+                                <input type="number" id="maxWriteRetries" class="form-control" @bind="maxWriteRetries" min="0" placeholder="Default (5)"/>
                             </div>
                         </div>
                     }</div>
@@ -209,7 +213,7 @@
 
                 @if (!string.IsNullOrEmpty(errorMessage))
                 {
-                    <div class="alert alert-danger mt-2">
+                    <div class="alert alert-danger mt-2" style="white-space: pre-line">
                         @errorMessage
                         <button type="button" class="btn-close btn-close-sm" aria-label="Close" @onclick="() => errorMessage = string.Empty"></button>
                     </div>
@@ -248,10 +252,10 @@
     private bool appendMode = false;
     private bool dropTargetTableBeforeStart = false;
     private bool skipSchemaSync = false;
-    private int? parallelThreads = null; // Parallel threads for CQL Copy
-    private int defaultParallelThreads = 5;
-    private int? feedRangeWorkers = null; // Max concurrent feed range workers per table
-    private int? connectionsPerHost = null; // Max connections per host (0 = default)
+    private bool skipSourceRowCount = false;
+    private int? workerCount = null; // Shared worker pool size (0 = auto from ProcessorCount)
+    private int? sourceConnectionsPerHost = null; // Source reader connections per host (0 = auto)
+    private int? targetConnectionsPerHost = null; // Target writer connections per host (0 = auto)
     private int? pageSize = null; // Rows per page (0 = default 500)
     private int? maxReadRetries = null; // Per-page source read retries (0 = default 3)
     private int? maxWriteRetries = null; // Per-row target write retries (0 = default 5)
@@ -269,7 +273,6 @@
     private int targetPort = 9042;
     private string targetUsername = string.Empty;
     private string targetPassword = string.Empty;
-    private bool overwrite = false;
 
     // File upload state
     private bool isFileUploaded = false;
@@ -280,16 +283,6 @@
     {
         var value = e?.Value?.ToString() ?? string.Empty;
         isTextAreaUsed = !string.IsNullOrWhiteSpace(value);
-    }
-
-    private void SwitchToBasicTab()
-    {
-        activeTab = "Basic";
-    }
-
-    private void SwitchToAdvancedTab()
-    {
-        activeTab = "Advanced";
     }
 
     private async Task HandleFileUpload(InputFileChangeEventArgs e)
@@ -346,11 +339,6 @@
         };
     }
 
-    private bool ShowWarning()
-    {
-        return false;
-    }
-
     private void OnSelectionChanged(ChangeEventArgs e)
     {
         selectedOption = e?.Value?.ToString() ?? selectedOption;
@@ -372,7 +360,7 @@
             appendMode = false;
             dropTargetTableBeforeStart = false;
             skipSchemaSync = false;
-            parallelThreads = null; // Default will be calculated
+            skipSourceRowCount = false;
             logLevel = LogType.Info; // Default to Info
             isFileUploaded = false;
             isTextAreaUsed = false;
@@ -385,11 +373,12 @@
             targetConnectionString = Job?.TargetContactPoint ?? string.Empty;
             sourcePort = Job?.SourcePort ?? 10350;
             sourceUsername = Job?.SourceUsername ?? string.Empty;
-            sourcePassword = Job?.SourcePassword ?? string.Empty;
+            sourcePassword = string.Empty;
             sourceUseAad = Job?.SourceUseAad ?? false;
             targetPort = Job?.TargetPort ?? 9042;
             targetUsername = Job?.TargetUsername ?? string.Empty;
-            targetPassword = Job?.TargetPassword ?? string.Empty;
+            // Same rationale as sourcePassword above.
+            targetPassword = string.Empty;
             namespaces = Job?.Namespaces ?? string.Empty;
             cdcMode = Job?.CDCMode ?? CDCMode.Offline;
             jobType = Job?.JobType ?? JobType.CqlCopy;
@@ -398,9 +387,10 @@
             appendMode = Job?.AppendMode ?? false;
             dropTargetTableBeforeStart = Job?.DropTargetTableBeforeStart ?? false;
             skipSchemaSync = Job?.SkipSchemaSync ?? false;
-            parallelThreads = Job?.ParallelThreads == defaultParallelThreads ? null : Job?.ParallelThreads;
-            feedRangeWorkers = Job?.MaxFeedRangeParallelism == 0 ? null : Job?.MaxFeedRangeParallelism;
-            connectionsPerHost = Job?.MaxConnectionsPerHost == 0 ? null : Job?.MaxConnectionsPerHost;
+            skipSourceRowCount = Job?.SkipSourceRowCount ?? false;
+            workerCount = Job?.WorkerCount == 0 ? null : Job?.WorkerCount;
+            sourceConnectionsPerHost = Job?.SourceMaxConnectionsPerHost == 0 ? null : Job?.SourceMaxConnectionsPerHost;
+            targetConnectionsPerHost = Job?.TargetMaxConnectionsPerHost == 0 ? null : Job?.TargetMaxConnectionsPerHost;
             pageSize = Job?.PageSize == 0 ? null : Job?.PageSize;
             maxReadRetries = Job?.MaxReadRetries == 0 ? null : Job?.MaxReadRetries;
             maxWriteRetries = Job?.MaxWriteRetries == 0 ? null : Job?.MaxWriteRetries;
@@ -417,32 +407,37 @@
 
     private async Task HandleSubmit()
     {
-        if (ShowWarning() && !overwrite)
+        // Aggregate validation problems in a single pass so the
+        // operator doesn't fix-submit one field at a time.
+        var errors = new List<string>();
+
+        // Normalise the name once; only on create — existing jobs
+        // can't edit the field.
+        if (NewMode)
         {
-            errorMessage = "Please check the overwrite option to proceed with migration.";
-            return;
+            name = (name ?? string.Empty).Trim();
         }
 
-        if (string.IsNullOrEmpty(name))
+        if (string.IsNullOrWhiteSpace(name))
         {
-            errorMessage = "Name can't be empty.";
-            return;
+            errors.Add("Name can't be empty or whitespace.");
         }
-
-        if (NewMode && CheckNameExists != null) // Ensure callback is provided
+        else if (name.Length > 128)
+        {
+            errors.Add("Name can be at most 128 characters.");
+        }
+        else if (NewMode && CheckNameExists != null)
         {
             var nameExists = await CheckNameExists(name);
             if (nameExists)
             {
-                errorMessage = "Name already exists.";
-                return;
+                errors.Add("Name already exists.");
             }
         }
 
         if (string.IsNullOrEmpty(sourceConnectionString))
         {
-            errorMessage = "Source Connection String can't be empty.";
-            return;
+            errors.Add("Source Connection String can't be empty.");
         }
 
         // For simulation mode, add a dummy target connection string if not provided
@@ -454,15 +449,70 @@
             }
             else
             {
-                errorMessage = "Target Connection String can't be empty.";
-                return;
+                errors.Add("Target Connection String can't be empty.");
             }
         }
 
-        if (sourceConnectionString == targetConnectionString && !isSimulatedRun)
+        if (!string.IsNullOrEmpty(sourceConnectionString)
+            && sourceConnectionString == targetConnectionString
+            && !isSimulatedRun)
         {
-            errorMessage = "Target and Source contact points can't be the same.";
-            return;
+            errors.Add("Target and Source Connection Strings can't be the same.");
+        }
+
+        if (sourcePort < 1 || sourcePort > 65535)
+        {
+            errors.Add($"Source Port must be between 1 and 65535 (got {sourcePort}).");
+        }
+        if (targetPort < 1 || targetPort > 65535)
+        {
+            errors.Add($"Target Port must be between 1 and 65535 (got {targetPort}).");
+        }
+
+        // Mirror the HTML5 min/max on the Advanced tab as a
+        // server-side guard (browser caps are trivially bypassed).
+        // Allow null = auto/default.
+        if (workerCount.HasValue && (workerCount.Value < 0 || workerCount.Value > 500))
+        {
+            errors.Add($"Shared workers must be between 0 and 500 (got {workerCount.Value}).");
+        }
+        if (pageSize.HasValue && (pageSize.Value < 1 || pageSize.Value > 10000))
+        {
+            errors.Add($"Page size must be between 1 and 10000 (got {pageSize.Value}).");
+        }
+        // Server-side guard against negative retry counts. Upper
+        // bound is unbounded by design — operators on flaky endpoints
+        // may legitimately opt into many retries.
+        if (maxReadRetries.HasValue && maxReadRetries.Value < 0)
+        {
+            errors.Add($"Max read retries must be 0 or greater (got {maxReadRetries.Value}).");
+        }
+        if (maxWriteRetries.HasValue && maxWriteRetries.Value < 0)
+        {
+            errors.Add($"Max write retries must be 0 or greater (got {maxWriteRetries.Value}).");
+        }
+
+        // Re-check the maxLength caps the HTML attributes advertise
+        // (text inputs default to maxLength=-1).
+        if (sourceConnectionString?.Length > 1024)
+        {
+            errors.Add("Source Connection String can be at most 1024 characters.");
+        }
+        if (targetConnectionString?.Length > 1024)
+        {
+            errors.Add("Target Connection String can be at most 1024 characters.");
+        }
+        if (sourceUsername?.Length > 256)
+        {
+            errors.Add("Source Username can be at most 256 characters.");
+        }
+        if (targetUsername?.Length > 256)
+        {
+            errors.Add("Target Username can be at most 256 characters.");
+        }
+        if (namespaces?.Length > 1000)
+        {
+            errors.Add($"Tables To Migrate must be at most 1000 characters (got {namespaces.Length}). Use 'Upload File' for larger lists.");
         }
 
         if (NewMode)
@@ -471,18 +521,22 @@
 
             if (retValue == null)
             {
-                errorMessage = "Invalid namespace format.";
-                return;
+                errors.Add("Tables To Migrate: invalid format.");
             }
-            if (!retValue.Item1)
+            else if (!retValue.Item1)
             {
-                errorMessage = retValue.Item3;
-                return;
+                errors.Add(retValue.Item3);
             }
             else
             {
                 namespaces = retValue.Item2;
             }
+        }
+
+        if (errors.Count > 0)
+        {
+            errorMessage = string.Join("\n", errors.Select(e => "• " + e));
+            return;
         }
 
 
@@ -506,15 +560,44 @@
             AppendMode = appendMode,
             DropTargetTableBeforeStart = dropTargetTableBeforeStart,
             SkipSchemaSync = skipSchemaSync,
-            ParallelThreads = parallelThreads ?? defaultParallelThreads,
-            MaxFeedRangeParallelism = feedRangeWorkers ?? 0,
-            MaxConnectionsPerHost = connectionsPerHost ?? 0,
+            SkipSourceRowCount = skipSourceRowCount,
+            WorkerCount = workerCount ?? 0,
+            SourceMaxConnectionsPerHost = sourceConnectionsPerHost ?? 0,
+            TargetMaxConnectionsPerHost = targetConnectionsPerHost ?? 0,
             PageSize = pageSize ?? 0,
             MaxReadRetries = maxReadRetries ?? 0,
             MaxWriteRetries = maxWriteRetries ?? 0,
             LogLevel = logLevel,
             Tables = new List<TableMigrationSummary>()
         };
+
+        if (NewMode && !string.IsNullOrWhiteSpace(namespaces))
+        {
+            // Populate Job.Tables from the parsed Tables-To-Migrate
+            // input using the same parser the Update Tables modal uses;
+            // wildcards stay deferred to the runner.
+            try
+            {
+                var units = await TableDiscovery.PopulateJobTablesAsync(job, namespaces);
+                foreach (var u in units)
+                {
+                    job.Tables.Add(TableMigrationMapper.ToSummary(u));
+                    // Persist the per-unit {unitId}.json document up
+                    // front so MigrationJobRunner.StartAsync can find
+                    // it when iterating job.Tables. Without this,
+                    // UnitStore.GetMigrationUnitsToMigrate silently
+                    // drops every literal-table entry and the runner
+                    // exits with "No remaining migration units."
+                    // (see #204).
+                    UnitStore.SaveUnit(u, updateParent: false);
+                }
+            }
+            catch (Exception ex)
+            {
+                errorMessage = $"Failed to parse Tables To Migrate: {ex.Message}";
+                return;
+            }
+        }
         if (OnSubmit != null)
         {
             await OnSubmit(job, sourceConnectionString, targetConnectionString);

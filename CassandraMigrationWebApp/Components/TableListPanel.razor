@@ -22,15 +22,27 @@
                 </div>
             </div>
             <div class="col-md-4">
-                <div class="d-flex justify-content-end">
-                    <div class="page-size-selector-top">
-                        <select id="pageSizeSelect" class="form-select form-select-sm page-size-dropdown" @bind="_pageSize" @bind:after="OnPageSizeChanged" style="width: auto;" title="Items per page">
-                            <option value="10">10 per page</option>
-                            <option value="25">25 per page</option>
-                            <option value="50">50 per page</option>
-                            <option value="100">100 per page</option>
-                        </select>
-                    </div>
+                <div class="d-flex justify-content-end align-items-center gap-2">
+                    @* Show the "Showing X of Y" indicator and per-page selector
+                       only when total items exceed the smallest selectable page
+                       size (10). Below that threshold pagination cannot be
+                       active (the grid renders as a single page regardless of
+                       page-size choice) and the strip is pure visual noise.
+                       Issue #253 item 8. *@
+                    @if (GetFilteredItemsCount() > 10)
+                    {
+                        <small class="text-muted text-nowrap">
+                            Showing @GetDisplayedItemsInfo() of @GetFilteredItemsCount() @(GetFilteredItemsCount() == 1 ? "table" : "tables")
+                        </small>
+                        <div class="page-size-selector-top">
+                            <select id="pageSizeSelect" class="form-select form-select-sm page-size-dropdown" @bind="_pageSize" @bind:after="OnPageSizeChanged" style="width: auto;" title="Items per page">
+                                <option value="10">10 per page</option>
+                                <option value="25">25 per page</option>
+                                <option value="50">50 per page</option>
+                                <option value="100">100 per page</option>
+                            </select>
+                        </div>
+                    }
                 </div>
             </div>
         </div>
@@ -57,7 +69,7 @@
                     Rows Copied
                     <i class="bi @GetSortIcon("RowsCopied") ms-1"></i>
                 </th>
-                @if (Job != null && MigrationUtilities.IsOnline(Job))
+                @if (Job != null && Job.IsOnline)
                 {
                     <th class="sortable-header @GetSortClass("TimeSinceLastChange")" @onclick='() => SortBy("TimeSinceLastChange")' style="cursor: pointer;">
                         Last Checked
@@ -97,11 +109,21 @@
                                 else if (mu.SkippedDueToMaxRetries)
                                 { copyStatus = "Skipped (Max Retries)"; barColor = "bg-warning"; pct = 100; }
                                 else if (mu.CopyComplete && Job != null
-                                    && MigrationUtilities.IsOnline(Job)
+                                    && Job.IsOnline
+                                    && Job.Status == JobStatus.Paused)
+                                { copyStatus = "Replay Paused"; barColor = "bg-warning"; pct = 100; }
+                                else if (mu.CopyComplete && Job != null
+                                    && Job.IsOnline
                                     && Job.Status == JobStatus.Running)
                                 { copyStatus = "Replaying"; barColor = "bg-info"; pct = 100; }
                                 else if (mu.CopyComplete)
                                 { copyStatus = "Complete"; barColor = "bg-success"; pct = 100; }
+                                else if (Job != null && Job.Status == JobStatus.Paused && (mu.CopyPercent > 0 || mu.CopyRowsCopied > 0))
+                                {
+                                    pct = mu.CopyPercent > 0 ? Math.Min(mu.CopyPercent, 99.9) : 5;
+                                    copyStatus = mu.CopyPercent > 0 ? $"Bulk Paused ({pct:F1}%)" : "Bulk Paused";
+                                    barColor = "bg-warning";
+                                }
                                 else if (mu.CopyPercent > 0)
                                 {
                                     pct = Math.Min(mu.CopyPercent, 99.9);
@@ -118,7 +140,7 @@
                                         ? $"{mu.CopyRowsPerSecond/1000:F1}k/s"
                                         : mu.CopyRowsPerSecond > 0
                                             ? $"{mu.CopyRowsPerSecond:F0}/s" : "";
-                                    copyStatus = speedStr != "" ? $"Copying ({speedStr})" : "Copying...";
+                                    copyStatus = speedStr != "" ? $"?% ({speedStr})" : "?% (Copying)";
                                 }
                                 else
                                 { copyStatus = "Pending"; pct = 0; }
@@ -134,10 +156,30 @@
                             </div>
                         </td>
                         <td>
-                            @(mu.CopyRowsCopied > 0 ? mu.CopyRowsCopied.ToString("N0") : "-")
+                            @{
+                                long bulkRows = mu.CopyRowsCopied;
+                                long replayRows = mu.ChangeFeedRowsInserted;
+                                long totalRows = bulkRows + replayRows;
+                                bool showReplay = Job != null && Job.IsOnline && replayRows > 0;
+                                string tip = showReplay
+                                    ? $"Bulk: {bulkRows:N0} · Replay: {replayRows:N0}"
+                                    : "";
+                            }
+                            @if (totalRows > 0)
+                            {
+                                <span title="@tip">@totalRows.ToString("N0")</span>
+                                @if (showReplay)
+                                {
+                                    <span class="text-muted ms-1" style="font-size: 0.75rem;" title="@tip">(+@replayRows.ToString("N0"))</span>
+                                }
+                            }
+                            else
+                            {
+                                @("-")
+                            }
                         </td>
 
-                        @if (Job != null && MigrationUtilities.IsOnline(Job))
+                        @if (Job != null && Job.IsOnline)
                         {
                             <td title="Avg Read Latency: @mu.ChangeFeedAvgReadLatencyInMS.ToString("F2") ms | Avg Write Latency: @mu.ChangeFeedAvgWriteLatencyInMS.ToString("F2") ms">                           
                                 @(mu.ChangeFeedLastChecked.HasValue ? MigrationUtilities.GetTimestampDiff(mu.ChangeFeedLastChecked.Value) : "NA")
@@ -229,7 +271,11 @@
     // Pagination and filtering state
     private string _filterText = string.Empty;
     private int _currentPage = 1;
-    private int _pageSize = 10;
+    // Bumped from 10 to 25 so that the common multi-table jobs (10-25
+    // tables) don't silently hide rows behind the pager. 10 was
+    // particularly bad for the 15-table case in the repro because
+    // exactly 5 tables ended up on page 2 with no above-grid hint.
+    private int _pageSize = 25;
 
     // Sorting state
     private string _sortColumn = "KeyspaceName";
@@ -290,14 +336,14 @@
             if (sourceStatus.Contains(searchText, StringComparison.OrdinalIgnoreCase))
                 return true;
 
-            if (Job != null && MigrationUtilities.IsOnline(Job) == true)
+            if (Job != null && Job.IsOnline == true)
             {
                 var lagText = mu.ChangeFeedLastChecked.HasValue ? MigrationUtilities.GetTimestampDiff(mu.ChangeFeedLastChecked.Value) : "NA";
                 if (lagText.Contains(searchText, StringComparison.OrdinalIgnoreCase))
                     return true;
             }
 
-            if (Job != null && MigrationUtilities.IsOnline(Job) == true)
+            if (Job != null && Job.IsOnline == true)
             {
                 var batchCount = mu.ChangeFeedUpdatesInLastBatch.ToString();
                 if (batchCount.Contains(searchText, StringComparison.OrdinalIgnoreCase))
@@ -361,41 +407,25 @@
         if (units == null || !units.Any())
             return units ?? new List<TableMigrationSummary>();
 
-        return _sortColumn switch
+        Func<TableMigrationSummary, IComparable>? keySelector = _sortColumn switch
         {
-            "KeyspaceName" => _sortAscending 
-                ? units.OrderBy(u => u.KeyspaceName).ToList()
-                : units.OrderByDescending(u => u.KeyspaceName).ToList(),
-
-            "TableName" => _sortAscending
-                ? units.OrderBy(u => u.TableName).ToList()
-                : units.OrderByDescending(u => u.TableName).ToList(),
-
-            "CopyStatus" => _sortAscending
-                ? units.OrderBy(u => GetSortValueForStatus(u)).ToList()
-                : units.OrderByDescending(u => GetSortValueForStatus(u)).ToList(),
-
-            "RowsCopied" => _sortAscending
-                ? units.OrderBy(u => u.CopyRowsCopied).ToList()
-                : units.OrderByDescending(u => u.CopyRowsCopied).ToList(),
-
-            "TimeSinceLastChange" => _sortAscending
-                ? units.OrderBy(u => GetSortValueForTimestamp(u)).ToList()
-                : units.OrderByDescending(u => GetSortValueForTimestamp(u)).ToList(),
-
-            "TimeSinceLastBatch" => _sortAscending
-                ? units.OrderBy(u => GetSortValueForLastBatch(u)).ToList()
-                : units.OrderByDescending(u => GetSortValueForLastBatch(u)).ToList(),
-
-            "LastBatchChanges" => _sortAscending
-                ? units.OrderBy(u => u.ChangeFeedUpdatesInLastBatch).ToList()
-                : units.OrderByDescending(u => u.ChangeFeedUpdatesInLastBatch).ToList(),
-
-            _ => units
+            "KeyspaceName"        => u => u.KeyspaceName ?? string.Empty,
+            "TableName"           => u => u.TableName ?? string.Empty,
+            "CopyStatus"          => u => GetSortValueForStatus(u),
+            "RowsCopied"          => u => u.CopyRowsCopied + u.ChangeFeedRowsInserted,
+            "TimeSinceLastChange" => u => GetSortValueForTimestamp(u),
+            "LastBatchChanges"    => u => u.ChangeFeedUpdatesInLastBatch,
+            _ => null
         };
+
+        if (keySelector == null) return units;
+
+        return _sortAscending
+            ? units.OrderBy(keySelector).ToList()
+            : units.OrderByDescending(keySelector).ToList();
     }
 
-    private object GetSortValueForStatus(TableMigrationSummary mu)
+    private string GetSortValueForStatus(TableMigrationSummary mu)
     {
         if (mu.SourceStatus == TableStatus.NotFound)
             return "0_Skipped (404)";
@@ -409,11 +439,6 @@
     }
 
     private DateTime GetSortValueForTimestamp(TableMigrationSummary mu)
-    {
-        return mu.ChangeFeedLastChecked ?? DateTime.MinValue;
-    }
-
-    private DateTime GetSortValueForLastBatch(TableMigrationSummary mu)
     {
         return mu.ChangeFeedLastChecked ?? DateTime.MinValue;
     }
@@ -481,6 +506,12 @@
     {
         UpdatePaginationHelper();
         return _cachedFilteredItemsCount;
+    }
+
+    private string GetDisplayedItemsInfo()
+    {
+        UpdatePaginationHelper();
+        return _cachedDisplayedItemsInfo;
     }
 
     private int GetTotalPages()

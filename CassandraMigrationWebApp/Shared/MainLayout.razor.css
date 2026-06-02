@@ -17,7 +17,7 @@ main {
     color: #ffffff;
     border-bottom: none;
     justify-content: space-between;
-    height: 40px;
+    min-height: 40px;
     display: flex;
     align-items: center;
 }

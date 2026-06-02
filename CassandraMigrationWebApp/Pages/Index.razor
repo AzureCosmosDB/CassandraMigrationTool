@@ -1,25 +1,26 @@
 @page "/"
 @inject Service.JobManager JobManager
-@inject Service.MigrationContextService MigrationContext
+@inject CassandraMigrationProcessor.Context.MigrationJobContext MigrationContext
 @inject NavigationManager NavigationManager
 
 @using CassandraMigrationWebApp.Components
+@using CassandraMigrationWebApp.Service
 @using CassandraMigrationProcessor
 @using CassandraMigrationProcessor.Infrastructure
 @using CassandraMigrationProcessor.Models
 
 
 <div class="card" style="border: none; box-shadow: none; background: transparent;">
-    <div style="background: var(--az-surface, #fff); border-bottom: 1px solid var(--az-border, #d6d6d6); padding: 10px 16px; display: flex; justify-content: space-between; align-items: center; border-radius: 4px 4px 0 0;">
+    <div style="background: var(--az-surface, #fff); border-bottom: 1px solid var(--az-border, #d6d6d6); padding: 10px 16px; display: flex; flex-wrap: wrap; gap: 8px; justify-content: space-between; align-items: center; border-radius: 4px 4px 0 0;">
         <div style="font-size: 18px; font-weight: 600; color: var(--az-text, #323130);">
             Migration Jobs
         </div>
         <div class="d-flex align-items-center gap-2">
-            <button class="btn btn-primary btn-sm d-flex align-items-center gap-1" title="New Job" @onclick="StartMigrationAsync">
-                <i class="bi bi-plus"></i> New
+            <button class="btn btn-primary btn-sm d-flex align-items-center gap-1" title="Create a new migration job" aria-label="New migration job" @onclick="StartMigrationAsync">
+                <i class="bi bi-plus" aria-hidden="true"></i> New
             </button>
-            <button class="btn btn-outline-secondary btn-sm" title="Settings" @onclick="OpenConfig">
-                <i class="bi bi-gear"></i>
+            <button class="btn btn-outline-secondary btn-sm" title="Application settings" aria-label="Application settings" @onclick="OpenConfig">
+                <i class="bi bi-gear" aria-hidden="true"></i>
             </button>
         </div>
     </div>
@@ -51,6 +52,7 @@
                             <th>Name</th>
                             <th>Type</th>
                             <th>Started</th>
+                            <th>Duration</th>
                             <th>Source → Target</th>
                             <th>Mode</th>
                             <th>Progress</th>
@@ -78,18 +80,21 @@
                                 </td>
                                 <td style="color: var(--az-text-secondary, #605e5c);">@GetToolName(migration.JobType)</td>
                                 <td style="color: var(--az-text-secondary, #605e5c); font-size: 12px;">@migration.StartedOn</td>
-                                <td style="font-size: 12px; max-width: 260px;" title="@GetTootTip(migration)">
+                                <td style="color: var(--az-text-secondary, #605e5c); font-size: 12px; white-space: nowrap;" title="@GetDurationTooltip(migration)">
+                                    @GetJobDuration(migration)
+                                </td>
+                                <td style="font-size: 12px; max-width: 260px;" title="@GetToolTip(migration)">
                                     <div class="text-truncate" style="color: var(--az-text, #323130);">@migration.SourceContactPoint</div>
                                     <div class="text-truncate" style="color: var(--az-text-disabled, #a19f9d); font-size: 11px;">→ @migration.TargetContactPoint</div>
                                 </td>
                                 <td>
-                                    @if (MigrationUtilities.IsOnline(migration))
+                                    @if (migration.IsOnline)
                                     {
-                                        <span class="badge bg-info">Online</span>
+                                        <span class="badge bg-light text-dark border border-info">Online</span>
                                     }
                                     else
                                     {
-                                        <span class="badge bg-secondary">Offline</span>
+                                        <span class="badge bg-light text-dark border border-secondary">Offline</span>
                                     }
                                 </td>
                                 <td style="font-size: 12px; white-space: nowrap;">
@@ -120,29 +125,29 @@
                                     }
                                     @if (speed > 0 && remaining > 0)
                                     {
-                                        double etaSec = remaining / speed;
-                                        string etaStr;
-                                        if (etaSec < 60) etaStr = $"{etaSec:F0}s";
-                                        else if (etaSec < 3600) etaStr = $"{etaSec/60:F0}m {etaSec%60:F0}s";
-                                        else etaStr = $"{etaSec/3600:F0}h {(etaSec%3600)/60:F0}m";
-                                        <span>@etaStr</span>
+                                        <span>@JobLifecycle.FormatEta(remaining, speed)</span>
                                     }
                                     else
                                     {
                                         <span style="color: var(--az-text-disabled, #a19f9d);">—</span>
                                     }
                                 </td>
-                                <td><span class="badge @GetJobStatusBadge(migration)">@GetJobStatusLabel(migration)</span></td>
+                                <td>
+                                    @{
+                                        var liveStatus = JobManager.GetLiveStatus(migration);
+                                    }
+                                    <span class="badge @JobLifecycle.BadgeClass(liveStatus)">@JobLifecycle.Label(liveStatus)</span>
+                                </td>
                                 <td @onclick:stopPropagation="true">
                                     <div class="d-flex gap-1">
-                                        <button class="btn btn-outline-secondary btn-sm" title="View" @onclick="() => ViewMigration(migration.Id)">
-                                            <i class="bi bi-eye"></i>
+                                        <button class="btn btn-outline-secondary btn-sm" title="View job details" aria-label="View job details" @onclick="() => ViewMigration(migration.Id)">
+                                            <i class="bi bi-eye" aria-hidden="true"></i>
                                         </button>
-                                        <button class="btn btn-outline-secondary btn-sm" title="Report" @onclick="() => ViewJobReport(migration.Id)">
-                                            <i class="bi bi-file-earmark-text"></i>
+                                        <button class="btn btn-outline-secondary btn-sm" title="Open job report" aria-label="Open job report" @onclick="() => ViewJobReport(migration.Id)">
+                                            <i class="bi bi-file-earmark-text" aria-hidden="true"></i>
                                         </button>
-                                        <button class="btn btn-outline-secondary btn-sm" title="Delete" @onclick="() => RemoveMigration(migration.Id)">
-                                            <i class="bi bi-trash"></i>
+                                        <button class="btn btn-outline-secondary btn-sm" title="Delete job" aria-label="Delete job" @onclick="() => RemoveMigration(migration.Id)">
+                                            <i class="bi bi-trash" aria-hidden="true"></i>
                                         </button>
                                     </div>
                                 </td>
@@ -191,7 +196,7 @@
     private List<Job>? migrationJobs;
     private bool _loadingComplete;
 
-    private string GetTootTip(Job Job)
+    private string GetToolTip(Job Job)
     {
 
         return string.Join(",",
@@ -211,19 +216,81 @@
         }
     }
 
-    protected override async Task OnInitializedAsync()
+    private string GetJobDuration(Job migration)
     {
-        // Update WebAppBaseUrl from browser context for Keep-Alive functionality
-        try
+        if (!migration.StartedOn.HasValue || migration.StartedOn.Value == DateTime.MinValue)
+            return "—";
+
+        var endTime = ResolveJobEndTime(migration);
+        var elapsed = endTime - migration.StartedOn.Value;
+        if (elapsed.TotalSeconds < 1) return "—";
+        return FormatElapsed(elapsed);
+    }
+
+    private string GetDurationTooltip(Job migration)
+    {
+        if (!migration.StartedOn.HasValue || migration.StartedOn.Value == DateTime.MinValue)
+            return "Job has not started yet";
+
+        if (JobManager.IsProcessRunning(migration.Id ?? string.Empty))
+            return $"Running for {FormatElapsed(DateTime.UtcNow - migration.StartedOn.Value)} (live)";
+
+        var endTime = ResolveJobEndTime(migration);
+        return migration.Status switch
         {
-            var baseUri = NavigationManager.BaseUri;
-            JobManager.UpdateWebAppBaseUrlFromBrowser(baseUri);
-        }
-        catch (Exception ex)
+            JobStatus.Completed => $"Completed at {endTime:yyyy-MM-dd HH:mm:ss} UTC",
+            JobStatus.Faulted   => $"Last activity at {endTime:yyyy-MM-dd HH:mm:ss} UTC (job is Faulted; clock stopped here)",
+            JobStatus.Cancelled => $"Last activity at {endTime:yyyy-MM-dd HH:mm:ss} UTC (job was Cancelled)",
+            JobStatus.Paused    => $"Last activity at {endTime:yyyy-MM-dd HH:mm:ss} UTC (job is Paused)",
+            _                   => $"Last activity at {endTime:yyyy-MM-dd HH:mm:ss} UTC",
+        };
+    }
+
+    private DateTime ResolveJobEndTime(Job migration)
+    {
+        // Running jobs always show elapsed wall-clock time so the duration
+        // ticks forward; this matches operator expectation ("how long has
+        // this been running?"). Without this, Faulted jobs would freeze
+        // the duration at the moment of the last successful batch
+        // (e.g. ~15s into a 19-min run), making the operator think the
+        // crash happened ~15s in when actually the worker died silently
+        // 19 minutes ago.
+        if (JobManager.IsProcessRunning(migration.Id ?? string.Empty))
+            return DateTime.UtcNow;
+
+        if (migration.EndedOn.HasValue)
+            return migration.EndedOn.Value;
+
+        // For non-running jobs without a terminal stamp (legacy job docs
+        // that pre-date EndedOn, or Paused jobs), prefer the most recent
+        // per-table CDC activity so Faulted/Completed/Cancelled jobs
+        // reflect "ran for X" not just "started X ago".
+        DateTime? lastActivity = null;
+        foreach (var t in migration.Tables ?? new List<TableMigrationSummary>())
         {
-            Console.WriteLine($"Error updating WebAppBaseUrl. Details: {ex}");
+            if (t.ChangeFeedLastChecked.HasValue && (!lastActivity.HasValue || t.ChangeFeedLastChecked.Value > lastActivity.Value))
+                lastActivity = t.ChangeFeedLastChecked.Value;
         }
 
+        // If we never recorded any activity (e.g. offline job that
+        // crashed before any CDC checkpoint), fall back to wall-clock.
+        // This is conservative but it's still much better than a
+        // misleading "15s" report — the duration at least monotonically
+        // reflects "how long the job has been alive on disk" instead of
+        // freezing on the first batch.
+        return lastActivity ?? DateTime.UtcNow;
+    }
+
+    private static string FormatElapsed(TimeSpan d)
+    {
+        if (d.TotalSeconds < 60) return $"{(int)d.TotalSeconds}s";
+        if (d.TotalMinutes < 60) return $"{(int)d.TotalMinutes}m {d.Seconds}s";
+        if (d.TotalHours < 24)   return $"{(int)d.TotalHours}h {d.Minutes}m";
+        return $"{(int)d.TotalDays}d {d.Hours}h";
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
         await base.OnInitializedAsync();
     }
 
@@ -234,7 +301,7 @@
             return;
 
         _loadingComplete = false;
-        migrationJobs = GetMigrationsFromManager(false);
+        migrationJobs = GetMigrations();
         _loadingComplete = true;
     }
 #pragma warning restore CS1998
@@ -242,13 +309,8 @@
 
     private List<Job> GetMigrations()
     {
-        return GetMigrationsFromManager(true);
-    }
-
-    private List<Job> GetMigrationsFromManager(bool silent)
-    {
         var ids = JobManager.GetMigrationIds();
-        var result = MigrationContext.PopulateJobs(ids);
+        var result = MigrationContext.GetJobsById(ids);
         // Latest jobs first
         result.Reverse();
         return result;
@@ -288,15 +350,16 @@
                 if (_selectedMigrationJob != null)
                 {
                     string jobId = _selectedMigrationJob.Id;
-                    // Display-only removal from a fresh copy;
-                    // actual deletion happens in ClearJobFiles below.
-                    GetMigrations().Remove(_selectedMigrationJob);
 
                     try
                     {
                         JobManager.ClearJobFiles(jobId);
                     }
-                    catch { }
+                    catch (Exception ex)
+                    {
+                        Console.Error.WriteLine(
+                            $"ClearJobFiles({jobId}) failed: {ex.GetType().Name}: {ex.Message}");
+                    }
                 }
 
             }
@@ -363,15 +426,15 @@
             {
                 // Store connection strings if provided
                 if (!string.IsNullOrEmpty(sourceConnectionString))
-                    MigrationContext.SourceConnectionString[job.Id] = sourceConnectionString;
+                    MigrationContext.Credentials.SetSource(job.Id, sourceConnectionString);
 
                 if (!string.IsNullOrEmpty(targetConnectionString))
-                    MigrationContext.TargetConnectionString[job.Id] = targetConnectionString;
+                    MigrationContext.Credentials.SetTarget(job.Id, targetConnectionString);
 
                 MigrationContext.JobIndex.MigrationJobIds.Add(job.Id);
 
                 MigrationContext.PendingAutoStartJobIds.TryAdd(job.Id, 0);
-                MigrationContext.SaveJob(job);
+                MigrationContext.SaveMigrationJob(job);
                 MigrationContext.SaveJobList();
                 
                 ViewMigration(job.Id);
@@ -379,29 +442,5 @@
         }
         await InvokeAsync(StateHasChanged);
         return true;
-    }
-
-    private string GetJobStatusLabel(Job job)
-    {
-        if (job.Status == JobStatus.Completed) return "Completed";
-        if (job.Status == JobStatus.Cancelled) return "Cancelled";
-        if (JobManager.IsProcessRunning(job.Id ?? string.Empty))
-            return "Running";
-        if (job.Status == JobStatus.Faulted) return "Faulted";
-        if (job.Status == JobStatus.Paused) return "Paused";
-        if (job.Status == JobStatus.Running) return "Stopped";
-        return "Not Started";
-    }
-
-    private string GetJobStatusBadge(Job job)
-    {
-        if (job.Status == JobStatus.Completed) return "bg-success";
-        if (job.Status == JobStatus.Cancelled) return "bg-secondary";
-        if (JobManager.IsProcessRunning(job.Id ?? string.Empty))
-            return "bg-primary";
-        if (job.Status == JobStatus.Faulted) return "bg-danger";
-        if (job.Status == JobStatus.Paused) return "bg-warning text-dark";
-        if (job.Status == JobStatus.Running) return "bg-info";
-        return "bg-secondary";
     }
 }

@@ -12,33 +12,26 @@
                 <!-- Tab Navigation -->
                 <ul class="nav nav-tabs mb-3">
                     <li class="nav-item">
-                        <button class="nav-link @(activeTab == "OfflineDataMovement" ? "active" : "")" @onclick="SwitchToOfflineDataMovementTab">Offline</button>
+                        <button class="nav-link @(activeTab == OfflineDataMovementTab ? "active" : "")" @onclick="@(() => activeTab = OfflineDataMovementTab)">Offline</button>
                     </li>
                     <li class="nav-item">
-                        <button class="nav-link @(activeTab == "ChangeStream" ? "active" : "")" @onclick="SwitchToChangeStreamTab">Online</button>
-                    </li>
-                    <li class="nav-item">
-                        <button class="nav-link @(activeTab == "Other" ? "active" : "")" @onclick="SwitchToOtherTab">Other</button>
+                        <button class="nav-link @(activeTab == OtherTab ? "active" : "")" @onclick="@(() => activeTab = OtherTab)">Other</button>
                     </li>
                 </ul>
 
                 <!-- Offline Data Movement Tab Content -->
-                <div class="@(activeTab == "OfflineDataMovement" ? "" : "d-none")">
+                <div class="@(activeTab == OfflineDataMovementTab ? "" : "d-none")">
                     <div class="mb-3">
                         <label for="cql-copy-page-size" class="form-label">CQL Copy page size</label>
-                        <input type="number" id="cql-copy-page-size" class="form-control" @bind="(_configurationBackup ??= new CassandraMigrationProcessor.Models.AppSettings()).CqlCopyPageSize" />
+                        <input type="number" id="cql-copy-page-size" class="form-control" @bind="(_configurationBackup ??= new AppSettings()).CqlCopyPageSize" />
                     </div>
                 </div>
 
-                <!-- Change Stream Tab Content -->
-                <div class="@(activeTab == "ChangeStream" ? "" : "d-none")">
-                </div>
-
                 <!-- Other Tab Content -->
-                <div class="@(activeTab == "Other" ? "" : "d-none")">
+                <div class="@(activeTab == OtherTab ? "" : "d-none")">
                     <div class="mb-3">
                         <label for="log-page-size" class="form-label">Log page size</label>
-                        <input type="text" id="log-page-size" class="form-control" @bind="(_configurationBackup ??= new CassandraMigrationProcessor.Models.AppSettings()).LogPageSize" />
+                        <input type="number" id="log-page-size" class="form-control" min="1000" max="100000" @bind="(_configurationBackup ??= new AppSettings()).LogPageSize" />
                     </div>
                 </div>
 
@@ -61,34 +54,21 @@
 @code
 {
     [Parameter]
-    public CassandraMigrationProcessor.Models.AppSettings? _configuration { get; set; }
+    public AppSettings? _configuration { get; set; }
 
     [Parameter]
-    public EventCallback<CassandraMigrationProcessor.Models.AppSettings?> On_configurationSaved { get; set; }
+    public EventCallback<AppSettings?> On_configurationSaved { get; set; }
 
     private string errorMessage = string.Empty;
-    private string activeTab = "OfflineDataMovement";
+    private const string OfflineDataMovementTab = "OfflineDataMovement";
+    private const string OtherTab = "Other";
+    private string activeTab = OfflineDataMovementTab;
 
-    private void SwitchToOfflineDataMovementTab()
-    {
-        activeTab = "OfflineDataMovement";
-    }
-
-    private void SwitchToChangeStreamTab()
-    {
-        activeTab = "ChangeStream";
-    }
-
-    private void SwitchToOtherTab()
-    {
-        activeTab = "Other";
-    }
-
-    CassandraMigrationProcessor.Models.AppSettings? _configurationBackup;
+    AppSettings? _configurationBackup;
 
     protected override void OnInitialized()
     {
-        _configurationBackup = (CassandraMigrationProcessor.Models.AppSettings?)(_configuration?.Clone()) ?? new CassandraMigrationProcessor.Models.AppSettings();
+        _configurationBackup = _configuration?.Copy() ?? new AppSettings();
     }
 
     private async Task HandleSubmit()
@@ -105,8 +85,8 @@
             return;
         }
 
-        _configurationBackup ??= new CassandraMigrationProcessor.Models.AppSettings();
-        _configuration = (CassandraMigrationProcessor.Models.AppSettings)_configurationBackup.Clone();
+        _configurationBackup ??= new AppSettings();
+        _configuration = _configurationBackup.Copy();
 
         if (On_configurationSaved.HasDelegate)
         {

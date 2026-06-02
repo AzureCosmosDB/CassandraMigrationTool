@@ -2,5 +2,5 @@ namespace CassandraMigrationWebApp;
 
 internal static class AppVersion
 {
-    public const string Display = "v1.1.0";
+    public const string Display = "v2.0.0";
 }

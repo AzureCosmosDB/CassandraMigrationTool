@@ -58,13 +58,38 @@
                             
                             @if (collectionsToShow.Any())
                             {
-                                @foreach (var mu in collectionsToShow)
+                                var hasWildcardRows = collectionsToShow.Any(mu => mu.TableName == "*");
+                                @if (hasWildcardRows)
                                 {
                                     <tr>
+                                        <td colspan="2" class="alert alert-info py-2 mb-2 small">
+                                            <i class="bi bi-info-circle"></i>
+                                            One or more rows below are <strong>wildcard namespaces</strong>
+                                            (<code>keyspace.*</code>). The actual tables are enumerated against the
+                                            source during the schema phase when the job starts. Until then, the
+                                            wildcard counts as a single placeholder row in the <em>Tables: N/M</em> header.
+                                        </td>
+                                    </tr>
+                                }
+                                @foreach (var mu in collectionsToShow)
+                                {
+                                    var isWildcard = mu.TableName == "*";
+                                    <tr>
                                         <td>
-                                            <span title="@($"Keyspace: {mu.KeyspaceName}, Table: {mu.TableName}")">
-                                                @mu.KeyspaceName.@mu.TableName
-                                            </span>
+                                            @if (isWildcard)
+                                            {
+                                                <span class="badge bg-info text-dark me-2">Wildcard</span>
+                                                <span title="@($"Keyspace: {mu.KeyspaceName}, Wildcard: {mu.KeyspaceName}.*")">
+                                                    <code>@mu.KeyspaceName.*</code>
+                                                    <small class="text-muted ms-1">(all tables in <code>@mu.KeyspaceName</code>; expanded at job start)</small>
+                                                </span>
+                                            }
+                                            else
+                                            {
+                                                <span title="@($"Keyspace: {mu.KeyspaceName}, Table: {mu.TableName}")">
+                                                    @mu.KeyspaceName.@mu.TableName
+                                                </span>
+                                            }
                                         </td>
                                         <td>
                                             <button class="btn btn-danger btn-sm" @onclick="() => RemoveCollection(mu)" title="Remove collection">
@@ -212,13 +237,7 @@
     protected override void OnInitialized()
     {
         // Initialize pagination helper with filter predicate
-        _paginationHelper = new PaginationHelper<TableMigration>(
-            LoadUpdatedMigrationUnits(),
-            (mu, filterText) =>
-                $"{mu.KeyspaceName}.{mu.TableName}".Contains(filterText, StringComparison.OrdinalIgnoreCase) ||
-                mu.KeyspaceName.Contains(filterText, StringComparison.OrdinalIgnoreCase) ||
-                mu.TableName.Contains(filterText, StringComparison.OrdinalIgnoreCase)
-        );
+        RefreshPaginationHelper();
     }
 
     private List<TableMigration> LoadUpdatedMigrationUnits()
