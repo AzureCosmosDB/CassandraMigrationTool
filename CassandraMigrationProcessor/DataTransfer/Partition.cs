@@ -80,9 +80,9 @@ public sealed class Partition
     private readonly LinkedList<WorkChunk> _chunks = new();
     private readonly object _chunksLock = new();
 
-    public Partition(PartitionSnapshot Snapshot, byte[]? initialPagingState, TableResources table, PartitionPhase phase = PartitionPhase.Bulk)
+    public Partition(PartitionSnapshot snapshot, byte[]? initialPagingState, TableResources table, PartitionPhase phase = PartitionPhase.Bulk)
     {
-        Snapshot = Snapshot ?? throw new ArgumentNullException(nameof(Snapshot));
+        Snapshot = snapshot ?? throw new ArgumentNullException(nameof(snapshot));
         LastPagingState = initialPagingState;
         Phase = phase;
         Table = table;
