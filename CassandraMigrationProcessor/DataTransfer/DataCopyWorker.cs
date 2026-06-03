@@ -214,6 +214,13 @@ internal class DataCopyWorker
         // chains of inner exceptions whose top-level message is
         // generic. Walk Flatten() and InnerException.
         _workerLog.WriteLine($"Error on {tag}: {ex.GetType().Name}: {ex.Message}", LogType.Error);
+        // Include the originating stack frame so NREs and other
+        // unexpected failures are diagnosable from the UI log alone.
+        var firstFrame = ex.StackTrace?.Split('\n').FirstOrDefault()?.Trim();
+        if (!string.IsNullOrEmpty(firstFrame))
+        {
+            _workerLog.WriteLine($"  at {firstFrame}", LogType.Error);
+        }
 
         if (ex is AggregateException agg)
         {
