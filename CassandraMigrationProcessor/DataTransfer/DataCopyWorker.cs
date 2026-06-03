@@ -219,7 +219,7 @@ internal class DataCopyWorker
         var firstFrame = ex.StackTrace?.Split('\n').FirstOrDefault()?.Trim();
         if (!string.IsNullOrEmpty(firstFrame))
         {
-            _workerLog.WriteLine($"  at {firstFrame}", LogType.Error);
+            _workerLog.WriteLine($"  {firstFrame}", LogType.Error);
         }
 
         if (ex is AggregateException agg)
