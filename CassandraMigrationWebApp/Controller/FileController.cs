@@ -56,4 +56,42 @@ public class FileController : ControllerBase
 
         return File(fileBytes, contentType, $"{jobId}.json");
     }
+
+    // Streams the persisted log for a job (or backup file name) back to
+    // the MigrationJobViewer's Downloader() click. ExportLogsAsBytes
+    // returns an empty array when no entries exist.
+    [HttpGet("download/log/{fileName}")]
+    public IActionResult DownloadLog(string fileName)
+    {
+        if (string.IsNullOrWhiteSpace(fileName))
+            return BadRequest("fileName is required.");
+
+        // Defence in depth: refuse any path-traversal attempt. Job IDs and
+        // backup filenames are simple alphanum/hyphen/underscore/dot tokens.
+        if (fileName.IndexOfAny(new[] { '/', '\\', ':' }) >= 0
+            || fileName.Contains(".."))
+        {
+            return BadRequest("Invalid fileName.");
+        }
+
+        if (_context.LogStore == null)
+            return NotFound("Log storage is not initialised.");
+
+        byte[] bytes;
+        try
+        {
+            bytes = _context.LogStore.ExportLogsAsBytes(fileName);
+        }
+        catch (Exception ex)
+        {
+            return Problem(
+                detail: $"Failed to export log '{fileName}': {ex.GetType().Name}: {ex.Message}",
+                statusCode: 500);
+        }
+
+        if (bytes == null || bytes.Length == 0)
+            return NotFound($"No log entries found for '{fileName}'.");
+
+        return File(bytes, "text/plain", $"{fileName}.log");
+    }
 }

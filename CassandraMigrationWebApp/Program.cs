@@ -24,6 +24,30 @@ catch (Exception ex)
     Console.Error.WriteLine($"[WARN] Diagnostic MigrationLog setup failed, falling back to stdout: {ex.Message}");
 }
 
+// Surface unhandled exceptions to the redirected diag stream so they
+// reach App Service logs before the host exits (default 0xe0434352
+// fatal exit produces no captured stack trace otherwise).
+AppDomain.CurrentDomain.UnhandledException += (sender, args) =>
+{
+    try
+    {
+        var ex = args.ExceptionObject as Exception;
+        Console.Error.WriteLine(
+            $"[FATAL] [{DateTime.UtcNow:O}] AppDomain.UnhandledException (terminating={args.IsTerminating}): {ex}");
+    }
+    catch { /* never let the handler itself throw */ }
+};
+TaskScheduler.UnobservedTaskException += (sender, args) =>
+{
+    try
+    {
+        Console.Error.WriteLine(
+            $"[ERROR] [{DateTime.UtcNow:O}] TaskScheduler.UnobservedTaskException: {args.Exception}");
+        args.SetObserved();
+    }
+    catch { /* never let the handler itself throw */ }
+};
+
 builder.Services.AddControllersWithViews();
 
 // Register HttpClient and dynamically set the base address using NavigationManager

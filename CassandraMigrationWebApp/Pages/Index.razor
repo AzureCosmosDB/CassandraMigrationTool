@@ -78,7 +78,7 @@
                                 <td>
                                     <span style="color: var(--az-brand, #0078d4); font-weight: 600;">@migration.Name</span>
                                 </td>
-                                <td style="color: var(--az-text-secondary, #605e5c);">@GetToolName(migration.JobType)</td>
+                                <td style="color: var(--az-text-secondary, #605e5c);">CQL Copy</td>
                                 <td style="color: var(--az-text-secondary, #605e5c); font-size: 12px;">@migration.StartedOn</td>
                                 <td style="color: var(--az-text-secondary, #605e5c); font-size: 12px; white-space: nowrap;" title="@GetDurationTooltip(migration)">
                                     @GetJobDuration(migration)
@@ -204,17 +204,6 @@
                 .Select(mu => $"{mu.KeyspaceName}.{mu.TableName}") ?? Enumerable.Empty<string>());
     }
 
-
-    private string GetToolName(CassandraMigrationProcessor.Models.JobType jobType)
-    {
-        switch(jobType)
-        {
-            case CassandraMigrationProcessor.Models.JobType.CqlCopy:
-                return "CQL Copy";
-            default:
-                return "NA";
-        }
-    }
 
     private string GetJobDuration(Job migration)
     {

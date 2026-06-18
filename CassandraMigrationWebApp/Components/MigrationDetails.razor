@@ -171,13 +171,12 @@
                         </label>
                     </div>
                     <div class="mb-3">
-                        <label for="skipSourceRowCount" class="form-label" title="Skip the per-table SELECT COUNT(*) probe during partition discovery. Progress will display as '?%' for affected tables. Use this when the source is a very large Cassandra cluster where COUNT(*) routinely times out, when the source operator has disabled range scans for cost / blast-radius reasons, or when the cumulative COUNT(*) cost across many tables delays bulk-copy start.">
+                        <label for="skipSourceRowCount" class="form-label" title="Skip the per-table SELECT COUNT(*) probe during partition discovery. Per-table progress shows the live copy rate (e.g. 'Copying (3k/s)') rather than a percentage. Use this when the source is a very large Cassandra cluster where COUNT(*) routinely times out, when the source operator has disabled range scans for cost / blast-radius reasons, or when the cumulative COUNT(*) cost across many tables delays bulk-copy start.">
                             <input type="checkbox" id="skipSourceRowCount" disabled="@(!NewMode)" @bind="skipSourceRowCount" />
-                            Don't run COUNT(*) on source (faster start; per-table ETA / percent will display as ?)
+                            Don't run COUNT(*) on source (faster start; per-table progress shows live copy rate instead of percent)
                         </label>
                     </div>
-                    @if (jobType == JobType.CqlCopy)
-                    {
+                    @* CQL Copy is the only supported job kind. *@
                         <div class="row mb-3">
                             <div class="col-md-6">
                                 <label for="workerCount" class="form-label" title="Size of the shared worker pool that does row-level copy work across all tables. Leave blank for auto = max(MinWorkers, ProcessorCount × WorkerMultiplier).">Shared workers</label>
@@ -208,7 +207,7 @@
                                 <input type="number" id="maxWriteRetries" class="form-control" @bind="maxWriteRetries" min="0" placeholder="Default (5)"/>
                             </div>
                         </div>
-                    }</div>
+                    </div>
 
 
                 @if (!string.IsNullOrEmpty(errorMessage))
@@ -246,7 +245,6 @@
 
     private string activeTab = "Basic"; // Track active tab
     private string errorMessage = string.Empty;
-    private JobType jobType = JobType.CqlCopy; // Default to CqlCopy for Cassandra
     private string selectedOption = "CQL Copy"; // Default dropdown value
     private bool isSimulatedRun = false; // Variable to track the dummy run option
     private bool appendMode = false;
@@ -342,7 +340,6 @@
     private void OnSelectionChanged(ChangeEventArgs e)
     {
         selectedOption = e?.Value?.ToString() ?? selectedOption;
-        jobType = JobType.CqlCopy;
     }
 
     protected override void OnInitialized()
@@ -354,7 +351,6 @@
             targetConnectionString = string.Empty;
             namespaces = string.Empty;
             cdcMode = CDCMode.Offline;
-            jobType = JobType.CqlCopy;
             selectedOption = "CQL Copy";
             isSimulatedRun = false;
             appendMode = false;
@@ -381,7 +377,6 @@
             targetPassword = string.Empty;
             namespaces = Job?.Namespaces ?? string.Empty;
             cdcMode = Job?.CDCMode ?? CDCMode.Offline;
-            jobType = Job?.JobType ?? JobType.CqlCopy;
             selectedOption = "CQL Copy";
             isSimulatedRun = Job?.IsSimulatedRun ?? false;
             appendMode = Job?.AppendMode ?? false;
@@ -555,7 +550,6 @@
             TargetUsername = targetUsername,
             TargetPassword = targetPassword,
             Namespaces = namespaces,
-            JobType = jobType,
             IsSimulatedRun = isSimulatedRun,
             AppendMode = appendMode,
             DropTargetTableBeforeStart = dropTargetTableBeforeStart,
@@ -588,7 +582,7 @@
                     // UnitStore.GetMigrationUnitsToMigrate silently
                     // drops every literal-table entry and the runner
                     // exits with "No remaining migration units."
-                    // (see #204).
+                    // (wildcard expansion persists per-unit docs at submit).
                     UnitStore.SaveUnit(u, updateParent: false);
                 }
             }

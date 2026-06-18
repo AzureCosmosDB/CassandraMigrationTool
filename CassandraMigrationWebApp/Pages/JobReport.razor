@@ -67,12 +67,12 @@ else
             </thead>
             <tbody>
                 <tr><td class="nowrap">Job Name</td><td class="wrap">@Job.Name</td></tr>
-                <tr><td class="nowrap">Job Type</td><td>@GetToolName(Job.JobType)</td></tr>
+                <tr><td class="nowrap">Job Type</td><td>CQL Copy</td></tr>
                 <tr><td class="nowrap">Started On (UTC)</td><td>@(Job.StartedOn?.ToString() ?? "N/A")</td></tr>
                 <tr><td class="nowrap">Is Online</td><td>@(Job.IsOnline ? "Yes" : "No")</td></tr>
                 <tr><td class="nowrap">Is Completed</td><td>@(Job.Status == JobStatus.Completed ? "Yes" : "No")</td></tr>
-                <tr><td class="nowrap">Source Contact Point</td><td class="wrap">@Job.SourceContactPoint</td></tr>
-                <tr><td class="nowrap">Target Contact Point</td><td class="wrap">@Job.TargetContactPoint</td></tr>
+                <tr><td class="nowrap">Source Connection String</td><td class="wrap">@Job.SourceContactPoint</td></tr>
+                <tr><td class="nowrap">Target Connection String</td><td class="wrap">@Job.TargetContactPoint</td></tr>
                 <tr><td class="nowrap">Collection Count</td><td>@migrationUnits.Count</td></tr>
             </tbody>
         </table>
@@ -119,8 +119,6 @@ else
                     <div><span class="lbl">Started On (UTC):</span> @(mu.ChangeFeedStartedOn?.ToString() ?? "N/A")</div>
                     <div><span class="lbl">Last Batch Count:</span> @FormatLong(mu.ChangeFeedUpdatesInLastBatch)</div>
                     <div><span class="lbl">Inserted:</span> @FormatLong(mu.ChangeFeedRowsInserted) (from @FormatLong(mu.ChangeFeedInsertEvents) events)</div>
-                    <div><span class="lbl">Deleted:</span> @FormatLong(mu.ChangeFeedRowsDeleted) (from @FormatLong(mu.ChangeFeedDeleteEvents) events)</div>
-                    <div><span class="lbl">Updated:</span> @FormatLong(mu.ChangeFeedRowsUpdated) (from @FormatLong(mu.ChangeFeedUpdateEvents) events)</div>
                     <div><span class="lbl">Failed (with retries):</span> @FormatLong(mu.ChangeFeedErrors)</div>
                 </td>
             </tr>
@@ -144,14 +142,5 @@ else
     private void GoBack()
     {
         NavigationManager.NavigateTo("/");
-    }
-
-    private string GetToolName(CassandraMigrationProcessor.Models.JobType jobType)
-    {
-        return jobType switch
-        {
-            CassandraMigrationProcessor.Models.JobType.CqlCopy => "CQL Copy",
-            _ => "NA"
-        };
     }
 }
