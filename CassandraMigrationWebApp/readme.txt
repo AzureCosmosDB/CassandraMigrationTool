@@ -1,3 +1,3 @@
-Version: 0.9.6
-Instructions: https://github.com/AzureCosmosDB/MongoMigrationWebBasedUtility
-Purpose: An online and offline migration utility designed to migrate any MongoDB source to Azure DocumentDB. It operates as an Azure Web App (or on-premises) and offers multiple methods for data migration. It can either use mongodump and mongorestore for data movement or employ the MongoDB driver to read data from the source and write it
+Version: 2.2.0
+Instructions: https://github.com/AzureCosmosDB/CassandraMigrationTool
+Purpose: An online and offline migration utility designed to migrate Apache Cassandra data to Azure Managed Instance for Apache Cassandra. It operates as an Azure Web App (or on-premises) and supports bulk copy via the Cassandra driver and optional live sync via the Cosmos DB change feed.

@@ -100,10 +100,9 @@ internal static class CdcJsonRowParser
         using (var writer = new Utf8JsonWriter(ms))
         {
             writer.WriteStartObject();
-            foreach (var prop in root.EnumerateObject())
+            foreach (var prop in root.EnumerateObject()
+                         .Where(p => !p.Name.StartsWith(SysColumnPrefix, StringComparison.Ordinal)))
             {
-                if (prop.Name.StartsWith(SysColumnPrefix, StringComparison.Ordinal))
-                    continue;
                 prop.WriteTo(writer);
             }
             writer.WriteEndObject();

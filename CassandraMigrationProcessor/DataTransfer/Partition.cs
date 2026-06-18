@@ -80,9 +80,9 @@ public sealed class Partition
     private readonly LinkedList<WorkChunk> _chunks = new();
     private readonly object _chunksLock = new();
 
-    public Partition(PartitionSnapshot Snapshot, byte[]? initialPagingState, TableResources table, PartitionPhase phase = PartitionPhase.Bulk)
+    public Partition(PartitionSnapshot snapshot, byte[]? initialPagingState, TableResources table, PartitionPhase phase = PartitionPhase.Bulk)
     {
-        this.Snapshot = Snapshot ?? throw new ArgumentNullException(nameof(Snapshot));
+        Snapshot = snapshot ?? throw new ArgumentNullException(nameof(snapshot));
         LastPagingState = initialPagingState;
         Phase = phase;
         Table = table;
@@ -136,11 +136,8 @@ public sealed class Partition
     {
         lock (_chunksLock)
         {
-            foreach (var chunk in _chunks)
-            {
-                if (!chunk.IsCompleted) return chunk.ContinuationToken;
-            }
-            return _chunks.Last?.Value.ContinuationToken;
+            var firstIncomplete = _chunks.FirstOrDefault(chunk => !chunk.IsCompleted);
+            return firstIncomplete?.ContinuationToken ?? _chunks.Last?.Value.ContinuationToken;
         }
     }
 

@@ -80,7 +80,7 @@ public class FileController : ControllerBase
         byte[] bytes;
         try
         {
-            bytes = _context.LogStore.ExportLogsAsBytes(fileName);
+            bytes = _context.LogStore.ExportLogsAsBytes(fileName, int.MaxValue, int.MaxValue);
         }
         catch (Exception ex)
         {
@@ -93,5 +93,39 @@ public class FileController : ControllerBase
             return NotFound($"No log entries found for '{fileName}'.");
 
         return File(bytes, "text/plain", $"{fileName}.log");
+    }
+
+    [HttpGet("download/log/{jobId}/page/{pageNumber}/{pageSize}")]
+    public IActionResult DownloadLogPage(string jobId, int pageNumber, int pageSize)
+    {
+        if (string.IsNullOrWhiteSpace(jobId))
+            return BadRequest("jobId is required.");
+
+        if (jobId.IndexOfAny(new[] { '/', '\\', ':' }) >= 0 || jobId.Contains(".."))
+            return BadRequest("Invalid jobId.");
+
+        if (pageNumber < 1 || pageSize < 1)
+            return BadRequest("pageNumber and pageSize must be positive.");
+
+        if (_context.LogStore == null)
+            return NotFound("Log storage is not initialised.");
+
+        int skip = (pageNumber - 1) * pageSize;
+        byte[] bytes;
+        try
+        {
+            bytes = _context.LogStore.DownloadLogsPaginated(jobId, skip, pageSize);
+        }
+        catch (Exception ex)
+        {
+            return Problem(
+                detail: $"Failed to export log page for '{jobId}': {ex.GetType().Name}: {ex.Message}",
+                statusCode: 500);
+        }
+
+        if (bytes == null || bytes.Length == 0)
+            return NotFound($"No log entries found for page {pageNumber}.");
+
+        return File(bytes, "text/plain", $"{jobId}_page{pageNumber}.log");
     }
 }
