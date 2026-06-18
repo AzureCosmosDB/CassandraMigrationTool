@@ -1,4 +1,5 @@
 using Cassandra;
+using CassandraMigrationProcessor.DataTransfer;
 
 namespace CassandraMigrationProcessor.Infrastructure;
 /// <summary>
@@ -23,6 +24,7 @@ public static class ExceptionClassifier
         typeof(System.IO.IOException),
         typeof(System.Net.Sockets.SocketException),
         typeof(ObjectDisposedException),
+        typeof(MigrationTransientException),
     };
 
     private static readonly Type[] _fatalBases = new[]
@@ -31,6 +33,9 @@ public static class ExceptionClassifier
         typeof(UnauthorizedException),
         typeof(InvalidQueryException),
         typeof(SyntaxError),
+        typeof(MigrationFatalException),
+        typeof(MigrationSchemaException),
+        typeof(MigrationAuthException),
     };
 
     private static bool IsKindOf(Exception ex, Type[] bases)
@@ -130,6 +135,9 @@ public static class ExceptionClassifier
         return false;
     }
 
+    private const int MaxExponentAttempt = 10;
+    private const int MaxBackoffMs = 30_000;
+
     /// <summary>
     /// Compute the recommended retry delay for an attempt. If the error
     /// carries a <c>RetryAfterMs=NNN</c> hint (Cosmos DB throttle
@@ -138,10 +146,12 @@ public static class ExceptionClassifier
     /// The exponent is clamped at <see cref="MaxExponentAttempt"/> so a
     /// long-lived job whose attempt counter climbs past 10 doesn't
     /// schedule a multi-day sleep on the next backoff.
+    /// <para>
+    /// Pure computation; lives here only so the static classifier can
+    /// share one implementation. See <see cref="RetryPolicy.FromException"/>
+    /// for the policy-shaped wrapper preferred by new callers.
+    /// </para>
     /// </summary>
-    private const int MaxExponentAttempt = 10;
-    private const int MaxBackoffMs = 30_000;
-
     public static int GetRetryDelayMs(Exception ex, int attempt)
     {
         var msg = BuildMessageChain(ex);
@@ -201,8 +211,58 @@ public static class ExceptionClassifier
 
     private static string BuildMessageChain(Exception ex)
     {
-        if (ex.InnerException == null)
-            return ex.Message ?? string.Empty;
-        return (ex.Message ?? string.Empty) + " " + (ex.InnerException.Message ?? string.Empty);
+        // Walks the entire AggregateException + InnerException chain so
+        // marker text (RetryAfterMs=NNN, 429, "Request rate is large")
+        // is detected even when the driver buries the underlying
+        // server response several wrappers deep. The previous
+        // single-level walk silently missed deep throttle markers and
+        // GetRetryDelayMs fell back to plain exponential backoff,
+        // ignoring the server's hint.
+        var sb = new System.Text.StringBuilder(ex.Message ?? string.Empty);
+        foreach (var e in Walk(ex))
+        {
+            if (ReferenceEquals(e, ex)) continue;
+            if (!string.IsNullOrEmpty(e.Message))
+            {
+                sb.Append(' ').Append(e.Message);
+            }
+        }
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// Flat enumeration of <paramref name="ex"/> and every wrapped
+    /// inner / aggregate inner, up to <paramref name="maxDepth"/> hops.
+    /// Walks both <see cref="Exception.InnerException"/> and the
+    /// <see cref="AggregateException.InnerExceptions"/> list (after
+    /// <see cref="AggregateException.Flatten"/>); the depth cap guards
+    /// against pathological cycles. Consolidates the five previous
+    /// ad-hoc walkers (DataCopyWorker.LogExceptionChain, IsOutOfMemory,
+    /// WorkerPool fault-flush, ExceptionClassifier.UnwrapAggregate,
+    /// BuildMessageChain) so all classification text-search paths see
+    /// the same chain.
+    /// </summary>
+    public static IEnumerable<Exception> Walk(Exception? ex, int maxDepth = 8)
+    {
+        if (ex == null) yield break;
+        var stack = new Stack<(Exception ex, int depth)>();
+        var seen = new HashSet<Exception>(ReferenceEqualityComparer.Instance);
+        stack.Push((ex, 0));
+        while (stack.Count > 0)
+        {
+            var (cur, depth) = stack.Pop();
+            if (cur == null || depth > maxDepth) continue;
+            if (!seen.Add(cur)) continue;
+            yield return cur;
+            if (cur is AggregateException agg)
+            {
+                foreach (var inner in agg.Flatten().InnerExceptions)
+                {
+                    if (inner != null) stack.Push((inner, depth + 1));
+                }
+            }
+            if (cur.InnerException != null)
+                stack.Push((cur.InnerException, depth + 1));
+        }
     }
 }

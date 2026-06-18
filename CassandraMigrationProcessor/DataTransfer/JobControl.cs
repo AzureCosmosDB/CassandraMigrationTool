@@ -104,14 +104,48 @@ public sealed class JobControl : IDisposable
 }
 
 /// <summary>
-/// Sentinel exception used by sites that detect a fatal condition
-/// (e.g. "write retries exhausted", "source read retries exhausted")
-/// where there isn't a single driver exception to forward. Carries
-/// an operator-readable reason for surfacing in logs / final job
-/// status.
+/// Base type for tool-originated migration exceptions. Sentinel
+/// hierarchy used by sites that detect a known condition where there
+/// isn't a single driver exception to forward; carries an
+/// operator-readable reason for surfacing in logs / final job status.
+/// Subclasses (Fatal / Transient / Schema / Auth) let callers
+/// classify by type rather than parsing message text.
 /// </summary>
-public sealed class MigrationFatalException : Exception
+public abstract class MigrationException : Exception
+{
+    protected MigrationException(string message) : base(message) { }
+    protected MigrationException(string message, Exception inner) : base(message, inner) { }
+}
+
+/// <summary>
+/// Fatal condition (e.g. "write retries exhausted", "source read
+/// retries exhausted", "N consecutive auth errors"). Recognised by
+/// <see cref="Infrastructure.ExceptionClassifier.IsFatal"/> so the
+/// classifier treats its own sentinel as fatal.
+/// </summary>
+public sealed class MigrationFatalException : MigrationException
 {
     public MigrationFatalException(string message) : base(message) { }
     public MigrationFatalException(string message, Exception inner) : base(message, inner) { }
+}
+
+/// <summary>Transient condition the caller wants to flag for retry.</summary>
+public sealed class MigrationTransientException : MigrationException
+{
+    public MigrationTransientException(string message) : base(message) { }
+    public MigrationTransientException(string message, Exception inner) : base(message, inner) { }
+}
+
+/// <summary>Schema-mismatch or invalid-query condition surfaced by the tool.</summary>
+public sealed class MigrationSchemaException : MigrationException
+{
+    public MigrationSchemaException(string message) : base(message) { }
+    public MigrationSchemaException(string message, Exception inner) : base(message, inner) { }
+}
+
+/// <summary>Authentication / authorization condition surfaced by the tool.</summary>
+public sealed class MigrationAuthException : MigrationException
+{
+    public MigrationAuthException(string message) : base(message) { }
+    public MigrationAuthException(string message, Exception inner) : base(message, inner) { }
 }

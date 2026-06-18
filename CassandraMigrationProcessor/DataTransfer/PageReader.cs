@@ -10,8 +10,9 @@ namespace CassandraMigrationProcessor.DataTransfer;
 /// <summary>
 /// Tunable knobs for a single <see cref="PageReader"/>: how many rows
 /// to pull per page and how many times to retry a transient read
-/// failure. Carried as a record so the caller passes one capability
-/// instead of two loose ints.
+/// failure. The reader uses <c>SELECT JSON *</c> for non-counter
+/// tables so per-row system metadata (writetime + per-row TTL) is
+/// surfaced to the writer — see <see cref="CdcJsonRowParser"/>.
 /// </summary>
 internal record ReaderConfig(int PageSize, int MaxReadRetries);
 
@@ -64,9 +65,18 @@ internal class PageReader : IDisposable
 
     public void Dispose() => MigrationUtilities.SafeDisposeSession(_sourceSession, "PageReader source session");
 
-    /// <summary>Lazy, idempotent UDT registration for a table's keyspace.</summary>
+    /// <summary>
+    /// Lazy, idempotent UDT registration for a table's keyspace. Only
+    /// needed on the counter typed-read path (`row[columnName]`) — the
+    /// JSON read path doesn't decode UDTs into CLR types, so UDT
+    /// registration is a no-op there.
+    /// </summary>
     private Task EnsureUdtsRegisteredAsync(Partition partition)
     {
+        // JSON read path bypasses CLR-side UDT decoding entirely.
+        if (!partition.Table.IsCounterTable)
+            return Task.CompletedTask;
+
         return _udtRegistrations.GetOrAdd(partition.Table.Spec.KeyspaceName, async ks =>
         {
             try
@@ -86,67 +96,90 @@ internal class PageReader : IDisposable
         });
     }
 
-    internal record ReadResult(List<object[]> Rows, WorkChunk WorkChunk, bool IsEmptyPage);
+    /// <summary>
+    /// One page of source rows together with the chunk and per-row
+    /// CDC metadata (writetime + TTL expiry). Exactly one of
+    /// <see cref="Rows"/> and <see cref="JsonRows"/> is non-empty:
+    /// counter tables (which cannot honour <c>USING TIMESTAMP/TTL</c>)
+    /// use the typed <see cref="Rows"/> path; every other table uses
+    /// <see cref="JsonRows"/> so the writer can re-INSERT each row
+    /// via <c>INSERT JSON</c> and let the destination server handle
+    /// type coercion. <see cref="Metadata"/> is index-aligned with
+    /// the populated row list (or <c>null</c> when no per-row CDC
+    /// metadata was available, e.g. counter pages).
+    /// </summary>
+    internal record ReadResult(
+        List<object[]> Rows,
+        IReadOnlyList<string>? JsonRows,
+        IReadOnlyList<CdcRowMetadata?>? Metadata,
+        WorkChunk WorkChunk,
+        bool IsEmptyPage);
 
-    public async Task<ReadResult?> ReadAsync(Partition partition)
+    /// <summary>
+    /// Read one page from <paramref name="partition"/>. Dispatches to
+    /// the JSON metadata-preserving path for regular tables, or the
+    /// typed binary path for counter tables (counters cannot honour
+    /// <c>USING TIMESTAMP/TTL</c> and use UPDATE, so the
+    /// <c>INSERT JSON</c> write path does not apply).
+    /// </summary>
+    public Task<ReadResult?> ReadAsync(Partition partition)
+        => partition.Table.IsCounterTable
+            ? ReadTypedPageAsync(partition)
+            : ReadJsonPageAsync(partition);
+
+    /// <summary>
+    /// Read a page via <c>SELECT JSON *</c>. The destination writer
+    /// will re-INSERT each row via <c>INSERT JSON</c> and let the
+    /// destination server handle type coercion, so UDT, tuple,
+    /// decimal, varint, duration, and nested collections all preserve
+    /// TTL/writetime end-to-end.
+    /// </summary>
+    private async Task<ReadResult?> ReadJsonPageAsync(Partition partition)
     {
         await EnsureUdtsRegisteredAsync(partition);
 
         var stopwatch = Stopwatch.StartNew();
-        var stmt = new SimpleStatement(BuildSelectCql(partition.Table.Spec, partition.FeedRange));
-        stmt.SetPageSize(_pageSize);
-        stmt.SetAutoPage(false);
-        stmt.SetReadTimeoutMillis(ReadTimeoutMs);
-        stmt.SetConsistencyLevel(ConsistencyLevel.One);
-
-        if (partition.LastPagingState is { Length: > 0 })
-            stmt.SetPagingState(partition.LastPagingState);
-
-        RowSet? resultSet = null;
-        for (int attempt = 1; attempt <= _maxReadRetries; attempt++)
-        {
-            try
-            {
-                resultSet = await _sourceSession.ExecuteAsync(stmt).WaitAsync(_ct);
-                break;
-            }
-            catch (Exception ex) when (ExceptionClassifier.IsTransient(ex))
-            {
-                LastRetryExhaustionException = ex;
-                _log.WriteLine(
-                    $"Read attempt {attempt}/{_maxReadRetries} on {partition.Table.FullTableName} failed: " +
-                    $"{ex.GetType().Name}: {ex.Message}",
-                    LogType.Warning);
-
-                if (attempt >= _maxReadRetries)
-                {
-                    // Final attempt failed on a transient/throttle.
-                    // Surface null so the worker re-queues this
-                    // partition via cooldown — LastPagingState is
-                    // intact and will retry the same page once the
-                    // source stops throttling.
-                    break;
-                }
-
-                // Honour server's RetryAfterMs hint when present;
-                // clamp to MaxRetryDelayMs.
-                int delayMs = Math.Min(
-                    ExceptionClassifier.GetRetryDelayMs(ex, attempt),
-                    MaxRetryDelayMs);
-                await Task.Delay(delayMs, _ct);
-            }
-        }
-
-        if (resultSet == null)
-        {
-            // Read exhausted retries; worker re-queues via cooldown.
-            return null;
-        }
+        var (resultSet, elapsed) = await ExecutePageAsync(partition, useJson: true, stopwatch);
+        if (resultSet == null) return null;
 
         byte[]? nextPaging = resultSet.PagingState;
-        var columnNames = partition.Table.Columns.Select(c => c.Name).ToList();
-        var rows = new List<object[]>();
         int available = resultSet.GetAvailableWithoutFetching();
+        var jsonRows = new List<string>(available);
+        var metadata = new List<CdcRowMetadata?>(available);
+        int consumed = 0;
+        foreach (var row in resultSet)
+        {
+            if (consumed >= available) break;
+            consumed++;
+            // SELECT JSON returns a single synthetic column literally
+            // named "[json]" — see CASSANDRA-7970.
+            var json = row.GetValue<string>("[json]");
+            var (cleaned, meta) = CdcJsonRowParser.Parse(json);
+            jsonRows.Add(cleaned);
+            metadata.Add(meta);
+        }
+
+        return FinalizePage(partition, nextPaging, rows: new List<object[]>(),
+            jsonRows: jsonRows, metadata: metadata, elapsed);
+    }
+
+    /// <summary>
+    /// Read a page via the typed binary <c>SELECT *</c> path. Used
+    /// only for counter tables; the writer materializes them via
+    /// counter UPDATEs through <c>CounterRowWriteStrategy</c>.
+    /// </summary>
+    private async Task<ReadResult?> ReadTypedPageAsync(Partition partition)
+    {
+        await EnsureUdtsRegisteredAsync(partition);
+
+        var stopwatch = Stopwatch.StartNew();
+        var (resultSet, elapsed) = await ExecutePageAsync(partition, useJson: false, stopwatch);
+        if (resultSet == null) return null;
+
+        byte[]? nextPaging = resultSet.PagingState;
+        int available = resultSet.GetAvailableWithoutFetching();
+        var columnNames = partition.Table.Columns.Select(c => c.Name).ToList();
+        var rows = new List<object[]>(available);
         int consumed = 0;
         foreach (var row in resultSet)
         {
@@ -158,8 +191,52 @@ internal class PageReader : IDisposable
             rows.Add(rowValues);
         }
 
+        return FinalizePage(partition, nextPaging, rows: rows,
+            jsonRows: null, metadata: null, elapsed);
+    }
+
+    private async Task<(RowSet? ResultSet, Stopwatch Stopwatch)> ExecutePageAsync(
+        Partition partition, bool useJson, Stopwatch stopwatch)
+    {
+        var stmt = new SimpleStatement(BuildSelectCql(partition.Table.Spec, partition.FeedRange, useJson));
+        stmt.SetPageSize(_pageSize);
+        stmt.SetAutoPage(false);
+        stmt.SetReadTimeoutMillis(ReadTimeoutMs);
+        stmt.SetConsistencyLevel(ConsistencyLevel.One);
+
+        if (partition.LastPagingState is { Length: > 0 })
+            stmt.SetPagingState(partition.LastPagingState);
+
+        // Retry exhaustion surfaces as a null RowSet so the worker can
+        // re-queue this partition via cooldown — LastPagingState is
+        // intact and will retry the same page once the source stops
+        // throttling.
+        var resultSet = await RetryExecutor.ExecuteOrDefaultAsync<RowSet>(
+            operation: _ => _sourceSession.ExecuteAsync(stmt).WaitAsync(_ct),
+            maxAttempts: _maxReadRetries,
+            shouldRetry: ExceptionClassifier.IsTransient,
+            delayFor: (ex, attempt) => TimeSpan.FromMilliseconds(
+                Math.Min(ExceptionClassifier.GetRetryDelayMs(ex, attempt), MaxRetryDelayMs)),
+            onRetry: (ex, attempt) =>
+            {
+                LastRetryExhaustionException = ex;
+                _log.WriteLine(
+                    $"Read attempt {attempt}/{_maxReadRetries} on {partition.Table.FullTableName} [{partition.FeedRange}] failed: " +
+                    $"{ex.GetType().Name}: {ex.Message}",
+                    LogType.Warning);
+            },
+            cancellationToken: _ct);
+
+        return (resultSet, stopwatch);
+    }
+
+    private ReadResult FinalizePage(Partition partition, byte[]? nextPaging,
+        List<object[]> rows, IReadOnlyList<string>? jsonRows,
+        IReadOnlyList<CdcRowMetadata?>? metadata, Stopwatch stopwatch)
+    {
         stopwatch.Stop();
-        bool isEmptyPage = rows.Count == 0;
+        int rowCount = jsonRows?.Count ?? rows.Count;
+        bool isEmptyPage = rowCount == 0;
 
         partition.Table.Tracker.AddReadTime(stopwatch.ElapsedMilliseconds);
         var workChunk = partition.AddChunkAndTrim(nextPaging);
@@ -177,10 +254,10 @@ internal class PageReader : IDisposable
                 LogType.Debug);
         }
 
-        return new ReadResult(rows, workChunk, isEmptyPage);
+        return new ReadResult(rows, jsonRows, metadata, workChunk, isEmptyPage);
     }
 
-    private static string BuildSelectCql(TableCopySpec context, string range)
+    private static string BuildSelectCql(TableCopySpec context, string range, bool useJson)
     {
         CqlIdentifier.Validate(context.KeyspaceName);
         CqlIdentifier.Validate(context.TableName);
@@ -191,8 +268,13 @@ internal class PageReader : IDisposable
         // schema change in that system table cannot turn the
         // interpolation into invalid CQL or an injection surface.
         var escapedRange = range.Replace("'", "''");
+        // SELECT JSON is required to surface per-row TTL/writetime
+        // metadata on changefeed responses; plain SELECT * strips
+        // the synthetic __sys_* columns the writer needs to honour
+        // USING TIMESTAMP/USING TTL.
+        var projection = useJson ? "SELECT JSON *" : "SELECT *";
         return
-            $"SELECT * FROM \"{context.KeyspaceName}\".\"{context.TableName}\"" +
+            $"{projection} FROM \"{context.KeyspaceName}\".\"{context.TableName}\"" +
             $" WHERE COSMOS_CHANGEFEED_FROM_START() = true AND COSMOS_FEEDRANGE() = '{escapedRange}'";
     }
 }

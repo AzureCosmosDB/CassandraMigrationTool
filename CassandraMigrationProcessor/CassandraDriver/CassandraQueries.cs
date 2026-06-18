@@ -50,7 +50,8 @@ public static class CassandraQueries
     /// <summary>
     /// Get the row count of a table via COUNT(*) with a retry at a
     /// longer fallback timeout. Returns -1 if the count cannot be
-    /// determined; the UI then renders "(?%)" to signal unknown.
+    /// determined; the UI then renders "Copying (3k/s)" (rate only)
+    /// instead of a numeric percent to signal unknown.
     /// </summary>
     public static async Task<long> GetRowCountAsync(ISession session, string keyspace, string table)
     {
@@ -137,30 +138,32 @@ public static class CassandraQueries
         => columns.Any(IsCounterColumn);
 
     /// <summary>
-    /// Build a prepared INSERT for a non-counter table. The returned
-    /// ColumnNames are in bind-parameter order. Throws if called on a
-    /// counter table — use <see cref="PrepareCounterUpdateAsync"/>.
+    /// Build a prepared <c>INSERT ... JSON ? USING TIMESTAMP ? AND TTL ?</c>
+    /// for a non-counter table. The destination server handles all
+    /// type coercion from the JSON envelope, so this path supports
+    /// every CQL type the source table contains (UDT, tuple, decimal,
+    /// varint, duration, nested collections) without per-type code on
+    /// the migrator. Bind layout is
+    /// <c>(jsonEnvelope, writetimeMicros, ttlSeconds)</c>;
+    /// <c>USING TTL 0</c> is equivalent to omitting the clause so a
+    /// single prepared statement covers both metadata-present and
+    /// metadata-absent cases. Throws if called on a counter table —
+    /// counters cannot be inserted via <c>INSERT JSON</c> and would
+    /// also reject the <c>USING</c> clauses.
     /// </summary>
-    public static async Task<(PreparedStatement Ps, List<string> ColumnNames)>
-        PrepareInsertAsync(ISession session, string keyspace, string table,
+    public static async Task<PreparedStatement>
+        PrepareInsertJsonAsync(ISession session, string keyspace, string table,
             List<CassandraColumn> columns)
     {
         if (IsCounterTable(columns))
             throw new InvalidOperationException(
-                $"PrepareInsertAsync called on counter table {keyspace}.{table}; " +
-                "use PrepareCounterUpdateAsync instead.");
-
-        var colNames = columns.Select(c => $"\"{c.Name}\"").ToList();
-        var placeholders = columns.Select(_ => "?").ToList();
+                $"PrepareInsertJsonAsync called on counter table {keyspace}.{table}; " +
+                "counter tables must use PrepareCounterUpdateAsync.");
 
         var cql =
-            $"INSERT INTO \"{keyspace}\".\"{table}\" " +
-            $"({string.Join(", ", colNames)}) " +
-            $"VALUES ({string.Join(", ", placeholders)})";
-
-        var bindOrder = columns.Select(c => c.Name).ToList();
-        var ps = await session.PrepareAsync(cql);
-        return (ps, bindOrder);
+            $"INSERT INTO \"{keyspace}\".\"{table}\" JSON ? " +
+            "USING TIMESTAMP ? AND TTL ?";
+        return await session.PrepareAsync(cql);
     }
 
     /// <summary>
@@ -176,7 +179,7 @@ public static class CassandraQueries
         if (counterCols.Count == 0)
             throw new InvalidOperationException(
                 $"PrepareCounterUpdateAsync called on non-counter table {keyspace}.{table}; " +
-                "use PrepareInsertAsync instead.");
+                "use PrepareInsertJsonAsync instead.");
 
         var keyCols = columns
             .Where(c => c.Kind == "partition_key" || c.Kind == "clustering")

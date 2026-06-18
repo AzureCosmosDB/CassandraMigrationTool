@@ -85,7 +85,7 @@ internal sealed class TableCopyCoordinator
         if (allChunksSucceeded)
         {
             tableMigration.BulkCopyEndedOn = DateTime.UtcNow;
-            tableMigration.BulkCopyPhase = BulkCopyPhase.Completed;
+            tableMigration.AdvanceBulkCopyPhase(BulkCopyPhase.Completed);
             tableMigration.CopyPercent = 100;
             tableMigration.CopyComplete = true;
             TableMigrationMapper.UpdateParentJob(tableMigration);

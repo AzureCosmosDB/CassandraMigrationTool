@@ -1,6 +1,17 @@
 namespace CassandraMigrationProcessor.Models;
 
-/// <summary>Lifecycle state of a <see cref="Job"/>.</summary>
+/// <summary>
+/// Lifecycle state of a <see cref="Job"/>.
+/// <para>
+/// Legal transitions (enforced by <c>JobLifecycle</c> / <c>JobManager</c>):
+/// </para>
+/// <list type="bullet">
+///   <item><description><see cref="Pending"/>      → <see cref="Running"/></description></item>
+///   <item><description><see cref="Running"/>      → <see cref="Paused"/>, <see cref="Completed"/>, <see cref="Cancelled"/>, <see cref="Faulted"/></description></item>
+///   <item><description><see cref="Paused"/>       → <see cref="Running"/>, <see cref="Cancelled"/></description></item>
+///   <item><description><see cref="Completed"/> / <see cref="Cancelled"/> / <see cref="Faulted"/> → terminal (see <see cref="JobStatusExtensions.IsTerminal"/>)</description></item>
+/// </list>
+/// </summary>
 public enum JobStatus
 {
     Pending,

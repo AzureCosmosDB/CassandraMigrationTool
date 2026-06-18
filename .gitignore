@@ -64,3 +64,9 @@ app.password
 
 ## 1ES inventory
 .inventory/
+
+# Local Playwright MCP snapshots
+.playwright-mcp/
+
+# Local job-config / scratch yamls used for ad-hoc App Service deployments
+/*.yml

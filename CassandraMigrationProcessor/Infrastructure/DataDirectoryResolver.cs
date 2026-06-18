@@ -39,7 +39,20 @@ public static class DataDirectoryResolver
             }
             else
             {
-                _workingFolder = "/tmp/migration-data/";
+                // Azure App Service Linux: /tmp is wiped on container
+                // recycle. $HOME is the persistent /home mount.
+                var linuxWebsiteInstanceId = Environment.GetEnvironmentVariable("WEBSITE_INSTANCE_ID");
+                var home = Environment.GetEnvironmentVariable("HOME");
+                if (!string.IsNullOrEmpty(linuxWebsiteInstanceId) && !string.IsNullOrEmpty(home))
+                {
+                    _workingFolder = home.TrimEnd('/') + "/migration-data/";
+                    MigrationUtilities.LogToFile(
+                        $"WorkingFolder (Azure App Service Linux): {_workingFolder} (WEBSITE_INSTANCE_ID={linuxWebsiteInstanceId})");
+                }
+                else
+                {
+                    _workingFolder = "/tmp/migration-data/";
+                }
             }
             if (!Directory.Exists(_workingFolder))
                 Directory.CreateDirectory(_workingFolder);
@@ -73,14 +86,25 @@ public static class DataDirectoryResolver
         string homePath =
             Environment.GetEnvironmentVariable("ResourceDrive");
 
-        if (string.IsNullOrEmpty(homePath))
-            _workingFolder = Path.GetTempPath();
-
         if (!string.IsNullOrEmpty(homePath)
             && Directory.Exists(
                 Path.Combine(homePath, "home\\")))
         {
             _workingFolder = Path.Combine(homePath, "home\\");
+        }
+        else
+        {
+            // Previous logic returned an empty string when
+            // ResourceDrive was set but %ResourceDrive%\home\ didn't
+            // exist (neither the empty-check nor the directory-exists
+            // branch fired). Downstream Path.Combine("", ...) then wrote
+            // job state into the process working directory — potentially
+            // a non-writable system folder, causing silent state loss
+            // across restarts. Use a dedicated subfolder under TEMP so
+            // multiple installs don't collide.
+            _workingFolder = Path.Combine(Path.GetTempPath(), "CassandraMigrationTool\\");
+            if (!Directory.Exists(_workingFolder))
+                Directory.CreateDirectory(_workingFolder);
         }
 
         MigrationUtilities.LogToFile($"WorkingFolder (Win): {_workingFolder} (ResourceDrive={homePath})");

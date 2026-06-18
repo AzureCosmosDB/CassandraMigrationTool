@@ -1,5 +1,6 @@
 using Cassandra;
 using CassandraMigrationProcessor.CassandraDriver;
+using CassandraMigrationProcessor.Infrastructure;
 
 namespace CassandraMigrationProcessor.DataTransfer;
 
@@ -11,7 +12,10 @@ namespace CassandraMigrationProcessor.DataTransfer;
 ///   <item>SELECT current target counter values for this row's PK.</item>
 ///   <item>Compute delta = origin − target per counter column.</item>
 ///   <item>UPDATE c = c + delta, binding <see cref="Unset"/>.Value when
-///     origin is null or delta is 0.</item>
+///     origin is null, or when delta is 0 <em>and</em> the target column
+///     already exists (otherwise we must still emit <c>c = c + 0</c> so
+///     a source counter whose value is exactly 0 materialises on the
+///     target rather than reading back as <c>NULL</c>).</item>
 ///   <item>Skip the row when every counter ends up unset.</item>
 /// </list>
 /// Both SELECT and UPDATE run at LocalQuorum so the read sees the
@@ -27,10 +31,11 @@ internal sealed class CounterRowWriteStrategy : IRowWriteStrategy
     private readonly RetryPolicy _retryPolicy;
     private readonly int _counterBindCount;
     private readonly PreparedStatement _targetSelectByPk;
+    private readonly string _rowKind;
 
     private CounterRowWriteStrategy(WorkerLog log, ISession targetSession, PreparedStatement preparedInsert,
         int[] bindOrderToSourceIndex, RetryPolicy retryPolicy,
-        int counterBindCount, PreparedStatement targetSelectByPk)
+        int counterBindCount, PreparedStatement targetSelectByPk, string tableLabel)
     {
         _log = log;
         _targetSession = targetSession;
@@ -39,6 +44,7 @@ internal sealed class CounterRowWriteStrategy : IRowWriteStrategy
         _retryPolicy = retryPolicy;
         _counterBindCount = counterBindCount;
         _targetSelectByPk = targetSelectByPk;
+        _rowKind = $"Counter row[{tableLabel}]";
     }
 
     /// <summary>
@@ -73,17 +79,42 @@ internal sealed class CounterRowWriteStrategy : IRowWriteStrategy
         var targetSelectByPk = await targetSession.PrepareAsync(selectCql);
 
         return new CounterRowWriteStrategy(log, targetSession, ps, bindOrderToSourceIndex,
-            retryPolicy, counterBindCount, targetSelectByPk);
+            retryPolicy, counterBindCount, targetSelectByPk,
+            tableLabel: $"{targetKeyspace}.{targetTable}");
     }
 
-    public Task<WriteOutcome> WriteRowAsync(object[] sourceRow, WriteCounters counters, CancellationToken cancellationToken)
+    public Task<WriteOutcome> WriteRowAsync(
+        object[] sourceRow,
+        WriteCounters counters,
+        CdcRowMetadata? metadata,
+        CancellationToken cancellationToken)
     {
+        // Counter UPDATEs reject USING TIMESTAMP / USING TTL — Cassandra
+        // forbids both on counter mutations. The metadata is therefore
+        // ignored here; counter tables fall back to the typed path
+        // gated at the reader layer (see PageReader.ShouldUseJsonForTable).
         return RowWriteRetry.ExecuteAsync(
             attempt: () => ReadModifyWriteAsync(sourceRow, cancellationToken),
             policy: _retryPolicy,
-            log: _log, rowKind: "Counter row",
+            log: _log, rowKind: _rowKind,
             counters: counters,
             cancellationToken: cancellationToken);
+    }
+
+    public Task<WriteOutcome> WriteJsonRowAsync(
+        string cleanedJson,
+        WriteCounters counters,
+        CdcRowMetadata? metadata,
+        CancellationToken cancellationToken)
+    {
+        // Defensive: counter tables should never be routed through the
+        // JSON path (the reader excludes them upfront), and INSERT JSON
+        // cannot apply +delta semantics. Surface a hard error so a
+        // future plumbing bug is caught immediately rather than
+        // producing a wrong destination value.
+        throw new NotSupportedException(
+            "Counter tables cannot be written via INSERT JSON; the reader " +
+            "must route counter pages through the typed object[] path.");
     }
 
     private async Task ReadModifyWriteAsync(object[] sourceRow, CancellationToken cancellationToken)
@@ -100,7 +131,11 @@ internal sealed class CounterRowWriteStrategy : IRowWriteStrategy
         Row? targetRow = null;
         foreach (var r in rs) { targetRow = r; break; }
 
-        // 2) Compute deltas. Unset on null-origin or zero-delta.
+        // 2) Compute deltas. Unset on null-origin. When delta is 0 we
+        //    only skip the UPDATE if the target column already exists
+        //    (otherwise the column never gets materialised and reads
+        //    back as NULL — a source counter of exactly 0 must still
+        //    emit `c = c + 0`).
         var bindValues = new object[_bindOrderToSourceIndex.Length];
         bool anyDelta = false;
         for (int b = 0; b < _counterBindCount; b++)
@@ -113,13 +148,18 @@ internal sealed class CounterRowWriteStrategy : IRowWriteStrategy
             }
             long origin = Convert.ToInt64(originRaw);
             long target = 0;
+            bool targetExists = false;
             if (targetRow != null)
             {
                 var t = targetRow.GetValue<long?>(b);
-                if (t.HasValue) target = t.Value;
+                if (t.HasValue)
+                {
+                    target = t.Value;
+                    targetExists = true;
+                }
             }
             long delta = origin - target;
-            if (delta == 0)
+            if (delta == 0 && targetExists)
             {
                 bindValues[b] = Unset.Value;
                 continue;

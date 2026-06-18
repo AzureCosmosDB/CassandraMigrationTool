@@ -31,7 +31,14 @@ internal sealed class WorkerPool : IDisposable
 
     /// <summary>
     /// Waits for all workers to complete. Swallows cancellation
-    /// exceptions (workers exit gracefully on cancel).
+    /// exceptions (workers exit gracefully on cancel) and the catch-all
+    /// is intentional: <c>Task.WhenAll</c> re-throws only the first
+    /// faulted task's inner exception, not the aggregate, so we suppress
+    /// it here and walk every task in the <c>finally</c> block to surface
+    /// each worker fault individually. The actual fault *reporting* to
+    /// <c>JobControl</c> is <see cref="DataCopyWorker"/>'s responsibility
+    /// (it calls <c>ReportFault</c> at the source); this method only
+    /// logs for operator visibility.
     /// </summary>
     internal async Task WaitForCompletionAsync()
     {
@@ -43,25 +50,23 @@ internal sealed class WorkerPool : IDisposable
         }
         catch
         {
-            // await Task.WhenAll only re-throws the FIRST faulted task's
-            // inner exception, not AggregateException. Inspect each task
-            // directly to surface every worker fault.
+            // Intentional: see method doc-comment. Per-task faults
+            // are surfaced in the finally below; DataCopyWorker has
+            // already called ReportFault for fatal cases.
         }
         finally
         {
             foreach (var t in _workers.Where(t => t.IsFaulted && t.Exception != null))
             {
-                foreach (var inner in t.Exception!.Flatten().InnerExceptions.Where(inner => inner is not OperationCanceledException))
+                foreach (var inner in ExceptionClassifier.Walk(t.Exception)
+                    .Where(inner => inner is not AggregateException
+                                 && inner is not OperationCanceledException))
                 {
                     _log.WriteLine(
                         $"Worker faulted: {inner.GetType().FullName}: {inner.Message}",
                         LogType.Error);
                     if (inner.StackTrace != null)
                         _log.WriteLine($"  at {inner.StackTrace}", LogType.Error);
-                    if (inner.InnerException != null)
-                        _log.WriteLine(
-                            $"  Inner: {inner.InnerException.GetType().FullName}: {inner.InnerException.Message}",
-                            LogType.Error);
                 }
             }
         }

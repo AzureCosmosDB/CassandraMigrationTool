@@ -60,6 +60,50 @@ public static class CqlIdentifier
     }
 
     /// <summary>
+    /// Quote-aware split of a user-submitted ``keyspace.table`` entry
+    /// (as found in ``Job.Namespaces``). The table side may be the
+    /// literal wildcard ``*`` (expanded by the migration runner against
+    /// the source schema at job start); the keyspace side MUST be an
+    /// explicit identifier. Returns bare identifiers. Unlike
+    /// <see cref="SplitQualifiedName"/>, the returned components are
+    /// NOT run through <see cref="Validate"/> so the ``*`` sentinel
+    /// survives; callers MUST resolve ``*`` against the source schema
+    /// before quoting either side into actual CQL.
+    /// </summary>
+    public static (string keyspace, string table) SplitNamespaceEntry(string fullName)
+    {
+        if (string.IsNullOrWhiteSpace(fullName))
+            throw new ArgumentException("Qualified name cannot be empty", nameof(fullName));
+
+        var s = fullName.Trim();
+        int pos = 0;
+        // Keyspace side: wildcards not supported. Cluster-wide
+        // discovery would require also iterating system_schema.keyspaces
+        // in the runner, which it does not currently do -- accepting
+        // '*' here would silently produce a zero-table job.
+        string keyspace = ReadIdentifier(s, ref pos);
+        if (pos >= s.Length || s[pos] != '.')
+            throw new ArgumentException(
+                $"Qualified name must be 'keyspace.table': '{fullName}'", nameof(fullName));
+        pos++;
+        string table = ReadIdentifierOrWildcard(s, ref pos);
+        if (pos < s.Length)
+            throw new ArgumentException(
+                $"Unexpected trailing characters in qualified name: '{fullName}'", nameof(fullName));
+        return (keyspace, table);
+    }
+
+    private static string ReadIdentifierOrWildcard(string s, ref int pos)
+    {
+        if (pos < s.Length && s[pos] == '*')
+        {
+            pos++;
+            return "*";
+        }
+        return ReadIdentifier(s, ref pos);
+    }
+
+    /// <summary>
     /// Wraps <paramref name="identifier"/> in CQL double-quotes,
     /// doubling any embedded <c>"</c> as required by the CQL grammar.
     /// </summary>

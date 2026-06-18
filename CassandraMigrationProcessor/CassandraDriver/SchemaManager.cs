@@ -597,9 +597,9 @@ public static class SchemaManager
     {
         if (string.IsNullOrEmpty(type)) return string.Empty;
         var sb = new System.Text.StringBuilder(type.Length);
-        foreach (var ch in type.Where(c => !char.IsWhiteSpace(c)))
+        foreach (var ch in type)
         {
-            sb.Append(char.ToLowerInvariant(ch));
+            if (!char.IsWhiteSpace(ch)) sb.Append(char.ToLowerInvariant(ch));
         }
         return sb.ToString();
     }
