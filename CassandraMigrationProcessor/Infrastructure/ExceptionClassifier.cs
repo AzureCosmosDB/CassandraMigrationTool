@@ -219,13 +219,9 @@ public static class ExceptionClassifier
         // GetRetryDelayMs fell back to plain exponential backoff,
         // ignoring the server's hint.
         var sb = new System.Text.StringBuilder(ex.Message ?? string.Empty);
-        foreach (var e in Walk(ex))
+        foreach (var e in Walk(ex).Where(e => !ReferenceEquals(e, ex) && !string.IsNullOrEmpty(e.Message)))
         {
-            if (ReferenceEquals(e, ex)) continue;
-            if (!string.IsNullOrEmpty(e.Message))
-            {
-                sb.Append(' ').Append(e.Message);
-            }
+            sb.Append(' ').Append(e.Message);
         }
         return sb.ToString();
     }
@@ -256,9 +252,9 @@ public static class ExceptionClassifier
             yield return cur;
             if (cur is AggregateException agg)
             {
-                foreach (var inner in agg.Flatten().InnerExceptions)
+                foreach (var inner in agg.Flatten().InnerExceptions.Where(i => i != null))
                 {
-                    if (inner != null) stack.Push((inner, depth + 1));
+                    stack.Push((inner, depth + 1));
                 }
             }
             if (cur.InnerException != null)

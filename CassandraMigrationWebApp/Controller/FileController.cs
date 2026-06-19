@@ -80,7 +80,9 @@ public class FileController : ControllerBase
         byte[] bytes;
         try
         {
-            bytes = _context.LogStore.ExportLogsAsBytes(fileName, int.MaxValue, int.MaxValue);
+            // Use large but bounded limits to avoid unbounded memory allocation
+            const int maxEntries = 500_000;
+            bytes = _context.LogStore.ExportLogsAsBytes(fileName, maxEntries, maxEntries);
         }
         catch (Exception ex)
         {
@@ -107,14 +109,20 @@ public class FileController : ControllerBase
         if (pageNumber < 1 || pageSize < 1)
             return BadRequest("pageNumber and pageSize must be positive.");
 
+        if (pageSize > 10_000)
+            return BadRequest("pageSize cannot exceed 10000.");
+
         if (_context.LogStore == null)
             return NotFound("Log storage is not initialised.");
 
-        int skip = (pageNumber - 1) * pageSize;
+        long skip = (long)(pageNumber - 1) * pageSize;
+        if (skip > int.MaxValue)
+            return BadRequest("Page offset too large.");
+
         byte[] bytes;
         try
         {
-            bytes = _context.LogStore.DownloadLogsPaginated(jobId, skip, pageSize);
+            bytes = _context.LogStore.DownloadLogsPaginated(jobId, (int)skip, pageSize);
         }
         catch (Exception ex)
         {
