@@ -28,7 +28,7 @@
                        size (10). Below that threshold pagination cannot be
                        active (the grid renders as a single page regardless of
                        page-size choice) and the strip is pure visual noise.
-                       Pagination hidden when fewer than 10 rows. *@
+                       Pagination hidden when there are 10 or fewer rows. *@
                     @if (GetFilteredItemsCount() > 10)
                     {
                         <small class="text-muted text-nowrap">

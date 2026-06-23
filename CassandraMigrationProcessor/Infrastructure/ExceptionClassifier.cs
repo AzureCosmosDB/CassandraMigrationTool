@@ -119,19 +119,33 @@ public static class ExceptionClassifier
             || msg.Contains("rate limit", StringComparison.OrdinalIgnoreCase);
     }
 
+    private static readonly Type[] _authBases = new[]
+    {
+        typeof(AuthenticationException),
+        typeof(UnauthorizedException),
+        typeof(MigrationAuthException),
+    };
+
     /// <summary>
     /// Whether the error is an authentication / authorisation failure.
-    /// Handles direct <see cref="AuthenticationException"/>, wrapping via
-    /// <see cref="Exception.InnerException"/>, and Cassandra driver's
-    /// <see cref="NoHostAvailableException"/> that aggregates per-host
-    /// errors in its <c>Errors</c> dictionary.
+    /// Walks the full exception chain (unwrapping aggregates and inner
+    /// exceptions) and recognises every auth-class type — Cassandra's
+    /// <see cref="AuthenticationException"/> and <see cref="UnauthorizedException"/>
+    /// plus the migration-domain <see cref="MigrationAuthException"/> — so all
+    /// of them feed the consecutive-auth abort counter. Also inspects the
+    /// per-host errors that <see cref="NoHostAvailableException"/> aggregates
+    /// in its <c>Errors</c> dictionary (those are not reachable via
+    /// <see cref="Exception.InnerException"/>).
     /// </summary>
     public static bool IsAuth(Exception ex)
     {
-        if (ex is AuthenticationException) return true;
-        if (ex.InnerException is AuthenticationException) return true;
-        if (ex is NoHostAvailableException nhae)
-            return nhae.Errors?.Values?.Any(e => e is AuthenticationException) ?? false;
+        foreach (var e in Walk(ex))
+        {
+            if (IsKindOf(e, _authBases)) return true;
+            if (e is NoHostAvailableException nhae
+                && (nhae.Errors?.Values?.Any(inner => IsKindOf(inner, _authBases)) ?? false))
+                return true;
+        }
         return false;
     }
 
