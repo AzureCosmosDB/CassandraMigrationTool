@@ -35,7 +35,7 @@ AppDomain.CurrentDomain.UnhandledException += (sender, args) =>
         Console.Error.WriteLine(
             $"[FATAL] [{DateTime.UtcNow:O}] AppDomain.UnhandledException (terminating={args.IsTerminating}): {ex}");
     }
-    catch { /* never let the handler itself throw */ }
+    catch (Exception ex) when (ex is IOException or ObjectDisposedException) { /* never let the handler itself throw */ }
 };
 TaskScheduler.UnobservedTaskException += (sender, args) =>
 {
@@ -45,7 +45,7 @@ TaskScheduler.UnobservedTaskException += (sender, args) =>
             $"[ERROR] [{DateTime.UtcNow:O}] TaskScheduler.UnobservedTaskException: {args.Exception}");
         args.SetObserved();
     }
-    catch { /* never let the handler itself throw */ }
+    catch (Exception ex) when (ex is IOException or ObjectDisposedException) { /* never let the handler itself throw */ }
 };
 
 builder.Services.AddControllersWithViews();

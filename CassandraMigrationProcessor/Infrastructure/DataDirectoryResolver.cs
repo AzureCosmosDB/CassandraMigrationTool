@@ -102,7 +102,7 @@ public static class DataDirectoryResolver
             // a non-writable system folder, causing silent state loss
             // across restarts. Use a dedicated subfolder under TEMP so
             // multiple installs don't collide.
-            _workingFolder = Path.Combine(Path.GetTempPath(), "CassandraMigrationTool") + Path.DirectorySeparatorChar;
+            _workingFolder = Path.Join(Path.GetTempPath(), "CassandraMigrationTool") + Path.DirectorySeparatorChar;
             if (!Directory.Exists(_workingFolder))
                 Directory.CreateDirectory(_workingFolder);
         }

@@ -70,3 +70,12 @@ app.password
 
 # Local job-config / scratch yamls used for ad-hoc App Service deployments
 /*.yml
+
+# Local scratch / temporary artifacts
+.tmp-*
+*.tmp
+
+# Local publish / deployment output
+.deploy-out/
+.deploy-out-*/
+*.deploy.zip

@@ -84,7 +84,7 @@ public class FileController : ControllerBase
             const int maxEntries = 500_000;
             bytes = _context.LogStore.ExportLogsAsBytes(fileName, maxEntries, maxEntries);
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is IOException or InvalidOperationException or ArgumentException or ObjectDisposedException)
         {
             return Problem(
                 detail: $"Failed to export log '{fileName}': {ex.GetType().Name}: {ex.Message}",
@@ -124,7 +124,7 @@ public class FileController : ControllerBase
         {
             bytes = _context.LogStore.DownloadLogsPaginated(jobId, (int)skip, pageSize);
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is IOException or InvalidOperationException or ArgumentException or ObjectDisposedException)
         {
             return Problem(
                 detail: $"Failed to export log page for '{jobId}': {ex.GetType().Name}: {ex.Message}",

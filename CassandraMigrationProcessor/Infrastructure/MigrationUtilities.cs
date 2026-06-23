@@ -13,7 +13,10 @@ public static class MigrationUtilities
         if (log != null)
         {
             try { log.WriteLine(text, LogType.Warning); return; }
-            catch { /* fall through to Console.Error so we never silently lose the signal */ }
+            catch (Exception ex) when (ex is IOException or ObjectDisposedException or InvalidOperationException)
+            {
+                Console.Error.WriteLine($"[WARN] Failed to write to log: {ex.Message}");
+            }
         }
         Console.Error.WriteLine($"[WARN] {text}");
     }
