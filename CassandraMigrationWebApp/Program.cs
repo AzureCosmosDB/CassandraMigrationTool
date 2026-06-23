@@ -31,9 +31,11 @@ AppDomain.CurrentDomain.UnhandledException += (sender, args) =>
 {
     try
     {
-        var ex = args.ExceptionObject as Exception;
+        // Log the ExceptionObject directly: it is usually an Exception
+        // (whose ToString gives the full stack) but can be a non-Exception
+        // payload, so casting to Exception could lose details or log null.
         Console.Error.WriteLine(
-            $"[FATAL] [{DateTime.UtcNow:O}] AppDomain.UnhandledException (terminating={args.IsTerminating}): {ex}");
+            $"[FATAL] [{DateTime.UtcNow:O}] AppDomain.UnhandledException (terminating={args.IsTerminating}): {args.ExceptionObject}");
     }
     catch (Exception ex) when (ex is IOException or ObjectDisposedException) { /* never let the handler itself throw */ }
 };

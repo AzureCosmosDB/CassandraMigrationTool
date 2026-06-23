@@ -836,9 +836,6 @@ else if (@_showLogBackupFile)
         if (!string.IsNullOrEmpty(targetConnectionString))
             MigrationContext.Credentials.SetTarget(mj.Id, targetConnectionString);
 
-        if (!mj.StartedOn.HasValue)
-            mj.StartedOn = DateTime.UtcNow;
-
         // Pre-flight reject when another job already holds
         // the runtime slot, so the operator sees a banner instead of a
         // job that silently parks at "Not Started" while only the
@@ -858,6 +855,12 @@ else if (@_showLogBackupFile)
             await InvokeAsync(StateHasChanged);
             return false;
         }
+
+        // Stamp StartedOn only after the pre-flight check passes, so a job
+        // rejected because another is running is not left with a misleading
+        // start time / duration in the UI and persisted history.
+        if (!mj.StartedOn.HasValue)
+            mj.StartedOn = DateTime.UtcNow;
 
         // Clear pending auto-start flag so it doesn't fire again
         MigrationContext.PendingAutoStartJobIds.TryRemove(mj.Id, out _);

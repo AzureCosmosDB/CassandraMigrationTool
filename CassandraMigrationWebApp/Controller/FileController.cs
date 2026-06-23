@@ -124,7 +124,7 @@ public class FileController : ControllerBase
         if (bytes == null || bytes.Length == 0)
             return NotFound($"No log entries found for '{fileName}'.");
 
-        return File(bytes, "text/plain", $"{logId}.log");
+        return File(bytes, "text/plain; charset=utf-8", $"{logId}.log");
     }
 
     [HttpGet("download/log/{jobId}/page/{pageNumber}/{pageSize}")]
@@ -164,6 +164,6 @@ public class FileController : ControllerBase
         if (bytes == null || bytes.Length == 0)
             return NotFound($"No log entries found for page {pageNumber}.");
 
-        return File(bytes, "text/plain", $"{jobId}_page{pageNumber}.log");
+        return File(bytes, "text/plain; charset=utf-8", $"{jobId}_page{pageNumber}.log");
     }
 }
