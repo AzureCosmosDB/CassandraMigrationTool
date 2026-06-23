@@ -302,7 +302,7 @@ public class JobManager
                         "Pause or complete that job first, then click Resume Job here.",
                         LogType.Info);
                 }
-                catch (Exception ex)
+                catch (Exception ex) when (ex is IOException or InvalidOperationException or ObjectDisposedException)
                 {
                     // Never let the rejection-log path mask the original
                     // rejection; the primary log line above is already
