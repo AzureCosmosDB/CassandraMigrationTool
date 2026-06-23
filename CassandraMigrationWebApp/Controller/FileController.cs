@@ -7,12 +7,10 @@ using System.Text;
 public class FileController : ControllerBase
 {
     private readonly MigrationJobContext _context;
-    private readonly ILogger<FileController> _logger;
 
-    public FileController(MigrationJobContext context, ILogger<FileController> logger)
+    public FileController(MigrationJobContext context)
     {
         _context = context;
-        _logger = logger;
     }
 
     [HttpGet("download/TableMigration/{jobId}/{migrationUnitId}")]
@@ -100,9 +98,8 @@ public class FileController : ControllerBase
         }
         catch (Exception ex) when (ex is IOException or InvalidOperationException or ArgumentException or ObjectDisposedException)
         {
-            _logger.LogError(ex, "Failed to read log '{FileName}'", fileName);
             return Problem(
-                detail: "Failed to read the log. See server logs for details.",
+                detail: $"Failed to read log '{fileName}': {ex.GetType().Name}: {ex.Message}",
                 statusCode: 500);
         }
 
@@ -119,9 +116,8 @@ public class FileController : ControllerBase
         }
         catch (Exception ex) when (ex is IOException or InvalidOperationException or ArgumentException or ObjectDisposedException)
         {
-            _logger.LogError(ex, "Failed to export log '{FileName}'", fileName);
             return Problem(
-                detail: "Failed to export the log. See server logs for details.",
+                detail: $"Failed to export log '{fileName}': {ex.GetType().Name}: {ex.Message}",
                 statusCode: 500);
         }
 
@@ -160,9 +156,8 @@ public class FileController : ControllerBase
         }
         catch (Exception ex) when (ex is IOException or InvalidOperationException or ArgumentException or ObjectDisposedException)
         {
-            _logger.LogError(ex, "Failed to export log page for '{JobId}'", jobId);
             return Problem(
-                detail: "Failed to export the log page. See server logs for details.",
+                detail: $"Failed to export log page for '{jobId}': {ex.GetType().Name}: {ex.Message}",
                 statusCode: 500);
         }
 
