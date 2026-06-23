@@ -64,11 +64,11 @@ public static class CqlIdentifier
     /// (as found in ``Job.Namespaces``). The table side may be the
     /// literal wildcard ``*`` (expanded by the migration runner against
     /// the source schema at job start); the keyspace side MUST be an
-    /// explicit identifier. Returns bare identifiers. Unlike
-    /// <see cref="SplitQualifiedName"/>, the returned components are
-    /// NOT run through <see cref="Validate"/> so the ``*`` sentinel
-    /// survives; callers MUST resolve ``*`` against the source schema
-    /// before quoting either side into actual CQL.
+    /// explicit identifier. Returns bare identifiers. The keyspace is
+    /// always run through <see cref="Validate"/>, and the table is too
+    /// unless it is the ``*`` sentinel — so the same injection guards as
+    /// <see cref="SplitQualifiedName"/> apply while the wildcard still
+    /// survives for the runner to resolve.
     /// </summary>
     public static (string keyspace, string table) SplitNamespaceEntry(string fullName)
     {
@@ -90,7 +90,10 @@ public static class CqlIdentifier
         if (pos < s.Length)
             throw new ArgumentException(
                 $"Unexpected trailing characters in qualified name: '{fullName}'", nameof(fullName));
-        return (keyspace, table);
+        // Validate both sides (the '*' table sentinel is exempt so the
+        // runner can resolve it against the source schema) to keep
+        // injected / exotic characters out of downstream CQL building.
+        return (Validate(keyspace), table == "*" ? "*" : Validate(table));
     }
 
     private static string ReadIdentifierOrWildcard(string s, ref int pos)
