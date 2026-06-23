@@ -77,12 +77,42 @@ public class FileController : ControllerBase
         if (_context.LogStore == null)
             return NotFound("Log storage is not initialised.");
 
+        // The backup-file download path passes a filename that already
+        // carries the ".bin" extension, but the log store appends ".bin"
+        // internally. Strip a trailing ".bin" so both the job-id and the
+        // backup-file forms resolve to the correct file (otherwise the
+        // store looks for "...bin.bin" and the download 404s).
+        var logId = fileName.EndsWith(".bin", StringComparison.OrdinalIgnoreCase)
+            ? fileName[..^4]
+            : fileName;
+
+        // Bound the full-log download. Below the cap we return the complete
+        // log (top = cap, bottom = 0 → no top/bottom sampling, so the middle
+        // is never silently dropped); above it, direct callers to the
+        // paginated endpoint rather than allocating an unbounded buffer.
+        const int maxEntries = 1_000_000;
+        int entryCount;
+        try
+        {
+            entryCount = _context.LogStore.GetLogCount(logId);
+        }
+        catch (Exception ex) when (ex is IOException or InvalidOperationException or ArgumentException or ObjectDisposedException)
+        {
+            return Problem(
+                detail: $"Failed to read log '{fileName}': {ex.GetType().Name}: {ex.Message}",
+                statusCode: 500);
+        }
+
+        if (entryCount > maxEntries)
+            return Problem(
+                detail: $"Log '{fileName}' has {entryCount:N0} entries, exceeding the {maxEntries:N0}-entry download cap. " +
+                        "Use the paginated endpoint /api/File/download/log/{jobId}/page/{pageNumber}/{pageSize} instead.",
+                statusCode: 413);
+
         byte[] bytes;
         try
         {
-            // Use large but bounded limits to avoid unbounded memory allocation
-            const int maxEntries = 500_000;
-            bytes = _context.LogStore.ExportLogsAsBytes(fileName, maxEntries, maxEntries);
+            bytes = _context.LogStore.ExportLogsAsBytes(logId, maxEntries, 0);
         }
         catch (Exception ex) when (ex is IOException or InvalidOperationException or ArgumentException or ObjectDisposedException)
         {
@@ -94,7 +124,7 @@ public class FileController : ControllerBase
         if (bytes == null || bytes.Length == 0)
             return NotFound($"No log entries found for '{fileName}'.");
 
-        return File(bytes, "text/plain", $"{fileName}.log");
+        return File(bytes, "text/plain", $"{logId}.log");
     }
 
     [HttpGet("download/log/{jobId}/page/{pageNumber}/{pageSize}")]

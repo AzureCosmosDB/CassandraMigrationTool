@@ -302,11 +302,15 @@ public class JobManager
                         "Pause or complete that job first, then click Resume Job here.",
                         LogType.Info);
                 }
-                catch
+                catch (Exception ex)
                 {
                     // Never let the rejection-log path mask the original
                     // rejection; the primary log line above is already
-                    // recorded on the active job.
+                    // recorded on the active job. Surface this failure on
+                    // the primary log so it stays diagnosable.
+                    _log?.WriteLine(
+                        $"Failed to write rejection log for job {job.Id}: {ex.Message}",
+                        LogType.Warning);
                 }
                 return Task.CompletedTask;
             }

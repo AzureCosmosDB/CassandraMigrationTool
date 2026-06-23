@@ -217,7 +217,7 @@ internal class DataCopyWorker
         _workerLog.WriteLine($"Error on {tag}: {ex.GetType().Name}: {ex.Message}", LogType.Error);
         if (!string.IsNullOrEmpty(ex.StackTrace))
         {
-            _workerLog.WriteLine($"  stack: {ex.StackTrace.Replace("\n", " | ")}", LogType.Error);
+            _workerLog.WriteLine($"  stack: {ex.StackTrace.Replace("\r", string.Empty).Replace("\n", " | ")}", LogType.Error);
         }
 
         int i = 0;
