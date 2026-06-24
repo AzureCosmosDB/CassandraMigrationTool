@@ -31,7 +31,7 @@ public class PasswordManager
 
     private const int PasswordSaltSize = 16;
     private const int PasswordHashSize = 32;
-    private const int PasswordIterations = 100_000;
+    private const int PasswordIterations = 600_000;
 
     public async Task<bool> ValidatePasswordAsync(string password)
     {
@@ -120,6 +120,26 @@ public class PasswordManager
         }
 
         File.WriteAllText(_passwordFilePath, passwordHash);
+
+        // On Unix-like systems, explicitly restrict access to owner read/write (0600).
+        if (OperatingSystem.IsLinux() || OperatingSystem.IsMacOS())
+        {
+            try
+            {
+                File.SetUnixFileMode(
+                    _passwordFilePath,
+                    UnixFileMode.UserRead | UnixFileMode.UserWrite);
+            }
+            catch (UnauthorizedAccessException ex)
+            {
+                _logger.LogDebug(ex, "Access denied while setting restrictive permissions on password file.");
+            }
+            catch (IOException ex)
+            {
+                _logger.LogDebug(ex, "I/O error while setting restrictive permissions on password file.");
+            }
+        }
+
         return Task.CompletedTask;
     }
 
@@ -171,6 +191,7 @@ public class PasswordManager
         {
             CryptographicOperations.ZeroMemory(actualHash);
             CryptographicOperations.ZeroMemory(expectedHash);
+            CryptographicOperations.ZeroMemory(salt);
         }
     }
 

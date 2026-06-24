@@ -280,8 +280,8 @@ public class JobManager
 
     public Task StartMigration(Job job, string sourceConnectionString, string targetConnectionString)
     {
-        MigrationLog runLog = null!;
-        JobControl runControl = null!;
+        MigrationLog? runLog = null;
+        JobControl? runControl = null;
         bool shouldWriteRejectionLog = false;
         string? runningJobIdForRejection = null;
         // Single source-of-truth for "user resumed from a non-terminal-but-
@@ -376,6 +376,14 @@ public class JobManager
             return Task.CompletedTask;
         }
 
+        if (runLog is null || runControl is null)
+        {
+            return Task.CompletedTask;
+        }
+
+        var ensuredRunLog = runLog;
+        var ensuredRunControl = runControl;
+
         // Clear Running status on all other jobs so stale flags don't
         // cause unwanted auto-resume after an app recycle.
         var staleRunningJobs = new List<Job>();
@@ -424,7 +432,7 @@ public class JobManager
             MigrationJobRunner? runner = null;
             try
             {
-                runner = await MigrationJobRunner.CreateAsync(runLog, job, config, runControl);
+                runner = await MigrationJobRunner.CreateAsync(ensuredRunLog, job, config, ensuredRunControl);
                 lock (_stateLock)
                 {
                     MigrationJobRunner = runner;
@@ -439,7 +447,7 @@ public class JobManager
                 // failure during CreateAsync session acquisition) from
                 // leaving the job stuck in Running.
                 Console.WriteLine($"Migration unexpectedly threw for Job ID: {job.Id}: {ex}");
-                runLog.WriteLine($"Migration unexpectedly threw: {ex}", LogType.Error);
+                ensuredRunLog.WriteLine($"Migration unexpectedly threw: {ex}", LogType.Error);
                 // Ensure escaped exceptions always produce persisted terminal metadata.
                 // Preserve an already-terminal status (e.g. Cancelled), but fault any
                 // non-terminal state so the job does not remain in-progress.
@@ -475,7 +483,7 @@ public class JobManager
                 catch (Exception disposeEx)
                 {
                     Console.WriteLine($"[Manager] Runner DisposeAsync threw for {job.Id}: {disposeEx}");
-                    try { runLog.WriteLine($"[Manager] Runner dispose threw (state cleared regardless): {disposeEx.Message}", LogType.Warning); }
+                    try { ensuredRunLog.WriteLine($"[Manager] Runner dispose threw (state cleared regardless): {disposeEx.Message}", LogType.Warning); }
                     catch { /* logging is best-effort during shutdown */ }
                 }
                 finally
