@@ -291,7 +291,9 @@ public class JobManager
         // Single source-of-truth for "user resumed from a non-terminal-but-
         // not-fresh state" — drives both the audit-log verb (RESUME vs
         // START) and the EndedOn reset below, so the two stay in lockstep.
-        bool isResume = job.Status is JobStatus.Paused or JobStatus.Pending or JobStatus.Faulted;
+        bool isResume =
+            job.Status is JobStatus.Paused or JobStatus.Faulted
+            || (job.Status is JobStatus.Pending && HasMadeProgress(job));
         lock (_stateLock)
         {
             if (!string.IsNullOrEmpty(_runningJobId))
@@ -358,13 +360,28 @@ public class JobManager
 
         // Clear Running status on all other jobs so stale flags don't
         // cause unwanted auto-resume after an app recycle.
+        var staleRunningJobs = new List<Job>();
         foreach (var otherId in GetMigrationIds().Where(otherId => otherId != job.Id))
         {
             var other = GetMigrationJobById(otherId);
             if (other is { Status: JobStatus.Running })
             {
-                other.Status = JobStatus.Pending;
-                _context.SaveMigrationJob(other);
+                staleRunningJobs.Add(other);
+            }
+        }
+
+        foreach (var staleJob in staleRunningJobs)
+        {
+            staleJob.Status = JobStatus.Pending;
+            try
+            {
+                _context.SaveMigrationJob(staleJob);
+            }
+            catch (Exception ex)
+            {
+                _log.WriteLine(
+                    $"Failed to clear stale Running status for job {staleJob.Id}: {ex.Message}",
+                    LogType.Warning);
             }
         }
 
@@ -405,16 +422,18 @@ public class JobManager
                 // leaving the job stuck in Running.
                 Console.WriteLine($"Migration unexpectedly threw for Job ID: {job.Id}: {ex}");
                 runLog.WriteLine($"Migration unexpectedly threw: {ex}", LogType.Error);
-                if (job.Status == JobStatus.Running)
+                // Ensure escaped exceptions always produce persisted terminal metadata.
+                // Preserve an already-terminal status (e.g. Cancelled), but fault any
+                // non-terminal state so the job does not remain in-progress.
+                if (!job.Status.IsTerminal())
                 {
                     job.Status = JobStatus.Faulted;
-                    // Stamp EndedOn here too: if CreateAsync throws
-                    // before StartAsync runs, the runner's
-                    // StampEndedOnIfTerminal never fires.
-                    if (!job.EndedOn.HasValue)
-                        job.EndedOn = DateTime.UtcNow;
-                    _context.SaveMigrationJob(job);
                 }
+                // Stamp EndedOn here too: if CreateAsync throws before StartAsync runs,
+                // the runner's StampEndedOnIfTerminal never fires.
+                if (!job.EndedOn.HasValue)
+                    job.EndedOn = DateTime.UtcNow;
+                _context.SaveMigrationJob(job);
             }
             finally
             {
