@@ -86,12 +86,19 @@ public class JobManager
 
         Task.Run(() =>
         {
-            _context.Store.Delete($"{Path.Combine(JobStore.JobsFolder, jobId)}");
-            _context.LogStore.DeleteLogs(jobId);
+            try
+            {
+                _context.Store.Delete($"{Path.Combine(JobStore.JobsFolder, jobId)}");
+                _context.LogStore.DeleteLogs(jobId);
 
-            string dumpPath = Path.Combine(DataDirectoryResolver.GetWorkingFolder(), "cassandradump", jobId);
-            if (Directory.Exists(dumpPath))
-                Directory.Delete(dumpPath, true);
+                string dumpPath = Path.Combine(DataDirectoryResolver.GetWorkingFolder(), "cassandradump", jobId);
+                if (Directory.Exists(dumpPath))
+                    Directory.Delete(dumpPath, true);
+            }
+            catch (Exception ex)
+            {
+                _log.WriteError($"Failed to clear job files for job '{jobId}'. {ex}");
+            }
         });
     }
 
@@ -134,14 +141,14 @@ public class JobManager
 
         // If migration worker is not running, get from file
         isLiveLog = false;
-        MigrationLog MigrationLog = CreateLog();
-        return MigrationLog.ReadLogFile(id, out fileName) ?? new LogBucket { Logs = new List<LogObject>() };
+        MigrationLog migrationLog = CreateLog();
+        return migrationLog.ReadLogFile(id, out fileName) ?? new LogBucket { Logs = new List<LogObject>() };
     }
 
     public int GetLogCount(string jobId)
     {
-        MigrationLog MigrationLog = CreateLog();
-        return MigrationLog.GetLogCount(jobId);
+        MigrationLog migrationLog = CreateLog();
+        return migrationLog.GetLogCount(jobId);
     }
 
     #endregion
@@ -466,7 +473,7 @@ public class JobManager
         if (string.IsNullOrEmpty(jobId)) return;
         try
         {
-            string msg = $"[Manager] Resume dispatched by operator{(string.IsNullOrEmpty(note) ? "" : " — " + note)}";
+            string msg = $"[Manager] Resume dispatched by operator{(string.IsNullOrEmpty(note) ? "" : " - " + note)}";
 
             // Only write to the live in-flight log when this is the
             // same job running; otherwise scope a transient log to the
