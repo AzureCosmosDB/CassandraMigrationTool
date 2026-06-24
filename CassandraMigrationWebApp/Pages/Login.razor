@@ -98,8 +98,7 @@
         var value = relativeUri.OriginalString;
 
         // Must be app-root relative and not protocol-relative / network-path reference.
-        // We check for a leading "\\\\" explicitly before the general backslash rejection below.
-        if (!value.StartsWith("/") || value.StartsWith("//") || value.StartsWith("\\\\") || value.Contains('\\'))
+        if (!value.StartsWith("/") || value.StartsWith("//") || value.Contains('\\'))
         {
             return false;
         }
