@@ -95,7 +95,7 @@ public static class JobStore
     /// <summary>Loads and returns all jobs matching the given IDs.</summary>
     public static List<Job> GetAllJobs(List<string> ids)
     {
-        var jobs = ids.Select(GetJob).Where(job => job != null).ToList()!;
+        var jobs = ids.Select(GetJob).OfType<Job>().ToList();
         return jobs;
     }
 
