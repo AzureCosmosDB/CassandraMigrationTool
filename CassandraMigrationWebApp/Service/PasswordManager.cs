@@ -26,10 +26,10 @@ public class PasswordManager
 
     private readonly string _passwordFilePath;
     private readonly string _keyFilePath;
-    private readonly Microsoft.Extensions.Logging.ILogger<PasswordManager> _logger;
+    private readonly ILogger<PasswordManager> _logger;
     private byte[]? _encryptionKey;
 
-    public PasswordManager(Microsoft.Extensions.Logging.ILogger<PasswordManager> logger)
+    public PasswordManager(ILogger<PasswordManager> logger)
     {
         _logger = logger;
         var workingFolder = DataDirectoryResolver.GetWorkingFolder();
