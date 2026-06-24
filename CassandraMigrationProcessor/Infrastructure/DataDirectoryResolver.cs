@@ -88,16 +88,16 @@ public static class DataDirectoryResolver
 
         if (!string.IsNullOrEmpty(homePath)
             && Directory.Exists(
-                Path.Combine(homePath, "home\\")))
+                Path.Join(homePath, "home\\")))
         {
-            _workingFolder = Path.Combine(homePath, "home\\");
+            _workingFolder = Path.Join(homePath, "home\\");
         }
         else
         {
             // Previous logic returned an empty string when
             // ResourceDrive was set but %ResourceDrive%\home\ didn't
             // exist (neither the empty-check nor the directory-exists
-            // branch fired). Downstream Path.Combine("", ...) then wrote
+            // branch fired). Downstream Path.Join("", ...) then wrote
             // job state into the process working directory — potentially
             // a non-writable system folder, causing silent state loss
             // across restarts. Use a dedicated subfolder under TEMP so

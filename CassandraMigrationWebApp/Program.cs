@@ -7,7 +7,7 @@ using CassandraMigrationProcessor.Context;
 var builder = WebApplication.CreateBuilder(args);
 
 // Set up file-based diagnostic logging (stdout capture unreliable on IIS in-process)
-var diagLogPath = Path.Combine(
+var diagLogPath = Path.Join(
     Environment.GetEnvironmentVariable("HOME") ?? ".",
     "LogFiles", "app-diag.log");
 StreamWriter? diagStream = null;

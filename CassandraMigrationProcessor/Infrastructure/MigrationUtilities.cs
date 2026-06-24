@@ -35,7 +35,7 @@ public static class MigrationUtilities
     {
         try
         {
-            string path = Path.Combine(
+            string path = Path.Join(
                 DataDirectoryResolver.GetWorkingFolder(), fileName);
             string timestamp =
                 DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss.fff");

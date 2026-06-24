@@ -75,13 +75,13 @@ public class DiskPersistence : IDocumentStorage, ILogStorage
 
         if (parts.Length > 1)
         {
-            var dir = Path.Combine(pathParts.ToArray());
+            var dir = Path.Join(pathParts.ToArray());
             EnsureWithinStorage(dir, id);
             FileSystem.EnsureDirectoryExists(dir);
         }
 
         pathParts.Add(SanitizeFileName(parts[^1]));
-        var finalPath = Path.Combine(pathParts.ToArray());
+        var finalPath = Path.Join(pathParts.ToArray());
         EnsureWithinStorage(finalPath, id);
         return finalPath;
     }
@@ -92,7 +92,7 @@ public class DiskPersistence : IDocumentStorage, ILogStorage
         var pathParts = new List<string> { _storagePath };
         foreach (var part in parts)
             pathParts.Add(SanitizeFileName(part));
-        var finalPath = Path.Combine(pathParts.ToArray());
+        var finalPath = Path.Join(pathParts.ToArray());
         EnsureWithinStorage(finalPath, id);
         return finalPath;
     }
@@ -100,7 +100,7 @@ public class DiskPersistence : IDocumentStorage, ILogStorage
     /// <summary>
     /// Sanitises a single path segment. Rejects path-traversal
     /// segments and null-byte input so attacker-controlled ids cannot
-    /// escape the storage root via <c>Path.Combine</c>.
+    /// escape the storage root via <c>Path.Join</c>.
     /// </summary>
     private static string SanitizeFileName(string fileName)
     {

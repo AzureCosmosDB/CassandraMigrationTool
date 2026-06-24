@@ -21,14 +21,14 @@ public static class JobStore
     /// so loaders and writers cannot drift.
     /// </summary>
     internal static string JobRegistryPath { get; } =
-        Path.Combine(JobsFolder, JobRegistryFile);
+        Path.Join(JobsFolder, JobRegistryFile);
 
     /// <summary>
     /// Canonical path to the global <c>config.json</c> document under
     /// <see cref="JobsFolder"/>. Used by <see cref="SettingsManager"/>.
     /// </summary>
     internal static string ConfigPath { get; } =
-        Path.Combine(JobsFolder, ConfigFile);
+        Path.Join(JobsFolder, ConfigFile);
 
     private static readonly object _writeJobLock = new object();
     private static readonly object _cacheLock = new();
@@ -48,7 +48,7 @@ public static class JobStore
     /// Build the canonical path to a job definition file.
     /// </summary>
     internal static string GetJobDefinitionPath(string jobId) =>
-        Path.Combine(JobsFolder, jobId, JobDefinitionFile);
+        Path.Join(JobsFolder, jobId, JobDefinitionFile);
 
     /// <summary>
     /// Build the canonical path to a per-table unit document
@@ -56,7 +56,7 @@ public static class JobStore
     /// here so the path scheme can change in one place.
     /// </summary>
     internal static string GetUnitDocumentPath(string jobId, string unitId) =>
-        Path.Combine(JobsFolder, jobId, $"{unitId}.json");
+        Path.Join(JobsFolder, jobId, $"{unitId}.json");
 
     /// <summary>
     /// Serialize a job and persist it to storage (caller must hold _writeJobLock).

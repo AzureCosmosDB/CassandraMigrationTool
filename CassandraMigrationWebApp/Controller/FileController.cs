@@ -16,7 +16,7 @@ public class FileController : ControllerBase
     [HttpGet("download/TableMigration/{jobId}/{migrationUnitId}")]
     public IActionResult DownloadMigrationUnit(string jobId, string migrationUnitId)
     {
-        var filePath = Path.Combine(JobStore.JobsFolder, jobId, $"{migrationUnitId}.json");
+        var filePath = Path.Join(JobStore.JobsFolder, jobId, $"{migrationUnitId}.json");
 
         if (_context.Store == null || !_context.Store.Exists(filePath))
         {
