@@ -33,6 +33,7 @@ public class PasswordManager
     private const int PasswordSaltSize = 16;
     private const int PasswordHashSize = 32;
     private const int PasswordIterations = 100_000;
+    private const int MinPasswordIterations = 10_000;
 
     public async Task<bool> ValidatePasswordAsync(string password)
     {
@@ -59,12 +60,12 @@ public class PasswordManager
         }
         catch (IOException ex)
         {
-            _logger.LogDebug(ex, "I/O error while reading stored password from {PasswordFilePath}.", _passwordFilePath);
+            _logger.LogDebug(ex, "I/O error while reading stored password hash from disk.");
             return Task.FromResult<string?>(null);
         }
         catch (UnauthorizedAccessException ex)
         {
-            _logger.LogDebug(ex, "Access denied while reading stored password from {PasswordFilePath}.", _passwordFilePath);
+            _logger.LogDebug(ex, "Access denied while reading stored password hash from disk.");
             return Task.FromResult<string?>(null);
         }
     }
@@ -85,7 +86,9 @@ public class PasswordManager
     private static bool VerifyPassword(string password, string storedPasswordHash)
     {
         var parts = storedPasswordHash.Split(':');
-        if (parts.Length != 3 || !int.TryParse(parts[0], out var iterations) || iterations <= 0)
+        if (parts.Length != 3
+            || !int.TryParse(parts[0], out var iterations)
+            || iterations < MinPasswordIterations)
         {
             return false;
         }
@@ -97,7 +100,12 @@ public class PasswordManager
             salt = Convert.FromBase64String(parts[1]);
             expectedHash = Convert.FromBase64String(parts[2]);
         }
-        catch
+        catch (FormatException)
+        {
+            return false;
+        }
+
+        if (salt.Length != PasswordSaltSize || expectedHash.Length != PasswordHashSize)
         {
             return false;
         }
@@ -131,7 +139,9 @@ public class PasswordManager
         {
             var storedHash = File.ReadAllText(_passwordFilePath);
             var parts = storedHash.Split(':');
-            if (parts.Length == 3 && int.TryParse(parts[0], out var iterations) && iterations > 0)
+            if (parts.Length == 3
+                && int.TryParse(parts[0], out var iterations)
+                && iterations >= MinPasswordIterations)
             {
                 return Task.FromResult(true);
             }
@@ -150,13 +160,15 @@ public class PasswordManager
             }
             return Task.FromResult(false);
         }
-        catch (IOException)
+        catch (IOException ex)
         {
+            _logger.LogDebug(ex, "I/O error while reading stored password hash from disk.");
             // File exists but could not be read due to I/O issues; do not treat as corruption.
             return Task.FromResult(false);
         }
-        catch (UnauthorizedAccessException)
+        catch (UnauthorizedAccessException ex)
         {
+            _logger.LogDebug(ex, "Access denied while reading stored password hash from disk.");
             // File exists but access is denied; do not treat as corruption.
             return Task.FromResult(false);
         }
