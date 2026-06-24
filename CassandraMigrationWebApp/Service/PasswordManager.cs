@@ -78,7 +78,15 @@ public class PasswordManager
         }
         var passwordBytes = Encoding.UTF8.GetBytes(password);
         var storedPasswordBytes = Encoding.UTF8.GetBytes(storedPassword);
-        return CryptographicOperations.FixedTimeEquals(passwordBytes, storedPasswordBytes);
+        try
+        {
+            return CryptographicOperations.FixedTimeEquals(passwordBytes, storedPasswordBytes);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(passwordBytes);
+            CryptographicOperations.ZeroMemory(storedPasswordBytes);
+        }
     }
 
     public Task<string?> GetStoredPasswordAsync()

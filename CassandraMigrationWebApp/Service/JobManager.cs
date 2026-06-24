@@ -291,6 +291,8 @@ public class JobManager
         // Single source-of-truth for "user resumed from a non-terminal-but-
         // not-fresh state" — drives both the audit-log verb (RESUME vs
         // START) and the EndedOn reset below, so the two stay in lockstep.
+        // Pending is only treated as resume when prior table copy progress
+        // exists; otherwise it's a first-time start.
         bool isResume =
             job.Status is JobStatus.Paused or JobStatus.Faulted
             || (job.Status is JobStatus.Pending && HasMadeProgress(job));
