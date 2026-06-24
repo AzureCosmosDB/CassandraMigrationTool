@@ -108,12 +108,9 @@ public static class CassandraQueries
             var resultSet = await session.ExecuteAsync(new SimpleStatement(
                     "SELECT range FROM system_cosmos.feedranges WHERE keyspace_name=? AND table_name=?",
                     keyspace, table));
-            foreach (var row in resultSet)
-            {
-                var range = row.GetValue<string>("range");
-                if (!string.IsNullOrEmpty(range))
-                    ranges.Add(range);
-            }
+            ranges.AddRange(resultSet
+                .Select(row => row.GetValue<string>("range"))
+                .Where(range => !string.IsNullOrEmpty(range)));
         }
         catch (InvalidQueryException ex)
         {

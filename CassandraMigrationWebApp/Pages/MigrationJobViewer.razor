@@ -1033,7 +1033,6 @@ else if (@_showLogBackupFile)
         if (migrationUnits != null && CurrentlyLoadedMigrationJob != null)
         {
             // Get IDs for comparison
-            var existingIds = CurrentlyLoadedMigrationJob.Tables.Select(mu => mu.Id).ToHashSet();
             var newIds = migrationUnits.Select(mu => mu.Id).ToHashSet();
 
             //get ids that are no llonger present in newUnits
@@ -1156,7 +1155,7 @@ else if (@_showLogBackupFile)
         // Cancel + dispose the component CTS first so any in-flight
         // ScheduleUpdateTimerStatus probe wakes immediately and skips
         // its post-delay mutations on disposed fields.
-        try { _componentCts.Cancel(); } catch (ObjectDisposedException) { }
+        try { _componentCts.Cancel(); } catch (ObjectDisposedException) { /* CTS already disposed — nothing to cancel */ }
         _componentCts.Dispose();
 
         _refreshTimer?.Dispose();

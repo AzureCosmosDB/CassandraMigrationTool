@@ -340,14 +340,14 @@
             if (sourceStatus.Contains(searchText, StringComparison.OrdinalIgnoreCase))
                 return true;
 
-            if (Job != null && Job.IsOnline == true)
+            if (Job != null && Job.IsOnline)
             {
                 var lagText = mu.ChangeFeedLastChecked.HasValue ? MigrationUtilities.GetTimestampDiff(mu.ChangeFeedLastChecked.Value) : "NA";
                 if (lagText.Contains(searchText, StringComparison.OrdinalIgnoreCase))
                     return true;
             }
 
-            if (Job != null && Job.IsOnline == true)
+            if (Job != null && Job.IsOnline)
             {
                 var batchCount = mu.ChangeFeedUpdatesInLastBatch.ToString();
                 if (batchCount.Contains(searchText, StringComparison.OrdinalIgnoreCase))
@@ -364,10 +364,10 @@
             if (searchText.Contains("%"))
             {
                 var percentText = searchText.Replace("%", "").Trim();
-                if (double.TryParse(percentText, out var searchPercent))
+                if (double.TryParse(percentText, out var searchPercent)
+                    && Math.Abs(mu.CopyPercent - searchPercent) < 0.1)
                 {
-                    if (Math.Abs(mu.CopyPercent - searchPercent) < 0.1)
-                        return true;
+                    return true;
                 }
             }
 

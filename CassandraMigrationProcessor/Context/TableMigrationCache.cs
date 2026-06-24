@@ -49,10 +49,10 @@ public class TableMigrationCache
         if (string.IsNullOrEmpty(migrationUnitId))
             return;
 
-        foreach (var key in _migrationUnits.Keys)
+        foreach (var key in _migrationUnits.Keys
+            .Where(key => key.EndsWith($"::{migrationUnitId}", StringComparison.Ordinal)).ToList())
         {
-            if (key.EndsWith($"::{migrationUnitId}", StringComparison.Ordinal))
-                _migrationUnits.TryRemove(key, out _);
+            _migrationUnits.TryRemove(key, out _);
         }
     }
 }
