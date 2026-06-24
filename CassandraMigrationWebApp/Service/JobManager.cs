@@ -155,7 +155,7 @@ public class JobManager
     /// </summary>
     private bool TryClaimRunningJob(string action, out string jobId)
     {
-        jobId = _runningJobId ?? string.Empty;
+        jobId = _runningJobId;
         if (string.IsNullOrEmpty(jobId)) return false;
         _log.WriteLine($"User requested {action} for job {jobId}", LogType.Info);
         return true;
@@ -332,8 +332,6 @@ public class JobManager
             _runningJobId = job.Id;
         }
 
-        _context.Credentials.Remember(job.Id, sourceConnectionString, targetConnectionString);
-
         // Clear Running status on all other jobs so stale flags don't
         // cause unwanted auto-resume after an app recycle.
         foreach (var otherId in GetMigrationIds())
@@ -354,6 +352,7 @@ public class JobManager
         if (isResume)
             job.EndedOn = null;
         job.Status = JobStatus.Running;
+        _context.Credentials.Remember(job.Id, sourceConnectionString, targetConnectionString);
 
         var config = new AppSettings();
         SettingsManager.Load(config);

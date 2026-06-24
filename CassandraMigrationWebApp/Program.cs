@@ -9,7 +9,7 @@ var builder = WebApplication.CreateBuilder(args);
 // Set up file-based diagnostic logging (stdout capture unreliable on IIS in-process)
 var diagLogPath = Path.Combine(
     Environment.GetEnvironmentVariable("HOME") ?? ".",
-    "LogFiles", "app-diag.MigrationLog");
+    "LogFiles", "app-diag.log");
 StreamWriter? diagStream = null;
 try
 {
@@ -120,7 +120,7 @@ if (diagStream != null)
     });
 }
 
-// _configure the HTTP request pipeline.
+// Configure the HTTP request pipeline.
 if (!app.Environment.IsDevelopment())
 {
     app.UseExceptionHandler("/Error");
