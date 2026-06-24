@@ -81,9 +81,6 @@ public class JobManager
 
     public void ClearJobFiles(string jobId)
     {
-        _context.JobIndex.MigrationJobIds?.Remove(jobId);
-        _context.SaveJobList();
-
         Task.Run(() =>
         {
             try
@@ -94,10 +91,13 @@ public class JobManager
                 string dumpPath = Path.Combine(DataDirectoryResolver.GetWorkingFolder(), "cassandradump", jobId);
                 if (Directory.Exists(dumpPath))
                     Directory.Delete(dumpPath, true);
+
+                _context.JobIndex.MigrationJobIds?.Remove(jobId);
+                _context.SaveJobList();
             }
             catch (Exception ex)
             {
-                _log.WriteError($"Failed to clear job files for job '{jobId}'. {ex}");
+                _log.WriteLine($"Failed to clear job files for job '{jobId}'. {ex}", LogType.Error);
             }
         });
     }
@@ -116,7 +116,7 @@ public class JobManager
     {
         if (jobId != _lastJobID) return false;
 
-        if (System.DateTime.UtcNow.AddSeconds(-10) > _lastJobHeartBeat)
+        if (DateTime.UtcNow.AddSeconds(-10) > _lastJobHeartBeat)
         {
             _lastJobID = string.Empty;
             return false; // heartbeat can be max 10 seconds old
@@ -204,8 +204,11 @@ public class JobManager
     /// </summary>
     public void RequestControlledPause()
     {
-        TryClaimRunningJob("PAUSE", out _);
-        _control?.RequestPause();
+        lock (_stateLock)
+        {
+            TryClaimRunningJob("PAUSE", out _);
+            _control?.RequestPause();
+        }
     }
 
     /// <summary>
@@ -239,8 +242,12 @@ public class JobManager
     {
         if (job == null) return LiveJobStatus.NotStarted;
 
+        var jobId = !string.IsNullOrWhiteSpace(job.Id)
+            ? job.Id
+            : throw new InvalidOperationException("Job.Id must be non-null and non-empty when computing live status.");
+
         // Process-live state takes priority over persisted Status.
-        if (IsProcessRunning(job.Id ?? string.Empty))
+        if (IsProcessRunning(jobId))
         {
             return _control?.Requested switch
             {
@@ -277,8 +284,10 @@ public class JobManager
 
     public Task StartMigration(Job job, string sourceConnectionString, string targetConnectionString)
     {
-        MigrationLog runLog;
-        JobControl runControl;
+        MigrationLog runLog = null!;
+        JobControl runControl = null!;
+        bool shouldWriteRejectionLog = false;
+        string? runningJobIdForRejection = null;
         // Single source-of-truth for "user resumed from a non-terminal-but-
         // not-fresh state" — drives both the audit-log verb (RESUME vs
         // START) and the EndedOn reset below, so the two stay in lockstep.
@@ -287,56 +296,64 @@ public class JobManager
         {
             if (!string.IsNullOrEmpty(_runningJobId))
             {
+                runningJobIdForRejection = _runningJobId;
                 _log.WriteLine(
-                    $"Job {_runningJobId} already running, cannot start {job.Id}",
+                    $"Job {runningJobIdForRejection} already running, cannot start {job.Id}",
                     LogType.Warning);
-                // Also write the rejection to the REJECTED
-                // job's own log at Info level so an operator looking at
-                // Job B's Job Logs panel sees a clear "Cannot start"
-                // entry instead of staring at an empty log while the
-                // banner says "Not Started". The pre-flight check in
-                // OnMigrationDetailsPopUpSubmit catches the common path
-                // before reaching here; this log is the defense-in-depth
-                // for any caller that bypasses the UI guard or hits the
-                // TOCTOU race between pre-flight and slot claim.
-                try
-                {
-                    using var rejectionLog = CreateLog();
-                    rejectionLog.Initialize(job.Id);
-                    rejectionLog.SetJob(job);
-                    rejectionLog.WriteLine(
-                        $"Cannot start — job {_runningJobId} is currently running. " +
-                        "Pause or complete that job first, then click Resume Job here.",
-                        LogType.Info);
-                }
-                catch (Exception ex) when (ex is IOException or InvalidOperationException or ObjectDisposedException)
-                {
-                    // Never let the rejection-log path mask the original
-                    // rejection; the primary log line above is already
-                    // recorded on the active job. Surface this failure on
-                    // the primary log so it stays diagnosable.
-                    _log?.WriteLine(
-                        $"Failed to write rejection log for job {job.Id}: {ex.Message}",
-                        LogType.Warning);
-                }
-                return Task.CompletedTask;
+                shouldWriteRejectionLog = true;
             }
+            else
+            {
+                _log = CreateLog();
+                _log.Initialize(job.Id);
+                _log.SetJob(job);
+                _log.WriteLine(
+                    $"User requested {(isResume ? "RESUME" : "START")} for job {job.Id} (prior status={job.Status})",
+                    LogType.Info);
+                // MigrationJobRunner is published below, once its sessions
+                // are open (built via async factory). Claiming _runningJobId
+                // here is enough to make concurrent StartMigration calls
+                // see the slot as taken; Pause/Stop arriving during the
+                // open window record intent on _control.
+                _control = new JobControl();
+                runControl = _control;
+                runLog = _log;
+                _runningJobId = job.Id;
+            }
+        }
 
-            _log = CreateLog();
-            _log.Initialize(job.Id);
-            _log.SetJob(job);
-            _log.WriteLine(
-                $"User requested {(isResume ? "RESUME" : "START")} for job {job.Id} (prior status={job.Status})",
-                LogType.Info);
-            // MigrationJobRunner is published below, once its sessions
-            // are open (built via async factory). Claiming _runningJobId
-            // here is enough to make concurrent StartMigration calls
-            // see the slot as taken; Pause/Stop arriving during the
-            // open window record intent on _control.
-            _control = new JobControl();
-            runControl = _control;
-            runLog = _log;
-            _runningJobId = job.Id;
+        if (shouldWriteRejectionLog)
+        {
+            // Also write the rejection to the REJECTED
+            // job's own log at Info level so an operator looking at
+            // Job B's Job Logs panel sees a clear "Cannot start"
+            // entry instead of staring at an empty log while the
+            // banner says "Not Started". The pre-flight check in
+            // OnMigrationDetailsPopUpSubmit catches the common path
+            // before reaching here; this log is the defense-in-depth
+            // for any caller that bypasses the UI guard or hits the
+            // TOCTOU race between pre-flight and slot claim.
+            try
+            {
+                using var rejectionLog = CreateLog();
+                rejectionLog.Initialize(job.Id);
+                rejectionLog.SetJob(job);
+                rejectionLog.WriteLine(
+                    $"Cannot start — job {runningJobIdForRejection} is currently running. " +
+                    "Pause or complete that job first, then click Resume Job here.",
+                    LogType.Info);
+            }
+            catch (Exception ex) when (ex is IOException or InvalidOperationException or ObjectDisposedException)
+            {
+                // Never let the rejection-log path mask the original
+                // rejection; the primary log line above is already
+                // recorded on the active job. Surface this failure on
+                // the primary log so it stays diagnosable.
+                _log?.WriteLine(
+                    $"Failed to write rejection log for job {job.Id}: {ex.Message}",
+                    LogType.Warning);
+            }
+            return Task.CompletedTask;
         }
 
         // Clear Running status on all other jobs so stale flags don't
