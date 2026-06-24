@@ -21,8 +21,8 @@ public class PasswordManager
             Directory.CreateDirectory(workingFolder);
         }
 
-        _passwordFilePath = Path.Combine(workingFolder, PasswordFileName);
-        _keyFilePath = Path.Combine(workingFolder, KeyFileName);
+        _passwordFilePath = Path.Join(workingFolder, PasswordFileName);
+        _keyFilePath = Path.Join(workingFolder, KeyFileName);
     }
 
     /// <summary>

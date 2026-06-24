@@ -22,7 +22,7 @@ public class LogPersistence
     }
 
     private string LogBinPath(string id) =>
-        Path.Combine(_storagePath, LogFolder, $"{id}.bin");
+        Path.Join(_storagePath, LogFolder, $"{id}.bin");
 
     public void PushLogEntry(string jobId, LogObject logObject)
     {
@@ -316,7 +316,7 @@ public class LogPersistence
         // codebase regardless of host TZ.
         string timestamp = DateTime.UtcNow.ToString("yyyyMMdd_HHmmssZ");
         string newFileName = $"{stem}_{timestamp}{extension}";
-        string newFilePath = Path.Combine(directory, newFileName);
+        string newFilePath = Path.Join(directory, newFileName);
 
         if (!FileSystem.Exists(newFilePath))
             FileSystem.CopyFile(sourceFilePath, newFilePath);

@@ -85,10 +85,10 @@ public class JobManager
         {
             try
             {
-                _context.Store.Delete($"{Path.Combine(JobStore.JobsFolder, jobId)}");
+                _context.Store.Delete($"{Path.Join(JobStore.JobsFolder, jobId)}");
                 _context.LogStore.DeleteLogs(jobId);
 
-                string dumpPath = Path.Combine(DataDirectoryResolver.GetWorkingFolder(), "cassandradump", jobId);
+                string dumpPath = Path.Join(DataDirectoryResolver.GetWorkingFolder(), "cassandradump", jobId);
                 if (Directory.Exists(dumpPath))
                     Directory.Delete(dumpPath, true);
 
