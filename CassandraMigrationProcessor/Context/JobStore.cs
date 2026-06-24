@@ -33,7 +33,7 @@ public static class JobStore
     private static readonly object _writeJobLock = new object();
     private static readonly object _cacheLock = new();
 
-    private static ConcurrentDictionary<string, Job>
+    private static readonly ConcurrentDictionary<string, Job>
         _jobs = new();
 
     private static Job? _cachedActiveJob = null;

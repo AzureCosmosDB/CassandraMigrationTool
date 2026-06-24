@@ -117,7 +117,7 @@
     private int TotalPages => (int)Math.Ceiling((double)TotalEntries / Math.Max(1, PageSize));
     private int _currentPage = 1;
     private int _downloadingPage = 0;
-    private HashSet<int> _downloadedPages = new HashSet<int>();
+    private readonly HashSet<int> _downloadedPages = new HashSet<int>();
     
     private void GoToPage(int pageNumber)
     {
