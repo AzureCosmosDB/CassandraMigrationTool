@@ -278,6 +278,8 @@ public class JobManager
 
     private static bool HasMadeProgress(Job job)
     {
+        // "Progress" means at least one table has copied rows persisted
+        // from a prior run, so a Pending state is actually resumable.
         if (job.Tables == null) return false;
         return job.Tables.Any(mu => mu.CopyRowsCopied > 0);
     }
