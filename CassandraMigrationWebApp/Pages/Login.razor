@@ -105,7 +105,7 @@
         }
 
         // Reject control chars and backslashes.
-        if (value.Any(char.IsControl) || value.Contains('\\'))
+        if (value.Any(c => char.IsControl(c) || c == '\\'))
         {
             return false;
         }
