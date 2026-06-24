@@ -358,9 +358,8 @@ public class JobManager
 
         // Clear Running status on all other jobs so stale flags don't
         // cause unwanted auto-resume after an app recycle.
-        foreach (var otherId in GetMigrationIds())
+        foreach (var otherId in GetMigrationIds().Where(otherId => otherId != job.Id))
         {
-            if (otherId == job.Id) continue;
             var other = GetMigrationJobById(otherId);
             if (other is { Status: JobStatus.Running })
             {

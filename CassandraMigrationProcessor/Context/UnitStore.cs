@@ -104,9 +104,8 @@ public static class UnitStore
         List<TableMigration> units = new();
         if (job == null) return units;
 
-        foreach (var summary in job.Tables)
+        foreach (var summary in job.Tables.Where(summary => summary.IsValid))
         {
-            if (!summary.IsValid) continue;
             // For online jobs, include CopyComplete tables too — the
             // merged DataCopyWorker re-seeds their feed ranges in
             // Replay phase to keep tailing the change feed.
