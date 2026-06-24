@@ -1,19 +1,37 @@
 using CassandraMigrationProcessor.Infrastructure;
 using CassandraMigrationProcessor.Persistence;
 using System.Security.Cryptography;
+using System.Text;
 
 namespace CassandraMigrationWebApp.Service;
 public class PasswordManager
 {
+    /// <summary>
+    /// File name used to persist the encrypted password payload in the application's working directory.
+    /// </summary>
+    /// <remarks>
+    /// This file is intended to store encrypted credential data, not plaintext. It is persisted across application restarts.
+    /// Access to this file should be restricted because it contains sensitive encrypted material.
+    /// </remarks>
     private const string PasswordFileName = "app.password";
+    /// <summary>
+    /// File name used to persist the symmetric encryption key associated with <see cref="PasswordFileName"/>.
+    /// </summary>
+    /// <remarks>
+    /// The key is stored on the same filesystem as the encrypted password file and is persisted across restarts.
+    /// If an attacker can read both files, the encrypted credential data may be decrypted; therefore filesystem permissions
+    /// and host-level protections are required.
+    /// </remarks>
     private const string KeyFileName = "app.keyfile";
 
     private readonly string _passwordFilePath;
     private readonly string _keyFilePath;
+    private readonly ILogger<PasswordManager> _logger;
     private byte[]? _encryptionKey;
 
-    public PasswordManager()
+    public PasswordManager(ILogger<PasswordManager> logger)
     {
+        _logger = logger;
         var workingFolder = DataDirectoryResolver.GetWorkingFolder();
 
         if (!Directory.Exists(workingFolder))
@@ -39,7 +57,7 @@ public class PasswordManager
             if (_encryptionKey.Length == 32)
                 return _encryptionKey;
 
-            Console.WriteLine("[WARN] PasswordManager: invalid keyfile detected, regenerating key. Previously stored passwords will be invalidated.");
+            _logger.LogWarning("PasswordManager: invalid keyfile detected, regenerating key. Previously stored passwords will be invalidated.");
         }
 
         // Generate a new random 256-bit key
@@ -58,7 +76,17 @@ public class PasswordManager
         {
             return false;
         }
-        return password == storedPassword;
+        var passwordBytes = Encoding.UTF8.GetBytes(password);
+        var storedPasswordBytes = Encoding.UTF8.GetBytes(storedPassword);
+        try
+        {
+            return CryptographicOperations.FixedTimeEquals(passwordBytes, storedPasswordBytes);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(passwordBytes);
+            CryptographicOperations.ZeroMemory(storedPasswordBytes);
+        }
     }
 
     public Task<string?> GetStoredPasswordAsync()
@@ -132,6 +160,8 @@ public class PasswordManager
     {
         using (Aes aes = Aes.Create())
         {
+            aes.Mode = CipherMode.CBC;
+            aes.Padding = PaddingMode.PKCS7;
             aes.Key = GetEncryptionKey();
             aes.GenerateIV();
 
@@ -156,6 +186,8 @@ public class PasswordManager
     {
         using (Aes aes = Aes.Create())
         {
+            aes.Mode = CipherMode.CBC;
+            aes.Padding = PaddingMode.PKCS7;
             aes.Key = GetEncryptionKey();
 
             // Extract IV from the beginning of the cipher text

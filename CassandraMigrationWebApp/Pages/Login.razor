@@ -2,6 +2,7 @@
 @layout EmptyLayout
 @attribute [AllowAnonymous]
 @using CassandraMigrationWebApp.Service
+@using System.Linq
 @inject AuthenticationService AuthService
 @inject PasswordManager PasswordManager
 @inject NavigationManager Navigation
@@ -79,9 +80,37 @@
     [Parameter]
     public string? ReturnUrl { get; set; }
 
-    private string SafeReturnUrl =>
-        !string.IsNullOrEmpty(ReturnUrl) && ReturnUrl.StartsWith("/")
-            ? ReturnUrl : "/";
+    private string SafeReturnUrl => IsSafeLocalReturnUrl(ReturnUrl) ? ReturnUrl! : "/";
+
+    private static bool IsSafeLocalReturnUrl(string? url)
+    {
+        if (string.IsNullOrWhiteSpace(url))
+        {
+            return false;
+        }
+
+        // Must be a relative URL (not absolute).
+        if (!Uri.TryCreate(url, UriKind.Relative, out var relativeUri))
+        {
+            return false;
+        }
+
+        var value = relativeUri.OriginalString;
+
+        // Must be app-root relative and not protocol-relative / network-path reference.
+        if (!value.StartsWith("/") || value.StartsWith("//"))
+        {
+            return false;
+        }
+
+        // Reject control chars and backslashes.
+        if (value.Any(c => char.IsControl(c) || c == '\\'))
+        {
+            return false;
+        }
+
+        return true;
+    }
 
     protected override async Task OnInitializedAsync()
     {
@@ -118,9 +147,9 @@
                 loginModel.Password = string.Empty;
             }
         }
-        catch (Exception ex)
+        catch (Exception)
         {
-            errorMessage = $"An error occurred. Details: {ex.Message}";
+            errorMessage = "An unexpected error occurred. Please try again or contact support.";
         }
         finally
         {
