@@ -134,14 +134,14 @@ public class JobManager
 
         // If migration worker is not running, get from file
         isLiveLog = false;
-        MigrationLog MigrationLog = CreateLog();
-        return MigrationLog.ReadLogFile(id, out fileName) ?? new LogBucket { Logs = new List<LogObject>() };
+        MigrationLog migrationLog = CreateLog();
+        return migrationLog.ReadLogFile(id, out fileName) ?? new LogBucket { Logs = new List<LogObject>() };
     }
 
     public int GetLogCount(string jobId)
     {
-        MigrationLog MigrationLog = CreateLog();
-        return MigrationLog.GetLogCount(jobId);
+        MigrationLog migrationLog = CreateLog();
+        return migrationLog.GetLogCount(jobId);
     }
 
     #endregion
