@@ -86,12 +86,19 @@ public class JobManager
 
         Task.Run(() =>
         {
-            _context.Store.Delete($"{Path.Combine(JobStore.JobsFolder, jobId)}");
-            _context.LogStore.DeleteLogs(jobId);
+            try
+            {
+                _context.Store.Delete($"{Path.Combine(JobStore.JobsFolder, jobId)}");
+                _context.LogStore.DeleteLogs(jobId);
 
-            string dumpPath = Path.Combine(DataDirectoryResolver.GetWorkingFolder(), "cassandradump", jobId);
-            if (Directory.Exists(dumpPath))
-                Directory.Delete(dumpPath, true);
+                string dumpPath = Path.Combine(DataDirectoryResolver.GetWorkingFolder(), "cassandradump", jobId);
+                if (Directory.Exists(dumpPath))
+                    Directory.Delete(dumpPath, true);
+            }
+            catch (Exception ex)
+            {
+                _log.WriteError($"Failed to clear job files for job '{jobId}'. {ex}");
+            }
         });
     }
 
