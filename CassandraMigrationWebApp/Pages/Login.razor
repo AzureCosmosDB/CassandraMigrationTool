@@ -98,13 +98,13 @@
         var value = relativeUri.OriginalString;
 
         // Must be app-root relative and not protocol-relative / network-path reference.
-        if (!value.StartsWith("/") || value.StartsWith("//"))
+        if (!value.StartsWith("/") || value.StartsWith("//") || value.StartsWith("\\\\"))
         {
             return false;
         }
 
         // Reject control chars and backslashes.
-        if (value.Any(c => char.IsControl(c) || c == '\\'))
+        if (value.Any(char.IsControl) || value.Contains('\\'))
         {
             return false;
         }
