@@ -60,7 +60,7 @@ public class JobManager
         {
             units.AddRange(mj.Tables
                 .Select(mub => _context.GetMigrationUnit(mub.Id, mj.Id))
-                .Where(mu => mu != null)!);
+                .OfType<TableMigration>());
         }
         return units;
     }
