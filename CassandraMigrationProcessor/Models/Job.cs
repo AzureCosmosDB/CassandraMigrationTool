@@ -161,9 +161,8 @@ public class Job
         get
         {
             if (Tables.Count == 0) return false;
-            foreach (var t in Tables)
+            foreach (var t in Tables.Where(t => t.IsValid))
             {
-                if (!t.IsValid) continue;
                 if (!t.CopyComplete) return false;
             }
             return true;

@@ -221,9 +221,8 @@ internal class DataCopyWorker
         }
 
         int i = 0;
-        foreach (var inner in ExceptionClassifier.Walk(ex))
+        foreach (var inner in ExceptionClassifier.Walk(ex).Where(inner => !ReferenceEquals(inner, ex)))
         {
-            if (ReferenceEquals(inner, ex)) continue;
             _workerLog.WriteLine(
                 $"  caused by [{++i}] {inner.GetType().Name}: {inner.Message}",
                 LogType.Error);

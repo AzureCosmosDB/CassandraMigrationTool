@@ -249,9 +249,8 @@ public static class SchemaManager
         while (progress && resolved.Count < udts.Count)
         {
             progress = false;
-            foreach (var u in udts)
+            foreach (var u in udts.Where(u => !resolvedNames.Contains(u.TypeName)))
             {
-                if (resolvedNames.Contains(u.TypeName)) continue;
                 if (dependsOn[u.TypeName].All(d => resolvedNames.Contains(d)))
                 {
                     resolved.Add(u);
