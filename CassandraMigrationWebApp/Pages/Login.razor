@@ -3,9 +3,11 @@
 @attribute [AllowAnonymous]
 @using CassandraMigrationWebApp.Service
 @using System.Linq
+@using Microsoft.Extensions.Logging
 @inject AuthenticationService AuthService
 @inject PasswordManager PasswordManager
 @inject NavigationManager Navigation
+@inject ILogger<Login> Logger
 
 <PageTitle>Login - Cassandra Migration</PageTitle>
 
@@ -147,8 +149,9 @@
                 loginModel.Password = string.Empty;
             }
         }
-        catch (Exception)
+        catch (Exception ex)
         {
+            Logger.LogError(ex, "Unexpected error occurred during login.");
             errorMessage = "An unexpected error occurred. Please try again or contact support.";
         }
         finally
