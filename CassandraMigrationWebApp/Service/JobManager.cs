@@ -466,7 +466,7 @@ public class JobManager
         if (string.IsNullOrEmpty(jobId)) return;
         try
         {
-            string msg = $"[Manager] Resume dispatched by operator{(string.IsNullOrEmpty(note) ? "" : " — " + note)}";
+            string msg = $"[Manager] Resume dispatched by operator{(string.IsNullOrEmpty(note) ? "" : " - " + note)}";
 
             // Only write to the live in-flight log when this is the
             // same job running; otherwise scope a transient log to the
