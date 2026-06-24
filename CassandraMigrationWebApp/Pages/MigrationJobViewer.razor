@@ -1035,14 +1035,14 @@ else if (@_showLogBackupFile)
             // Get IDs for comparison
             var newIds = migrationUnits.Select(mu => mu.Id).ToHashSet();
 
-            //get ids that are no llonger present in newUnits
+            //get ids that are no longer present in newUnits
             var delList = CurrentlyLoadedMigrationJob.Tables.FindAll(mu => !newIds.Contains(mu.Id));
 
-            foreach (var tobDel in delList)
+            foreach (var unitToDelete in delList)
             {
-                tobDel.ParentJob = CurrentlyLoadedMigrationJob;
-                UnitStore.RemoveUnit(tobDel);
-                MigrationContext.MigrationUnitsCache?.RemoveMigrationUnit(tobDel.Id);//remove from cache
+                unitToDelete.ParentJob = CurrentlyLoadedMigrationJob;
+                UnitStore.RemoveUnit(unitToDelete);
+                MigrationContext.MigrationUnitsCache?.RemoveMigrationUnit(unitToDelete.Id);//remove from cache
             }
 
             foreach (var mu in migrationUnits)
