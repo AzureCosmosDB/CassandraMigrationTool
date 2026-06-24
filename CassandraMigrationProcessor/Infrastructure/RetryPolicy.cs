@@ -1,18 +1,19 @@
-namespace CassandraMigrationProcessor.DataTransfer;
+namespace CassandraMigrationProcessor.Infrastructure;
 
 /// <summary>
-/// Immutable retry configuration for per-row writes. Encapsulates the
-/// max attempt count and the inter-attempt backoff so the
-/// <see cref="RowWriteRetry"/> helper has a single, replaceable knob
-/// instead of separate int/const parameters.
+/// Immutable retry configuration. Encapsulates the max attempt count
+/// and the inter-attempt backoff so retry callers (per-row writes,
+/// table-level retries, ad-hoc transient loops) share a single
+/// replaceable knob instead of separate int/const parameters.
 /// <para>
 /// Use the <see cref="Linear"/> factory for the default linear-backoff
-/// policy (<c>BaseDelay × attempt</c>), or the <see cref="Exponential"/>
-/// factory for capped exponential backoff. Both stay deterministic so
-/// behaviour stays predictable in tests.
+/// policy (<c>BaseDelay × attempt</c>), <see cref="Exponential"/> for
+/// capped exponential backoff (deterministic, suited for tests), or
+/// <see cref="FromException"/> to honour server-supplied
+/// <c>RetryAfterMs</c> hints with exponential fallback.
 /// </para>
 /// </summary>
-internal sealed class RetryPolicy
+public sealed class RetryPolicy
 {
     public int MaxAttempts { get; }
     private readonly Func<int, TimeSpan> _delayFor;
@@ -50,4 +51,14 @@ internal sealed class RetryPolicy
             var ms = baseDelay.TotalMilliseconds * Math.Pow(2, attempt - 1);
             return ms >= cap.TotalMilliseconds ? cap : TimeSpan.FromMilliseconds(ms);
         });
+
+    /// <summary>
+    /// Single-shot delay computed from a server-hinted exception via
+    /// <see cref="ExceptionClassifier.GetRetryDelayMs"/>: honours
+    /// <c>RetryAfterMs=NNN</c> markers in the exception's message chain,
+    /// falls back to capped exponential backoff with jitter otherwise.
+    /// Returned as a <see cref="TimeSpan"/> ready for <c>Task.Delay</c>.
+    /// </summary>
+    public static TimeSpan FromException(Exception ex, int attempt)
+        => TimeSpan.FromMilliseconds(ExceptionClassifier.GetRetryDelayMs(ex, attempt));
 }

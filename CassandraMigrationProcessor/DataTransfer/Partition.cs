@@ -136,7 +136,7 @@ public sealed class Partition
     {
         lock (_chunksLock)
         {
-            var firstIncomplete = _chunks.FirstOrDefault(c => !c.IsCompleted);
+            var firstIncomplete = _chunks.FirstOrDefault(chunk => !chunk.IsCompleted);
             return firstIncomplete?.ContinuationToken ?? _chunks.Last?.Value.ContinuationToken;
         }
     }

@@ -21,7 +21,7 @@
                   IsRunning="IsJobRunning()"
                   IsLoadingCollections="_isLoadingCollections"
                   HasExistingConnectionStrings="@HasCachedCredentials(CurrentlyLoadedMigrationJob)"
-                  IsControlledPauseApplicable="@(CurrentlyLoadedMigrationJob != null && JobManager.IsControlledPauseApplicable(CurrentlyLoadedMigrationJob.JobType, CurrentlyLoadedMigrationJob))"
+                  IsControlledPauseApplicable="@(CurrentlyLoadedMigrationJob != null && JobManager.IsControlledPauseApplicable(CurrentlyLoadedMigrationJob))"
                   IsControlledPauseRequested="@(JobManager.GetLiveStatus(CurrentlyLoadedMigrationJob) == LiveJobStatus.Pausing)"
                   CutoverReady="JobLifecycle.IsCutoverReady(CurrentlyLoadedMigrationJob)"
                   ChangeFeedLag="GetChangeFeedLag()"
@@ -836,6 +836,29 @@ else if (@_showLogBackupFile)
         if (!string.IsNullOrEmpty(targetConnectionString))
             MigrationContext.Credentials.SetTarget(mj.Id, targetConnectionString);
 
+        // Pre-flight reject when another job already holds
+        // the runtime slot, so the operator sees a banner instead of a
+        // job that silently parks at "Not Started" while only the
+        // error-log table records "Job <X> already running, cannot
+        // start <this>". Mirror the wording / shape of the auto-start
+        // banner above so both surfaces tell the same story.
+        if (!NoOtherActiveJobs())
+        {
+            string activeId = JobManager?.GetRunningJobId() ?? string.Empty;
+            var activeJob = !string.IsNullOrEmpty(activeId)
+                ? MigrationContext.GetMigrationJob(activeId)
+                : null;
+            string activeName = activeJob?.Name ?? activeId;
+            _errorMessage = $"Cannot start: another migration job \"{activeName}\" " +
+                "is currently running. Pause or complete that job first, then click " +
+                "Resume Job on this one.";
+            await InvokeAsync(StateHasChanged);
+            return false;
+        }
+
+        // Stamp StartedOn only after the pre-flight check passes, so a job
+        // rejected because another is running is not left with a misleading
+        // start time / duration in the UI and persisted history.
         if (!mj.StartedOn.HasValue)
             mj.StartedOn = DateTime.UtcNow;
 
@@ -896,14 +919,16 @@ else if (@_showLogBackupFile)
     {
         // The runner's finally is the single source of truth for
         // clearing the active-job handle.
-        if (!string.IsNullOrEmpty(JobId))
-        {
-            JobManager?.LogOperatorResumeRequest(JobId, "with existing connection strings");
-        }
         if (IsResumeEnabled() && NoOtherActiveJobs())
         {
             if (CurrentlyLoadedMigrationJob != null)
+            {
+                // Log only at the point of actual dispatch so
+                // each log line corresponds 1:1 with a real state change.
+                if (!string.IsNullOrEmpty(JobId))
+                    JobManager?.LogResumeDispatched(JobId, "with existing connection strings");
                 await OnMigrationDetailsPopUpSubmit(CurrentlyLoadedMigrationJob, string.Empty, string.Empty);
+            }
             else
                 _migrationDetailsPopUpOpen = true;
         }
@@ -920,16 +945,6 @@ else if (@_showLogBackupFile)
     {
         _errorMessage = string.Empty;
 
-        // Log the Resume click into the persistent log of THIS job
-        // so operators see evidence the click was received.
-        if (!string.IsNullOrEmpty(JobId))
-        {
-            var liveStatus = CurrentlyLoadedMigrationJob != null
-                ? JobManager.GetLiveStatus(CurrentlyLoadedMigrationJob).ToString()
-                : "unknown";
-            JobManager?.LogOperatorResumeRequest(JobId, $"prior live status={liveStatus}");
-        }
-
         if (IsResumeEnabled() && NoOtherActiveJobs())
         {
             if(showDialog)
@@ -939,7 +954,17 @@ else if (@_showLogBackupFile)
                 if (CanAutoStart())
                 {
                     if (CurrentlyLoadedMigrationJob != null)
+                    {
+                        // Log only at the point of actual dispatch
+                        // so each log line corresponds 1:1 with a real state
+                        // change; rejected clicks surface via the UI banner.
+                        if (!string.IsNullOrEmpty(JobId))
+                        {
+                            var liveStatus = JobManager.GetLiveStatus(CurrentlyLoadedMigrationJob).ToString();
+                            JobManager?.LogResumeDispatched(JobId, $"prior live status={liveStatus}");
+                        }
                         await OnMigrationDetailsPopUpSubmit(CurrentlyLoadedMigrationJob, string.Empty, string.Empty);
+                    }
                 }
                 else
                 {

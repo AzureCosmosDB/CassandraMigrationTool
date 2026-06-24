@@ -260,7 +260,7 @@ public static class ArmCredentialDiscovery
             // missing, token rejected, ARM outage) instead of the
             // ambiguous empty ArmCredentialResult that previously
             // looked indistinguishable from "no matching resource".
-            // This neutralised a stated goal of PR #220's new throws.
+            // This neutralised a stated goal of the credential-throw refactor.
             throw;
         }
         catch (Exception ex)

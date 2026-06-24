@@ -11,7 +11,24 @@ namespace CassandraMigrationProcessor.DataTransfer;
 /// </summary>
 internal sealed class SimulatedRowWriteStrategy : IRowWriteStrategy
 {
-    public Task<WriteOutcome> WriteRowAsync(object[] sourceRow, WriteCounters counters, CancellationToken cancellationToken)
+    public Task<WriteOutcome> WriteRowAsync(
+        object[] sourceRow,
+        WriteCounters counters,
+        CdcRowMetadata? metadata,
+        CancellationToken cancellationToken)
+    {
+        if (cancellationToken.IsCancellationRequested)
+            return Task.FromResult(WriteOutcome.Failed);
+
+        Interlocked.Increment(ref counters.Done);
+        return Task.FromResult(WriteOutcome.Success);
+    }
+
+    public Task<WriteOutcome> WriteJsonRowAsync(
+        string cleanedJson,
+        WriteCounters counters,
+        CdcRowMetadata? metadata,
+        CancellationToken cancellationToken)
     {
         if (cancellationToken.IsCancellationRequested)
             return Task.FromResult(WriteOutcome.Failed);

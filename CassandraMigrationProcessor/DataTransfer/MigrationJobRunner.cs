@@ -21,6 +21,13 @@ public class MigrationJobRunner : IAsyncDisposable
     private readonly JobControl _control;
     private readonly TokenRefreshManager _tokenRefreshManager;
     private int _consecutiveAuthErrors;
+    // Last auth exception observed by HandleMigrationUnitError;
+    // attached as inner when the consecutive-auth threshold trips so
+    // operators see the actual driver failure (host, message, stack)
+    // not just the sentinel reason. Read/written under the
+    // Interlocked.Exchange of _consecutiveAuthErrors so writers race
+    // safely with the threshold-check reader in RunCopyPhaseAsync.
+    private Exception? _lastAuthException;
     private JobPipeline? _pipeline;
 
     /// <summary>
@@ -205,6 +212,12 @@ public class MigrationJobRunner : IAsyncDisposable
         catch (Exception ex)
         {
             failure = ex;
+            // Make the fault observable through JobControl.FirstFault so
+            // any cooperating coordinator (PartitionManager, change-feed
+            // tail) that polls IsFatal also stops promptly — without
+            // this, the catch swallowed the signal and only the final
+            // status update surfaced it.
+            _control.ReportFault(ex);
             _log.WriteLine($"Migration failed: {ex}", LogType.Error);
         }
         finally
@@ -513,8 +526,11 @@ public class MigrationJobRunner : IAsyncDisposable
                 return;
             if (Volatile.Read(ref _consecutiveAuthErrors) >= MigrationDefaults.MaxConsecutiveAuthErrors)
             {
-                _control.ReportFault(new MigrationFatalException(
-                    $"Aborting: {MigrationDefaults.MaxConsecutiveAuthErrors} consecutive auth errors"));
+                var lastAuth = Interlocked.CompareExchange(ref _lastAuthException, null, null);
+                var msg = $"Aborting: {MigrationDefaults.MaxConsecutiveAuthErrors} consecutive auth errors";
+                _control.ReportFault(lastAuth != null
+                    ? new MigrationFatalException(msg, lastAuth)
+                    : new MigrationFatalException(msg));
                 return;
             }
             _log.WriteLine($"[Copy] Copying data for {mu.KeyspaceName}.{mu.TableName}", LogType.Info);
@@ -533,6 +549,7 @@ public class MigrationJobRunner : IAsyncDisposable
             }
             catch (Exception ex)
             {
+                HandleMigrationUnitError(mu, ex);
                 _log.WriteLine(
                     $"Table {mu.KeyspaceName}.{mu.TableName} faulted: {ex.GetType().FullName}: {ex.Message}",
                     LogType.Error);
@@ -588,32 +605,21 @@ public class MigrationJobRunner : IAsyncDisposable
         }
     }
 
-    private async Task ProcessWithRetryAsync(Job job, TableMigration mu, JobPartitioning partitioning, CancellationToken token)
+    private Task ProcessWithRetryAsync(Job job, TableMigration mu, JobPartitioning partitioning, CancellationToken token)
     {
-        for (int attempt = 1; attempt <= MigrationDefaults.MaxTableRetries; attempt++)
-        {
-            try
+        return RetryExecutor.ExecuteAsync<int>(
+            operation: async _ =>
             {
                 await ProcessMigrationUnitAsync(job, mu, partitioning, token);
-                return;
-            }
-            catch (Exception ex) when (ExceptionClassifier.IsTransient(ex)
-                && attempt < MigrationDefaults.MaxTableRetries)
-            {
-                int delayMs = ExceptionClassifier.GetRetryDelayMs(ex, attempt);
-                _log.WriteLine($"Table retry {attempt} for {mu.KeyspaceName}.{mu.TableName}: {ex.Message}", LogType.Warning);
-                await Task.Delay(delayMs, token);
-            }
-            catch (OperationCanceledException)
-            {
-                throw;
-            }
-            catch (Exception ex)
-            {
-                HandleMigrationUnitError(mu, ex);
-                return;
-            }
-        }
+                return 0;
+            },
+            maxAttempts: MigrationDefaults.MaxTableRetries,
+            shouldRetry: ExceptionClassifier.IsTransient,
+            delayFor: (ex, attempt) => RetryPolicy.FromException(ex, attempt),
+            onRetry: (ex, attempt) => _log.WriteLine(
+                $"Table retry {attempt} for {mu.KeyspaceName}.{mu.TableName}: {ex.Message}",
+                LogType.Warning),
+            cancellationToken: token);
     }
 
     private async Task DiscoverUnitPartitioningAsync(
@@ -708,7 +714,7 @@ public class MigrationJobRunner : IAsyncDisposable
         }
 
         if (mu.BulkCopyPhase < BulkCopyPhase.Copying)
-            mu.BulkCopyPhase = BulkCopyPhase.Copying;
+            mu.AdvanceBulkCopyPhase(BulkCopyPhase.Copying);
 
         mu.BulkCopyStartedOn ??= DateTime.UtcNow;
         if (job.IsOnline)
@@ -748,7 +754,7 @@ public class MigrationJobRunner : IAsyncDisposable
 
         if (mu.BulkCopyPhase == BulkCopyPhase.NotStarted)
         {
-            mu.BulkCopyPhase = BulkCopyPhase.InitializingDestination;
+            mu.AdvanceBulkCopyPhase(BulkCopyPhase.InitializingDestination);
             MigrationJobContext.Instance.SaveMigrationUnit(mu, true);
         }
 
@@ -798,17 +804,31 @@ public class MigrationJobRunner : IAsyncDisposable
         _log.WriteLine($"Error processing {mu.KeyspaceName}.{mu.TableName}: {ex}", LogType.Error);
         mu.SourceStatus = TableStatus.Failed;
 
+        // Stamped on the unit JSON so the failure reason survives a
+        // process restart even when in-memory log buffer is lost.
+        var phase = mu.BulkCopyPhase.ToString();
+        mu.FailedOperation =
+            $"[{DateTime.UtcNow:O}] phase={phase} {ex.GetType().Name}: {Truncate(ex.Message, 500)}";
+
         if (ExceptionClassifier.IsAuth(ex))
         {
+            Interlocked.Exchange(ref _lastAuthException, ex);
             Interlocked.Increment(ref _consecutiveAuthErrors);
             _log.WriteLine($"Auth failure #{Volatile.Read(ref _consecutiveAuthErrors)} on {mu.KeyspaceName}.{mu.TableName}", LogType.Warning);
         }
         else
         {
             Interlocked.Exchange(ref _consecutiveAuthErrors, 0);
+            Interlocked.Exchange(ref _lastAuthException, null);
         }
 
         MigrationJobContext.Instance.SaveMigrationUnit(mu, true);
+    }
+
+    private static string Truncate(string? s, int max)
+    {
+        if (string.IsNullOrEmpty(s)) return string.Empty;
+        return s.Length <= max ? s : s.Substring(0, max) + "…";
     }
 
     /// <summary>
@@ -869,7 +889,7 @@ public class MigrationJobRunner : IAsyncDisposable
             string keyspace, table;
             try
             {
-                (keyspace, table) = SplitKeyspaceAllowingWildcard(fullName);
+                (keyspace, table) = CqlIdentifier.SplitNamespaceEntry(fullName);
             }
             catch (ArgumentException ex)
             {
@@ -924,67 +944,32 @@ public class MigrationJobRunner : IAsyncDisposable
     private async Task<bool> IsTableAccessibleAsync(
         ISession session, string keyspace, string tableName, CancellationToken cancellationToken)
     {
-        for (int att = 1; att <= 10; att++)
+        try
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            try
-            {
-                var probe = new SimpleStatement(
-                    $"SELECT * FROM \"{keyspace}\".\"{tableName}\" WHERE COSMOS_CHANGEFEED_FROM_START() = true");
-                probe.SetPageSize(1);
-                probe.SetAutoPage(false);
-                probe.SetReadTimeoutMillis(15_000);
-                session.Execute(probe);
-                return true;
-            }
-            catch (Exception vex)
-            {
-                if (ExceptionClassifier.IsThrottle(vex) && att < 10)
+            return await RetryExecutor.ExecuteAsync<bool>(
+                operation: _ =>
                 {
-                    int delaySec = Math.Min(att * 3, 30);
-                    await Task.Delay(TimeSpan.FromSeconds(delaySec), cancellationToken);
-                    continue;
-                }
-                _log.WriteLine($"Skipping {keyspace}.{tableName}: {vex.Message}", LogType.Warning);
-                return false;
-            }
+                    var probe = new SimpleStatement(
+                        $"SELECT * FROM \"{keyspace}\".\"{tableName}\" WHERE COSMOS_CHANGEFEED_FROM_START() = true");
+                    probe.SetPageSize(1);
+                    probe.SetAutoPage(false);
+                    probe.SetReadTimeoutMillis(15_000);
+                    session.Execute(probe);
+                    return Task.FromResult(true);
+                },
+                maxAttempts: 10,
+                shouldRetry: ExceptionClassifier.IsThrottle,
+                delayFor: (_, attempt) => TimeSpan.FromSeconds(Math.Min(attempt * 3, 30)),
+                cancellationToken: cancellationToken);
         }
-        return false;
-    }
-
-    /// <summary>
-    /// Quote-aware split of 'keyspace.table' where the table side may
-    /// be the literal wildcard '*'. Both sides are returned in bare
-    /// form (surrounding "..." stripped, ""-escapes resolved).
-    /// <see cref="CqlIdentifier.SplitQualifiedName"/> is not used
-    /// because it rejects '*' on the table side.
-    /// </summary>
-    private static (string keyspace, string table) SplitKeyspaceAllowingWildcard(string fullName)
-    {
-        if (string.IsNullOrWhiteSpace(fullName))
-            throw new ArgumentException("Empty entry", nameof(fullName));
-
-        int pos = 0;
-        string keyspace = CqlIdentifier.ReadIdentifier(fullName, ref pos);
-        if (pos >= fullName.Length || fullName[pos] != '.')
-            throw new ArgumentException(
-                $"Expected '.' between keyspace and table in '{fullName}'", nameof(fullName));
-        pos++;
-
-        string table;
-        if (pos < fullName.Length && fullName[pos] == '*'
-            && (pos + 1 == fullName.Length))
+        catch (OperationCanceledException)
         {
-            table = "*";
+            throw;
         }
-        else
+        catch (Exception vex)
         {
-            table = CqlIdentifier.ReadIdentifier(fullName, ref pos);
-            if (pos != fullName.Length)
-                throw new ArgumentException(
-                    $"Unexpected trailing characters in '{fullName}'", nameof(fullName));
+            _log.WriteLine($"Skipping {keyspace}.{tableName}: {vex.Message}", LogType.Warning);
+            return false;
         }
-
-        return (keyspace, table);
     }
 }

@@ -86,7 +86,7 @@ internal class DataCopyWorker
                 if (current.Phase == PartitionPhase.Replay)
                     current.Table.Tracker.MarkReplayPolled();
 
-                await writer.WriteAsync(result.Rows, result.WorkChunk, current, ctx);
+                await writer.WriteAsync(result.Rows, result.JsonRows, result.Metadata, result.WorkChunk, current, ctx);
 
                 if (result.WorkChunk.IsCompleted)
                 {
@@ -212,36 +212,21 @@ internal class DataCopyWorker
     {
         // Surface root causes — the driver wraps CQL/network errors in
         // chains of inner exceptions whose top-level message is
-        // generic. Walk Flatten() and InnerException.
+        // generic. ExceptionClassifier.Walk handles both Flatten() and
+        // InnerException so we don't duplicate the walk here.
         _workerLog.WriteLine($"Error on {tag}: {ex.GetType().Name}: {ex.Message}", LogType.Error);
-        // Include the originating stack frame so NREs and other
-        // unexpected failures are diagnosable from the UI log alone.
-        var firstFrame = ex.StackTrace?.Split('\n').FirstOrDefault()?.Trim();
-        if (!string.IsNullOrEmpty(firstFrame))
+        if (!string.IsNullOrEmpty(ex.StackTrace))
         {
-            _workerLog.WriteLine($"  {firstFrame}", LogType.Error);
+            _workerLog.WriteLine($"  stack: {ex.StackTrace.Replace("\r", string.Empty).Replace("\n", " | ")}", LogType.Error);
         }
 
-        if (ex is AggregateException agg)
+        int i = 0;
+        foreach (var inner in ExceptionClassifier.Walk(ex))
         {
-            int i = 0;
-            foreach (var inner in agg.Flatten().InnerExceptions)
-            {
-                _workerLog.WriteLine(
-                    $"  caused by [{++i}] {inner.GetType().Name}: {inner.Message}",
-                    LogType.Error);
-            }
-            return;
-        }
-
-        var cur = ex.InnerException;
-        int depth = 0;
-        while (cur != null && depth++ < 5)
-        {
+            if (ReferenceEquals(inner, ex)) continue;
             _workerLog.WriteLine(
-                $"  caused by {cur.GetType().Name}: {cur.Message}",
+                $"  caused by [{++i}] {inner.GetType().Name}: {inner.Message}",
                 LogType.Error);
-            cur = cur.InnerException;
         }
     }
 
@@ -251,20 +236,11 @@ internal class DataCopyWorker
     /// The Cassandra driver often wraps raw OOMs in driver-level
     /// exceptions (NoHostAvailableException, ReadTimeoutException,
     /// AggregateException), so a plain type-check misses them.
+    /// Delegates the walk to <see cref="ExceptionClassifier.Walk"/>.
     /// </summary>
     private static bool IsOutOfMemory(Exception? ex)
     {
-        int depth = 0;
-        while (ex != null && depth++ < 8)
-        {
-            if (ex is OutOfMemoryException) return true;
-            if (ex is AggregateException agg)
-            {
-                return agg.Flatten().InnerExceptions.Any(IsOutOfMemory);
-            }
-            ex = ex.InnerException;
-        }
-        return false;
+        return ExceptionClassifier.Walk(ex).Any(e => e is OutOfMemoryException);
     }
 
     private static void MarkBulkDrained(Partition partition)

@@ -53,7 +53,7 @@
                 </div>
                 <div class="col">
                     <small class="text-muted">
-                        <strong>Type:</strong> @sj.JobType
+                        <strong>Type:</strong> CQL Copy
                         @if (sj.IsOnline) { <span> · <strong>Mode:</strong> Online (CDC)</span> }
                         else { <span> · <strong>Mode:</strong> Offline</span> }
                         @if (sj.StartedOn.HasValue) { <span> · <strong>Started:</strong> @sj.StartedOn.Value.ToString("yyyy-MM-dd HH:mm:ss") UTC</span> }
@@ -162,7 +162,7 @@
                 @if (sj.SkipSourceRowCount)
                 {
                     <div class="col-auto">
-                        <span class="badge bg-warning text-dark" title="SELECT COUNT(*) on the source was skipped — per-table progress displays as '?%' until the migration completes.">Skip source COUNT(*)</span>
+                        <span class="badge bg-warning text-dark" title="SELECT COUNT(*) on the source was skipped — per-table progress shows the live copy rate (e.g. 'Copying (3k/s)') rather than a percentage until the migration completes.">Skip source COUNT(*)</span>
                     </div>
                 }
                 @if (sj.AppendMode)

@@ -1,3 +1,5 @@
+using CassandraMigrationProcessor.CassandraDriver;
+
 namespace CassandraMigrationProcessor.DataTransfer;
 
 /// <summary>
@@ -13,10 +15,34 @@ namespace CassandraMigrationProcessor.DataTransfer;
 /// <see cref="System.Threading.Interlocked"/> when updating the shared
 /// <see cref="WriteCounters"/>.
 /// </para>
+/// <para>
+/// Two write entry points exist because the reader has two output
+/// shapes. <see cref="WriteRowAsync"/> takes a typed
+/// <c>object[]</c> bound to a <c>VALUES</c>-list INSERT (or counter
+/// UPDATE) and is the only path used for counter tables.
+/// <see cref="WriteJsonRowAsync"/> takes the cleaned <c>SELECT JSON *</c>
+/// envelope and binds it to an <c>INSERT ... JSON ?</c> statement,
+/// delegating type marshalling to the destination server so the
+/// migrator does not have to implement a CQL-to-CLR coercer for every
+/// type the source might contain. The <c>metadata</c> argument carries
+/// CDC-derived per-row writetime + remaining-TTL; strategies that
+/// cannot honour <c>USING TIMESTAMP</c>/<c>USING TTL</c> (counters)
+/// ignore the metadata silently.
+/// </para>
 /// </summary>
 internal interface IRowWriteStrategy
 {
-    Task<WriteOutcome> WriteRowAsync(object[] sourceRow, WriteCounters counters, CancellationToken cancellationToken);
+    Task<WriteOutcome> WriteRowAsync(
+        object[] sourceRow,
+        WriteCounters counters,
+        CdcRowMetadata? metadata,
+        CancellationToken cancellationToken);
+
+    Task<WriteOutcome> WriteJsonRowAsync(
+        string cleanedJson,
+        WriteCounters counters,
+        CdcRowMetadata? metadata,
+        CancellationToken cancellationToken);
 }
 
 /// <summary>

@@ -87,8 +87,6 @@ public class Job
 
     public CDCMode CDCMode { get; set; } = CDCMode.Offline;
 
-    public JobType JobType{ get; set; } = JobType.CqlCopy;
-
     public bool IsSimulatedRun { get; set; }
     public bool AppendMode { get; set; }
 
@@ -109,7 +107,8 @@ public class Job
     /// <summary>
     /// When true, the tool does NOT run a per-table <c>SELECT COUNT(*)</c>
     /// during partitioning to learn the source row count. Progress
-    /// display shows "?%" for those tables. Useful when COUNT(*) is
+    /// display shows the live copy rate (e.g. "Copying (3k/s)") for
+    /// those tables instead of a percentage. Useful when COUNT(*) is
     /// expensive or disabled on the source. Default is false.
     /// </summary>
     public bool SkipSourceRowCount { get; set; }

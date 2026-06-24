@@ -202,13 +202,13 @@ public class JobManager
     }
 
     /// <summary>
-    /// Checks if controlled pause is applicable for the given job type and current job state.
+    /// Returns true while the job is still in a phase where a controlled
+    /// pause is meaningful — i.e. bulk copy hasn't fully drained yet. Once
+    /// every table is past its copy phase the pause command is a no-op,
+    /// so the UI hides the button.
     /// </summary>
-    public bool IsControlledPauseApplicable(JobType jobType, CassandraMigrationProcessor.Models.Job? job = null)
+    public bool IsControlledPauseApplicable(CassandraMigrationProcessor.Models.Job? job = null)
     {
-        if (jobType != JobType.CqlCopy)
-            return false;
-
         // If job is provided, check if bulk copy (offline phase) is still ongoing
         if (job != null)
         {
@@ -283,6 +283,35 @@ public class JobManager
                 _log.WriteLine(
                     $"Job {_runningJobId} already running, cannot start {job.Id}",
                     LogType.Warning);
+                // Also write the rejection to the REJECTED
+                // job's own log at Info level so an operator looking at
+                // Job B's Job Logs panel sees a clear "Cannot start"
+                // entry instead of staring at an empty log while the
+                // banner says "Not Started". The pre-flight check in
+                // OnMigrationDetailsPopUpSubmit catches the common path
+                // before reaching here; this log is the defense-in-depth
+                // for any caller that bypasses the UI guard or hits the
+                // TOCTOU race between pre-flight and slot claim.
+                try
+                {
+                    using var rejectionLog = CreateLog();
+                    rejectionLog.Initialize(job.Id);
+                    rejectionLog.SetJob(job);
+                    rejectionLog.WriteLine(
+                        $"Cannot start — job {_runningJobId} is currently running. " +
+                        "Pause or complete that job first, then click Resume Job here.",
+                        LogType.Info);
+                }
+                catch (Exception ex) when (ex is IOException or InvalidOperationException or ObjectDisposedException)
+                {
+                    // Never let the rejection-log path mask the original
+                    // rejection; the primary log line above is already
+                    // recorded on the active job. Surface this failure on
+                    // the primary log so it stays diagnosable.
+                    _log?.WriteLine(
+                        $"Failed to write rejection log for job {job.Id}: {ex.Message}",
+                        LogType.Warning);
+                }
                 return Task.CompletedTask;
             }
 
@@ -423,16 +452,22 @@ public class JobManager
     }
 
     /// <summary>
-    /// Append a "Resume requested by operator" entry to the persistent
-    /// log file for <paramref name="jobId"/>. Used as immediate
-    /// feedback before <see cref="StartMigration"/> is invoked.
+    /// Append a "Resume dispatched by operator" entry to the persistent
+    /// log file for <paramref name="jobId"/>. Call this **only** at the
+    /// point a resume actually dispatches to <see cref="StartMigration"/>,
+    /// i.e. after the precondition gate (resumable state, no other active
+    /// job, credentials available) has passed. The entry is the
+    /// operator-visible signal that the click drove a state change;
+    /// rejected clicks are surfaced via the UI error banner instead so
+    /// the log file stays a faithful record of "what the system did"
+    /// rather than "where the user clicked".
     /// </summary>
-    public void LogOperatorResumeRequest(string jobId, string note = "")
+    public void LogResumeDispatched(string jobId, string note = "")
     {
         if (string.IsNullOrEmpty(jobId)) return;
         try
         {
-            string msg = $"[Manager] Resume requested by operator{(string.IsNullOrEmpty(note) ? "" : " — " + note)}";
+            string msg = $"[Manager] Resume dispatched by operator{(string.IsNullOrEmpty(note) ? "" : " — " + note)}";
 
             // Only write to the live in-flight log when this is the
             // same job running; otherwise scope a transient log to the
@@ -449,7 +484,7 @@ public class JobManager
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"[Manager] LogOperatorResumeRequest failed for {jobId}: {ex.Message}");
+            Console.WriteLine($"[Manager] LogResumeDispatched failed for {jobId}: {ex.Message}");
         }
     }
 

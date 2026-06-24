@@ -180,20 +180,17 @@ public static class CassandraClientFactory
             {
                 if (nhae.Errors != null)
                 {
-                    var found = nhae.Errors.Values
+                    return nhae.Errors.Values
                         .Select(UnwrapToAuthenticationException)
-                        .FirstOrDefault(a => a != null);
-                    if (found != null) return found;
+                        .FirstOrDefault(found => found != null);
                 }
                 return null;
             }
             if (ex is AggregateException agg)
             {
-                var found = agg.InnerExceptions
+                return agg.InnerExceptions
                     .Select(UnwrapToAuthenticationException)
-                    .FirstOrDefault(a => a != null);
-                if (found != null) return found;
-                return null;
+                    .FirstOrDefault(found => found != null);
             }
             ex = ex.InnerException;
         }

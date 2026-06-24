@@ -22,7 +22,7 @@ internal sealed class PartitionManager : IAsyncDisposable
     // the source is disposed; reading _cooldownStopCts.Token post-
     // dispose throws ObjectDisposedException synchronously, which a
     // fire-and-forget RecycleAfterDelayAsync would silently swallow
-    // and drop the partition. Issue surfaced in PR #387 review.
+    // and drop the partition. Issue surfaced in partitioning review.
     private readonly CancellationToken _cooldownCt;
     private readonly JobControl? _control;
 

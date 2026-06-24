@@ -1,5 +1,6 @@
 using Cassandra;
 using CassandraMigrationProcessor.CassandraDriver;
+using CassandraMigrationProcessor.Infrastructure;
 
 namespace CassandraMigrationProcessor.DataTransfer;
 
@@ -39,6 +40,9 @@ internal static class RowWriteStrategyFactory
         var retryPolicy = RetryPolicy.Linear(maxWriteRetries, TimeSpan.FromMilliseconds(500));
 
         if (isCounterTable)
+            // Counters cannot honour USING TIMESTAMP / USING TTL —
+            // Cassandra forbids both on counter UPDATEs. The counter
+            // strategy uses its own prepared UPDATE without the clause.
             return await CounterRowWriteStrategy.CreateAsync(log, targetSession, columns, targetKeyspace, targetTable, retryPolicy);
 
         return await RegularRowWriteStrategy.CreateAsync(log, targetSession, columns, targetKeyspace, targetTable, retryPolicy);

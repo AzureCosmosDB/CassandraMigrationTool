@@ -54,11 +54,9 @@ public static class TableDiscovery
             string table;
             try
             {
-                // CQL-aware split: handles both bare 'foo.bar' and
-                // quoted forms like 'foo."MixedCase_Table-1"' or
-                // '"My-KS"."Some.Table"' — the surrounding "..." is
-                // stripped and ""-escapes are resolved.
-                (keyspace, table) = CqlIdentifier.SplitQualifiedName(fullName);
+                // Tolerates the '*' wildcard sentinel; expanded by
+                // MigrationJobRunner.ExpandWildcardTablesAsync at start.
+                (keyspace, table) = CqlIdentifier.SplitNamespaceEntry(fullName);
             }
             catch (ArgumentException)
             {
@@ -129,8 +127,8 @@ public static class TableDiscovery
                 string table;
                 try
                 {
-                    // CQL-aware split: tolerates 'foo."MixedCase-1"' etc.
-                    (keyspace, table) = CqlIdentifier.SplitQualifiedName(fullName);
+                    // Tolerates the '*' wildcard sentinel; see ParseNamespaceEntries.
+                    (keyspace, table) = CqlIdentifier.SplitNamespaceEntry(fullName);
                 }
                 catch (ArgumentException)
                 {

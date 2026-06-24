@@ -28,7 +28,7 @@
                        size (10). Below that threshold pagination cannot be
                        active (the grid renders as a single page regardless of
                        page-size choice) and the strip is pure visual noise.
-                       Issue #253 item 8. *@
+                       Pagination hidden when there are 10 or fewer rows. *@
                     @if (GetFilteredItemsCount() > 10)
                     {
                         <small class="text-muted text-nowrap">
@@ -140,7 +140,11 @@
                                         ? $"{mu.CopyRowsPerSecond/1000:F1}k/s"
                                         : mu.CopyRowsPerSecond > 0
                                             ? $"{mu.CopyRowsPerSecond:F0}/s" : "";
-                                    copyStatus = speedStr != "" ? $"?% ({speedStr})" : "?% (Copying)";
+                                    // No percent estimate yet (CDC partition
+                                    // discovery / bulk-init, or Skip-COUNT mode). Show the
+                                    // rate by itself instead of a literal "?%" token, which
+                                    // operators routinely misread as a broken counter.
+                                    copyStatus = speedStr != "" ? $"Copying ({speedStr})" : "Copying…";
                                 }
                                 else
                                 { copyStatus = "Pending"; pct = 0; }

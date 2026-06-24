@@ -23,7 +23,7 @@ public class TableMigrationSummary
     // ── Identity ──
 
     [JsonIgnore]
-    public Job? ParentJob;
+    public Job? ParentJob { get; set; }
 
     public string Id { get; set; } = string.Empty;
     public string JobId { get; set; } = string.Empty;
@@ -89,7 +89,25 @@ public class TableMigration : TableMigrationSummary
 {
     // ── Bulk Copy State ──
 
-    public BulkCopyPhase BulkCopyPhase { get; set; } = BulkCopyPhase.NotStarted;
+    [JsonProperty]
+    public BulkCopyPhase BulkCopyPhase { get; private set; } = BulkCopyPhase.NotStarted;
+
+    /// <summary>
+    /// Advances <see cref="BulkCopyPhase"/> to <paramref name="next"/>.
+    /// Throws <see cref="InvalidOperationException"/> if the move would
+    /// regress (the lifecycle is strictly forward-only:
+    /// <c>NotStarted → InitializingDestination → Copying → Completed</c>).
+    /// Idempotent: setting to the current phase is a no-op.
+    /// </summary>
+    public void AdvanceBulkCopyPhase(BulkCopyPhase next)
+    {
+        if (next == BulkCopyPhase) return;
+        if ((int)next < (int)BulkCopyPhase)
+            throw new InvalidOperationException(
+                $"BulkCopyPhase cannot regress from {BulkCopyPhase} to {next} " +
+                $"for {KeyspaceName}.{TableName}.");
+        BulkCopyPhase = next;
+    }
 
     public DateTime? BulkCopyStartedOn { get; set; }
     public DateTime? BulkCopyEndedOn { get; set; }
@@ -135,18 +153,20 @@ public class TableMigration : TableMigrationSummary
     public string? ChangeFeedStartToken { get; set; }
 
     // ── Change Feed Counters (Interlocked for thread safety) ──
+    //
+    // Workers write through Interlocked.Add directly on the internal
+    // fields below; readers (UI / mapper) consume the snapshot stored
+    // on the base TableMigrationSummary auto-properties via
+    // TableMigrationMapper.ToSummary. There is no "new" hide:
+    // TableMigration deliberately does NOT re-declare the
+    // ChangeFeedRowsInserted / ChangeFeedInsertEvents properties — the
+    // single source of truth for any read is "what the mapper last
+    // snapshotted", which keeps display values consistent and avoids
+    // the two-backing-stores hazard the previous design carried.
 
     internal long _changeFeedInsertEvents;
-    // Reserved for FFCF: currently always 0 (insert-only pipeline)
-    internal long _changeFeedDeleteEvents;
-    // Reserved for FFCF: currently always 0 (insert-only pipeline)
-    internal long _changeFeedUpdateEvents;
     internal long _changeFeedErrors;
     internal long _changeFeedRowsInserted;
-    // Reserved for FFCF: currently always 0 (insert-only pipeline)
-    internal long _changeFeedRowsDeleted;
-    // Reserved for FFCF: currently always 0 (insert-only pipeline)
-    internal long _changeFeedRowsUpdated;
     internal long _changeFeedUpdatesInLastBatch;
     // Sticky "last flushed batch size" the dashboard renders.
     // TableMigrationMapper.UpdateParentJob captures the live
@@ -154,52 +174,11 @@ public class TableMigration : TableMigrationSummary
     // display survives between flushes.
     internal long _changeFeedLastFlushedBatch;
 
-    public new long ChangeFeedInsertEvents
-    {
-        get => Interlocked.Read(ref _changeFeedInsertEvents);
-        set => Interlocked.Exchange(
-            ref _changeFeedInsertEvents, value);
-    }
-    // Reserved for FFCF: currently always 0 (insert-only pipeline)
-    public long ChangeFeedDeleteEvents
-    {
-        get => Interlocked.Read(ref _changeFeedDeleteEvents);
-        set => Interlocked.Exchange(
-            ref _changeFeedDeleteEvents, value);
-    }
-    // Reserved for FFCF: currently always 0 (insert-only pipeline)
-    public long ChangeFeedUpdateEvents
-    {
-        get => Interlocked.Read(ref _changeFeedUpdateEvents);
-        set => Interlocked.Exchange(
-            ref _changeFeedUpdateEvents, value);
-    }
     public long ChangeFeedErrors
     {
         get => Interlocked.Read(ref _changeFeedErrors);
         set => Interlocked.Exchange(
             ref _changeFeedErrors, value);
-    }
-
-    public new long ChangeFeedRowsInserted
-    {
-        get => Interlocked.Read(ref _changeFeedRowsInserted);
-        set => Interlocked.Exchange(
-            ref _changeFeedRowsInserted, value);
-    }
-    // Reserved for FFCF: currently always 0 (insert-only pipeline)
-    public long ChangeFeedRowsDeleted
-    {
-        get => Interlocked.Read(ref _changeFeedRowsDeleted);
-        set => Interlocked.Exchange(
-            ref _changeFeedRowsDeleted, value);
-    }
-    // Reserved for FFCF: currently always 0 (insert-only pipeline)
-    public long ChangeFeedRowsUpdated
-    {
-        get => Interlocked.Read(ref _changeFeedRowsUpdated);
-        set => Interlocked.Exchange(
-            ref _changeFeedRowsUpdated, value);
     }
 
     // ── Constructor ──
@@ -230,8 +209,7 @@ public class TableMigration : TableMigrationSummary
         using var sha = SHA256.Create();
         byte[] hashBytes = sha.ComputeHash(
             Encoding.UTF8.GetBytes($"{keyspaceName}.{tableName}"));
-        return BitConverter.ToString(hashBytes)
-            .Replace("-", "").Substring(0, 16).ToLower();
+        return Convert.ToHexString(hashBytes)[..16].ToLowerInvariant();
     }
 
     /// <summary>
@@ -286,17 +264,25 @@ public class TableMigration : TableMigrationSummary
                 }
             }
             if (TargetFailedRowCount == 0)
-            {
-                long v = TryReadLegacy<long?>(c, "TargetFailedRowCount", out _) ?? 0;
-                if (v > 0) TargetFailedRowCount = v;
-            }
+                AssignIfZero(c, "TargetFailedRowCount", v => TargetFailedRowCount = v);
             if (SourceCountDuringCopy == 0)
-            {
-                long v = TryReadLegacy<long?>(c, "SourceQueryRowCount", out _) ?? 0;
-                if (v > 0) SourceCountDuringCopy = v;
-            }
+                AssignIfZero(c, "SourceQueryRowCount", v => SourceCountDuringCopy = v);
         }
         _legacyFields.Remove("CopyChunks");
+    }
+
+    /// <summary>
+    /// If the legacy JSON object has a positive value at
+    /// <paramref name="field"/>, hand it to <paramref name="assign"/>.
+    /// Read failures and missing/zero values are intentionally swallowed —
+    /// the whole point of the legacy migration path is best-effort
+    /// fold-forward, and the caller is expected to only invoke this when
+    /// the current field is still at its default.
+    /// </summary>
+    private void AssignIfZero(JObject source, string field, Action<long> assign)
+    {
+        long v = TryReadLegacy<long?>(source, field, out _) ?? 0;
+        if (v > 0) assign(v);
     }
 
     private T? TryReadLegacy<T>(JObject source, string field, out bool readFailed)

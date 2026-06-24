@@ -15,6 +15,12 @@ public class AppSettings
     // Clamping bounds
     internal const int MinLogPageSize = 1000;
     internal const int MaxLogPageSize = 100000;
+    internal const int MinCqlCopyPageSize = 1;
+    internal const int MaxCqlCopyPageSize = 100000;
+    internal const int MinChangeFeedPollIntervalMs = 100;
+    internal const int MaxChangeFeedPollIntervalMs = 600_000;
+    internal const int MinFeedRangeParallelism = 1;
+    internal const int MaxFeedRangeParallelismCap = 4096;
 
     public int LogPageSize { get; set; }
     public int CqlCopyPageSize { get; set; }
@@ -36,25 +42,28 @@ public class AppSettings
     private static int DefaultOrValue(int loaded, int defaultVal)
         => loaded == 0 ? defaultVal : loaded;
 
-    internal static int DefaultParallelism()
-        => Math.Max(4, Environment.ProcessorCount * 2);
+    private static readonly int _defaultParallelism
+        = Math.Max(4, Environment.ProcessorCount * 2);
 
-    internal void ApplyDefaults()
-    {
-        CqlCopyPageSize = DefaultCqlCopyPageSize;
-        ChangeFeedPollIntervalMs = DefaultChangeFeedPollIntervalMs;
-        MaxFeedRangeParallelism = DefaultParallelism();
-        LogPageSize = DefaultLogPageSize;
-        ClampValues();
-    }
+    internal static int DefaultParallelism() => _defaultParallelism;
+
+    /// <summary>
+    /// Populate every setting from a freshly-constructed instance (i.e. all
+    /// zeroes) — <see cref="ApplyLoaded"/> coerces 0 → default and then
+    /// clamps, which is exactly the behaviour we want for "all defaults".
+    /// </summary>
+    internal void ApplyDefaults() => ApplyLoaded(new AppSettings());
 
     internal void ClampValues()
     {
-        if (LogPageSize < MinLogPageSize)
-            LogPageSize = MinLogPageSize;
-        if (LogPageSize > MaxLogPageSize)
-            LogPageSize = MaxLogPageSize;
+        LogPageSize              = Clamp(LogPageSize,              MinLogPageSize,              MaxLogPageSize);
+        CqlCopyPageSize          = Clamp(CqlCopyPageSize,          MinCqlCopyPageSize,          MaxCqlCopyPageSize);
+        ChangeFeedPollIntervalMs = Clamp(ChangeFeedPollIntervalMs, MinChangeFeedPollIntervalMs, MaxChangeFeedPollIntervalMs);
+        MaxFeedRangeParallelism  = Clamp(MaxFeedRangeParallelism,  MinFeedRangeParallelism,     MaxFeedRangeParallelismCap);
     }
+
+    private static int Clamp(int value, int min, int max)
+        => value < min ? min : (value > max ? max : value);
 
     internal void ApplyLoaded(AppSettings loaded)
     {

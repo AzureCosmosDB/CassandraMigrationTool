@@ -66,8 +66,9 @@ internal sealed class Partitioner
 
         var pending = new List<PendingPartition>(feedRanges.Count);
         int resumedCount = 0;
-        foreach (var state in feedRanges.Select(range => mu.Partitions[range]))
+        foreach (var range in feedRanges)
         {
+            var state = mu.Partitions[range];
             if (!enableReplay && state.BulkCompleted) continue;
 
             var phase = state.BulkCompleted ? PartitionPhase.Replay : PartitionPhase.Bulk;
@@ -112,10 +113,13 @@ internal sealed class Partitioner
         IReadOnlyList<string> working;
         lock (mu.Partitions)
         {
-            foreach (var range in sourceRanges.Where(r => !mu.Partitions.ContainsKey(r)))
+            foreach (var range in sourceRanges)
             {
-                mu.Partitions[range] = new PartitionSnapshot { FeedRange = range };
-                addedFromSource++;
+                if (!mu.Partitions.ContainsKey(range))
+                {
+                    mu.Partitions[range] = new PartitionSnapshot { FeedRange = range };
+                    addedFromSource++;
+                }
             }
             working = mu.Partitions.Keys.ToList();
         }

@@ -9,7 +9,6 @@ namespace CassandraMigrationProcessor.DataTransfer;
 
 /// <summary>
 /// Tunables for <see cref="PageWriter"/>: per-row write retry budget.
-/// Page size is reader-only; writers don't page.
 /// </summary>
 internal record WriterConfig(int MaxWriteRetries);
 
@@ -78,6 +77,14 @@ internal sealed class PageWriter : IDisposable
         if (_targetSession is NullSession)
             return Task.CompletedTask;
 
+        // INSERT JSON binds only (string, long, int) — no UDT
+        // marshalling on the wire — so non-counter tables don't need
+        // UDT mapping on the target session. This avoids spinning up
+        // a temporary source session for UDT schema discovery on the
+        // write path.
+        if (!partition.Table.IsCounterTable)
+            return Task.CompletedTask;
+
         return _udtRegistrations.GetOrAdd(partition.Table.Spec.TargetKeyspaceName, async ks =>
         {
             ISession? sourceSession = null;
@@ -109,8 +116,21 @@ internal sealed class PageWriter : IDisposable
         WorkChunk workChunk,
         Partition partition,
         PipelineContext ctx)
+        => await WriteAsync(rows, jsonRows: null, metadata: null, workChunk, partition, ctx).ConfigureAwait(false);
+
+    public async Task WriteAsync(List<object[]> rows,
+        IReadOnlyList<string>? jsonRows,
+        IReadOnlyList<CdcRowMetadata?>? metadata,
+        WorkChunk workChunk,
+        Partition partition,
+        PipelineContext ctx)
     {
-        if (rows.Count == 0)
+        // Exactly one of rows/jsonRows is populated per page (the
+        // reader picks JSON for every non-counter table; counters
+        // keep the typed path). Pick whichever is non-empty so the
+        // rest of the method is shape-agnostic.
+        int rowCount = jsonRows?.Count ?? rows.Count;
+        if (rowCount == 0)
         {
             workChunk.IsCompleted = true;
             return;
@@ -120,10 +140,10 @@ internal sealed class PageWriter : IDisposable
 
         var stopwatch = Stopwatch.StartNew();
         var counters = new WriteCounters();
-        var writeTasks = new List<Task<WriteOutcome>>(rows.Count);
+        var writeTasks = new List<Task<WriteOutcome>>(rowCount);
 
         bool aborted = false;
-        for (int i = 0; i < rows.Count; i++)
+        for (int i = 0; i < rowCount; i++)
         {
             if (_ct.IsCancellationRequested
                 || ctx.Control.IsFatal)
@@ -132,7 +152,15 @@ internal sealed class PageWriter : IDisposable
                 break;
             }
 
-            writeTasks.Add(strategy.WriteRowAsync(rows[i], counters, _ct));
+            // Single TTL policy regardless of phase: always write with
+            // source writetime + remaining TTL. Rows whose remaining
+            // TTL is <= 0 by the time we bind are clamped to 1s by the
+            // strategy so the destination quickly tombstones the row
+            // via the same LWW path the source took.
+            var meta = metadata?[i];
+            writeTasks.Add(jsonRows != null
+                ? strategy.WriteJsonRowAsync(jsonRows[i], counters, meta, _ct)
+                : strategy.WriteRowAsync(rows[i], counters, meta, _ct));
         }
 
         var outcomes = await Task.WhenAll(writeTasks);
@@ -146,18 +174,18 @@ internal sealed class PageWriter : IDisposable
         // written. Gating on counters.Failed == 0 was unsafe: an early break
         // (cancellation or fatal flag tripped mid-loop) leaves un-enqueued
         // rows that never fail and never succeed — Failed stays 0 but Done
-        // < rows.Count, and marking IsCompleted=true would advance the
+        // < rowCount, and marking IsCompleted=true would advance the
         // continuation token past unwritten rows = silent data loss on
         // resume.
-        if (!aborted && counters.Done == rows.Count && counters.Failed == 0)
+        if (!aborted && counters.Done == rowCount && counters.Failed == 0)
         {
             workChunk.IsCompleted = true;
         }
         else
         {
-            int unwritten = rows.Count - (int)counters.Done;
+            int unwritten = rowCount - (int)counters.Done;
             _log.WriteLine(
-                $"{counters.Failed} failed / {unwritten - counters.Failed} unattempted / {rows.Count} total writes for {partition.Table.FullTableName} — checkpoint NOT advanced (will retry on resume)",
+                $"{counters.Failed} failed / {unwritten - counters.Failed} unattempted / {rowCount} total writes for {partition.Table.FullTableName} — checkpoint NOT advanced (will retry on resume)",
                 LogType.Warning);
         }
 
@@ -177,16 +205,25 @@ internal sealed class PageWriter : IDisposable
         }
 
         long pageBytes = 0;
-        foreach (var r in rows)
-            foreach (var v in r)
-            {
-                if (v is byte[] b)
-                    pageBytes += b.Length;
-                else if (v is string s)
-                    pageBytes += s.Length * 2;
-                else if (v != null)
-                    pageBytes += 8;
-            }
+        if (jsonRows != null)
+        {
+            // UTF-16 char count is a reasonable upper bound on the
+            // wire-byte cost of the JSON envelope.
+            foreach (var s in jsonRows) pageBytes += s.Length * 2;
+        }
+        else
+        {
+            foreach (var r in rows)
+                foreach (var v in r)
+                {
+                    if (v is byte[] b)
+                        pageBytes += b.Length;
+                    else if (v is string s)
+                        pageBytes += s.Length * 2;
+                    else if (v != null)
+                        pageBytes += 8;
+                }
+        }
         partition.Table.Tracker.AddBytes(pageBytes);
     }
 }

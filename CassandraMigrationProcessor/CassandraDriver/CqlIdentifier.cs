@@ -60,6 +60,53 @@ public static class CqlIdentifier
     }
 
     /// <summary>
+    /// Quote-aware split of a user-submitted ``keyspace.table`` entry
+    /// (as found in ``Job.Namespaces``). The table side may be the
+    /// literal wildcard ``*`` (expanded by the migration runner against
+    /// the source schema at job start); the keyspace side MUST be an
+    /// explicit identifier. Returns bare identifiers. The keyspace is
+    /// always run through <see cref="Validate"/>, and the table is too
+    /// unless it is the ``*`` sentinel — so the same injection guards as
+    /// <see cref="SplitQualifiedName"/> apply while the wildcard still
+    /// survives for the runner to resolve.
+    /// </summary>
+    public static (string keyspace, string table) SplitNamespaceEntry(string fullName)
+    {
+        if (string.IsNullOrWhiteSpace(fullName))
+            throw new ArgumentException("Qualified name cannot be empty", nameof(fullName));
+
+        var s = fullName.Trim();
+        int pos = 0;
+        // Keyspace side: wildcards not supported. Cluster-wide
+        // discovery would require also iterating system_schema.keyspaces
+        // in the runner, which it does not currently do -- accepting
+        // '*' here would silently produce a zero-table job.
+        string keyspace = ReadIdentifier(s, ref pos);
+        if (pos >= s.Length || s[pos] != '.')
+            throw new ArgumentException(
+                $"Qualified name must be 'keyspace.table': '{fullName}'", nameof(fullName));
+        pos++;
+        string table = ReadIdentifierOrWildcard(s, ref pos);
+        if (pos < s.Length)
+            throw new ArgumentException(
+                $"Unexpected trailing characters in qualified name: '{fullName}'", nameof(fullName));
+        // Validate both sides (the '*' table sentinel is exempt so the
+        // runner can resolve it against the source schema) to keep
+        // injected / exotic characters out of downstream CQL building.
+        return (Validate(keyspace), table == "*" ? "*" : Validate(table));
+    }
+
+    private static string ReadIdentifierOrWildcard(string s, ref int pos)
+    {
+        if (pos < s.Length && s[pos] == '*')
+        {
+            pos++;
+            return "*";
+        }
+        return ReadIdentifier(s, ref pos);
+    }
+
+    /// <summary>
     /// Wraps <paramref name="identifier"/> in CQL double-quotes,
     /// doubling any embedded <c>"</c> as required by the CQL grammar.
     /// </summary>
