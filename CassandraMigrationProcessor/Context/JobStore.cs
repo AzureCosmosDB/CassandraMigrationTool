@@ -95,12 +95,7 @@ public static class JobStore
     /// <summary>Loads and returns all jobs matching the given IDs.</summary>
     public static List<Job> GetAllJobs(List<string> ids)
     {
-        List<Job> jobs = new();
-        foreach (var id in ids)
-        {
-            var job = GetJob(id);
-            if (job != null) jobs.Add(job);
-        }
+        var jobs = ids.Select(GetJob).OfType<Job>().ToList();
         return jobs;
     }
 

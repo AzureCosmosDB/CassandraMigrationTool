@@ -58,12 +58,9 @@ public class JobManager
         var units = new List<TableMigration>();
         if (mj != null)
         {
-            foreach (var mub in mj.Tables)
-            {
-                var mu = _context.GetMigrationUnit(mub.Id, mj.Id);
-                if (mu != null)
-                    units.Add(mu);
-            }
+            units.AddRange(mj.Tables
+                .Select(mub => _context.GetMigrationUnit(mub.Id, mj.Id))
+                .OfType<TableMigration>());
         }
         return units;
     }
@@ -219,14 +216,11 @@ public class JobManager
     /// </summary>
     public bool IsControlledPauseApplicable(CassandraMigrationProcessor.Models.Job? job = null)
     {
-        // If job is provided, check if bulk copy (offline phase) is still ongoing
-        if (job != null)
+        // If job is provided, check if bulk copy (offline phase) is still ongoing.
+        // If all units have completed their copy phase, controlled pause is not applicable.
+        if (job != null && job.Tables.All(mu => mu.CopyComplete))
         {
-            // Check if all units have completed their copy phase
-            if (job.Tables.All(mu => mu.CopyComplete))
-            {
-                return false;
-            }
+            return false;
         }
 
         return true;

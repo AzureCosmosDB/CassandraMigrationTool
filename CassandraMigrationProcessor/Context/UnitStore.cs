@@ -21,11 +21,9 @@ public static class UnitStore
             jobId = MigrationJobContext.Instance.CurrentlyActiveJob.Id;
         }
 
-        if (MigrationJobContext.Instance.MigrationUnitsCache == null)
-            return GetFromStorage(jobId, unitId);
-        else
-            return MigrationJobContext.Instance.MigrationUnitsCache
-                .GetMigrationUnit(unitId, jobId);
+        return MigrationJobContext.Instance.MigrationUnitsCache == null
+            ? GetFromStorage(jobId, unitId)
+            : MigrationJobContext.Instance.MigrationUnitsCache.GetMigrationUnit(unitId, jobId);
     }
 
     /// <summary>Persists a migration unit to disk and optionally updates its parent job.</summary>
