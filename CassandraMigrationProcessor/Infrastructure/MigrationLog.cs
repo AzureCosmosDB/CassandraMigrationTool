@@ -26,7 +26,7 @@ public class MigrationLog : IDisposable
     private const int LogTrimIndex = 20;
 
     private LogBucket _logBucket = new LogBucket();
-    private List<LogObject> _verboseMessages = new List<LogObject>();
+    private readonly List<LogObject> _verboseMessages = new List<LogObject>();
     private string _currentId = string.Empty;
     private Job? CurrentlyActiveJob;
     private LogStorageCallbacks? _storage;
