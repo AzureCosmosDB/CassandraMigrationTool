@@ -134,7 +134,7 @@ public class PasswordManager
         if (!FileSystem.Exists(_passwordFilePath))
             return Task.FromResult(false);
 
-        // Verify the file contains a recognisable PBKDF2 hash (key may have changed or file may be corrupt)
+        // Verify the file contains a recognizable PBKDF2 hash (file may be corrupt or in an old format)
         try
         {
             var storedHash = File.ReadAllText(_passwordFilePath);
