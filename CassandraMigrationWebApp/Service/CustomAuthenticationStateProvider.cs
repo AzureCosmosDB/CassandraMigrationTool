@@ -14,11 +14,12 @@ public class CustomAuthenticationStateProvider : AuthenticationStateProvider
     public override async Task<AuthenticationState> GetAuthenticationStateAsync()
     {
         var isAuthenticated = await _authService.IsAuthenticatedAsync();
+        var username = isAuthenticated ? await _authService.GetCurrentUsernameAsync() : null;
 
         ClaimsIdentity identity = isAuthenticated
             ? new ClaimsIdentity(new[]
             {
-                new Claim(ClaimTypes.Name, "User")
+                new Claim(ClaimTypes.Name, string.IsNullOrWhiteSpace(username) ? "Unknown" : username)
             }, "Custom Authentication")
             : new ClaimsIdentity();
 

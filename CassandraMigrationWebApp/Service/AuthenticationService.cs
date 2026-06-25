@@ -65,4 +65,11 @@ public class AuthenticationService
         await _sessionStorage.DeleteAsync(AuthTokenKey);
         await _sessionStorage.DeleteAsync(AuthExpiryKey);
     }
+
+    public Task<string?> GetCurrentUsernameAsync()
+    {
+        // This application uses single-user password authentication;
+        // no per-user name is stored. Return null so callers can apply a fallback.
+        return Task.FromResult<string?>(null);
+    }
 }

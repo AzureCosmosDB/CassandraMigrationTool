@@ -55,7 +55,7 @@ internal class DataCopyWorker
                     int exhaustions = current.RecordReadRetryExhaustion();
                     if (exhaustions >= Partition.MaxConsecutiveReadRetryExhaustions)
                     {
-                        var msg = $"Source read retries exhausted ({exhaustions} consecutive cycles on partition {current.FeedRange}) for table {current.Table.FullTableName}. Aborting migration job (source likely unavailable or rate-limited beyond recovery).";
+                        var msg = $"Source read retries exhausted ({exhaustions} consecutive cycles on partition {current.FeedRange}) for table {current.Table.FullTableName}. Aborting migration job. Next steps: verify source cluster health and node availability, review source-side throttling/rate limits (and credentials/network), then wait for recovery/backoff and rerun the migration.";
                         _workerLog.WriteLine($"FATAL: {msg}", LogType.Error);
                         ctx.Control.ReportFault(new MigrationFatalException(msg, reader.LastRetryExhaustionException));
                         break;
@@ -105,7 +105,7 @@ internal class DataCopyWorker
                     // would let a subsequent empty-page read flip
                     // BulkCompleted=true and silently mark the table
                     // done with failed rows missing.
-                    var msg = $"Target write retries exhausted for table {current.Table.FullTableName}. Aborting migration job (resume to re-attempt).";
+                    var msg = $"Target write retries exhausted for table {current.Table.FullTableName}. Aborting migration job. Before resuming, verify target connectivity/availability, capacity or throttling limits, and write permissions/schema compatibility; then resume to re-attempt.";
                     _workerLog.WriteLine($"FATAL: {msg}", LogType.Error);
                     ctx.Control.ReportFault(new MigrationFatalException(msg, writer.LastWriteException));
                     break;

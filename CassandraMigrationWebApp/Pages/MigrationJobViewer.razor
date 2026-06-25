@@ -56,7 +56,7 @@
 
 @if (_yesNoDialogOpen)
 {
-   <YesNoDialog Type=_yesNoDiaLogType Caption="Confirmation Required" Message="@_message" OnClose="@YesNoDialogSubmit" />
+   <YesNoDialog Type=_yesNoDialogType Caption="Confirmation Required" Message="@_message" OnClose="@YesNoDialogSubmit" />
 }
 @if (_manageCollectionDialogOpen && CurrentlyLoadedMigrationJob != null)
 {
@@ -308,7 +308,7 @@ else if (@_showLogBackupFile)
     private readonly CancellationTokenSource _componentCts = new();
     private string _message = string.Empty;
     private bool _yesNoDialogOpen;
-    private YesNoDialog.Category _yesNoDiaLogType= YesNoDialog.Category.CutoverNot;
+    private YesNoDialog.Category _yesNoDialogType = YesNoDialog.Category.CutoverNot;
     private bool _manageCollectionDialogOpen;
     private bool _collectionDetailsDialogOpen;
 
@@ -388,9 +388,15 @@ else if (@_showLogBackupFile)
     {
         await InvokeAsync(() =>
         {
-            CurrentlyLoadedMigrationJob.AutoRefreshEnabled = !CurrentlyLoadedMigrationJob.AutoRefreshEnabled;
+            var currentJob = CurrentlyLoadedMigrationJob;
+            if (currentJob is null)
+            {
+                return;
+            }
 
-            if (CurrentlyLoadedMigrationJob.AutoRefreshEnabled)
+            currentJob.AutoRefreshEnabled = !currentJob.AutoRefreshEnabled;
+
+            if (currentJob.AutoRefreshEnabled)
             {
                 // Re-enable: Start the timer and do an immediate refresh
                 if (_refreshTimer == null)
@@ -399,9 +405,9 @@ else if (@_showLogBackupFile)
                 }
 
                 // Trigger immediate refresh
-                if (CurrentlyLoadedMigrationJob != null && (CurrentlyLoadedMigrationJob.Status == JobStatus.Running || JobManager.DidMigrationJobExitRecently(JobId)) && !_showLogBackupFile)
+                if ((currentJob.Status == JobStatus.Running || JobManager.DidMigrationJobExitRecently(JobId)) && !_showLogBackupFile)
                 {
-                    if (_isLoadingCollections && @CurrentlyLoadedMigrationJob.Tables.Count > 0)
+                    if (_isLoadingCollections && @currentJob.Tables.Count > 0)
                     {
                         _isLoadingCollections = false;
                     }
@@ -775,7 +781,6 @@ else if (@_showLogBackupFile)
             }
             else if (CurrentlyLoadedMigrationJob != null
                 && CurrentlyLoadedMigrationJob.Status == JobStatus.Running
-                && CurrentlyLoadedMigrationJob.Status != JobStatus.Completed
                 && !NoOtherActiveJobs())
             {
                 // BB-1 fix: Tell user why job can't start
@@ -1006,7 +1011,7 @@ else if (@_showLogBackupFile)
     private void CompleteJob()
     {
         _message = "You can't resume a job after its cutover. Are you sure you want to cutover?";
-        _yesNoDiaLogType = YesNoDialog.Category.CutoverNot;
+        _yesNoDialogType = YesNoDialog.Category.CutoverNot;
         _yesNoDialogOpen = true;
     }
 
@@ -1014,7 +1019,7 @@ else if (@_showLogBackupFile)
     private void ConfirmCancelJob()
     {
         _message = "This will permanently cancel the migration. You will not be able to resume it. Continue?";
-        _yesNoDiaLogType = YesNoDialog.Category.CancelNot;
+        _yesNoDialogType = YesNoDialog.Category.CancelNot;
         _yesNoDialogOpen = true;
     }
 

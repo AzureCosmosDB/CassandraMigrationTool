@@ -293,9 +293,10 @@ public static class SchemaManager
     /// <summary>
     /// One-shot discovery scan that warns about source-side schema
     /// objects this tool does NOT migrate (secondary indexes,
-    /// materialized views, UDFs, UDAs, triggers). Operators
-    /// queries returned empty; now they see a single Warn line per
-    /// category per keyspace at job start so they can recreate them
+    /// materialized views, UDFs, UDAs, triggers). Previously,
+    /// operators often saw no output when discovery queries returned
+    /// empty results; now they see a single Warn line per category
+    /// per keyspace at job start so they can recreate those objects
     /// manually before switchover.
     /// </summary>
     public static async Task WarnAboutUnreplicatedSchemaAsync(

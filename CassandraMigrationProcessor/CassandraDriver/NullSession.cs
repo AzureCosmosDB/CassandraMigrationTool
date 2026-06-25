@@ -33,7 +33,7 @@ internal sealed class NullSession : ISession
     public RowSet Execute(string cqlQuery, int pageSize) => new RowSet();
 
     public Task<RowSet> ExecuteAsync(IStatement statement) => Task.FromResult(Execute(statement));
-    public Task<RowSet> ExecuteAsync(IStatement statement, string executionProfileName) => Task.FromResult(new RowSet());
+    public Task<RowSet> ExecuteAsync(IStatement statement, string executionProfileName) => Task.FromResult(Execute(statement, executionProfileName));
 
     // ── Prepare (not supported) ──
 
@@ -58,8 +58,8 @@ internal sealed class NullSession : ISession
     // ── Keyspace management (no-op) ──
 
     public void ChangeKeyspace(string keyspace) { }
-    public void CreateKeyspace(string keyspace, Dictionary<string, string> replication = null, bool durableWrites = true) { }
-    public void CreateKeyspaceIfNotExists(string keyspace, Dictionary<string, string> replication = null, bool durableWrites = true) { }
+    public void CreateKeyspace(string keyspace, Dictionary<string, string>? replication = null, bool durableWrites = true) { }
+    public void CreateKeyspaceIfNotExists(string keyspace, Dictionary<string, string>? replication = null, bool durableWrites = true) { }
     public void DeleteKeyspace(string keyspace) { }
     public void DeleteKeyspaceIfExists(string keyspace) { }
 
