@@ -537,7 +537,7 @@ public static class SchemaManager
             }
         }
 
-        if (replication.DurableWrites == false)
+        if (replication.DurableWrites is false)
         {
             // Mirrored faithfully, but during the migration window
             // (dual-write or CDC tail readers) durable_writes=false
@@ -551,7 +551,7 @@ public static class SchemaManager
                 LogType.Warning);
         }
 
-        string durableClause = replication.DurableWrites == false
+        string durableClause = replication.DurableWrites is false
             ? " AND durable_writes = false"
             : string.Empty;
         string cql =
