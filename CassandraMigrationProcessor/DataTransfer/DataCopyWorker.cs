@@ -132,18 +132,12 @@ internal class DataCopyWorker
             // recycled, counter not advanced, checkpoint not advanced)
             // so we report fault to abort cleanly rather than silently
             // marking a table complete with a feed range missing.
-            string operatorMsg;
-            if (IsOutOfMemory(ex))
-            {
-                // OOM typically means the shared worker pool was sized
-                // too large for the host. Translate into sizing
-                // guidance.
-                operatorMsg = $"Worker out-of-memory while processing {tag}. The shared worker pool is too large for this host's available memory. Reduce the 'Shared workers' value on the Advanced tab (try halving it, or leave blank for auto) and resume from the last checkpoint.";
-            }
-            else
-            {
-                operatorMsg = $"Worker exhausted retries for table {tag}. Aborting migration job (resume from last checkpoint).";
-            }
+            // OOM typically means the shared worker pool was sized too large
+            // for the host — translate into sizing guidance; otherwise report
+            // a generic retry-exhaustion abort.
+            string operatorMsg = IsOutOfMemory(ex)
+                ? $"Worker out-of-memory while processing {tag}. The shared worker pool is too large for this host's available memory. Reduce the 'Shared workers' value on the Advanced tab (try halving it, or leave blank for auto) and resume from the last checkpoint."
+                : $"Worker exhausted retries for table {tag}. Aborting migration job (resume from last checkpoint).";
             _workerLog.WriteLine($"FATAL: {operatorMsg}", LogType.Error);
             ctx.Control.ReportFault(new MigrationFatalException(operatorMsg, ex));
         }

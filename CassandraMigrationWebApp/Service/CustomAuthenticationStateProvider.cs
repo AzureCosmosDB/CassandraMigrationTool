@@ -15,19 +15,12 @@ public class CustomAuthenticationStateProvider : AuthenticationStateProvider
     {
         var isAuthenticated = await _authService.IsAuthenticatedAsync();
 
-        ClaimsIdentity identity;
-
-        if (isAuthenticated)
-        {
-            identity = new ClaimsIdentity(new[]
+        ClaimsIdentity identity = isAuthenticated
+            ? new ClaimsIdentity(new[]
             {
                 new Claim(ClaimTypes.Name, "User")
-            }, "Custom Authentication");
-        }
-        else
-        {
-            identity = new ClaimsIdentity();
-        }
+            }, "Custom Authentication")
+            : new ClaimsIdentity();
 
         var user = new ClaimsPrincipal(identity);
         return new AuthenticationState(user);
