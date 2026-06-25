@@ -125,6 +125,8 @@ public static class UnitStore
         Job job,
         MigrationLog log = null)
     {
+        bool allSaved = true;
+
         var newUnits = unitsToAdd
             .Where(mu => !job.Tables
                 .Any(summary => summary.Id == TableMigration.GenerateId(
@@ -141,6 +143,7 @@ public static class UnitStore
             {
                 if (!MigrationJobContext.Instance.SaveMigrationUnit(mu, false))
                 {
+                    allSaved = false;
                     log?.WriteLine(
                         $"Warning: failed to save migration unit {mu.KeyspaceName}.{mu.TableName}",
                         LogType.Warning);
@@ -149,7 +152,7 @@ public static class UnitStore
             }
             MigrationJobContext.Instance.SaveMigrationJob(job);
         }
-        return true;
+        return allSaved;
     }
 
     private static void AddMigrationUnit(

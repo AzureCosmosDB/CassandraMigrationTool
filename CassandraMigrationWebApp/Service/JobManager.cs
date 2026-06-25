@@ -7,7 +7,7 @@ namespace CassandraMigrationWebApp.Service;
 public class JobManager
 {
     private MigrationJobRunner? MigrationJobRunner { get; set; }
-    private MigrationLog _log;
+    private readonly MigrationLog _log;
     private JobControl? _control;
     private string _runningJobId = string.Empty;
     private readonly object _stateLock = new();
@@ -280,8 +280,8 @@ public class JobManager
 
     public Task StartMigration(Job job, string sourceConnectionString, string targetConnectionString)
     {
-        MigrationLog runLog = null!;
-        JobControl runControl = null!;
+        MigrationLog? runLog = null;
+        JobControl? runControl = null;
         bool shouldWriteRejectionLog = false;
         string? runningJobIdForRejection = null;
         // Single source-of-truth for "user resumed from a non-terminal-but-
@@ -304,7 +304,6 @@ public class JobManager
             }
             else
             {
-                _log = CreateLog();
                 _log.Initialize(job.Id);
                 _log.SetJob(job);
                 _log.WriteLine(
@@ -343,27 +342,7 @@ public class JobManager
                     "Pause or complete that job first, then click Resume Job here.",
                     LogType.Info);
             }
-            catch (IOException ex)
-            {
-                // Never let the rejection-log path mask the original
-                // rejection; the primary log line above is already
-                // recorded on the active job. Surface this failure on
-                // the primary log so it stays diagnosable.
-                _log?.WriteLine(
-                    $"Failed to write rejection log for job {job.Id}: {ex.Message}",
-                    LogType.Warning);
-            }
-            catch (ObjectDisposedException ex)
-            {
-                // Never let the rejection-log path mask the original
-                // rejection; the primary log line above is already
-                // recorded on the active job. Surface this failure on
-                // the primary log so it stays diagnosable.
-                _log?.WriteLine(
-                    $"Failed to write rejection log for job {job.Id}: {ex.Message}",
-                    LogType.Warning);
-            }
-            catch (InvalidOperationException ex)
+            catch (Exception ex) when (ex is IOException || ex is ObjectDisposedException || ex is InvalidOperationException)
             {
                 // Never let the rejection-log path mask the original
                 // rejection; the primary log line above is already
@@ -424,7 +403,7 @@ public class JobManager
             MigrationJobRunner? runner = null;
             try
             {
-                runner = await MigrationJobRunner.CreateAsync(runLog, job, config, runControl);
+                runner = await MigrationJobRunner.CreateAsync(runLog!, job, config, runControl!);
                 lock (_stateLock)
                 {
                     MigrationJobRunner = runner;
@@ -439,7 +418,7 @@ public class JobManager
                 // failure during CreateAsync session acquisition) from
                 // leaving the job stuck in Running.
                 Console.WriteLine($"Migration unexpectedly threw for Job ID: {job.Id}: {ex}");
-                runLog.WriteLine($"Migration unexpectedly threw: {ex}", LogType.Error);
+                runLog!.WriteLine($"Migration unexpectedly threw: {ex}", LogType.Error);
                 // Ensure escaped exceptions always produce persisted terminal metadata.
                 // Preserve an already-terminal status (e.g. Cancelled), but fault any
                 // non-terminal state so the job does not remain in-progress.
@@ -475,7 +454,7 @@ public class JobManager
                 catch (Exception disposeEx)
                 {
                     Console.WriteLine($"[Manager] Runner DisposeAsync threw for {job.Id}: {disposeEx}");
-                    try { runLog.WriteLine($"[Manager] Runner dispose threw (state cleared regardless): {disposeEx.Message}", LogType.Warning); }
+                    try { runLog!.WriteLine($"[Manager] Runner dispose threw (state cleared regardless): {disposeEx.Message}", LogType.Warning); }
                     catch { /* logging is best-effort during shutdown */ }
                 }
                 finally
