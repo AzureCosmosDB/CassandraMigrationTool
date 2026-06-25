@@ -922,15 +922,9 @@ public static class SchemaManager
                 : $"  \"{c.Name}\" {c.Type}")
             .ToList();
 
-        string pkClause;
-        if (clusteringKeys.Count > 0)
-        {
-            pkClause = $"({string.Join(", ", partitionKeys)}), {string.Join(", ", clusteringKeys)}";
-        }
-        else
-        {
-            pkClause = string.Join(", ", partitionKeys);
-        }
+        string pkClause = clusteringKeys.Count > 0
+            ? $"({string.Join(", ", partitionKeys)}), {string.Join(", ", clusteringKeys)}"
+            : string.Join(", ", partitionKeys);
 
         string clusteringOrder = BuildClusteringOrderClause(columns);
         var tableOptions = await BuildForwardableTableOptionsAsync(

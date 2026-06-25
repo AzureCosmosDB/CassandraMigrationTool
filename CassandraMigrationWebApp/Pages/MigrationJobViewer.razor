@@ -1107,10 +1107,7 @@ else if (@_showLogBackupFile)
         if (activeJob != string.Empty && activeJob != JobId)
         {
             var job = MigrationContext.GetMigrationJob(activeJob);
-            if (job != null && job.Status != JobStatus.Cancelled && job.Status != JobStatus.Completed)
-                return false;
-            else
-                return true;
+            return job == null || job.Status == JobStatus.Cancelled || job.Status == JobStatus.Completed;
         }
         else
             return true;
