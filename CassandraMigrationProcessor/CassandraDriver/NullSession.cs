@@ -32,7 +32,7 @@ internal sealed class NullSession : ISession
     public RowSet Execute(string cqlQuery, ConsistencyLevel consistency) => new RowSet();
     public RowSet Execute(string cqlQuery, int pageSize) => new RowSet();
 
-    public Task<RowSet> ExecuteAsync(IStatement statement) => Task.FromResult(new RowSet());
+    public Task<RowSet> ExecuteAsync(IStatement statement) => Task.FromResult(Execute(statement));
     public Task<RowSet> ExecuteAsync(IStatement statement, string executionProfileName) => Task.FromResult(new RowSet());
 
     // ── Prepare (not supported) ──
