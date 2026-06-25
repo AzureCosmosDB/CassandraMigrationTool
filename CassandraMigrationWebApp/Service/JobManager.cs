@@ -304,9 +304,10 @@ public class JobManager
             }
             else
             {
-                _log.Initialize(job.Id);
-                _log.SetJob(job);
-                _log.WriteLine(
+                var log = _log ?? throw new InvalidOperationException("MigrationLog is not initialized.");
+                log.Initialize(job.Id);
+                log.SetJob(job);
+                log.WriteLine(
                     $"User requested {(isResume ? "RESUME" : "START")} for job {job.Id} (prior status={job.Status})",
                     LogType.Info);
                 // MigrationJobRunner is published below, once its sessions
@@ -316,7 +317,7 @@ public class JobManager
                 // open window record intent on _control.
                 _control = new JobControl();
                 runControl = _control;
-                runLog = _log;
+                runLog = log;
                 _runningJobId = job.Id;
             }
         }
