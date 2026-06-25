@@ -284,6 +284,7 @@ public class JobManager
         JobControl? runControl = null;
         bool shouldWriteRejectionLog = false;
         string? runningJobIdForRejection = null;
+        var log = _log ?? throw new InvalidOperationException("MigrationLog is not initialized.");
         // Single source-of-truth for "user resumed from a non-terminal-but-
         // not-fresh state" — drives both the audit-log verb (RESUME vs
         // START) and the EndedOn reset below, so the two stay in lockstep.
@@ -297,14 +298,13 @@ public class JobManager
             if (!string.IsNullOrEmpty(_runningJobId))
             {
                 runningJobIdForRejection = _runningJobId;
-                _log.WriteLine(
+                log.WriteLine(
                     $"Job {runningJobIdForRejection} already running, cannot start {job.Id}",
                     LogType.Warning);
                 shouldWriteRejectionLog = true;
             }
             else
             {
-                var log = _log ?? throw new InvalidOperationException("MigrationLog is not initialized.");
                 log.Initialize(job.Id);
                 log.SetJob(job);
                 log.WriteLine(
