@@ -1,5 +1,8 @@
+using Cassandra;
 using CassandraMigrationProcessor.Infrastructure;
 using CassandraMigrationProcessor.Models;
+using JobWriteConsistencyLevel =
+    CassandraMigrationProcessor.Models.TargetWriteConsistencyLevel;
 
 namespace CassandraMigrationProcessor.DataTransfer;
 /// <summary>
@@ -13,7 +16,8 @@ public record PipelineConfig(
     int PageSize,
     int ChangeFeedPollIntervalMs,
     int MaxReadRetries,
-    int MaxWriteRetries)
+    int MaxWriteRetries,
+    ConsistencyLevel TargetWriteConsistencyLevel)
 {
     /// <summary>
     /// Resolves configuration from job overrides, app settings, and defaults.
@@ -47,11 +51,36 @@ public record PipelineConfig(
             ? job.MaxWriteRetries
             : MigrationDefaults.DefaultMaxWriteRetries;
 
+        if (!Enum.IsDefined(job.TargetWriteConsistencyLevel))
+            throw new ArgumentOutOfRangeException(
+                nameof(job.TargetWriteConsistencyLevel),
+                job.TargetWriteConsistencyLevel,
+                "Unsupported target write consistency level.");
+
         return new PipelineConfig(
             WorkerCount: workerCount,
             PageSize: pageSize,
             ChangeFeedPollIntervalMs: cfPollMs,
             MaxReadRetries: maxReadRetries,
-            MaxWriteRetries: maxWriteRetries);
+            MaxWriteRetries: maxWriteRetries,
+            TargetWriteConsistencyLevel: ToDriverConsistencyLevel(
+                job.TargetWriteConsistencyLevel));
     }
+
+    private static ConsistencyLevel ToDriverConsistencyLevel(
+        JobWriteConsistencyLevel consistencyLevel)
+        => consistencyLevel switch
+        {
+            JobWriteConsistencyLevel.LocalOne => ConsistencyLevel.LocalOne,
+            JobWriteConsistencyLevel.One => ConsistencyLevel.One,
+            JobWriteConsistencyLevel.Two => ConsistencyLevel.Two,
+            JobWriteConsistencyLevel.Three => ConsistencyLevel.Three,
+            JobWriteConsistencyLevel.Quorum => ConsistencyLevel.Quorum,
+            JobWriteConsistencyLevel.LocalQuorum => ConsistencyLevel.LocalQuorum,
+            JobWriteConsistencyLevel.EachQuorum => ConsistencyLevel.EachQuorum,
+            JobWriteConsistencyLevel.All => ConsistencyLevel.All,
+            JobWriteConsistencyLevel.Any => ConsistencyLevel.Any,
+            _ => throw new ArgumentOutOfRangeException(
+                nameof(consistencyLevel), consistencyLevel, null)
+        };
 }

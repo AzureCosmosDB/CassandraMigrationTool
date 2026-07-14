@@ -26,15 +26,18 @@ internal sealed class RegularRowWriteStrategy : IRowWriteStrategy
     private readonly ISession _targetSession;
     private readonly PreparedStatement _preparedInsertJson;
     private readonly RetryPolicy _retryPolicy;
+    private readonly ConsistencyLevel _writeConsistencyLevel;
     private readonly string _rowKind;
 
     private RegularRowWriteStrategy(WorkerLog log, ISession targetSession,
-        PreparedStatement preparedInsertJson, RetryPolicy retryPolicy, string tableLabel)
+        PreparedStatement preparedInsertJson, RetryPolicy retryPolicy,
+        ConsistencyLevel writeConsistencyLevel, string tableLabel)
     {
         _log = log;
         _targetSession = targetSession;
         _preparedInsertJson = preparedInsertJson;
         _retryPolicy = retryPolicy;
+        _writeConsistencyLevel = writeConsistencyLevel;
         _rowKind = $"JSON row[{tableLabel}]";
     }
 
@@ -47,11 +50,13 @@ internal sealed class RegularRowWriteStrategy : IRowWriteStrategy
     public static async Task<RegularRowWriteStrategy> CreateAsync(
         WorkerLog log, ISession targetSession,
         List<CassandraColumn> columns,
-        string targetKeyspace, string targetTable, RetryPolicy retryPolicy)
+        string targetKeyspace, string targetTable, RetryPolicy retryPolicy,
+        ConsistencyLevel writeConsistencyLevel)
     {
         var psJson = await CassandraQueries.PrepareInsertJsonAsync(
             targetSession, targetKeyspace, targetTable, columns);
-        return new RegularRowWriteStrategy(log, targetSession, psJson, retryPolicy,
+        return new RegularRowWriteStrategy(
+            log, targetSession, psJson, retryPolicy, writeConsistencyLevel,
             tableLabel: $"{targetKeyspace}.{targetTable}");
     }
 
@@ -81,7 +86,7 @@ internal sealed class RegularRowWriteStrategy : IRowWriteStrategy
         // Bind layout: (envelope, writetime, ttl).
         var bound = _preparedInsertJson.Bind(cleanedJson, ts, ttlSeconds);
         bound.SetReadTimeoutMillis(RowWriteRetry.WriteTimeoutMs);
-        bound.SetConsistencyLevel(ConsistencyLevel.LocalOne);
+        bound.SetConsistencyLevel(_writeConsistencyLevel);
 
         return RowWriteRetry.ExecuteAsync(
             attempt: () => _targetSession.ExecuteAsync(bound).WaitAsync(cancellationToken),

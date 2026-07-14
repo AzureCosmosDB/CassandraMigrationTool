@@ -34,7 +34,9 @@ internal sealed class JobPipeline : IDisposable, IAsyncDisposable
             _control.Token,
             _control);
         var readerConfig = new ReaderConfig(pipelineConfig.PageSize, pipelineConfig.MaxReadRetries);
-        var writerConfig = new WriterConfig(pipelineConfig.MaxWriteRetries);
+        var writerConfig = new WriterConfig(
+            pipelineConfig.MaxWriteRetries,
+            pipelineConfig.TargetWriteConsistencyLevel);
 
         Context = new PipelineContext(
             _partitions,
@@ -51,7 +53,8 @@ internal sealed class JobPipeline : IDisposable, IAsyncDisposable
     {
         _log.WriteLine(
             $"Job pipeline: {_pipelineConfig.WorkerCount} shared workers " +
-            $"(replay={Context.EnableReplay}, page size={Context.ReaderConfig.PageSize})",
+            $"(replay={Context.EnableReplay}, page size={Context.ReaderConfig.PageSize}, " +
+            $"target write consistency={_pipelineConfig.TargetWriteConsistencyLevel})",
             LogType.Info);
         _workerPool.Start(workerId => new DataCopyWorker(_log, _control.Token, workerId).RunAsync(Context));
     }

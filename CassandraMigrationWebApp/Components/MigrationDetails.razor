@@ -190,6 +190,20 @@
                                 <label for="targetConnectionsPerHost" class="form-label" title="Target (writer) Cassandra driver connections per host. 0 = driver default.">Target connections per host</label>
                                 <input type="number" id="targetConnectionsPerHost" class="form-control" @bind="targetConnectionsPerHost" min="0" max="128" placeholder="Driver default"/>
                             </div>
+                            <div class="col-md-6">
+                                <label for="targetWriteConsistencyLevel" class="form-label" title="Consistency level for regular writes to the target. LOCAL_ONE preserves the historical default; LOCAL_QUORUM provides stronger replica acknowledgement. Counter-table operations always use LOCAL_QUORUM for retry correctness.">Target write consistency</label>
+                                <select id="targetWriteConsistencyLevel" class="form-select" @bind="targetWriteConsistencyLevel">
+                                    <option value="@TargetWriteConsistencyLevel.LocalOne">LOCAL_ONE (default)</option>
+                                    <option value="@TargetWriteConsistencyLevel.One">ONE</option>
+                                    <option value="@TargetWriteConsistencyLevel.Two">TWO</option>
+                                    <option value="@TargetWriteConsistencyLevel.Three">THREE</option>
+                                    <option value="@TargetWriteConsistencyLevel.Quorum">QUORUM</option>
+                                    <option value="@TargetWriteConsistencyLevel.LocalQuorum">LOCAL_QUORUM</option>
+                                    <option value="@TargetWriteConsistencyLevel.EachQuorum">EACH_QUORUM</option>
+                                    <option value="@TargetWriteConsistencyLevel.All">ALL</option>
+                                    <option value="@TargetWriteConsistencyLevel.Any">ANY</option>
+                                </select>
+                            </div>
                         </div>
                         <div class="row mb-3">
                             <div class="col-md-6">
@@ -257,6 +271,7 @@
     private int? pageSize = null; // Rows per page (0 = default 500)
     private int? maxReadRetries = null; // Per-page source read retries (0 = default 3)
     private int? maxWriteRetries = null; // Per-row target write retries (0 = default 5)
+    private TargetWriteConsistencyLevel targetWriteConsistencyLevel = TargetWriteConsistencyLevel.LocalOne;
     private LogType logLevel = LogType.Info; // Minimum log level
     private string namespaces = string.Empty;   // Comma-separated list of namespaces to migrate
     private string name = string.Empty; // Name of the migration job
@@ -357,6 +372,7 @@
             dropTargetTableBeforeStart = false;
             skipSchemaSync = false;
             skipSourceRowCount = false;
+            targetWriteConsistencyLevel = TargetWriteConsistencyLevel.LocalOne;
             logLevel = LogType.Info; // Default to Info
             isFileUploaded = false;
             isTextAreaUsed = false;
@@ -389,6 +405,8 @@
             pageSize = Job?.PageSize == 0 ? null : Job?.PageSize;
             maxReadRetries = Job?.MaxReadRetries == 0 ? null : Job?.MaxReadRetries;
             maxWriteRetries = Job?.MaxWriteRetries == 0 ? null : Job?.MaxWriteRetries;
+            targetWriteConsistencyLevel = Job?.TargetWriteConsistencyLevel
+                ?? TargetWriteConsistencyLevel.LocalOne;
             logLevel = Job?.LogLevel ?? LogType.Info;
 
             // Set migration mode dropdown value based on CDCMode enum
@@ -561,6 +579,7 @@
             PageSize = pageSize ?? 0,
             MaxReadRetries = maxReadRetries ?? 0,
             MaxWriteRetries = maxWriteRetries ?? 0,
+            TargetWriteConsistencyLevel = targetWriteConsistencyLevel,
             LogLevel = logLevel,
             Tables = new List<TableMigrationSummary>()
         };

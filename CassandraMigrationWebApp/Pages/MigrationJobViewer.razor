@@ -834,6 +834,7 @@ else if (@_showLogBackupFile)
         mj.SourcePort = job.SourcePort;
         mj.TargetPort = job.TargetPort;
         mj.SourceUseAad = job.SourceUseAad;
+        mj.TargetWriteConsistencyLevel = job.TargetWriteConsistencyLevel;
 
         if (!string.IsNullOrEmpty(sourceConnectionString))
             MigrationContext.Credentials.SetSource(mj.Id, sourceConnectionString);
@@ -1173,4 +1174,3 @@ else if (@_showLogBackupFile)
         PageSize="@_config.LogPageSize"
         OnClose="ClosePaginatedDownloadDialog" />
 }
-

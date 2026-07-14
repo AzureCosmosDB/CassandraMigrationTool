@@ -8,9 +8,12 @@ using System.Diagnostics;
 namespace CassandraMigrationProcessor.DataTransfer;
 
 /// <summary>
-/// Tunables for <see cref="PageWriter"/>: per-row write retry budget.
+/// Tunables for <see cref="PageWriter"/>: per-row write retry budget and
+/// regular target-write consistency.
 /// </summary>
-internal record WriterConfig(int MaxWriteRetries);
+internal record WriterConfig(
+    int MaxWriteRetries,
+    ConsistencyLevel TargetWriteConsistencyLevel);
 
 /// <summary>
 /// Writes extracted rows to the target cluster. The target session is
@@ -25,6 +28,7 @@ internal sealed class PageWriter : IDisposable
     private readonly CancellationToken _ct;
     private readonly ISession _targetSession;
     private readonly int _maxWriteRetries;
+    private readonly ConsistencyLevel _targetWriteConsistencyLevel;
     private readonly ISessionFactory _sessionFactory;
 
     private readonly ConcurrentDictionary<string, Task<IRowWriteStrategy>> _strategyCache = new();
@@ -47,6 +51,7 @@ internal sealed class PageWriter : IDisposable
         _ct = cancellationToken;
         _sessionFactory = sessionFactory;
         _maxWriteRetries = config.MaxWriteRetries;
+        _targetWriteConsistencyLevel = config.TargetWriteConsistencyLevel;
         _targetSession = targetSession;
     }
 
@@ -67,7 +72,8 @@ internal sealed class PageWriter : IDisposable
                 _log, _targetSession, partition.Table.Columns,
                 partition.Table.Spec.TargetKeyspaceName, partition.Table.Spec.TargetTableName,
                 _maxWriteRetries,
-                partition.Table.IsCounterTable);
+                partition.Table.IsCounterTable,
+                _targetWriteConsistencyLevel);
         });
     }
 
