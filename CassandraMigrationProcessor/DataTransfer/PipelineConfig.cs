@@ -55,7 +55,8 @@ public record PipelineConfig(
             throw new ArgumentOutOfRangeException(
                 nameof(job.TargetWriteConsistencyLevel),
                 job.TargetWriteConsistencyLevel,
-                "Unsupported target write consistency level.");
+                "Unsupported target write consistency level. Expected one of: " +
+                string.Join(", ", Enum.GetNames<JobWriteConsistencyLevel>()) + ".");
 
         return new PipelineConfig(
             WorkerCount: workerCount,
@@ -81,6 +82,9 @@ public record PipelineConfig(
             JobWriteConsistencyLevel.All => ConsistencyLevel.All,
             JobWriteConsistencyLevel.Any => ConsistencyLevel.Any,
             _ => throw new ArgumentOutOfRangeException(
-                nameof(consistencyLevel), consistencyLevel, null)
+                nameof(consistencyLevel),
+                consistencyLevel,
+                "Unsupported target write consistency level. Expected one of: " +
+                string.Join(", ", Enum.GetNames<JobWriteConsistencyLevel>()) + ".")
         };
 }
