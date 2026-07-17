@@ -139,6 +139,7 @@
                         · <strong>Source conn/host:</strong> @FormatConnPerHost(sj.SourceMaxConnectionsPerHost, sj.MaxConnectionsPerHost)
                         · <strong>Target conn/host:</strong> @FormatConnPerHost(sj.TargetMaxConnectionsPerHost, sj.MaxConnectionsPerHost)
                         · <strong>Page size:</strong> @(sj.PageSize > 0 ? sj.PageSize.ToString() : "500")
+                        · <strong>Target write CL:</strong> @FormatConsistencyLevel(sj.TargetWriteConsistencyLevel)
                     </small>
                 </div>
                 <div class="col-auto">
@@ -186,4 +187,14 @@
         int effective = sideValue > 0 ? sideValue : fallback;
         return effective > 0 ? effective.ToString() : "driver default";
     }
+
+    private static string FormatConsistencyLevel(
+        TargetWriteConsistencyLevel consistencyLevel)
+        => consistencyLevel switch
+        {
+            TargetWriteConsistencyLevel.LocalOne => "LOCAL_ONE",
+            TargetWriteConsistencyLevel.LocalQuorum => "LOCAL_QUORUM",
+            TargetWriteConsistencyLevel.EachQuorum => "EACH_QUORUM",
+            _ => consistencyLevel.ToString().ToUpperInvariant()
+        };
 }

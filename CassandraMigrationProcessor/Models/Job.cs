@@ -83,6 +83,14 @@ public class Job
     /// </summary>
     public int MaxWriteRetries { get; set; } = 0;
 
+    /// <summary>
+    /// Consistency level for regular target writes. Existing jobs that
+    /// predate this setting retain the historical LOCAL_ONE behaviour.
+    /// Counter-table writes always use LOCAL_QUORUM for retry correctness.
+    /// </summary>
+    public TargetWriteConsistencyLevel TargetWriteConsistencyLevel { get; set; }
+        = TargetWriteConsistencyLevel.LocalOne;
+
     // ── Job Settings ──
 
     public CDCMode CDCMode { get; set; } = CDCMode.Offline;
