@@ -12,7 +12,7 @@ namespace CassandraMigrationProcessor.CassandraDriver;
 /// </summary>
 public static class CassandraClientFactory
 {
-    private const string ApplicationName = "CassandraMigrationTool";
+    private const string ApplicationName = "CMT";
     private const int ReadTimeoutMs = 120000;
     private const int ConnectTimeoutMs = 30000;
     private const int ReconnectBaseDelayMs = 2000;
@@ -207,6 +207,7 @@ public static class CassandraClientFactory
             .AddContactPoint(contactPoint)
             .WithPort(port)
             .WithApplicationName(ApplicationName)
+            .WithApplicationVersion(AppVersion.Value)
             .WithSocketOptions(new SocketOptions()
                 .SetReadTimeoutMillis(ReadTimeoutMs)
                 .SetConnectTimeoutMillis(ConnectTimeoutMs))
