@@ -146,6 +146,10 @@ internal class PageReader : IDisposable
         int available = resultSet.GetAvailableWithoutFetching();
         var jsonRows = new List<string>(available);
         var metadata = new List<CdcRowMetadata?>(available);
+        // One reusable parser per page: its pooled buffers are reset (not
+        // reallocated) per row, so a page of N rows amortizes the parser's
+        // allocations across the whole page instead of paying them per row.
+        var parser = new CdcJsonRowParser();
         int consumed = 0;
         foreach (var row in resultSet)
         {
@@ -154,7 +158,7 @@ internal class PageReader : IDisposable
             // SELECT JSON returns a single synthetic column literally
             // named "[json]" — see CASSANDRA-7970.
             var json = row.GetValue<string>("[json]");
-            var (cleaned, meta) = CdcJsonRowParser.Parse(json);
+            var (cleaned, meta) = parser.Parse(json);
             jsonRows.Add(cleaned);
             metadata.Add(meta);
         }
