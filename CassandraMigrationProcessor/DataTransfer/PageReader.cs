@@ -146,7 +146,7 @@ internal class PageReader : IDisposable
         int available = resultSet.GetAvailableWithoutFetching();
         var jsonRows = new List<string>(available);
         var metadata = new List<CdcRowMetadata?>(available);
-        // One reusable parser per page: its pooled buffers are reset (not
+        // One reusable parser per page: its internal buffers are reset (not
         // reallocated) per row, so a page of N rows amortizes the parser's
         // allocations across the whole page instead of paying them per row.
         var parser = new CdcJsonRowParser();

@@ -24,7 +24,7 @@ namespace CassandraMigrationProcessor.CassandraDriver;
 /// <para>
 /// Performance: metadata extraction and system-column stripping are
 /// done in a <em>single</em> traversal of the parsed row, writing the
-/// cleaned envelope into a reusable pooled buffer instead of a fresh
+/// cleaned envelope into a reused buffer instead of a fresh
 /// <c>MemoryStream</c> per row. Instances are cheap and intended to be
 /// reused across all rows in a page (they are not thread-safe — use one
 /// per reading loop).
@@ -162,7 +162,7 @@ internal sealed class CdcJsonRowParser
             }
 
             // Regular column: emit name + value into the cleaned envelope.
-            _writer.WritePropertyName(reader.GetString()!);
+            WritePropertyName(ref reader, _writer);
             reader.Read();
             CopyValue(ref reader, _writer);
         }
@@ -170,8 +170,33 @@ internal sealed class CdcJsonRowParser
         _writer.WriteEndObject();
         _writer.Flush();
 
+        // Guard against trailing content after the root object. Unlike
+        // JsonDocument.Parse, a forward-only reader would otherwise silently
+        // ignore a second value or stray non-whitespace bytes.
+        if (reader.TokenType != JsonTokenType.EndObject)
+            throw new JsonException("Malformed row payload: unterminated root object.");
+        if (reader.Read())
+            throw new JsonException("Unexpected trailing content after row object.");
+
         var cleaned = Encoding.UTF8.GetString(_buffer.WrittenSpan);
         return (cleaned, new CdcRowMetadata(writetime, expiryEpochSeconds));
+    }
+
+    /// <summary>
+    /// Write the property name the reader is currently positioned on. In the
+    /// common case the name is neither escaped nor split across buffer
+    /// segments, so its raw UTF-8 bytes are written directly — avoiding a
+    /// managed string allocation per property. Only escaped or multi-segment
+    /// names (rare) fall back to <see cref="Utf8JsonReader.GetString"/>. Both
+    /// paths route through the writer's encoder, so output escaping is
+    /// identical either way.
+    /// </summary>
+    private static void WritePropertyName(ref Utf8JsonReader reader, Utf8JsonWriter writer)
+    {
+        if (!reader.HasValueSequence && !reader.ValueIsEscaped)
+            writer.WritePropertyName(reader.ValueSpan);
+        else
+            writer.WritePropertyName(reader.GetString()!);
     }
 
     /// <summary>
@@ -188,7 +213,7 @@ internal sealed class CdcJsonRowParser
                 writer.WriteStartObject();
                 while (reader.Read() && reader.TokenType != JsonTokenType.EndObject)
                 {
-                    writer.WritePropertyName(reader.GetString()!);
+                    WritePropertyName(ref reader, writer);
                     reader.Read();
                     CopyValue(ref reader, writer);
                 }
