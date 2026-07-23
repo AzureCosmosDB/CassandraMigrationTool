@@ -106,10 +106,14 @@ internal sealed class CdcJsonRowParser
             if (reader.ValueTextEquals(SysRwTimestampUtf8))
             {
                 reader.Read();
-                if (reader.TokenType == JsonTokenType.Number)
-                    writetime = reader.GetInt64();
-                else
-                    reader.Skip();
+                // Writetime is contractually a number of microseconds. Any
+                // other shape means the source envelope violated the contract
+                // we depend on — fail loudly rather than drop the metadata.
+                if (reader.TokenType != JsonTokenType.Number)
+                    throw new JsonException(
+                        $"Malformed row payload: '{SysRwTimestampColumn}' was " +
+                        $"{reader.TokenType}, expected a Number.");
+                writetime = reader.GetInt64();
                 continue;
             }
 
@@ -120,29 +124,32 @@ internal sealed class CdcJsonRowParser
                 // stripping stays correct regardless of the column's position
                 // (SELECT JSON * does not guarantee __sys_* columns come last).
                 reader.Read();
-                if (reader.TokenType == JsonTokenType.StartArray)
+                if (reader.TokenType != JsonTokenType.StartArray)
+                    throw new JsonException(
+                        $"Malformed row payload: '{SysCellLevelTtlColumn}' was " +
+                        $"{reader.TokenType}, expected an array.");
+
+                bool first = true;
+                while (reader.Read() && reader.TokenType != JsonTokenType.EndArray)
                 {
-                    bool first = true;
-                    while (reader.Read() && reader.TokenType != JsonTokenType.EndArray)
+                    if (first)
                     {
-                        if (first)
-                        {
-                            if (reader.TokenType == JsonTokenType.Number)
-                            {
-                                long expiry = reader.GetInt64();
-                                if (expiry > 0) expiryEpochSeconds = expiry;
-                            }
-                            first = false;
-                        }
-                        else
-                        {
-                            reader.Skip();
-                        }
+                        // First element must be the expiry epoch (number).
+                        if (reader.TokenType != JsonTokenType.Number)
+                            throw new JsonException(
+                                $"Malformed row payload: '{SysCellLevelTtlColumn}'[0] " +
+                                $"was {reader.TokenType}, expected the expiry epoch as a Number.");
+                        long expiry = reader.GetInt64();
+                        if (expiry > 0) expiryEpochSeconds = expiry;
+                        first = false;
                     }
-                }
-                else
-                {
-                    reader.Skip();
+                    else
+                    {
+                        // Remaining elements are an opaque detail object we do
+                        // not consume; skipping them is intentional, not an
+                        // error path.
+                        reader.Skip();
+                    }
                 }
                 continue;
             }
