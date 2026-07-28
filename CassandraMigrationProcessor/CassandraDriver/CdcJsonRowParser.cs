@@ -106,13 +106,18 @@ internal sealed class CdcJsonRowParser
             if (reader.ValueTextEquals(SysRwTimestampUtf8))
             {
                 reader.Read();
-                // Writetime is contractually a number of microseconds. Any
-                // other shape means the source envelope violated the contract
-                // we depend on — fail loudly rather than drop the metadata.
+                // A JSON null (or an absent column) is the source's legitimate
+                // "no writetime" signal for this row — tolerate it and fall
+                // back to the default, exactly as pre-streaming versions did.
+                // Only a present, non-null value of the wrong shape means the
+                // source envelope violated the contract we depend on, and only
+                // that case fails loudly rather than dropping the metadata.
+                if (reader.TokenType == JsonTokenType.Null)
+                    continue;
                 if (reader.TokenType != JsonTokenType.Number)
                     throw new JsonException(
                         $"Malformed row payload: '{SysRwTimestampColumn}' was " +
-                        $"{reader.TokenType}, expected a Number.");
+                        $"{reader.TokenType}, expected a Number or Null.");
                 writetime = reader.GetInt64();
                 continue;
             }
@@ -124,10 +129,17 @@ internal sealed class CdcJsonRowParser
                 // stripping stays correct regardless of the column's position
                 // (SELECT JSON * does not guarantee __sys_* columns come last).
                 reader.Read();
+                // A JSON null (or an absent column) means the row has no
+                // cell-level TTL — the source emits this for rows without a
+                // TTL. Tolerate it (no expiry) as pre-streaming versions did;
+                // only a present, non-null value that is not the expected
+                // array is a contract violation worth failing on.
+                if (reader.TokenType == JsonTokenType.Null)
+                    continue;
                 if (reader.TokenType != JsonTokenType.StartArray)
                     throw new JsonException(
                         $"Malformed row payload: '{SysCellLevelTtlColumn}' was " +
-                        $"{reader.TokenType}, expected an array.");
+                        $"{reader.TokenType}, expected an array or Null.");
 
                 bool first = true;
                 while (reader.Read() && reader.TokenType != JsonTokenType.EndArray)
