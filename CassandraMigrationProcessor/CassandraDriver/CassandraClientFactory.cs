@@ -208,6 +208,25 @@ public static class CassandraClientFactory
             .WithPort(port)
             .WithApplicationName(ApplicationName)
             .WithApplicationVersion(AppVersion.Value)
+            // Disable the driver's automatic schema/topology metadata
+            // synchronisation. By default the driver re-reads schema
+            // (system_schema.*) and peers (system.peers/local) on connect
+            // and on every server-pushed schema/topology event — and the
+            // migration's schema phase issues a DDL per target table, each
+            // firing a refresh on every open session. Against Cosmos DB's
+            // Cassandra API those control-plane reads are governed by a
+            // separate metadata throttle (429 / Substatus 3200, "high rate
+            // of metadata requests") that extra RUs do not relieve, so a
+            // wide worker pool can storm it and stall/abort otherwise
+            // healthy jobs. The tool does not depend on client-side schema
+            // metadata: reads use `SELECT JSON *` simple statements, regular
+            // writes use prepared `INSERT ... JSON ?` (Prepare fetches its
+            // own result metadata from the server regardless of this
+            // setting), and counter-table UDTs are registered explicitly.
+            // Disabling sync removes the recurring refresh traffic without
+            // changing data-plane concurrency or migration correctness.
+            .WithMetadataSyncOptions(
+                new MetadataSyncOptions().SetMetadataSyncEnabled(false))
             .WithSocketOptions(new SocketOptions()
                 .SetReadTimeoutMillis(ReadTimeoutMs)
                 .SetConnectTimeoutMillis(ConnectTimeoutMs))
