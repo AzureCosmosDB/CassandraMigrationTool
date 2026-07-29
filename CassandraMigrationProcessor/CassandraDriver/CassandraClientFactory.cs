@@ -18,6 +18,20 @@ public static class CassandraClientFactory
     private const int ReconnectBaseDelayMs = 2000;
     private const int ReconnectMaxDelayMs = 60000;
 
+    // Schema-metadata refresh debounce. The driver coalesces server-pushed
+    // schema-change events that arrive within a sliding window into a single
+    // metadata refresh: each new event pushes the scheduled refresh out by
+    // RefreshSchemaDelayIncrement, capped at MaxTotalRefreshSchemaDelay.
+    // The migration's schema phase issues a DDL per table in a tight burst;
+    // widening this window (driver defaults are 1000ms / 10000ms) collapses
+    // that burst into ~one refresh per session instead of one-per-DDL, which
+    // is what amplifies control-plane load against Cosmos DB's Cassandra API
+    // metadata throttle. Sync stays ENABLED so token-map/topology awareness
+    // (token-aware routing, node add/remove) is preserved for OSS Cassandra
+    // and Cassandra MI targets.
+    private const int SchemaRefreshDelayIncrementMs = 5000;
+    private const int SchemaRefreshMaxTotalDelayMs = 60000;
+
     /// <summary>
     /// Create a session to a Cosmos DB Cassandra API account.
     /// Uses SSL on port 10350 with PlainTextAuthProvider.
@@ -208,25 +222,26 @@ public static class CassandraClientFactory
             .WithPort(port)
             .WithApplicationName(ApplicationName)
             .WithApplicationVersion(AppVersion.Value)
-            // Disable the driver's automatic schema/topology metadata
-            // synchronisation. By default the driver re-reads schema
-            // (system_schema.*) and peers (system.peers/local) on connect
-            // and on every server-pushed schema/topology event — and the
-            // migration's schema phase issues a DDL per target table, each
-            // firing a refresh on every open session. Against Cosmos DB's
-            // Cassandra API those control-plane reads are governed by a
-            // separate metadata throttle (429 / Substatus 3200, "high rate
-            // of metadata requests") that extra RUs do not relieve, so a
-            // wide worker pool can storm it and stall/abort otherwise
-            // healthy jobs. The tool does not depend on client-side schema
-            // metadata: reads use `SELECT JSON *` simple statements, regular
-            // writes use prepared `INSERT ... JSON ?` (Prepare fetches its
-            // own result metadata from the server regardless of this
-            // setting), and counter-table UDTs are registered explicitly.
-            // Disabling sync removes the recurring refresh traffic without
-            // changing data-plane concurrency or migration correctness.
-            .WithMetadataSyncOptions(
-                new MetadataSyncOptions().SetMetadataSyncEnabled(false))
+            // Reduce — but do NOT disable — the driver's automatic
+            // schema/topology metadata synchronisation. By default the driver
+            // re-reads schema (system_schema.*) and peers (system.peers/local)
+            // on connect and refreshes again on every server-pushed
+            // schema/topology event. The migration's schema phase issues a DDL
+            // per target table in a tight burst, each event otherwise firing a
+            // separate refresh on every open session — a control-plane read
+            // storm that Cosmos DB's Cassandra API governs under a metadata
+            // throttle (429 / Substatus 3200, "high rate of metadata
+            // requests") that extra RUs do not relieve. Widening the refresh
+            // debounce window coalesces that DDL-phase burst into ~one refresh
+            // per session, cutting the amplification, while keeping metadata
+            // sync ENABLED so token-map/topology awareness (token-aware
+            // routing and node add/remove reactions) is retained for OSS
+            // Cassandra and Cassandra MI targets. (Residual per-session
+            // connect-time reads scale with session count and are addressed
+            // separately by sharing sessions across the worker pool.)
+            .WithMetadataSyncOptions(new MetadataSyncOptions()
+                .SetRefreshSchemaDelayIncrement(SchemaRefreshDelayIncrementMs)
+                .SetMaxTotalRefreshSchemaDelay(SchemaRefreshMaxTotalDelayMs))
             .WithSocketOptions(new SocketOptions()
                 .SetReadTimeoutMillis(ReadTimeoutMs)
                 .SetConnectTimeoutMillis(ConnectTimeoutMs))
