@@ -45,8 +45,23 @@ namespace CassandraMigrationProcessor.CassandraDriver;
 /// </remarks>
 internal sealed record CdcRowMetadata(
     long? WritetimeMicros,
-    long? ExpiryEpochSeconds)
+    long? ExpiryEpochSeconds,
+    IReadOnlyDictionary<string, CdcCellMetadata>? PerColumn = null)
 {
+    /// <summary>
+    /// True when the source row carries per-column writetime/TTL that
+    /// diverges from the row-level values and cell-level preservation is
+    /// enabled. When false the writer takes the single-statement fast
+    /// path (one <c>INSERT … JSON ? USING TIMESTAMP ? AND TTL ?</c>);
+    /// when true it splits the row into one partial <c>INSERT … JSON ?
+    /// DEFAULT UNSET USING TIMESTAMP ? AND TTL ?</c> per distinct
+    /// (writetime, expiry) group so each cell lands with its own
+    /// timestamp and TTL. <see cref="PerColumn"/> is populated only for
+    /// the columns whose metadata differs; every other column falls back
+    /// to the row-level (writetime, expiry) group.
+    /// </summary>
+    public bool HasPerColumnDivergence => PerColumn is { Count: > 0 };
+
     /// <summary>
     /// Sentinel used to mark rows that have no TTL on the source.
     /// Distinct from "expired" so the writer can omit <c>USING TTL</c>
@@ -81,3 +96,27 @@ internal sealed record CdcRowMetadata(
         return ExpiryEpochSeconds!.Value - nowEpochSeconds;
     }
 }
+
+/// <summary>
+/// Per-column (per-cell) change-feed metadata for a single scalar or
+/// frozen column, decoded from the source's <c>__sys_clts</c> (writetime)
+/// and <c>__sys_clttl[1]</c> (per-column TTL) maps. Only populated when
+/// cell-level preservation is enabled and the row actually diverges from
+/// its row-level metadata.
+/// </summary>
+/// <remarks>
+/// Non-frozen collection columns expose <em>per-element</em> writetime/TTL
+/// (arrays rather than scalars in those maps); CQL cannot re-apply
+/// per-element TTL through a single statement, so such columns are
+/// deliberately excluded here and fall back to the row-level group.
+/// </remarks>
+/// <param name="WritetimeMicros">Cell writetime in microseconds since the
+/// Unix epoch (from <c>__sys_clts[col]</c>), or <c>null</c> to inherit the
+/// row writetime.</param>
+/// <param name="ExpiryEpochSeconds">Absolute expiry epoch in seconds for
+/// the cell (<c>__sys_clttl[0] + offset</c>), or <c>null</c> when the cell
+/// has no TTL.</param>
+internal readonly record struct CdcCellMetadata(
+    long? WritetimeMicros,
+    long? ExpiryEpochSeconds);
+

@@ -27,6 +27,74 @@ internal static class RowWriteRetry
         WriteCounters counters,
         CancellationToken cancellationToken)
     {
+        var (outcome, latency, error) =
+            await ExecuteWithRetryAsync(attempt, policy, log, rowKind, cancellationToken);
+        ApplyToCounters(counters, outcome, latency, error);
+        return outcome;
+    }
+
+    /// <summary>
+    /// Executes one source row that must be written as <em>several</em>
+    /// statements (per-cell TTL/writetime preservation splits a row into
+    /// one partial <c>INSERT … DEFAULT UNSET</c> per distinct
+    /// (writetime, ttl) group). Each group attempt gets the same bounded
+    /// retry as a single-statement row, but the shared
+    /// <see cref="WriteCounters"/> are advanced <em>once</em> for the whole
+    /// row so page-level "all rows written" accounting stays correct.
+    /// Groups run sequentially and stop at the first fatal outcome; the
+    /// row's outcome is the worst of its groups (Fatal &gt; Failed &gt;
+    /// Success). Re-running the page on resume is safe because every
+    /// partial insert binds the source <c>USING TIMESTAMP</c>, making the
+    /// writes idempotent.
+    /// </summary>
+    public static async Task<WriteOutcome> ExecuteRowGroupsAsync(
+        IReadOnlyList<Func<Task>> groupAttempts,
+        RetryPolicy policy,
+        WorkerLog log,
+        string rowKind,
+        WriteCounters counters,
+        CancellationToken cancellationToken)
+    {
+        var rowOutcome = WriteOutcome.Success;
+        long totalLatency = 0;
+        Exception? lastError = null;
+
+        foreach (var attempt in groupAttempts)
+        {
+            var (outcome, latency, error) =
+                await ExecuteWithRetryAsync(attempt, policy, log, rowKind, cancellationToken);
+            totalLatency += latency;
+            if (outcome != WriteOutcome.Success)
+            {
+                rowOutcome = outcome;
+                lastError = error;
+                // A fatal group aborts the row immediately; a non-fatal
+                // failure also stops writing the remaining groups because
+                // the row is already lost and will be retried whole on the
+                // next page pass.
+                break;
+            }
+        }
+
+        ApplyToCounters(counters, rowOutcome, totalLatency, lastError);
+        return rowOutcome;
+    }
+
+    /// <summary>
+    /// Runs one attempt callback under the bounded-retry / classification
+    /// loop WITHOUT touching <see cref="WriteCounters"/>. Returns the
+    /// terminal outcome, the successful attempt's latency (0 on failure),
+    /// and the last observed exception so the caller can decide how to
+    /// account for it (single row vs. multi-statement row).
+    /// </summary>
+    private static async Task<(WriteOutcome Outcome, long LatencyMs, Exception? Error)>
+        ExecuteWithRetryAsync(
+            Func<Task> attempt,
+            RetryPolicy policy,
+            WorkerLog log,
+            string rowKind,
+            CancellationToken cancellationToken)
+    {
         for (int n = 1; n <= policy.MaxAttempts; n++)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -35,9 +103,7 @@ internal static class RowWriteRetry
             {
                 await attempt();
                 long elapsed = (Stopwatch.GetTimestamp() - start) * 1000 / Stopwatch.Frequency;
-                Interlocked.Add(ref counters.LatencySum, elapsed);
-                Interlocked.Increment(ref counters.Done);
-                return WriteOutcome.Success;
+                return (WriteOutcome.Success, elapsed, null);
             }
             catch (OperationCanceledException)
             {
@@ -49,9 +115,7 @@ internal static class RowWriteRetry
                 {
                     log.WriteLine($"FATAL {rowKind}: {ex.GetType().Name}: {ex.Message}",
                         LogType.Error);
-                    counters.LastException = ex;
-                    Interlocked.Increment(ref counters.Failed);
-                    return WriteOutcome.Fatal;
+                    return (WriteOutcome.Fatal, 0, ex);
                 }
 
                 if (ExceptionClassifier.IsTransient(ex) && n < policy.MaxAttempts)
@@ -60,14 +124,25 @@ internal static class RowWriteRetry
                     continue;
                 }
 
-                counters.LastException = ex;
-                Interlocked.Increment(ref counters.Failed);
                 log.WriteLine($"{rowKind} FAILED after {n} attempt(s): {ex.GetType().Name}: {ex.Message}",
                     LogType.Error);
-
-                return WriteOutcome.Failed;
+                return (WriteOutcome.Failed, 0, ex);
             }
         }
-        return WriteOutcome.Failed;
+        return (WriteOutcome.Failed, 0, null);
+    }
+
+    private static void ApplyToCounters(
+        WriteCounters counters, WriteOutcome outcome, long latencyMs, Exception? error)
+    {
+        if (outcome == WriteOutcome.Success)
+        {
+            Interlocked.Add(ref counters.LatencySum, latencyMs);
+            Interlocked.Increment(ref counters.Done);
+            return;
+        }
+
+        if (error != null) counters.LastException = error;
+        Interlocked.Increment(ref counters.Failed);
     }
 }

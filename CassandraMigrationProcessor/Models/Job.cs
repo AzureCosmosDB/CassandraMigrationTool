@@ -99,6 +99,21 @@ public class Job
     public bool AppendMode { get; set; }
 
     /// <summary>
+    /// When true, preserve <em>per-column</em> (per-cell) writetime and
+    /// TTL rather than a single row-level value. Rows whose columns were
+    /// written at different times or with different TTLs are split into
+    /// one partial <c>INSERT … JSON DEFAULT UNSET USING TIMESTAMP … AND
+    /// TTL …</c> per distinct (writetime, ttl) group, so each cell lands
+    /// on the target with its own timestamp and expiry. Opt-in
+    /// (default false): it requires the target to support
+    /// <c>INSERT JSON … DEFAULT UNSET</c> and issues extra writes for
+    /// divergent rows. Non-frozen collection element-level TTLs cannot be
+    /// reconstructed via CQL and still fall back to the row-level TTL.
+    /// Uniform rows are written exactly as before, unaffected by this flag.
+    /// </summary>
+    public bool PreserveCellTtlAndWritetime { get; set; }
+
+    /// <summary>
     /// When true, drop target tables before starting the
     /// job so they are recreated fresh from source schema.
     /// Default is false.

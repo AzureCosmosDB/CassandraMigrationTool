@@ -33,10 +33,12 @@ internal sealed class JobPipeline : IDisposable, IAsyncDisposable
             pipelineConfig.ChangeFeedPollIntervalMs,
             _control.Token,
             _control);
-        var readerConfig = new ReaderConfig(pipelineConfig.PageSize, pipelineConfig.MaxReadRetries);
+        var readerConfig = new ReaderConfig(pipelineConfig.PageSize, pipelineConfig.MaxReadRetries,
+            pipelineConfig.PreserveCellTtlAndWritetime);
         var writerConfig = new WriterConfig(
             pipelineConfig.MaxWriteRetries,
-            pipelineConfig.TargetWriteConsistencyLevel);
+            pipelineConfig.TargetWriteConsistencyLevel,
+            pipelineConfig.PreserveCellTtlAndWritetime);
 
         Context = new PipelineContext(
             _partitions,

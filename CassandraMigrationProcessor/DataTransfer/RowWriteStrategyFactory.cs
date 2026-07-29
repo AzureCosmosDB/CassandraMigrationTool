@@ -29,7 +29,8 @@ internal static class RowWriteStrategyFactory
         List<CassandraColumn> columns,
         string targetKeyspace, string targetTable, int maxWriteRetries,
         bool isCounterTable,
-        ConsistencyLevel targetWriteConsistencyLevel)
+        ConsistencyLevel targetWriteConsistencyLevel,
+        bool preserveCellTtl)
     {
         // Simulated run: target is a NullSession that cannot prepare.
         // Skip strategy preparation entirely and count rows as written.
@@ -48,7 +49,7 @@ internal static class RowWriteStrategyFactory
 
         return await RegularRowWriteStrategy.CreateAsync(
             log, targetSession, columns, targetKeyspace, targetTable,
-            retryPolicy, targetWriteConsistencyLevel);
+            retryPolicy, targetWriteConsistencyLevel, preserveCellTtl);
     }
 
     /// <summary>

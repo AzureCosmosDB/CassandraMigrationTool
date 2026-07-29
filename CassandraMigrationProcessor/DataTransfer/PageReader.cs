@@ -14,7 +14,7 @@ namespace CassandraMigrationProcessor.DataTransfer;
 /// tables so per-row system metadata (writetime + per-row TTL) is
 /// surfaced to the writer — see <see cref="CdcJsonRowParser"/>.
 /// </summary>
-internal record ReaderConfig(int PageSize, int MaxReadRetries);
+internal record ReaderConfig(int PageSize, int MaxReadRetries, bool PreserveCellTtlAndWritetime = false);
 
 /// <summary>
 /// Reads a single page from the source Cassandra cluster. The reader's
@@ -31,6 +31,7 @@ internal class PageReader : IDisposable
     private readonly ISession _sourceSession;
     private readonly int _pageSize;
     private readonly int _maxReadRetries;
+    private readonly bool _preserveCellTtl;
     private readonly ConcurrentDictionary<string, Task> _udtRegistrations = new();
 
     /// <summary>
@@ -53,6 +54,7 @@ internal class PageReader : IDisposable
         _ct = cancellationToken;
         _pageSize = config.PageSize;
         _maxReadRetries = config.MaxReadRetries;
+        _preserveCellTtl = config.PreserveCellTtlAndWritetime;
         _sourceSession = sessionFactory.CreateSourceSession();
     }
 
@@ -149,7 +151,7 @@ internal class PageReader : IDisposable
         // One reusable parser per page: its internal buffers are reset (not
         // reallocated) per row, so a page of N rows amortizes the parser's
         // allocations across the whole page instead of paying them per row.
-        var parser = new CdcJsonRowParser();
+        var parser = new CdcJsonRowParser(_preserveCellTtl);
         int consumed = 0;
         foreach (var row in resultSet)
         {
