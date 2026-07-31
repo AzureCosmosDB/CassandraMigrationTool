@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Linq;
 using System.Text;
 using System.Text.Json;
 
@@ -356,9 +357,8 @@ internal sealed class CdcJsonRowParser
     {
         foreach (var kv in _colWritetime)
             yield return kv.Key;
-        foreach (var kv in _colExpiry)
-            if (!_colWritetime.ContainsKey(kv.Key))
-                yield return kv.Key;
+        foreach (var kv in _colExpiry.Where(kv => !_colWritetime.ContainsKey(kv.Key)))
+            yield return kv.Key;
     }
 
     /// <summary>
