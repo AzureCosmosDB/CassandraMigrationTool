@@ -313,8 +313,9 @@ internal sealed class CdcJsonRowParser
             long dur = reader.TokenType == JsonTokenType.Number ? reader.GetInt64() : 0;
             reader.Read();
             long offset = reader.TokenType == JsonTokenType.Number ? reader.GetInt64() : 0;
-            while (reader.TokenType != JsonTokenType.EndArray)
-                reader.Read();
+while (reader.TokenType != JsonTokenType.EndArray && reader.Read()) { }
+if (reader.TokenType != JsonTokenType.EndArray)
+    throw new JsonException($"Malformed row payload: '{SysCellLevelTtlColumn}' detail for '{col}' did not terminate with EndArray.");
 
             _colExpiry[col] = (dur > 0 && baseExpiry > 0)
                 ? baseExpiry + offset
