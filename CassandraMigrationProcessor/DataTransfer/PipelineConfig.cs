@@ -17,7 +17,8 @@ public record PipelineConfig(
     int ChangeFeedPollIntervalMs,
     int MaxReadRetries,
     int MaxWriteRetries,
-    ConsistencyLevel TargetWriteConsistencyLevel)
+    ConsistencyLevel TargetWriteConsistencyLevel,
+    bool PreserveCellTtlAndWritetime)
 {
     /// <summary>
     /// Resolves configuration from job overrides, app settings, and defaults.
@@ -65,7 +66,8 @@ public record PipelineConfig(
             MaxReadRetries: maxReadRetries,
             MaxWriteRetries: maxWriteRetries,
             TargetWriteConsistencyLevel: ToDriverConsistencyLevel(
-                job.TargetWriteConsistencyLevel));
+                job.TargetWriteConsistencyLevel),
+            PreserveCellTtlAndWritetime: job.PreserveCellTtlAndWritetime);
     }
 
     private static ConsistencyLevel ToDriverConsistencyLevel(

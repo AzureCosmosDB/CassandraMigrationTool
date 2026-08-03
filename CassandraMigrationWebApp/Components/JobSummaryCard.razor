@@ -172,6 +172,12 @@
                         <span class="badge bg-info">Append mode</span>
                     </div>
                 }
+                @if (sj.PreserveCellTtlAndWritetime)
+                {
+                    <div class="col-auto">
+                        <span class="badge bg-info" title="Per-cell TTL and writetime preservation was enabled — rows with divergent column timestamps/TTLs were split into per-(writetime, TTL) partial inserts.">Per-cell TTL/writetime</span>
+                    </div>
+                }
             </div>
         </div>
     </div>

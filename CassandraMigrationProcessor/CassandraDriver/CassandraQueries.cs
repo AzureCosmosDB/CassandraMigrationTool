@@ -164,6 +164,32 @@ public static class CassandraQueries
     }
 
     /// <summary>
+    /// Build a prepared partial <c>INSERT … JSON ? DEFAULT UNSET USING
+    /// TIMESTAMP ? AND TTL ?</c> used by cell-level TTL/writetime
+    /// preservation. <c>DEFAULT UNSET</c> makes columns absent from the
+    /// bound JSON stay untouched rather than being overwritten with
+    /// <c>null</c>, so a single source row can be written as several
+    /// partial inserts — one per distinct (writetime, ttl) group — each
+    /// carrying only its primary key plus that group's columns. Bind
+    /// order matches <see cref="PrepareInsertJsonAsync"/>:
+    /// (json, writetime, ttl).
+    /// </summary>
+    public static async Task<PreparedStatement>
+        PrepareInsertJsonPartialAsync(ISession session, string keyspace, string table,
+            List<CassandraColumn> columns)
+    {
+        if (IsCounterTable(columns))
+            throw new InvalidOperationException(
+                $"PrepareInsertJsonPartialAsync called on counter table {keyspace}.{table}; " +
+                "counter tables must use PrepareCounterUpdateAsync.");
+
+        var cql =
+            $"INSERT INTO \"{keyspace}\".\"{table}\" JSON ? DEFAULT UNSET " +
+            "USING TIMESTAMP ? AND TTL ?";
+        return await session.PrepareAsync(cql);
+    }
+
+    /// <summary>
     /// Build a prepared UPDATE for a counter table. Bind order is
     /// counter columns first (schema order), then partition-key and
     /// clustering columns in key order.

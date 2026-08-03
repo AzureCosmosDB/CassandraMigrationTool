@@ -176,6 +176,12 @@
                             Don't run COUNT(*) on source (faster start; per-table progress shows live copy rate instead of percent)
                         </label>
                     </div>
+                    <div class="mb-3">
+                        <label for="preserveCellTtl" class="form-label" title="Preserve per-column (per-cell) writetime and TTL instead of a single row-level value. When a row's columns were written at different times or with different TTLs, the row is split into one partial INSERT ... JSON DEFAULT UNSET USING TIMESTAMP ... AND TTL ... per distinct (writetime, TTL) group, so each cell lands on the target with its own timestamp and expiry. Opt-in: the target must support INSERT JSON ... DEFAULT UNSET, and divergent rows issue extra writes. Non-frozen collection element-level TTLs cannot be reconstructed via CQL and still fall back to the row-level TTL. Uniform rows are unaffected.">
+                            <input type="checkbox" id="preserveCellTtl" disabled="@(!NewMode)" @bind="preserveCellTtlAndWritetime" />
+                            Preserve per-cell TTL and writetime (splits rows with divergent column timestamps/TTLs)
+                        </label>
+                    </div>
                     @* CQL Copy is the only supported job kind. *@
                         <div class="row mb-3">
                             <div class="col-md-6">
@@ -265,6 +271,7 @@
     private bool dropTargetTableBeforeStart = false;
     private bool skipSchemaSync = false;
     private bool skipSourceRowCount = false;
+    private bool preserveCellTtlAndWritetime = false;
     private int? workerCount = null; // Shared worker pool size (0 = auto from ProcessorCount)
     private int? sourceConnectionsPerHost = null; // Source reader connections per host (0 = auto)
     private int? targetConnectionsPerHost = null; // Target writer connections per host (0 = auto)
@@ -372,6 +379,7 @@
             dropTargetTableBeforeStart = false;
             skipSchemaSync = false;
             skipSourceRowCount = false;
+            preserveCellTtlAndWritetime = false;
             targetWriteConsistencyLevel = TargetWriteConsistencyLevel.LocalOne;
             logLevel = LogType.Info; // Default to Info
             isFileUploaded = false;
@@ -399,6 +407,7 @@
             dropTargetTableBeforeStart = Job?.DropTargetTableBeforeStart ?? false;
             skipSchemaSync = Job?.SkipSchemaSync ?? false;
             skipSourceRowCount = Job?.SkipSourceRowCount ?? false;
+            preserveCellTtlAndWritetime = Job?.PreserveCellTtlAndWritetime ?? false;
             workerCount = Job?.WorkerCount == 0 ? null : Job?.WorkerCount;
             sourceConnectionsPerHost = Job?.SourceMaxConnectionsPerHost == 0 ? null : Job?.SourceMaxConnectionsPerHost;
             targetConnectionsPerHost = Job?.TargetMaxConnectionsPerHost == 0 ? null : Job?.TargetMaxConnectionsPerHost;
@@ -573,6 +582,7 @@
             DropTargetTableBeforeStart = dropTargetTableBeforeStart,
             SkipSchemaSync = skipSchemaSync,
             SkipSourceRowCount = skipSourceRowCount,
+            PreserveCellTtlAndWritetime = preserveCellTtlAndWritetime,
             WorkerCount = workerCount ?? 0,
             SourceMaxConnectionsPerHost = sourceConnectionsPerHost ?? 0,
             TargetMaxConnectionsPerHost = targetConnectionsPerHost ?? 0,

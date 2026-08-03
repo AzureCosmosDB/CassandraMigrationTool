@@ -13,7 +13,8 @@ namespace CassandraMigrationProcessor.DataTransfer;
 /// </summary>
 internal record WriterConfig(
     int MaxWriteRetries,
-    ConsistencyLevel TargetWriteConsistencyLevel);
+    ConsistencyLevel TargetWriteConsistencyLevel,
+    bool PreserveCellTtlAndWritetime = false);
 
 /// <summary>
 /// Writes extracted rows to the target cluster. The target session is
@@ -29,6 +30,7 @@ internal sealed class PageWriter : IDisposable
     private readonly ISession _targetSession;
     private readonly int _maxWriteRetries;
     private readonly ConsistencyLevel _targetWriteConsistencyLevel;
+    private readonly bool _preserveCellTtl;
     private readonly ISessionFactory _sessionFactory;
 
     private readonly ConcurrentDictionary<string, Task<IRowWriteStrategy>> _strategyCache = new();
@@ -52,6 +54,7 @@ internal sealed class PageWriter : IDisposable
         _sessionFactory = sessionFactory;
         _maxWriteRetries = config.MaxWriteRetries;
         _targetWriteConsistencyLevel = config.TargetWriteConsistencyLevel;
+        _preserveCellTtl = config.PreserveCellTtlAndWritetime;
         _targetSession = targetSession;
     }
 
@@ -73,7 +76,8 @@ internal sealed class PageWriter : IDisposable
                 partition.Table.Spec.TargetKeyspaceName, partition.Table.Spec.TargetTableName,
                 _maxWriteRetries,
                 partition.Table.IsCounterTable,
-                _targetWriteConsistencyLevel);
+                _targetWriteConsistencyLevel,
+                _preserveCellTtl);
         });
     }
 
