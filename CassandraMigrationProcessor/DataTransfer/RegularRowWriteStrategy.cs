@@ -164,10 +164,11 @@ internal sealed class RegularRowWriteStrategy : IRowWriteStrategy
     {
         var groups = BuildGroups(cleanedJson, metadata);
         var attempts = new List<Func<Task>>(groups.Count);
+        long fallbackTs = NowMicros();
         foreach (var group in groups)
         {
             int ttlSeconds = ResolveTtlSecondsFromExpiry(group.Key.Expiry);
-            long ts = group.Key.Writetime ?? NowMicros();
+            long ts = group.Key.Writetime ?? fallbackTs;
             var bound = _preparedInsertJsonPartial!.Bind(group.Json, ts, ttlSeconds);
             bound.SetReadTimeoutMillis(RowWriteRetry.WriteTimeoutMs);
             bound.SetConsistencyLevel(_writeConsistencyLevel);
