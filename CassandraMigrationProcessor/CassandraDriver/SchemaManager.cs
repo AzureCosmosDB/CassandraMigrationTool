@@ -1,6 +1,7 @@
 using Cassandra;
 using CassandraMigrationProcessor.Infrastructure;
 using CassandraMigrationProcessor.Models;
+using System.Collections.Concurrent;
 
 namespace CassandraMigrationProcessor.CassandraDriver;
 
@@ -39,6 +40,8 @@ public static class SchemaManager
 {
     private const int ProbeTimeoutMs = 15_000;
     private const int ThrottleMaxRetries = 10;
+    private static readonly ConcurrentDictionary<string, SemaphoreSlim> UdtReplicationLocks
+        = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
     /// Synchronises the target schema with the source:
@@ -94,26 +97,40 @@ public static class SchemaManager
         udtsToReplicate ??= await GetUserDefinedTypesAsync(sourceSession, sourceKeyspace);
         if (udtsToReplicate.Count == 0) return;
 
-        var ordered = TopologicallySortUdts(udtsToReplicate.ToList());
-
-        foreach (var udt in ordered)
+        // Multiple tables in the same keyspace are provisioned concurrently.
+        // Serialize their CREATE TYPE chains so a dependent UDT cannot observe
+        // another task's IF NOT EXISTS result before the base type is visible
+        // to the target schema coordinator.
+        var replicationLock = UdtReplicationLocks.GetOrAdd(
+            targetKeyspace, _ => new SemaphoreSlim(1, 1));
+        await replicationLock.WaitAsync();
+        try
         {
-            CqlIdentifier.Validate(udt.TypeName);
+            var ordered = TopologicallySortUdts(udtsToReplicate.ToList());
 
-            var fieldDefs = new List<string>(udt.FieldNames.Count);
-            for (int i = 0; i < udt.FieldNames.Count; i++)
+            foreach (var udt in ordered)
             {
-                CqlIdentifier.Validate(udt.FieldNames[i]);
-                fieldDefs.Add($"\"{udt.FieldNames[i]}\" {udt.FieldTypes[i]}");
+                CqlIdentifier.Validate(udt.TypeName);
+
+                var fieldDefs = new List<string>(udt.FieldNames.Count);
+                for (int i = 0; i < udt.FieldNames.Count; i++)
+                {
+                    CqlIdentifier.Validate(udt.FieldNames[i]);
+                    fieldDefs.Add($"\"{udt.FieldNames[i]}\" {udt.FieldTypes[i]}");
+                }
+
+                string cql =
+                    $"CREATE TYPE IF NOT EXISTS \"{targetKeyspace}\".\"{udt.TypeName}\" (" +
+                    string.Join(", ", fieldDefs) + ")";
+
+                log?.WriteLine($"DDL on target: {cql}", LogType.Info);
+                await RetryExecutor.ExecuteAsync(() =>
+                    targetSession.ExecuteAsync(new SimpleStatement(cql)));
             }
-
-            string cql =
-                $"CREATE TYPE IF NOT EXISTS \"{targetKeyspace}\".\"{udt.TypeName}\" (" +
-                string.Join(", ", fieldDefs) + ")";
-
-            log?.WriteLine($"DDL on target: {cql}", LogType.Info);
-            await RetryExecutor.ExecuteAsync(() =>
-                targetSession.ExecuteAsync(new SimpleStatement(cql)));
+        }
+        finally
+        {
+            replicationLock.Release();
         }
     }
 

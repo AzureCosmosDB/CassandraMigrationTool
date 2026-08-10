@@ -94,7 +94,8 @@ internal sealed class PageWriter : IDisposable
         // INSERT JSON binds only (string, long, int), so JSON regular-table
         // writes don't need target UDT mappings. Counter and fast binary
         // writes bind typed values and must use the same dynamic CLR UDT
-        // mappings as the source session.
+        // mappings as the source session. Register every UDT in the keyspace
+        // because this writer can subsequently process a different table.
         if (!partition.Table.IsCounterTable && _useJsonCopy)
             return Task.CompletedTask;
 
@@ -104,10 +105,9 @@ internal sealed class PageWriter : IDisposable
             try
             {
                 sourceSession = _sessionFactory.CreateSourceSession();
-                var allUdts = await SchemaManager.GetUserDefinedTypesAsync(sourceSession, partition.Table.Spec.KeyspaceName);
-                var requiredUdts = SchemaManager.FilterUdtsReferencedByTable(
-                    allUdts, partition.Table.Columns.Select(c => c.Type));
-                await DynamicUdtRegistrar.RegisterAsync(_targetSession, ks, requiredUdts);
+                var allUdts = await SchemaManager.GetUserDefinedTypesAsync(
+                    sourceSession, partition.Table.Spec.KeyspaceName);
+                await DynamicUdtRegistrar.RegisterAsync(_targetSession, ks, allUdts);
             }
             catch (Exception ex)
             {

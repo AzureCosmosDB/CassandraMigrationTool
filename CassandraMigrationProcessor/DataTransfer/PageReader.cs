@@ -71,8 +71,9 @@ internal class PageReader : IDisposable
     public void Dispose() => MigrationUtilities.SafeDisposeSession(_sourceSession, "PageReader source session");
 
     /// <summary>
-    /// Lazy, idempotent UDT registration for typed reads. JSON reads don't
-    /// decode UDTs into CLR types, while counter and fast binary reads do.
+    /// Lazy, idempotent UDT registration for typed reads. The first typed
+    /// table registers every UDT in the keyspace because this reader can
+    /// subsequently process other tables that reference different UDTs.
     /// </summary>
     private Task EnsureUdtsRegisteredAsync(Partition partition)
     {
@@ -85,9 +86,7 @@ internal class PageReader : IDisposable
             try
             {
                 var allUdts = await SchemaManager.GetUserDefinedTypesAsync(_sourceSession, ks);
-                var requiredUdts = SchemaManager.FilterUdtsReferencedByTable(
-                    allUdts, partition.Table.Columns.Select(c => c.Type));
-                await DynamicUdtRegistrar.RegisterAsync(_sourceSession, ks, requiredUdts);
+                await DynamicUdtRegistrar.RegisterAsync(_sourceSession, ks, allUdts);
             }
             catch (Exception ex)
             {
