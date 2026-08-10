@@ -10,9 +10,10 @@ namespace CassandraMigrationProcessor.DataTransfer;
 /// <summary>
 /// Tunable knobs for a single <see cref="PageReader"/>: how many rows
 /// to pull per page and how many times to retry a transient read
-/// failure. The reader uses <c>SELECT JSON *</c> for non-counter
-/// tables so per-row system metadata (writetime + per-row TTL) is
-/// surfaced to the writer — see <see cref="CdcJsonRowParser"/>.
+/// failure. Regular tables use <c>SELECT JSON *</c> when
+/// <see cref="ReaderConfig.UseJsonCopy"/> is enabled so per-row system
+/// metadata (writetime + per-row TTL) is surfaced to the writer; fast
+/// binary mode and counter tables use typed <c>SELECT *</c> reads.
 /// </summary>
 internal record ReaderConfig(int PageSize, int MaxReadRetries, bool PreserveCellTtlAndWritetime = false, bool UseJsonCopy = true);
 

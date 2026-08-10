@@ -609,7 +609,7 @@
             DropTargetTableBeforeStart = dropTargetTableBeforeStart,
             SkipSchemaSync = skipSchemaSync,
             SkipSourceRowCount = skipSourceRowCount,
-            PreserveCellTtlAndWritetime = preserveCellTtlAndWritetime,
+            PreserveCellTtlAndWritetime = useJsonCopy && preserveCellTtlAndWritetime,
             UseJsonCopy = useJsonCopy,
             WorkerCount = workerCount ?? 0,
             SourceMaxConnectionsPerHost = sourceConnectionsPerHost ?? 0,
