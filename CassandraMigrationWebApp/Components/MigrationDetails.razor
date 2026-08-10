@@ -177,8 +177,17 @@
                         </label>
                     </div>
                     <div class="mb-3">
-                        <label for="preserveCellTtl" class="form-label" title="Preserve per-column (per-cell) writetime and TTL instead of a single row-level value. When a row's columns were written at different times or with different TTLs, the row is split into one partial INSERT ... JSON DEFAULT UNSET USING TIMESTAMP ... AND TTL ... per distinct (writetime, TTL) group, so each cell lands on the target with its own timestamp and expiry. Opt-in: the target must support INSERT JSON ... DEFAULT UNSET, and divergent rows issue extra writes. Non-frozen collection element-level TTLs cannot be reconstructed via CQL and still fall back to the row-level TTL. Uniform rows are unaffected.">
-                            <input type="checkbox" id="preserveCellTtl" disabled="@(!NewMode)" @bind="preserveCellTtlAndWritetime" />
+                        <label for="copyMode" class="form-label" title="Choose how regular (non-counter) tables are copied. 'Preserve TTL & writetime (JSON)' reads via SELECT JSON * and writes via INSERT ... JSON ? USING TIMESTAMP ? AND TTL ?, so the source row's writetime and remaining TTL are preserved (the default v3.x behavior). 'Fast copy (binary)' reads via SELECT * and writes via a typed prepared INSERT — materially faster, but it CANNOT preserve TTL or writetime and is incompatible with per-cell preservation. Counter tables always use the typed UPDATE path regardless of this setting.">
+                            Data copy mode (regular tables)
+                        </label>
+                        <select id="copyMode" class="form-select" disabled="@(!NewMode)" @bind="useJsonCopy" @bind:after="OnCopyModeChanged">
+                            <option value="true">Preserve TTL &amp; writetime (JSON copy)</option>
+                            <option value="false">Fast copy (binary — no TTL/writetime)</option>
+                        </select>
+                    </div>
+                    <div class="mb-3">
+                        <label for="preserveCellTtl" class="form-label" title="Preserve per-column (per-cell) writetime and TTL instead of a single row-level value. When a row's columns were written at different times or with different TTLs, the row is split into one partial INSERT ... JSON DEFAULT UNSET USING TIMESTAMP ... AND TTL ... per distinct (writetime, TTL) group, so each cell lands on the target with its own timestamp and expiry. Requires the JSON copy mode. Opt-in: the target must support INSERT JSON ... DEFAULT UNSET, and divergent rows issue extra writes. Non-frozen collection element-level TTLs cannot be reconstructed via CQL and still fall back to the row-level TTL. Uniform rows are unaffected.">
+                            <input type="checkbox" id="preserveCellTtl" disabled="@(!NewMode || !useJsonCopy)" @bind="preserveCellTtlAndWritetime" />
                             Preserve per-cell TTL and writetime (splits rows with divergent column timestamps/TTLs)
                         </label>
                     </div>
@@ -272,6 +281,7 @@
     private bool skipSchemaSync = false;
     private bool skipSourceRowCount = false;
     private bool preserveCellTtlAndWritetime = false;
+    private bool useJsonCopy = true;
     private int? workerCount = null; // Shared worker pool size (0 = auto from ProcessorCount)
     private int? sourceConnectionsPerHost = null; // Source reader connections per host (0 = auto)
     private int? targetConnectionsPerHost = null; // Target writer connections per host (0 = auto)
@@ -348,6 +358,16 @@
         StateHasChanged();
     }
 
+    // Per-cell TTL/writetime preservation requires the JSON copy path.
+    // When the user switches to the fast binary path, clear the now-invalid
+    // per-cell option so it cannot be submitted in an incompatible state
+    // (the checkbox is also disabled in that mode).
+    private void OnCopyModeChanged()
+    {
+        if (!useJsonCopy)
+            preserveCellTtlAndWritetime = false;
+    }
+
     private void OnModeSelectionChanged(ChangeEventArgs e)
     {
         var val = e?.Value?.ToString() ?? string.Empty;
@@ -380,6 +400,7 @@
             skipSchemaSync = false;
             skipSourceRowCount = false;
             preserveCellTtlAndWritetime = false;
+            useJsonCopy = true;
             targetWriteConsistencyLevel = TargetWriteConsistencyLevel.LocalOne;
             logLevel = LogType.Info; // Default to Info
             isFileUploaded = false;
@@ -408,6 +429,7 @@
             skipSchemaSync = Job?.SkipSchemaSync ?? false;
             skipSourceRowCount = Job?.SkipSourceRowCount ?? false;
             preserveCellTtlAndWritetime = Job?.PreserveCellTtlAndWritetime ?? false;
+            useJsonCopy = Job?.UseJsonCopy ?? true;
             workerCount = Job?.WorkerCount == 0 ? null : Job?.WorkerCount;
             sourceConnectionsPerHost = Job?.SourceMaxConnectionsPerHost == 0 ? null : Job?.SourceMaxConnectionsPerHost;
             targetConnectionsPerHost = Job?.TargetMaxConnectionsPerHost == 0 ? null : Job?.TargetMaxConnectionsPerHost;
@@ -583,6 +605,7 @@
             SkipSchemaSync = skipSchemaSync,
             SkipSourceRowCount = skipSourceRowCount,
             PreserveCellTtlAndWritetime = preserveCellTtlAndWritetime,
+            UseJsonCopy = useJsonCopy,
             WorkerCount = workerCount ?? 0,
             SourceMaxConnectionsPerHost = sourceConnectionsPerHost ?? 0,
             TargetMaxConnectionsPerHost = targetConnectionsPerHost ?? 0,

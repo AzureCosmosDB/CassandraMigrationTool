@@ -14,7 +14,7 @@ namespace CassandraMigrationProcessor.DataTransfer;
 /// tables so per-row system metadata (writetime + per-row TTL) is
 /// surfaced to the writer — see <see cref="CdcJsonRowParser"/>.
 /// </summary>
-internal record ReaderConfig(int PageSize, int MaxReadRetries, bool PreserveCellTtlAndWritetime = false);
+internal record ReaderConfig(int PageSize, int MaxReadRetries, bool PreserveCellTtlAndWritetime = false, bool UseJsonCopy = true);
 
 /// <summary>
 /// Reads a single page from the source Cassandra cluster. The reader's
@@ -32,6 +32,7 @@ internal class PageReader : IDisposable
     private readonly int _pageSize;
     private readonly int _maxReadRetries;
     private readonly bool _preserveCellTtl;
+    private readonly bool _useJsonCopy;
     private readonly ConcurrentDictionary<string, Task> _udtRegistrations = new();
 
     /// <summary>
@@ -55,6 +56,7 @@ internal class PageReader : IDisposable
         _pageSize = config.PageSize;
         _maxReadRetries = config.MaxReadRetries;
         _preserveCellTtl = config.PreserveCellTtlAndWritetime;
+        _useJsonCopy = config.UseJsonCopy;
         _sourceSession = sessionFactory.CreateSourceSession();
     }
 
@@ -118,14 +120,14 @@ internal class PageReader : IDisposable
         bool IsEmptyPage);
 
     /// <summary>
-    /// Read one page from <paramref name="partition"/>. Dispatches to
-    /// the JSON metadata-preserving path for regular tables, or the
-    /// typed binary path for counter tables (counters cannot honour
-    /// <c>USING TIMESTAMP/TTL</c> and use UPDATE, so the
-    /// <c>INSERT JSON</c> write path does not apply).
+    /// Read one page from <paramref name="partition"/>. Dispatches to the
+    /// typed binary path when the table is a counter table (counters cannot
+    /// honour <c>USING TIMESTAMP/TTL</c> and use UPDATE) or when the job
+    /// selected the non-JSON fast copy path (<see cref="ReaderConfig.UseJsonCopy"/>
+    /// is false). Otherwise uses the JSON metadata-preserving path.
     /// </summary>
     public Task<ReadResult?> ReadAsync(Partition partition)
-        => partition.Table.IsCounterTable
+        => partition.Table.IsCounterTable || !_useJsonCopy
             ? ReadTypedPageAsync(partition)
             : ReadJsonPageAsync(partition);
 
@@ -170,9 +172,10 @@ internal class PageReader : IDisposable
     }
 
     /// <summary>
-    /// Read a page via the typed binary <c>SELECT *</c> path. Used
-    /// only for counter tables; the writer materializes them via
-    /// counter UPDATEs through <c>CounterRowWriteStrategy</c>.
+    /// Read a page via the typed binary <c>SELECT *</c> path. Used for
+    /// counter tables and for regular tables when the job selected the
+    /// non-JSON fast copy path; the writer materializes rows via typed
+    /// prepared INSERT (regular) or counter UPDATE (counters).
     /// </summary>
     private async Task<ReadResult?> ReadTypedPageAsync(Partition partition)
     {

@@ -135,6 +135,37 @@ public static class CassandraQueries
         => columns.Any(IsCounterColumn);
 
     /// <summary>
+    /// Build a prepared typed <c>INSERT … (cols) VALUES (?, …)</c> for a
+    /// non-counter table. The returned <c>BindOrder</c> lists the column
+    /// names in bind-parameter order. This is the fast binary copy path
+    /// (paired with <c>SELECT *</c>); it does not carry
+    /// <c>USING TIMESTAMP/TTL</c>, so TTL and writetime are not preserved.
+    /// Throws if called on a counter table — use
+    /// <see cref="PrepareCounterUpdateAsync"/> instead.
+    /// </summary>
+    public static async Task<(PreparedStatement Ps, List<string> BindOrder)>
+        PrepareInsertAsync(ISession session, string keyspace, string table,
+            List<CassandraColumn> columns)
+    {
+        if (IsCounterTable(columns))
+            throw new InvalidOperationException(
+                $"PrepareInsertAsync called on counter table {keyspace}.{table}; " +
+                "use PrepareCounterUpdateAsync instead.");
+
+        var colNames = columns.Select(c => $"\"{c.Name}\"").ToList();
+        var placeholders = columns.Select(_ => "?").ToList();
+
+        var cql =
+            $"INSERT INTO \"{keyspace}\".\"{table}\" " +
+            $"({string.Join(", ", colNames)}) " +
+            $"VALUES ({string.Join(", ", placeholders)})";
+
+        var bindOrder = columns.Select(c => c.Name).ToList();
+        var ps = await session.PrepareAsync(cql);
+        return (ps, bindOrder);
+    }
+
+    /// <summary>
     /// Build a prepared <c>INSERT ... JSON ? USING TIMESTAMP ? AND TTL ?</c>
     /// for a non-counter table. The destination server handles all
     /// type coercion from the JSON envelope, so this path supports

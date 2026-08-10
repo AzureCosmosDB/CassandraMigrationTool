@@ -12,7 +12,9 @@ namespace CassandraMigrationProcessor.DataTransfer;
 /// owns its own statement preparation:
 /// <list type="bullet">
 ///   <item><see cref="RegularRowWriteStrategy.CreateAsync"/> prepares
-///         the INSERT;</item>
+///         the INSERT JSON (metadata-preserving path, UseJsonCopy=true);</item>
+///   <item><see cref="TypedRegularRowWriteStrategy.CreateAsync"/> prepares
+///         the typed VALUES INSERT (fast binary path, UseJsonCopy=false);</item>
 ///   <item><see cref="CounterRowWriteStrategy.CreateAsync"/> prepares
 ///         the UPDATE and the read-modify-write SELECT-by-PK.</item>
 /// </list>
@@ -30,7 +32,8 @@ internal static class RowWriteStrategyFactory
         string targetKeyspace, string targetTable, int maxWriteRetries,
         bool isCounterTable,
         ConsistencyLevel targetWriteConsistencyLevel,
-        bool preserveCellTtl)
+        bool preserveCellTtl,
+        bool useJsonCopy)
     {
         // Simulated run: target is a NullSession that cannot prepare.
         // Skip strategy preparation entirely and count rows as written.
@@ -46,6 +49,14 @@ internal static class RowWriteStrategyFactory
             // Cassandra forbids both on counter UPDATEs. The counter
             // strategy uses its own prepared UPDATE without the clause.
             return await CounterRowWriteStrategy.CreateAsync(log, targetSession, columns, targetKeyspace, targetTable, retryPolicy);
+
+        if (!useJsonCopy)
+            // Fast binary copy path: typed prepared INSERT bound from the
+            // SELECT * row. No TTL/writetime preservation (validated
+            // incompatible with per-cell preservation in PipelineConfig).
+            return await TypedRegularRowWriteStrategy.CreateAsync(
+                log, targetSession, columns, targetKeyspace, targetTable,
+                retryPolicy, targetWriteConsistencyLevel);
 
         return await RegularRowWriteStrategy.CreateAsync(
             log, targetSession, columns, targetKeyspace, targetTable,

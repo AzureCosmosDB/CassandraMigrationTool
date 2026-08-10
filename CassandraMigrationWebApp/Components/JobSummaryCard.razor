@@ -178,6 +178,12 @@
                         <span class="badge bg-info" title="Per-cell TTL and writetime preservation was enabled — rows with divergent column timestamps/TTLs were split into per-(writetime, TTL) partial inserts.">Per-cell TTL/writetime</span>
                     </div>
                 }
+                @if (!sj.UseJsonCopy)
+                {
+                    <div class="col-auto">
+                        <span class="badge bg-warning text-dark" title="Fast binary copy mode (SELECT * / typed INSERT) — materially faster, but TTL and writetime are NOT preserved.">Fast copy (no TTL/writetime)</span>
+                    </div>
+                }
             </div>
         </div>
     </div>

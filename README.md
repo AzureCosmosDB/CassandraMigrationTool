@@ -88,6 +88,10 @@ CassandraMigrationTool/
 | `IsSimulatedRun` | false | Dry run — validate without writing |
 | `AppendMode` | false | Append to existing target data instead of failing on duplicates |
 | `DropTargetTableBeforeStart` | false | Drop and recreate target tables from source schema |
+| `UseJsonCopy` | true | **Data copy mode** for regular (non-counter) tables. `true` = preserve TTL & writetime (`SELECT JSON *` → `INSERT … JSON ? USING TIMESTAMP ? AND TTL ?`). `false` = fast binary copy (`SELECT *` → typed `INSERT`), materially faster but **does not preserve TTL or writetime** and is incompatible with per-cell preservation. Counter tables always use the typed UPDATE path. |
+| `PreserveCellTtlAndWritetime` | false | Preserve *per-cell* (per-column) writetime/TTL instead of a single row-level value; divergent rows are split into one partial `INSERT … JSON DEFAULT UNSET USING TIMESTAMP … AND TTL …` per distinct (writetime, TTL) group. Requires `UseJsonCopy = true`. |
+
+> **Choosing a copy mode:** the default JSON path preserves TTL and writetime end-to-end but does more per-row server work. If your workload does not rely on TTL or on source writetime (LWW) ordering, the **fast binary copy** mode (`UseJsonCopy = false`) is significantly faster on large datasets. It cannot preserve TTL/writetime, so use it only when those semantics don't matter for the target.
 
 ## Migration Modes
 
