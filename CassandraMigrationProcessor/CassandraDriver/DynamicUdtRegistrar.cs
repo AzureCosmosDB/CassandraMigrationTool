@@ -2,6 +2,8 @@ using Cassandra;
 using System.Collections.Concurrent;
 using System.Reflection;
 using System.Reflection.Emit;
+using System.Security.Cryptography;
+using System.Text;
 
 namespace CassandraMigrationProcessor.CassandraDriver;
 
@@ -81,10 +83,11 @@ internal static class DynamicUdtRegistrar
         // same name across keyspaces (or altered shapes across runs)
         // don't collide. The same generated type is reused on both
         // sessions for cross-session bind to succeed.
-        var sig = udt.TypeName + "|" + string.Join(",",
-            udt.FieldNames.Zip(udt.FieldTypes, (n, t) => n + ":" + t));
+        var sig = udt.TypeName.ToLowerInvariant() + "|" + string.Join(",",
+            udt.FieldNames.Zip(udt.FieldTypes,
+                (n, t) => n.ToLowerInvariant() + ":" + NormalizeCqlType(t)));
         var lazy = _typeCache.GetOrAdd(sig, key => new Lazy<Type>(
-            () => BuildClrType(keyspace, udt, known),
+            () => BuildClrType(keyspace, udt, known, key),
             LazyThreadSafetyMode.ExecutionAndPublication));
         try
         {
@@ -101,10 +104,14 @@ internal static class DynamicUdtRegistrar
 
     private static Type BuildClrType(string keyspace,
         SchemaManager.UserDefinedTypeDef udt,
-        IReadOnlyDictionary<string, Type> known)
+        IReadOnlyDictionary<string, Type> known,
+        string signature)
     {
         var module = GetModule();
-        var safeName = "Udt_" + Sanitize(keyspace) + "_" + Sanitize(udt.TypeName);
+        var signatureHash = Convert.ToHexString(
+            SHA256.HashData(Encoding.UTF8.GetBytes(signature))).Substring(0, 12);
+        var safeName = "Udt_" + Sanitize(keyspace) + "_"
+            + Sanitize(udt.TypeName) + "_" + signatureHash;
         var typeBuilder = module.DefineType(
             safeName,
             TypeAttributes.Public | TypeAttributes.Class | TypeAttributes.AutoClass
@@ -152,6 +159,56 @@ internal static class DynamicUdtRegistrar
 
     private static string Sanitize(string s)
         => new(s.Select(c => char.IsLetterOrDigit(c) ? c : '_').ToArray());
+
+    private static string NormalizeCqlType(string cqlType)
+    {
+        var value = new string(cqlType
+            .Where(c => !char.IsWhiteSpace(c))
+            .Select(char.ToLowerInvariant)
+            .ToArray());
+        return NormalizeCqlTypeCore(value);
+    }
+
+    private static string NormalizeCqlTypeCore(string value)
+    {
+        if (value.StartsWith("frozen<", StringComparison.Ordinal)
+            && value.EndsWith('>'))
+        {
+            return NormalizeCqlTypeCore(value.Substring(7, value.Length - 8));
+        }
+
+        int genericStart = value.IndexOf('<');
+        if (genericStart < 0 || !value.EndsWith('>'))
+            return value;
+
+        var name = value.Substring(0, genericStart);
+        var inner = value.Substring(genericStart + 1, value.Length - genericStart - 2);
+        return name + "<" + string.Join(",",
+            SplitTopLevelTypeArguments(inner).Select(NormalizeCqlTypeCore)) + ">";
+    }
+
+    private static IEnumerable<string> SplitTopLevelTypeArguments(string value)
+    {
+        int depth = 0;
+        int start = 0;
+        for (int i = 0; i < value.Length; i++)
+        {
+            switch (value[i])
+            {
+                case '<':
+                    depth++;
+                    break;
+                case '>':
+                    depth--;
+                    break;
+                case ',' when depth == 0:
+                    yield return value.Substring(start, i - start);
+                    start = i + 1;
+                    break;
+            }
+        }
+        yield return value.Substring(start);
+    }
 
     /// <summary>
     /// Maps a CQL type string (as exposed by
