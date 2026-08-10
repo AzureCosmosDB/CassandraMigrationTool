@@ -33,8 +33,6 @@ internal sealed class PageWriter : IDisposable
     private readonly ConsistencyLevel _targetWriteConsistencyLevel;
     private readonly bool _preserveCellTtl;
     private readonly bool _useJsonCopy;
-    private readonly ISessionFactory _sessionFactory;
-
     private readonly ConcurrentDictionary<string, Task<IRowWriteStrategy>> _strategyCache = new();
     private readonly ConcurrentDictionary<string, Task> _udtRegistrations = new();
 
@@ -48,12 +46,11 @@ internal sealed class PageWriter : IDisposable
     /// </summary>
     internal Exception? LastWriteException { get; private set; }
 
-    private PageWriter(WorkerLog log, ISessionFactory sessionFactory, ISession targetSession,
+    private PageWriter(WorkerLog log, ISession targetSession,
         WriterConfig config, CancellationToken cancellationToken)
     {
         _log = log;
         _ct = cancellationToken;
-        _sessionFactory = sessionFactory;
         _maxWriteRetries = config.MaxWriteRetries;
         _targetWriteConsistencyLevel = config.TargetWriteConsistencyLevel;
         _preserveCellTtl = config.PreserveCellTtlAndWritetime;
@@ -64,7 +61,7 @@ internal sealed class PageWriter : IDisposable
     public static async Task<PageWriter> CreateAsync(WorkerLog log, ISessionFactory sessionFactory, WriterConfig config, CancellationToken cancellationToken)
     {
         var targetSession = await sessionFactory.CreateTargetSessionAsync();
-        return new PageWriter(log, sessionFactory, targetSession, config, cancellationToken);
+        return new PageWriter(log, targetSession, config, cancellationToken);
     }
 
     public void Dispose() => MigrationUtilities.SafeDisposeSession(_targetSession, "PageWriter target session");
@@ -94,19 +91,20 @@ internal sealed class PageWriter : IDisposable
         // INSERT JSON binds only (string, long, int), so JSON regular-table
         // writes don't need target UDT mappings. Counter and fast binary
         // writes bind typed values and must use the same dynamic CLR UDT
-        // mappings as the source session. Register every UDT in the keyspace
-        // because this writer can subsequently process a different table.
+        // mappings as the source session. Register every UDT that exists in
+        // the target keyspace because this writer can subsequently process a
+        // different selected table. Discovering from the target is important:
+        // the source keyspace can contain UDTs used only by unselected tables,
+        // and those types are intentionally not replicated.
         if (!partition.Table.IsCounterTable && _useJsonCopy)
             return Task.CompletedTask;
 
         return _udtRegistrations.GetOrAdd(partition.Table.Spec.TargetKeyspaceName, async ks =>
         {
-            ISession? sourceSession = null;
             try
             {
-                sourceSession = _sessionFactory.CreateSourceSession();
                 var allUdts = await SchemaManager.GetUserDefinedTypesAsync(
-                    sourceSession, partition.Table.Spec.KeyspaceName);
+                    _targetSession, ks);
                 await DynamicUdtRegistrar.RegisterAsync(_targetSession, ks, allUdts);
             }
             catch (Exception ex)
@@ -116,11 +114,6 @@ internal sealed class PageWriter : IDisposable
                 // the row never reaches the wire mis-shaped.
                 _log.WriteLine($"FATAL: UDT mapping registration on target failed for {ks}: {ex.Message}", LogType.Error);
                 throw;
-            }
-            finally
-            {
-                if (sourceSession != null)
-                    MigrationUtilities.SafeDisposeSession(sourceSession, "PageWriter UDT discovery session");
             }
         });
     }
