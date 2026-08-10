@@ -91,12 +91,11 @@ internal sealed class PageWriter : IDisposable
         if (_targetSession is NullSession)
             return Task.CompletedTask;
 
-        // INSERT JSON binds only (string, long, int) — no UDT
-        // marshalling on the wire — so non-counter tables don't need
-        // UDT mapping on the target session. This avoids spinning up
-        // a temporary source session for UDT schema discovery on the
-        // write path.
-        if (!partition.Table.IsCounterTable)
+        // INSERT JSON binds only (string, long, int), so JSON regular-table
+        // writes don't need target UDT mappings. Counter and fast binary
+        // writes bind typed values and must use the same dynamic CLR UDT
+        // mappings as the source session.
+        if (!partition.Table.IsCounterTable && _useJsonCopy)
             return Task.CompletedTask;
 
         return _udtRegistrations.GetOrAdd(partition.Table.Spec.TargetKeyspaceName, async ks =>

@@ -71,15 +71,13 @@ internal class PageReader : IDisposable
     public void Dispose() => MigrationUtilities.SafeDisposeSession(_sourceSession, "PageReader source session");
 
     /// <summary>
-    /// Lazy, idempotent UDT registration for a table's keyspace. Only
-    /// needed on the counter typed-read path (`row[columnName]`) — the
-    /// JSON read path doesn't decode UDTs into CLR types, so UDT
-    /// registration is a no-op there.
+    /// Lazy, idempotent UDT registration for typed reads. JSON reads don't
+    /// decode UDTs into CLR types, while counter and fast binary reads do.
     /// </summary>
     private Task EnsureUdtsRegisteredAsync(Partition partition)
     {
         // JSON read path bypasses CLR-side UDT decoding entirely.
-        if (!partition.Table.IsCounterTable)
+        if (!partition.Table.IsCounterTable && _useJsonCopy)
             return Task.CompletedTask;
 
         return _udtRegistrations.GetOrAdd(partition.Table.Spec.KeyspaceName, async ks =>
@@ -105,13 +103,11 @@ internal class PageReader : IDisposable
     /// One page of source rows together with the chunk and per-row
     /// CDC metadata (writetime + TTL expiry). Exactly one of
     /// <see cref="Rows"/> and <see cref="JsonRows"/> is non-empty:
-    /// counter tables (which cannot honour <c>USING TIMESTAMP/TTL</c>)
-    /// use the typed <see cref="Rows"/> path; every other table uses
-    /// <see cref="JsonRows"/> so the writer can re-INSERT each row
-    /// via <c>INSERT JSON</c> and let the destination server handle
-    /// type coercion. <see cref="Metadata"/> is index-aligned with
-    /// the populated row list (or <c>null</c> when no per-row CDC
-    /// metadata was available, e.g. counter pages).
+    /// counter tables and fast binary jobs use the typed
+    /// <see cref="Rows"/> path; metadata-preserving jobs use
+    /// <see cref="JsonRows"/> so the writer can re-INSERT each row via
+    /// <c>INSERT JSON</c>. <see cref="Metadata"/> is index-aligned with
+    /// the populated row list (or <c>null</c> when unavailable).
     /// </summary>
     internal record ReadResult(
         List<object[]> Rows,
