@@ -10,11 +10,12 @@ namespace CassandraMigrationProcessor.DataTransfer;
 /// <summary>
 /// Tunable knobs for a single <see cref="PageReader"/>: how many rows
 /// to pull per page and how many times to retry a transient read
-/// failure. The reader uses <c>SELECT JSON *</c> for non-counter
-/// tables so per-row system metadata (writetime + per-row TTL) is
-/// surfaced to the writer — see <see cref="CdcJsonRowParser"/>.
+/// failure. Regular tables use <c>SELECT JSON *</c> when
+/// <see cref="ReaderConfig.UseJsonCopy"/> is enabled so per-row system
+/// metadata (writetime + per-row TTL) is surfaced to the writer; fast
+/// binary mode and counter tables use typed <c>SELECT *</c> reads.
 /// </summary>
-internal record ReaderConfig(int PageSize, int MaxReadRetries, bool PreserveCellTtlAndWritetime = false);
+internal record ReaderConfig(int PageSize, int MaxReadRetries, bool PreserveCellTtlAndWritetime = false, bool UseJsonCopy = true);
 
 /// <summary>
 /// Reads a single page from the source Cassandra cluster. The reader's
@@ -32,6 +33,7 @@ internal class PageReader : IDisposable
     private readonly int _pageSize;
     private readonly int _maxReadRetries;
     private readonly bool _preserveCellTtl;
+    private readonly bool _useJsonCopy;
     private readonly ConcurrentDictionary<string, Task> _udtRegistrations = new();
 
     /// <summary>
@@ -55,6 +57,7 @@ internal class PageReader : IDisposable
         _pageSize = config.PageSize;
         _maxReadRetries = config.MaxReadRetries;
         _preserveCellTtl = config.PreserveCellTtlAndWritetime;
+        _useJsonCopy = config.UseJsonCopy;
         _sourceSession = sessionFactory.CreateSourceSession();
     }
 
@@ -68,15 +71,14 @@ internal class PageReader : IDisposable
     public void Dispose() => MigrationUtilities.SafeDisposeSession(_sourceSession, "PageReader source session");
 
     /// <summary>
-    /// Lazy, idempotent UDT registration for a table's keyspace. Only
-    /// needed on the counter typed-read path (`row[columnName]`) — the
-    /// JSON read path doesn't decode UDTs into CLR types, so UDT
-    /// registration is a no-op there.
+    /// Lazy, idempotent UDT registration for typed reads. The first typed
+    /// table registers every UDT in the keyspace because this reader can
+    /// subsequently process other tables that reference different UDTs.
     /// </summary>
     private Task EnsureUdtsRegisteredAsync(Partition partition)
     {
         // JSON read path bypasses CLR-side UDT decoding entirely.
-        if (!partition.Table.IsCounterTable)
+        if (!partition.Table.IsCounterTable && _useJsonCopy)
             return Task.CompletedTask;
 
         return _udtRegistrations.GetOrAdd(partition.Table.Spec.KeyspaceName, async ks =>
@@ -84,9 +86,7 @@ internal class PageReader : IDisposable
             try
             {
                 var allUdts = await SchemaManager.GetUserDefinedTypesAsync(_sourceSession, ks);
-                var requiredUdts = SchemaManager.FilterUdtsReferencedByTable(
-                    allUdts, partition.Table.Columns.Select(c => c.Type));
-                await DynamicUdtRegistrar.RegisterAsync(_sourceSession, ks, requiredUdts);
+                await DynamicUdtRegistrar.RegisterAsync(_sourceSession, ks, allUdts);
             }
             catch (Exception ex)
             {
@@ -102,13 +102,11 @@ internal class PageReader : IDisposable
     /// One page of source rows together with the chunk and per-row
     /// CDC metadata (writetime + TTL expiry). Exactly one of
     /// <see cref="Rows"/> and <see cref="JsonRows"/> is non-empty:
-    /// counter tables (which cannot honour <c>USING TIMESTAMP/TTL</c>)
-    /// use the typed <see cref="Rows"/> path; every other table uses
-    /// <see cref="JsonRows"/> so the writer can re-INSERT each row
-    /// via <c>INSERT JSON</c> and let the destination server handle
-    /// type coercion. <see cref="Metadata"/> is index-aligned with
-    /// the populated row list (or <c>null</c> when no per-row CDC
-    /// metadata was available, e.g. counter pages).
+    /// counter tables and fast binary jobs use the typed
+    /// <see cref="Rows"/> path; metadata-preserving jobs use
+    /// <see cref="JsonRows"/> so the writer can re-INSERT each row via
+    /// <c>INSERT JSON</c>. <see cref="Metadata"/> is index-aligned with
+    /// the populated row list (or <c>null</c> when unavailable).
     /// </summary>
     internal record ReadResult(
         List<object[]> Rows,
@@ -118,14 +116,14 @@ internal class PageReader : IDisposable
         bool IsEmptyPage);
 
     /// <summary>
-    /// Read one page from <paramref name="partition"/>. Dispatches to
-    /// the JSON metadata-preserving path for regular tables, or the
-    /// typed binary path for counter tables (counters cannot honour
-    /// <c>USING TIMESTAMP/TTL</c> and use UPDATE, so the
-    /// <c>INSERT JSON</c> write path does not apply).
+    /// Read one page from <paramref name="partition"/>. Dispatches to the
+    /// typed binary path when the table is a counter table (counters cannot
+    /// honour <c>USING TIMESTAMP/TTL</c> and use UPDATE) or when the job
+    /// selected the non-JSON fast copy path (<see cref="ReaderConfig.UseJsonCopy"/>
+    /// is false). Otherwise uses the JSON metadata-preserving path.
     /// </summary>
     public Task<ReadResult?> ReadAsync(Partition partition)
-        => partition.Table.IsCounterTable
+        => partition.Table.IsCounterTable || !_useJsonCopy
             ? ReadTypedPageAsync(partition)
             : ReadJsonPageAsync(partition);
 
@@ -170,9 +168,10 @@ internal class PageReader : IDisposable
     }
 
     /// <summary>
-    /// Read a page via the typed binary <c>SELECT *</c> path. Used
-    /// only for counter tables; the writer materializes them via
-    /// counter UPDATEs through <c>CounterRowWriteStrategy</c>.
+    /// Read a page via the typed binary <c>SELECT *</c> path. Used for
+    /// counter tables and for regular tables when the job selected the
+    /// non-JSON fast copy path; the writer materializes rows via typed
+    /// prepared INSERT (regular) or counter UPDATE (counters).
     /// </summary>
     private async Task<ReadResult?> ReadTypedPageAsync(Partition partition)
     {

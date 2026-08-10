@@ -14,7 +14,8 @@ namespace CassandraMigrationProcessor.DataTransfer;
 internal record WriterConfig(
     int MaxWriteRetries,
     ConsistencyLevel TargetWriteConsistencyLevel,
-    bool PreserveCellTtlAndWritetime = false);
+    bool PreserveCellTtlAndWritetime = false,
+    bool UseJsonCopy = true);
 
 /// <summary>
 /// Writes extracted rows to the target cluster. The target session is
@@ -31,6 +32,7 @@ internal sealed class PageWriter : IDisposable
     private readonly int _maxWriteRetries;
     private readonly ConsistencyLevel _targetWriteConsistencyLevel;
     private readonly bool _preserveCellTtl;
+    private readonly bool _useJsonCopy;
     private readonly ISessionFactory _sessionFactory;
 
     private readonly ConcurrentDictionary<string, Task<IRowWriteStrategy>> _strategyCache = new();
@@ -55,6 +57,7 @@ internal sealed class PageWriter : IDisposable
         _maxWriteRetries = config.MaxWriteRetries;
         _targetWriteConsistencyLevel = config.TargetWriteConsistencyLevel;
         _preserveCellTtl = config.PreserveCellTtlAndWritetime;
+        _useJsonCopy = config.UseJsonCopy;
         _targetSession = targetSession;
     }
 
@@ -77,7 +80,8 @@ internal sealed class PageWriter : IDisposable
                 _maxWriteRetries,
                 partition.Table.IsCounterTable,
                 _targetWriteConsistencyLevel,
-                _preserveCellTtl);
+                _preserveCellTtl,
+                _useJsonCopy);
         });
     }
 
@@ -87,12 +91,12 @@ internal sealed class PageWriter : IDisposable
         if (_targetSession is NullSession)
             return Task.CompletedTask;
 
-        // INSERT JSON binds only (string, long, int) — no UDT
-        // marshalling on the wire — so non-counter tables don't need
-        // UDT mapping on the target session. This avoids spinning up
-        // a temporary source session for UDT schema discovery on the
-        // write path.
-        if (!partition.Table.IsCounterTable)
+        // INSERT JSON binds only (string, long, int), so JSON regular-table
+        // writes don't need target UDT mappings. Counter and fast binary
+        // writes bind typed values and must use the same dynamic CLR UDT
+        // mappings as the source session. Register every UDT in the keyspace
+        // because this writer can subsequently process a different table.
+        if (!partition.Table.IsCounterTable && _useJsonCopy)
             return Task.CompletedTask;
 
         return _udtRegistrations.GetOrAdd(partition.Table.Spec.TargetKeyspaceName, async ks =>
@@ -101,10 +105,9 @@ internal sealed class PageWriter : IDisposable
             try
             {
                 sourceSession = _sessionFactory.CreateSourceSession();
-                var allUdts = await SchemaManager.GetUserDefinedTypesAsync(sourceSession, partition.Table.Spec.KeyspaceName);
-                var requiredUdts = SchemaManager.FilterUdtsReferencedByTable(
-                    allUdts, partition.Table.Columns.Select(c => c.Type));
-                await DynamicUdtRegistrar.RegisterAsync(_targetSession, ks, requiredUdts);
+                var allUdts = await SchemaManager.GetUserDefinedTypesAsync(
+                    sourceSession, partition.Table.Spec.KeyspaceName);
+                await DynamicUdtRegistrar.RegisterAsync(_targetSession, ks, allUdts);
             }
             catch (Exception ex)
             {

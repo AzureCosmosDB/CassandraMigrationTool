@@ -99,6 +99,29 @@ public class Job
     public bool AppendMode { get; set; }
 
     /// <summary>
+    /// Selects the row-copy path for regular (non-counter) tables.
+    /// <para>
+    /// <c>true</c> (default): copy via <c>SELECT JSON *</c> →
+    /// <c>INSERT … JSON ? USING TIMESTAMP ? AND TTL ?</c>. The destination
+    /// server handles all type marshalling and the row's source writetime
+    /// and remaining TTL are preserved end-to-end.
+    /// </para>
+    /// <para>
+    /// <c>false</c>: copy via the faster typed binary path
+    /// (<c>SELECT *</c> → prepared <c>INSERT … VALUES</c>). This does
+    /// materially less per-row work, but it <em>cannot</em> preserve TTL or
+    /// writetime — the <c>SELECT *</c> projection strips the synthetic
+    /// <c>__sys_*</c> metadata columns the writer needs — so rows land on
+    /// the target with the write's wall-clock timestamp and no TTL. It is
+    /// therefore incompatible with <see cref="PreserveCellTtlAndWritetime"/>.
+    /// </para>
+    /// Counter tables always use the typed UPDATE path and are unaffected by
+    /// this flag. Defaults to <c>true</c> so existing jobs keep the current
+    /// metadata-preserving behavior.
+    /// </summary>
+    public bool UseJsonCopy { get; set; } = true;
+
+    /// <summary>
     /// When true, preserve <em>per-column</em> (per-cell) writetime and
     /// TTL rather than a single row-level value. Rows whose columns were
     /// written at different times or with different TTLs are split into
