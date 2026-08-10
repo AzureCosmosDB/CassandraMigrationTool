@@ -180,9 +180,9 @@
                         <label for="copyMode" class="form-label" title="Choose how regular (non-counter) tables are copied. 'Preserve TTL & writetime (JSON)' reads via SELECT JSON * and writes via INSERT ... JSON ? USING TIMESTAMP ? AND TTL ?, so the source row's writetime and remaining TTL are preserved (the default v3.x behavior). 'Fast copy (binary)' reads via SELECT * and writes via a typed prepared INSERT — materially faster, but it CANNOT preserve TTL or writetime and is incompatible with per-cell preservation. Counter tables always use the typed UPDATE path regardless of this setting.">
                             Data copy mode (regular tables)
                         </label>
-                        <select id="copyMode" class="form-select" disabled="@(!NewMode)" @bind="useJsonCopy" @bind:after="OnCopyModeChanged">
-                            <option value="true">Preserve TTL &amp; writetime (JSON copy)</option>
-                            <option value="false">Fast copy (binary — no TTL/writetime)</option>
+                        <select id="copyMode" class="form-select" disabled="@(!NewMode)" @bind="copyModeSelection" @bind:after="OnCopyModeChanged">
+                            <option value="json">Preserve TTL &amp; writetime (JSON copy)</option>
+                            <option value="binary">Fast copy (binary — no TTL/writetime)</option>
                         </select>
                     </div>
                     <div class="mb-3">
@@ -282,6 +282,11 @@
     private bool skipSourceRowCount = false;
     private bool preserveCellTtlAndWritetime = false;
     private bool useJsonCopy = true;
+    private string copyModeSelection
+    {
+        get => useJsonCopy ? "json" : "binary";
+        set => useJsonCopy = value == "json";
+    }
     private int? workerCount = null; // Shared worker pool size (0 = auto from ProcessorCount)
     private int? sourceConnectionsPerHost = null; // Source reader connections per host (0 = auto)
     private int? targetConnectionsPerHost = null; // Target writer connections per host (0 = auto)
