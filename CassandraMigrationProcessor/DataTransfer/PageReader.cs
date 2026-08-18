@@ -30,6 +30,7 @@ internal class PageReader : IDisposable
     private readonly WorkerLog _log;
     private readonly CancellationToken _ct;
     private readonly ISession _sourceSession;
+    private readonly bool _ownsSourceSession;
     private readonly int _pageSize;
     private readonly int _maxReadRetries;
     private readonly bool _preserveCellTtl;
@@ -59,6 +60,7 @@ internal class PageReader : IDisposable
         _preserveCellTtl = config.PreserveCellTtlAndWritetime;
         _useJsonCopy = config.UseJsonCopy;
         _sourceSession = sessionFactory.CreateSourceSession();
+        _ownsSourceSession = sessionFactory.CallerOwnsSourceSession;
     }
 
     public static Task<PageReader> CreateAsync(WorkerLog log,
@@ -68,7 +70,11 @@ internal class PageReader : IDisposable
         return Task.FromResult(new PageReader(log, sessionFactory, config, cancellationToken));
     }
 
-    public void Dispose() => MigrationUtilities.SafeDisposeSession(_sourceSession, "PageReader source session");
+    public void Dispose()
+    {
+        if (_ownsSourceSession)
+            MigrationUtilities.SafeDisposeSession(_sourceSession, "PageReader source session");
+    }
 
     /// <summary>
     /// Lazy, idempotent UDT registration for typed reads. The first typed

@@ -17,12 +17,57 @@ namespace CassandraMigrationProcessor.CassandraDriver;
 /// </summary>
 public interface ISessionFactory
 {
+    /// <summary>
+    /// Whether sessions returned by this factory are owned by the caller.
+    /// Shared job sessions are owned by the migration runner instead.
+    /// </summary>
+    bool CallerOwnsSourceSession => true;
+    bool CallerOwnsTargetSession => true;
+
     /// <summary>Mint a new keyspace-agnostic source-cluster session.</summary>
     ISession CreateSourceSession();
 
     /// <summary>Mint a new keyspace-agnostic target-cluster session. Async because
     /// target credential discovery may go through ARM.</summary>
     Task<ISession> CreateTargetSessionAsync();
+}
+
+/// <summary>
+/// Exposes the runner's job-wide source session while retaining per-worker
+/// target sessions. Sharing the source avoids the Cosmos metadata connection
+/// storm; independent target sessions preserve the writer capacity required
+/// by high-concurrency bulk jobs.
+/// </summary>
+public sealed class SharedSourceSessionFactory : ISessionFactory
+{
+    private readonly ISession _sourceSession;
+    private readonly ISessionFactory _targetSessionFactory;
+    private readonly SemaphoreSlim _targetSessionCreationGate = new(2, 2);
+
+    public SharedSourceSessionFactory(ISession sourceSession, ISessionFactory targetSessionFactory)
+    {
+        _sourceSession = sourceSession ?? throw new ArgumentNullException(nameof(sourceSession));
+        _targetSessionFactory = targetSessionFactory
+            ?? throw new ArgumentNullException(nameof(targetSessionFactory));
+    }
+
+    public bool CallerOwnsSourceSession => false;
+
+    public ISession CreateSourceSession() => _sourceSession;
+
+    public async Task<ISession> CreateTargetSessionAsync()
+    {
+        await _targetSessionCreationGate.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            return await _targetSessionFactory.CreateTargetSessionAsync()
+                .ConfigureAwait(false);
+        }
+        finally
+        {
+            _targetSessionCreationGate.Release();
+        }
+    }
 }
 
 /// <summary>

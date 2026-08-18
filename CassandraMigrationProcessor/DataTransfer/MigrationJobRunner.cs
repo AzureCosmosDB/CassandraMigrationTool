@@ -34,8 +34,9 @@ public class MigrationJobRunner : IAsyncDisposable
     /// Runner-wide source / target sessions opened once in
     /// <see cref="CreateAsync"/> and reused across wildcard expansion,
     /// schema provisioning, and partition discovery. Disposed in
-    /// <see cref="DisposeAsync"/>. Copy workers mint their own sessions
-    /// via <see cref="ISessionFactory"/> for throughput isolation.
+    /// <see cref="DisposeAsync"/>. Copy workers reuse the thread-safe source
+    /// session to avoid multiplying driver metadata topology/schema handshakes,
+    /// while retaining independent target sessions for write throughput.
     /// For simulated runs the target session is a <see cref="NullSession"/>.
     /// </summary>
     private readonly ISession _sourceSession;
@@ -173,7 +174,12 @@ public class MigrationJobRunner : IAsyncDisposable
             var partitioning = await RunPartitioningPhaseAsync(
                 job, units, cancellationToken);
 
-            _pipeline = new JobPipeline(_log, job, _pipelineConfig, partitioning, _tokenRefreshManager, _control);
+            _pipeline = new JobPipeline(
+                _log, job, _pipelineConfig, partitioning,
+                new SharedSourceSessionFactory(
+                    _sourceSession,
+                    new JobSessionFactory(_log, job, _tokenRefreshManager)),
+                _control);
             _pipeline.Start();
 
             await RunCopyPhaseAsync(job, units, partitioning, cancellationToken);

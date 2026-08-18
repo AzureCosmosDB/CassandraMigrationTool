@@ -20,7 +20,9 @@ internal sealed class JobPipeline : IDisposable, IAsyncDisposable
     private readonly PartitionManager _partitions;
     public PipelineContext Context { get; }
 
-    public JobPipeline(MigrationLog log, Job job, PipelineConfig pipelineConfig, JobPartitioning partitioning, TokenRefreshManager? tokenRefreshManager, JobControl control)
+    public JobPipeline(MigrationLog log, Job job, PipelineConfig pipelineConfig,
+        JobPartitioning partitioning, ISessionFactory sessionFactory,
+        JobControl control)
     {
         _log = log;
         _pipelineConfig = pipelineConfig;
@@ -43,7 +45,7 @@ internal sealed class JobPipeline : IDisposable, IAsyncDisposable
 
         Context = new PipelineContext(
             _partitions,
-            new JobSessionFactory(log, job, tokenRefreshManager),
+            sessionFactory,
             readerConfig,
             writerConfig,
             EnableReplay: enableReplay,
