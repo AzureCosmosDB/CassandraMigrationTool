@@ -85,14 +85,16 @@ public class MigrationJobRunner : IAsyncDisposable
         ArgumentNullException.ThrowIfNull(control);
 
         var pipelineConfig = PipelineConfig.Resolve(job, config);
-        var sourceSessions = new RotatingSessionProvider();
+        var sourceSessions = new RotatingSessionProvider(
+            credential => CassandraClientFactory.CreateSourceSessionWithCredential(
+                log, job, credential));
         var tokenRefreshManager = new TokenRefreshManager(log, sourceSessions);
         ISession? source = null;
         ISession? target = null;
         try
         {
             source = CassandraClientFactory.CreateSourceSession(log, job, tokenRefreshManager);
-            sourceSessions.SetSession(source);
+            sourceSessions.Initialize(source);
             target = await CassandraClientFactory.CreateTargetSessionAsync(log, job);
             return new MigrationJobRunner(
                 log, job, pipelineConfig, control, tokenRefreshManager,

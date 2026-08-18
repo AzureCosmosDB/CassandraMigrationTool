@@ -48,10 +48,6 @@ public static class CassandraClientFactory
         TokenRefreshManager? tokenRefreshManager = null,
         int maxConnectionsPerHost = 0)
     {
-        // Cache parameters for token refresh reconnection
-        tokenRefreshManager?.CacheSourceConnectionParams(
-            contactPoint, port, username);
-
         // Source always uses SSL (Cosmos DB requires it)
         var builder = CreateBaseBuilder(
             contactPoint, port, username, password,
@@ -69,7 +65,7 @@ public static class CassandraClientFactory
             try
             {
                 var session = ConnectCluster(builder);
-                RegisterAadTokenRefresh(session, password, tokenRefreshManager);
+                RegisterAadTokenRefresh(password, tokenRefreshManager);
                 return session;
             }
             catch (Exception ex) when (
@@ -94,18 +90,16 @@ public static class CassandraClientFactory
     /// <summary>
     /// When <paramref name="password"/> looks like an AAD/JWT bearer
     /// token and the caller wired up a <see cref="TokenRefreshManager"/>,
-    /// hand the freshly-connected <paramref name="session"/> off so the
-    /// proactive refresh timer can rotate the bearer before it expires.
+    /// start the proactive refresh timer so the bearer is rotated before it
+    /// expires.
     /// No-op when the password is a static credential or the manager is
     /// not supplied.
     /// </summary>
     private static void RegisterAadTokenRefresh(
-        ISession session,
         string password,
         TokenRefreshManager? tokenRefreshManager)
     {
         if (!TokenRefreshManager.IsLikelyAadToken(password)) return;
-        tokenRefreshManager?.RegisterSourceSession(session);
         tokenRefreshManager?.StartTokenRefreshTimer(password);
     }
 
@@ -332,9 +326,27 @@ public static class CassandraClientFactory
             job.SourceUseAad = true;
         }
 
-        // For AAD auth, derive username from hostname if
-        // not explicitly provided (account name = first
-        // segment of the contact point FQDN).
+        return CreateSourceSessionWithCredential(
+            MigrationLog, job, password, tokenRefreshManager);
+    }
+
+    internal static ISession CreateSourceSessionWithCredential(
+        MigrationLog migrationLog,
+        Job job,
+        string credential)
+    {
+        return CreateSourceSessionWithCredential(
+            migrationLog, job, credential, tokenRefreshManager: null);
+    }
+
+    private static ISession CreateSourceSessionWithCredential(
+        MigrationLog migrationLog,
+        Job job,
+        string credential,
+        TokenRefreshManager? tokenRefreshManager)
+    {
+        // For AAD auth, derive username from hostname if not explicitly
+        // provided (account name = first segment of the contact point FQDN).
         string username = job.SourceUsername ?? string.Empty;
         if (string.IsNullOrWhiteSpace(username)
             && job.SourceUseAad
@@ -345,11 +357,11 @@ public static class CassandraClientFactory
         }
 
         return CreateSourceSession(
-            MigrationLog,
+            migrationLog,
             job.SourceContactPoint,
             job.SourcePort,
             username,
-            password,
+            credential,
             tokenRefreshManager,
             maxConnectionsPerHost: ResolveMaxConnectionsPerHost(job.SourceMaxConnectionsPerHost, job.MaxConnectionsPerHost));
     }

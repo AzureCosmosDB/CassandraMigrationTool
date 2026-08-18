@@ -18,10 +18,17 @@ public sealed class RotatingSessionProvider : ISessionProvider, IDisposable
         TimeSpan.FromMinutes(10);
 
     private readonly object _sync = new();
+    private readonly Func<string, ISession> _sessionFactory;
     private readonly HashSet<ISession> _retiredSessions =
         new(ReferenceEqualityComparer.Instance);
     private ISession? _currentSession;
     private bool _disposed;
+
+    public RotatingSessionProvider(Func<string, ISession> sessionFactory)
+    {
+        _sessionFactory = sessionFactory
+            ?? throw new ArgumentNullException(nameof(sessionFactory));
+    }
 
     public ISession GetSession()
     {
@@ -33,34 +40,46 @@ public sealed class RotatingSessionProvider : ISessionProvider, IDisposable
         }
     }
 
-    internal bool TryGetSession(out ISession? session)
-    {
-        lock (_sync)
-        {
-            session = _currentSession;
-            return !_disposed && session != null;
-        }
-    }
-
-    internal void SetSession(ISession session)
+    public void Initialize(ISession session)
     {
         ArgumentNullException.ThrowIfNull(session);
 
-        ISession? retiredSession;
         lock (_sync)
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
-            if (ReferenceEquals(_currentSession, session))
-                return;
-
-            retiredSession = _currentSession;
+            if (_currentSession != null)
+                throw new InvalidOperationException("The session provider is already initialized.");
             _currentSession = session;
-            if (retiredSession != null)
+        }
+    }
+
+    public void Refresh(string credential)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(credential);
+
+        var session = _sessionFactory(credential);
+        ISession? retiredSession;
+        try
+        {
+            lock (_sync)
+            {
+                ObjectDisposedException.ThrowIf(_disposed, this);
+                if (_currentSession == null)
+                    throw new InvalidOperationException("The session provider has not been initialized.");
+
+                retiredSession = _currentSession;
+                _currentSession = session;
                 _retiredSessions.Add(retiredSession);
+            }
+        }
+        catch
+        {
+            MigrationUtilities.SafeDisposeSession(
+                session, "Unpublished refreshed session");
+            throw;
         }
 
-        if (retiredSession != null)
-            _ = DisposeRetiredSessionAfterDelayAsync(retiredSession);
+        _ = DisposeRetiredSessionAfterDelayAsync(retiredSession);
     }
 
     private async Task DisposeRetiredSessionAfterDelayAsync(ISession session)

@@ -1,4 +1,3 @@
-using Cassandra;
 using System.IdentityModel.Tokens.Jwt;
 using CassandraMigrationProcessor.Infrastructure;
 using CassandraMigrationProcessor.Models;
@@ -18,10 +17,6 @@ public class TokenRefreshManager : IDisposable
     private int _consecutiveRefreshFailures;
     private const int MaxRefreshFailures = 6;
 
-    private string? _lastSourceContactPoint;
-    private int _lastSourcePort;
-    private string? _lastSourceUsername;
-
     public TokenRefreshManager(
         MigrationLog log,
         RotatingSessionProvider sourceSessions)
@@ -29,18 +24,6 @@ public class TokenRefreshManager : IDisposable
         _log = log;
         _sourceSessions = sourceSessions
             ?? throw new ArgumentNullException(nameof(sourceSessions));
-    }
-
-    /// <summary>
-    /// Cache source connection parameters so the token refresh
-    /// timer can reconnect with a fresh token.
-    /// </summary>
-    internal void CacheSourceConnectionParams(
-        string contactPoint, int port, string username)
-    {
-        _lastSourceContactPoint = contactPoint;
-        _lastSourcePort = port;
-        _lastSourceUsername = username;
     }
 
     /// <summary>
@@ -155,19 +138,7 @@ public class TokenRefreshManager : IDisposable
             {
                 string freshToken = GetFreshAadToken();
 
-                // If we have a managed session, recreate it
-                if (_sourceSessions.TryGetSession(out var currentSession)
-                    && !currentSession!.IsDisposed
-                    && _lastSourceContactPoint != null)
-                {
-                    var newSession = CassandraClientFactory.CreateSourceSession(
-                        _log,
-                        _lastSourceContactPoint,
-                        _lastSourcePort,
-                        _lastSourceUsername ?? string.Empty,
-                        freshToken);
-                    _sourceSessions.SetSession(newSession);
-                }
+                _sourceSessions.Refresh(freshToken);
 
                 // Schedule next refresh
                 _consecutiveRefreshFailures = 0;
@@ -195,13 +166,6 @@ public class TokenRefreshManager : IDisposable
             }
         }
     }
-
-    /// <summary>
-    /// Set the managed source session so the token refresh
-    /// timer can reconnect it proactively.
-    /// </summary>
-    public void RegisterSourceSession(ISession session)
-        => _sourceSessions.SetSession(session);
 
     public void Dispose()
     {
