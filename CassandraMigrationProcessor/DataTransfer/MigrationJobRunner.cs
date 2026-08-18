@@ -93,8 +93,7 @@ public class MigrationJobRunner : IAsyncDisposable
         {
             var sourceSettings = CassandraClientFactory.ResolveSourceSessionSettings(job);
             sourceSessions = new RotatingSessionProvider(
-                credential => CassandraClientFactory.CreateSourceSessionWithCredential(
-                    log, sourceSettings, credential));
+                new SourceSessionFactory(log, sourceSettings));
             tokenRefreshManager = new TokenRefreshManager(log, sourceSessions);
             string sourceCredential = CassandraClientFactory.ResolveSourceCredential(
                 job, tokenRefreshManager);

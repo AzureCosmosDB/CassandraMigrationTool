@@ -12,19 +12,24 @@ public interface ISessionProvider
     ISession GetSession();
 }
 
+public interface ICredentialSessionFactory
+{
+    ISession CreateSession(string credential);
+}
+
 public sealed class RotatingSessionProvider : ISessionProvider, IDisposable
 {
     private static readonly TimeSpan RetiredSessionDisposalDelay =
         TimeSpan.FromMinutes(10);
 
     private readonly object _sync = new();
-    private readonly Func<string, ISession> _sessionFactory;
+    private readonly ICredentialSessionFactory _sessionFactory;
     private readonly HashSet<ISession> _retiredSessions =
         new(ReferenceEqualityComparer.Instance);
     private ISession? _currentSession;
     private bool _disposed;
 
-    public RotatingSessionProvider(Func<string, ISession> sessionFactory)
+    public RotatingSessionProvider(ICredentialSessionFactory sessionFactory)
     {
         _sessionFactory = sessionFactory
             ?? throw new ArgumentNullException(nameof(sessionFactory));
@@ -44,7 +49,7 @@ public sealed class RotatingSessionProvider : ISessionProvider, IDisposable
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(credential);
 
-        var session = _sessionFactory(credential);
+        var session = _sessionFactory.CreateSession(credential);
         try
         {
             lock (_sync)
@@ -68,7 +73,7 @@ public sealed class RotatingSessionProvider : ISessionProvider, IDisposable
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(credential);
 
-        var session = _sessionFactory(credential);
+        var session = _sessionFactory.CreateSession(credential);
         ISession? retiredSession;
         try
         {

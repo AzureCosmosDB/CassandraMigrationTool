@@ -5,12 +5,6 @@ using CassandraMigrationProcessor.Infrastructure;
 using CassandraMigrationProcessor.Models;
 namespace CassandraMigrationProcessor.CassandraDriver;
 
-internal sealed record SourceSessionSettings(
-    string ContactPoint,
-    int Port,
-    string Username,
-    int MaxConnectionsPerHost);
-
 /// <summary>
 /// Creates Cassandra ISession instances for source (Cosmos DB)
 /// and target (OSS Cassandra) clusters.
