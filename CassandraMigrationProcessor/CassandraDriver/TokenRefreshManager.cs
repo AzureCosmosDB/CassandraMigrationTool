@@ -8,12 +8,22 @@ namespace CassandraMigrationProcessor.CassandraDriver;
 /// Manages AAD token lifecycle and proactive refresh for
 /// Cosmos DB Cassandra API connections.
 /// </summary>
-public class TokenRefreshManager : IDisposable
+public class TokenRefreshManager : ISessionProvider, IDisposable
 {
+    private sealed class ManagedSessionState
+    {
+        public ManagedSessionState(ISession session) => Session = session;
+
+        public ISession Session { get; }
+        public int ActiveLeases { get; set; }
+        public bool Retired { get; set; }
+    }
+
     private Timer? _tokenRefreshTimer;
     private readonly object _refreshLock = new();
-    private ISession? _managedSourceSession;
+    private ManagedSessionState? _managedSourceSession;
     private readonly MigrationLog _log;
+    private bool _disposed;
     private DateTime _tokenExpiresAt = DateTime.MinValue;
     private int _consecutiveRefreshFailures;
     private const int MaxRefreshFailures = 6;
@@ -153,17 +163,16 @@ public class TokenRefreshManager : IDisposable
 
                 // If we have a managed session, recreate it
                 if (_managedSourceSession != null
-                    && !_managedSourceSession.IsDisposed
+                    && !_managedSourceSession.Session.IsDisposed
                     && _lastSourceContactPoint != null)
                 {
-                    var oldSession = _managedSourceSession;
-                    _managedSourceSession = CassandraClientFactory.CreateSourceSession(
+                    var newSession = CassandraClientFactory.CreateSourceSession(
                         _log,
                         _lastSourceContactPoint,
                         _lastSourcePort,
                         _lastSourceUsername ?? string.Empty,
                         freshToken);
-                    MigrationUtilities.SafeDisposeSession(oldSession, "TokenRefresh old session");
+                    SetManagedSourceSession(newSession);
                 }
 
                 // Schedule next refresh
@@ -199,14 +208,73 @@ public class TokenRefreshManager : IDisposable
     /// </summary>
     public void SetManagedSourceSession(ISession session)
     {
-        _managedSourceSession = session;
+        ArgumentNullException.ThrowIfNull(session);
+
+        ISession? sessionToDispose = null;
+        lock (_refreshLock)
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            if (ReferenceEquals(_managedSourceSession?.Session, session))
+                return;
+
+            var previous = _managedSourceSession;
+            _managedSourceSession = new ManagedSessionState(session);
+            if (previous != null)
+            {
+                previous.Retired = true;
+                if (previous.ActiveLeases == 0)
+                    sessionToDispose = previous.Session;
+            }
+        }
+
+        MigrationUtilities.SafeDisposeSession(
+            sessionToDispose, "TokenRefresh retired source session");
+    }
+
+    public SessionLease AcquireSession()
+    {
+        lock (_refreshLock)
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            var state = _managedSourceSession
+                ?? throw new InvalidOperationException("The source session has not been initialized.");
+            state.ActiveLeases++;
+            return new SessionLease(state.Session, () => ReleaseSession(state));
+        }
+    }
+
+    private void ReleaseSession(ManagedSessionState state)
+    {
+        ISession? sessionToDispose = null;
+        lock (_refreshLock)
+        {
+            state.ActiveLeases--;
+            if (state.Retired && state.ActiveLeases == 0)
+                sessionToDispose = state.Session;
+        }
+
+        MigrationUtilities.SafeDisposeSession(
+            sessionToDispose, "TokenRefresh retired source session");
     }
 
     public void Dispose()
     {
+        ISession? sessionToDispose = null;
         lock (_refreshLock)
         {
+            if (_disposed) return;
+            _disposed = true;
             StopTokenRefreshTimer();
+            if (_managedSourceSession != null)
+            {
+                _managedSourceSession.Retired = true;
+                if (_managedSourceSession.ActiveLeases == 0)
+                    sessionToDispose = _managedSourceSession.Session;
+                _managedSourceSession = null;
+            }
         }
+
+        MigrationUtilities.SafeDisposeSession(
+            sessionToDispose, "TokenRefresh managed source session");
     }
 }

@@ -88,14 +88,14 @@ public class MigrationJobRunner : IAsyncDisposable
         try
         {
             source = CassandraClientFactory.CreateSourceSession(log, job, tokenRefreshManager);
+            tokenRefreshManager.SetManagedSourceSession(source);
             target = await CassandraClientFactory.CreateTargetSessionAsync(log, job);
             return new MigrationJobRunner(log, job, pipelineConfig, control, tokenRefreshManager, source, target);
         }
         catch
         {
             MigrationUtilities.SafeDisposeSession(target, "MigrationJobRunner target (CreateAsync rollback)");
-            MigrationUtilities.SafeDisposeSession(source, "MigrationJobRunner source (CreateAsync rollback)");
-            tokenRefreshManager.StopTokenRefreshTimer();
+            tokenRefreshManager.Dispose();
             throw;
         }
     }
@@ -176,7 +176,7 @@ public class MigrationJobRunner : IAsyncDisposable
 
             _pipeline = new JobPipeline(
                 _log, job, _pipelineConfig, partitioning,
-                _sourceSession,
+                _tokenRefreshManager,
                 new GatedSessionFactory(
                     new JobSessionFactory(_log, job)),
                 _control);
@@ -251,7 +251,7 @@ public class MigrationJobRunner : IAsyncDisposable
         MigrationUtilities.SafeDispose(_pipeline, "JobPipeline (Dispose)");
         _pipeline = null;
         MigrationUtilities.SafeDisposeSession(_targetSession, "MigrationJobRunner target session");
-        MigrationUtilities.SafeDisposeSession(_sourceSession, "MigrationJobRunner source session");
+        _tokenRefreshManager.Dispose();
         return ValueTask.CompletedTask;
     }
 

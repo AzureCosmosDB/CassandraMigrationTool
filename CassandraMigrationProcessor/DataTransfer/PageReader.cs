@@ -29,12 +29,12 @@ internal class PageReader
 {
     private readonly WorkerLog _log;
     private readonly CancellationToken _ct;
-    private readonly ISession _sourceSession;
+    private readonly ISessionProvider _sourceSessionProvider;
     private readonly int _pageSize;
     private readonly int _maxReadRetries;
     private readonly bool _preserveCellTtl;
     private readonly bool _useJsonCopy;
-    private readonly ConcurrentDictionary<string, Task> _udtRegistrations = new();
+    private readonly ConcurrentDictionary<(ISession Session, string Keyspace), Task> _udtRegistrations = new();
 
     /// <summary>
     /// Most recent transient exception observed during retry-exhausted
@@ -50,7 +50,7 @@ internal class PageReader
     // hints parking a worker for minutes.
     private const int MaxRetryDelayMs = 30_000;
 
-    private PageReader(WorkerLog log, ISession sourceSession, ReaderConfig config, CancellationToken cancellationToken)
+    private PageReader(WorkerLog log, ISessionProvider sourceSessionProvider, ReaderConfig config, CancellationToken cancellationToken)
     {
         _log = log;
         _ct = cancellationToken;
@@ -58,14 +58,15 @@ internal class PageReader
         _maxReadRetries = config.MaxReadRetries;
         _preserveCellTtl = config.PreserveCellTtlAndWritetime;
         _useJsonCopy = config.UseJsonCopy;
-        _sourceSession = sourceSession;
+        _sourceSessionProvider = sourceSessionProvider
+            ?? throw new ArgumentNullException(nameof(sourceSessionProvider));
     }
 
     public static Task<PageReader> CreateAsync(WorkerLog log,
-        ISession sourceSession, ReaderConfig config,
+        ISessionProvider sourceSessionProvider, ReaderConfig config,
         CancellationToken cancellationToken)
     {
-        return Task.FromResult(new PageReader(log, sourceSession, config, cancellationToken));
+        return Task.FromResult(new PageReader(log, sourceSessionProvider, config, cancellationToken));
     }
 
     /// <summary>
@@ -73,27 +74,30 @@ internal class PageReader
     /// table registers every UDT in the keyspace because this reader can
     /// subsequently process other tables that reference different UDTs.
     /// </summary>
-    private Task EnsureUdtsRegisteredAsync(Partition partition)
+    private async Task EnsureUdtsRegisteredAsync(Partition partition)
     {
         // JSON read path bypasses CLR-side UDT decoding entirely.
         if (!partition.Table.IsCounterTable && _useJsonCopy)
-            return Task.CompletedTask;
+            return;
 
-        return _udtRegistrations.GetOrAdd(partition.Table.Spec.KeyspaceName, async ks =>
+        using var lease = _sourceSessionProvider.AcquireSession();
+        var sourceSession = lease.Session;
+        var keyspace = partition.Table.Spec.KeyspaceName;
+        await _udtRegistrations.GetOrAdd((sourceSession, keyspace), async key =>
         {
             try
             {
-                var allUdts = await SchemaManager.GetUserDefinedTypesAsync(_sourceSession, ks);
-                await DynamicUdtRegistrar.RegisterAsync(_sourceSession, ks, allUdts);
+                var allUdts = await SchemaManager.GetUserDefinedTypesAsync(key.Session, key.Keyspace);
+                await DynamicUdtRegistrar.RegisterAsync(key.Session, key.Keyspace, allUdts);
             }
             catch (Exception ex)
             {
                 // Do NOT swallow: UDT mapping is required for correct
                 // row decoding. Surface as fatal.
-                _log.WriteLine($"FATAL: UDT mapping registration on source failed for {ks}: {ex.Message}", LogType.Error);
+                _log.WriteLine($"FATAL: UDT mapping registration on source failed for {key.Keyspace}: {ex.Message}", LogType.Error);
                 throw;
             }
-        });
+        }).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -214,8 +218,9 @@ internal class PageReader
         // re-queue this partition via cooldown — LastPagingState is
         // intact and will retry the same page once the source stops
         // throttling.
+        using var lease = _sourceSessionProvider.AcquireSession();
         var resultSet = await RetryExecutor.ExecuteOrDefaultAsync<RowSet>(
-            operation: _ => _sourceSession.ExecuteAsync(stmt).WaitAsync(_ct),
+            operation: _ => lease.Session.ExecuteAsync(stmt).WaitAsync(_ct),
             maxAttempts: _maxReadRetries,
             shouldRetry: ExceptionClassifier.IsTransient,
             delayFor: (ex, attempt) => TimeSpan.FromMilliseconds(

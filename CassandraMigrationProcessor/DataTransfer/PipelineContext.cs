@@ -1,4 +1,3 @@
-using Cassandra;
 using CassandraMigrationProcessor.CassandraDriver;
 
 namespace CassandraMigrationProcessor.DataTransfer;
@@ -15,7 +14,7 @@ namespace CassandraMigrationProcessor.DataTransfer;
 /// </summary>
 internal record PipelineContext(
     PartitionManager Partitions,
-    ISession SourceSession,
+    ISessionProvider SourceSessionProvider,
     ISessionFactory SessionFactory,
     ReaderConfig ReaderConfig,
     WriterConfig WriterConfig,

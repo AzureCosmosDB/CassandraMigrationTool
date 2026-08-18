@@ -11,14 +11,39 @@ namespace CassandraMigrationProcessor.CassandraDriver;
 public interface ISessionFactory
 {
     /// <summary>Mint a new keyspace-agnostic session.</summary>
-    Task<ISession> CreateSessionAsync();
+    Task<ISession> CreateSessionAsync(CancellationToken cancellationToken);
+}
+
+/// <summary>
+/// Provides a lease on the current shared session. A rotated session is not
+/// disposed until all operations using its leases have completed.
+/// </summary>
+public interface ISessionProvider
+{
+    SessionLease AcquireSession();
+}
+
+public sealed class SessionLease : IDisposable
+{
+    private Action? _release;
+
+    internal SessionLease(ISession session, Action release)
+    {
+        Session = session;
+        _release = release;
+    }
+
+    public ISession Session { get; }
+
+    public void Dispose()
+        => Interlocked.Exchange(ref _release, null)?.Invoke();
 }
 
 /// <summary>
 /// Limits simultaneous session opens. This prevents high-worker jobs from
 /// creating a connection storm during startup.
 /// </summary>
-public sealed class GatedSessionFactory : ISessionFactory
+public sealed class GatedSessionFactory : ISessionFactory, IDisposable
 {
     private const int MaxConcurrentSessionCreations = 20;
 
@@ -32,12 +57,12 @@ public sealed class GatedSessionFactory : ISessionFactory
         _inner = inner ?? throw new ArgumentNullException(nameof(inner));
     }
 
-    public async Task<ISession> CreateSessionAsync()
+    public async Task<ISession> CreateSessionAsync(CancellationToken cancellationToken)
     {
-        await _creationGate.WaitAsync().ConfigureAwait(false);
+        await _creationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            return await _inner.CreateSessionAsync()
+            return await _inner.CreateSessionAsync(cancellationToken)
                 .ConfigureAwait(false);
         }
         finally
@@ -45,6 +70,8 @@ public sealed class GatedSessionFactory : ISessionFactory
             _creationGate.Release();
         }
     }
+
+    public void Dispose() => _creationGate.Dispose();
 }
 
 /// <summary>
@@ -63,6 +90,10 @@ public sealed class JobSessionFactory : ISessionFactory
         _job = job;
     }
 
-    public Task<ISession> CreateSessionAsync()
-        => CassandraClientFactory.CreateTargetSessionAsync(_log, _job);
+    public async Task<ISession> CreateSessionAsync(CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        return await CassandraClientFactory.CreateTargetSessionAsync(_log, _job)
+            .ConfigureAwait(false);
+    }
 }
