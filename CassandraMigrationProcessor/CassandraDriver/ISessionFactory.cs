@@ -20,8 +20,12 @@ public interface ISessionFactory
 /// </summary>
 public sealed class GatedSessionFactory : ISessionFactory
 {
+    private const int MaxConcurrentSessionCreations = 20;
+
     private readonly ISessionFactory _inner;
-    private readonly SemaphoreSlim _creationGate = new(2, 2);
+    private readonly SemaphoreSlim _creationGate = new(
+        MaxConcurrentSessionCreations,
+        MaxConcurrentSessionCreations);
 
     public GatedSessionFactory(ISessionFactory inner)
     {
