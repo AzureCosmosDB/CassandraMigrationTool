@@ -23,7 +23,7 @@ internal sealed class JobPipeline : IDisposable, IAsyncDisposable
 
     public JobPipeline(MigrationLog log, Job job, PipelineConfig pipelineConfig,
         JobPartitioning partitioning, ISession sourceSession,
-        ITargetSessionFactory targetSessionFactory,
+        ISessionFactory targetSessionFactory,
         JobControl control)
     {
         _log = log;

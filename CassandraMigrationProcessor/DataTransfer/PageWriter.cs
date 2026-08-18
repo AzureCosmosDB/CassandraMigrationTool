@@ -58,7 +58,7 @@ internal sealed class PageWriter : IDisposable
         _targetSession = targetSession;
     }
 
-    public static async Task<PageWriter> CreateAsync(WorkerLog log, ITargetSessionFactory sessionFactory, WriterConfig config, CancellationToken cancellationToken)
+    public static async Task<PageWriter> CreateAsync(WorkerLog log, ISessionFactory sessionFactory, WriterConfig config, CancellationToken cancellationToken)
     {
         var targetSession = await sessionFactory.CreateTargetSessionAsync();
         return new PageWriter(log, targetSession, config, cancellationToken);

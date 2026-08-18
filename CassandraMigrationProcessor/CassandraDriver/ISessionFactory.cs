@@ -9,7 +9,7 @@ namespace CassandraMigrationProcessor.CassandraDriver;
 /// passed directly to readers, so their lifetime cannot be confused with the
 /// per-worker target-session lifetime.
 /// </summary>
-public interface ITargetSessionFactory
+public interface ISessionFactory
 {
     /// <summary>Mint a new keyspace-agnostic target-cluster session. Async because
     /// target credential discovery may go through ARM.</summary>
@@ -21,12 +21,12 @@ public interface ITargetSessionFactory
 /// session per worker. This prevents high-worker jobs from creating a
 /// connection storm during startup.
 /// </summary>
-public sealed class GatedTargetSessionFactory : ITargetSessionFactory
+public sealed class GatedTargetSessionFactory : ISessionFactory
 {
-    private readonly ITargetSessionFactory _inner;
+    private readonly ISessionFactory _inner;
     private readonly SemaphoreSlim _creationGate = new(2, 2);
 
-    public GatedTargetSessionFactory(ITargetSessionFactory inner)
+    public GatedTargetSessionFactory(ISessionFactory inner)
     {
         _inner = inner ?? throw new ArgumentNullException(nameof(inner));
     }
@@ -47,11 +47,11 @@ public sealed class GatedTargetSessionFactory : ITargetSessionFactory
 }
 
 /// <summary>
-/// Default <see cref="ITargetSessionFactory"/> bound to a single
+/// Default <see cref="ISessionFactory"/> bound to a single
 /// <see cref="Job"/>. Delegates to <see cref="CassandraClientFactory"/>
 /// so the connection-construction policy stays in one place.
 /// </summary>
-public sealed class JobTargetSessionFactory : ITargetSessionFactory
+public sealed class JobTargetSessionFactory : ISessionFactory
 {
     private readonly MigrationLog _log;
     private readonly Job _job;
