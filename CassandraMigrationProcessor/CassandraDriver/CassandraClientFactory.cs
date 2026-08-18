@@ -306,28 +306,32 @@ public static class CassandraClientFactory
         MigrationLog MigrationLog, Job job,
         TokenRefreshManager? tokenRefreshManager = null)
     {
+        string credential = ResolveSourceCredential(job, tokenRefreshManager);
+
+        return CreateSourceSessionWithCredential(
+            MigrationLog, job, credential, tokenRefreshManager);
+    }
+
+    internal static string ResolveSourceCredential(
+        Job job,
+        TokenRefreshManager? tokenRefreshManager = null)
+    {
         if (string.IsNullOrEmpty(job.SourceContactPoint))
             throw new ArgumentException("Source contact point is required", nameof(job));
 
-        string password = job.SourcePassword ?? string.Empty;
-
-        // If password is empty (resume) or AAD is enabled,
-        // fetch a fresh token via managed identity
-        if (string.IsNullOrEmpty(password) || job.SourceUseAad)
+        string credential = job.SourcePassword ?? string.Empty;
+        if (string.IsNullOrEmpty(credential) || job.SourceUseAad)
         {
-            password = tokenRefreshManager?.GetFreshAadToken()
+            credential = tokenRefreshManager?.GetFreshAadToken()
                 ?? TokenRefreshManager.AcquireAadToken();
             // SECURITY: do NOT write the AAD bearer token back into
             // job.SourcePassword — even though [JsonIgnore] keeps it
             // off disk, the Blazor "Update Connection Strings" modal
-            // would echo it into a <input value="…"> and leak the
-            // bearer JWT to the browser DOM. Azure.Identity caches
-            // tokens in-process so re-acquiring per call is free.
+            // would echo it into an <input value="…"> and leak the
+            // bearer JWT to the browser DOM.
             job.SourceUseAad = true;
         }
-
-        return CreateSourceSessionWithCredential(
-            MigrationLog, job, password, tokenRefreshManager);
+        return credential;
     }
 
     internal static ISession CreateSourceSessionWithCredential(

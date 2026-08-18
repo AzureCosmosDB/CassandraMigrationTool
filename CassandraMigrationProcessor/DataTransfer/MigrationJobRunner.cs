@@ -93,8 +93,11 @@ public class MigrationJobRunner : IAsyncDisposable
         ISession? target = null;
         try
         {
-            source = CassandraClientFactory.CreateSourceSession(log, job, tokenRefreshManager);
-            sourceSessions.Initialize(source);
+            string sourceCredential = CassandraClientFactory.ResolveSourceCredential(
+                job, tokenRefreshManager);
+            source = sourceSessions.Initialize(sourceCredential);
+            if (TokenRefreshManager.IsLikelyAadToken(sourceCredential))
+                tokenRefreshManager.StartTokenRefreshTimer(sourceCredential);
             target = await CassandraClientFactory.CreateTargetSessionAsync(log, job);
             return new MigrationJobRunner(
                 log, job, pipelineConfig, control, tokenRefreshManager,

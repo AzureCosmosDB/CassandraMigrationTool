@@ -40,16 +40,27 @@ public sealed class RotatingSessionProvider : ISessionProvider, IDisposable
         }
     }
 
-    public void Initialize(ISession session)
+    public ISession Initialize(string credential)
     {
-        ArgumentNullException.ThrowIfNull(session);
+        ArgumentException.ThrowIfNullOrWhiteSpace(credential);
 
-        lock (_sync)
+        var session = _sessionFactory(credential);
+        try
         {
-            ObjectDisposedException.ThrowIf(_disposed, this);
-            if (_currentSession != null)
-                throw new InvalidOperationException("The session provider is already initialized.");
-            _currentSession = session;
+            lock (_sync)
+            {
+                ObjectDisposedException.ThrowIf(_disposed, this);
+                if (_currentSession != null)
+                    throw new InvalidOperationException("The session provider is already initialized.");
+                _currentSession = session;
+            }
+            return session;
+        }
+        catch
+        {
+            MigrationUtilities.SafeDisposeSession(
+                session, "Unpublished initial session");
+            throw;
         }
     }
 
