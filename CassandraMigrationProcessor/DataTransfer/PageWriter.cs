@@ -29,7 +29,6 @@ internal sealed class PageWriter : IDisposable
     private readonly WorkerLog _log;
     private readonly CancellationToken _ct;
     private readonly ISession _targetSession;
-    private readonly bool _ownsTargetSession;
     private readonly int _maxWriteRetries;
     private readonly ConsistencyLevel _targetWriteConsistencyLevel;
     private readonly bool _preserveCellTtl;
@@ -47,7 +46,7 @@ internal sealed class PageWriter : IDisposable
     /// </summary>
     internal Exception? LastWriteException { get; private set; }
 
-    private PageWriter(WorkerLog log, ISession targetSession, bool ownsTargetSession,
+    private PageWriter(WorkerLog log, ISession targetSession,
         WriterConfig config, CancellationToken cancellationToken)
     {
         _log = log;
@@ -57,20 +56,16 @@ internal sealed class PageWriter : IDisposable
         _preserveCellTtl = config.PreserveCellTtlAndWritetime;
         _useJsonCopy = config.UseJsonCopy;
         _targetSession = targetSession;
-        _ownsTargetSession = ownsTargetSession;
     }
 
-    public static async Task<PageWriter> CreateAsync(WorkerLog log, ISessionFactory sessionFactory, WriterConfig config, CancellationToken cancellationToken)
+    public static async Task<PageWriter> CreateAsync(WorkerLog log, ITargetSessionFactory sessionFactory, WriterConfig config, CancellationToken cancellationToken)
     {
         var targetSession = await sessionFactory.CreateTargetSessionAsync();
-        return new PageWriter(log, targetSession, sessionFactory.CallerOwnsTargetSession, config, cancellationToken);
+        return new PageWriter(log, targetSession, config, cancellationToken);
     }
 
     public void Dispose()
-    {
-        if (_ownsTargetSession)
-            MigrationUtilities.SafeDisposeSession(_targetSession, "PageWriter target session");
-    }
+        => MigrationUtilities.SafeDisposeSession(_targetSession, "PageWriter target session");
 
     private Task<IRowWriteStrategy> GetStrategyAsync(Partition partition)
     {

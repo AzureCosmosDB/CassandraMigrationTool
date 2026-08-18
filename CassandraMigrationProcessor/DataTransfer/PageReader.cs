@@ -25,12 +25,11 @@ internal record ReaderConfig(int PageSize, int MaxReadRetries, bool PreserveCell
 /// cached per keyspace so the first partition for each table pays the
 /// cost and subsequent partitions reuse it.
 /// </summary>
-internal class PageReader : IDisposable
+internal class PageReader
 {
     private readonly WorkerLog _log;
     private readonly CancellationToken _ct;
     private readonly ISession _sourceSession;
-    private readonly bool _ownsSourceSession;
     private readonly int _pageSize;
     private readonly int _maxReadRetries;
     private readonly bool _preserveCellTtl;
@@ -51,7 +50,7 @@ internal class PageReader : IDisposable
     // hints parking a worker for minutes.
     private const int MaxRetryDelayMs = 30_000;
 
-    private PageReader(WorkerLog log, ISessionFactory sessionFactory, ReaderConfig config, CancellationToken cancellationToken)
+    private PageReader(WorkerLog log, ISession sourceSession, ReaderConfig config, CancellationToken cancellationToken)
     {
         _log = log;
         _ct = cancellationToken;
@@ -59,21 +58,14 @@ internal class PageReader : IDisposable
         _maxReadRetries = config.MaxReadRetries;
         _preserveCellTtl = config.PreserveCellTtlAndWritetime;
         _useJsonCopy = config.UseJsonCopy;
-        _sourceSession = sessionFactory.CreateSourceSession();
-        _ownsSourceSession = sessionFactory.CallerOwnsSourceSession;
+        _sourceSession = sourceSession;
     }
 
     public static Task<PageReader> CreateAsync(WorkerLog log,
-        ISessionFactory sessionFactory, ReaderConfig config,
+        ISession sourceSession, ReaderConfig config,
         CancellationToken cancellationToken)
     {
-        return Task.FromResult(new PageReader(log, sessionFactory, config, cancellationToken));
-    }
-
-    public void Dispose()
-    {
-        if (_ownsSourceSession)
-            MigrationUtilities.SafeDisposeSession(_sourceSession, "PageReader source session");
+        return Task.FromResult(new PageReader(log, sourceSession, config, cancellationToken));
     }
 
     /// <summary>

@@ -1,3 +1,4 @@
+using Cassandra;
 using CassandraMigrationProcessor.CassandraDriver;
 using CassandraMigrationProcessor.Infrastructure;
 using CassandraMigrationProcessor.Models;
@@ -21,7 +22,8 @@ internal sealed class JobPipeline : IDisposable, IAsyncDisposable
     public PipelineContext Context { get; }
 
     public JobPipeline(MigrationLog log, Job job, PipelineConfig pipelineConfig,
-        JobPartitioning partitioning, ISessionFactory sessionFactory,
+        JobPartitioning partitioning, ISession sourceSession,
+        ITargetSessionFactory targetSessionFactory,
         JobControl control)
     {
         _log = log;
@@ -45,7 +47,8 @@ internal sealed class JobPipeline : IDisposable, IAsyncDisposable
 
         Context = new PipelineContext(
             _partitions,
-            sessionFactory,
+            sourceSession,
+            targetSessionFactory,
             readerConfig,
             writerConfig,
             EnableReplay: enableReplay,
