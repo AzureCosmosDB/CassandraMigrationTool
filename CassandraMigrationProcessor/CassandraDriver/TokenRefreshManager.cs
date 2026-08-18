@@ -21,10 +21,10 @@ public class TokenRefreshManager : ISessionProvider, IDisposable
     private int _consecutiveRefreshFailures;
     private const int MaxRefreshFailures = 6;
     // A read attempt is capped at 60 seconds. Keep a rotated session alive
-    // for twice that time so an in-flight attempt can finish, while the next
-    // retry resolves and uses the newly refreshed session.
+    // for a generous bounded grace period so in-flight operations can finish,
+    // while each retry resolves and uses the newly refreshed session.
     private static readonly TimeSpan RetiredSessionDisposalDelay =
-        TimeSpan.FromMinutes(2);
+        TimeSpan.FromMinutes(10);
 
     private string? _lastSourceContactPoint;
     private int _lastSourcePort;
