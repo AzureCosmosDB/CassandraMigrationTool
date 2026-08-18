@@ -80,8 +80,7 @@ internal class PageReader
         if (!partition.Table.IsCounterTable && _useJsonCopy)
             return;
 
-        using var lease = _sourceSessionProvider.AcquireSession();
-        var sourceSession = lease.Session;
+        var sourceSession = _sourceSessionProvider.GetSession();
         var keyspace = partition.Table.Spec.KeyspaceName;
         await _udtRegistrations.GetOrAdd((sourceSession, keyspace), async key =>
         {
@@ -218,9 +217,10 @@ internal class PageReader
         // re-queue this partition via cooldown — LastPagingState is
         // intact and will retry the same page once the source stops
         // throttling.
-        using var lease = _sourceSessionProvider.AcquireSession();
         var resultSet = await RetryExecutor.ExecuteOrDefaultAsync<RowSet>(
-            operation: _ => lease.Session.ExecuteAsync(stmt).WaitAsync(_ct),
+            operation: _ => _sourceSessionProvider.GetSession()
+                .ExecuteAsync(stmt)
+                .WaitAsync(_ct),
             maxAttempts: _maxReadRetries,
             shouldRetry: ExceptionClassifier.IsTransient,
             delayFor: (ex, attempt) => TimeSpan.FromMilliseconds(

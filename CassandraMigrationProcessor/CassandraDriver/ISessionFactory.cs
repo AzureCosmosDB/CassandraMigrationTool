@@ -15,28 +15,13 @@ public interface ISessionFactory
 }
 
 /// <summary>
-/// Provides a lease on the current shared session. A rotated session is not
-/// disposed until all operations using its leases have completed.
+/// Resolves the current shared session. Implementations may rotate the
+/// underlying session while keeping retired instances alive for in-flight
+/// operations.
 /// </summary>
 public interface ISessionProvider
 {
-    SessionLease AcquireSession();
-}
-
-public sealed class SessionLease : IDisposable
-{
-    private Action? _release;
-
-    internal SessionLease(ISession session, Action release)
-    {
-        Session = session;
-        _release = release;
-    }
-
-    public ISession Session { get; }
-
-    public void Dispose()
-        => Interlocked.Exchange(ref _release, null)?.Invoke();
+    ISession GetSession();
 }
 
 /// <summary>
