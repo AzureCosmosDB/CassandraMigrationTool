@@ -15,16 +15,6 @@ public interface ISessionFactory
 }
 
 /// <summary>
-/// Resolves the current shared session. Implementations may rotate the
-/// underlying session while keeping retired instances alive for in-flight
-/// operations.
-/// </summary>
-public interface ISessionProvider
-{
-    ISession GetSession();
-}
-
-/// <summary>
 /// Limits simultaneous session opens. This prevents high-worker jobs from
 /// creating a connection storm during startup.
 /// </summary>

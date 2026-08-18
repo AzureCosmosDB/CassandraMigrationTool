@@ -105,7 +105,7 @@ public static class CassandraClientFactory
         TokenRefreshManager? tokenRefreshManager)
     {
         if (!TokenRefreshManager.IsLikelyAadToken(password)) return;
-        tokenRefreshManager?.SetManagedSourceSession(session);
+        tokenRefreshManager?.RegisterSourceSession(session);
         tokenRefreshManager?.StartTokenRefreshTimer(password);
     }
 

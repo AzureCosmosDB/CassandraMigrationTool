@@ -20,6 +20,7 @@ public class MigrationJobRunner : IAsyncDisposable
     private readonly PipelineConfig _pipelineConfig;
     private readonly JobControl _control;
     private readonly TokenRefreshManager _tokenRefreshManager;
+    private readonly RotatingSessionProvider _sourceSessions;
     private int _consecutiveAuthErrors;
     // Last auth exception observed by HandleMigrationUnitError;
     // attached as inner when the consecutive-auth threshold trips so
@@ -55,6 +56,7 @@ public class MigrationJobRunner : IAsyncDisposable
         PipelineConfig pipelineConfig,
         JobControl control,
         TokenRefreshManager tokenRefreshManager,
+        RotatingSessionProvider sourceSessions,
         ISession sourceSession,
         ISession targetSession)
     {
@@ -63,6 +65,7 @@ public class MigrationJobRunner : IAsyncDisposable
         _pipelineConfig = pipelineConfig;
         _control = control;
         _tokenRefreshManager = tokenRefreshManager;
+        _sourceSessions = sourceSessions;
         _sourceSession = sourceSession;
         _targetSession = targetSession;
     }
@@ -82,20 +85,24 @@ public class MigrationJobRunner : IAsyncDisposable
         ArgumentNullException.ThrowIfNull(control);
 
         var pipelineConfig = PipelineConfig.Resolve(job, config);
-        var tokenRefreshManager = new TokenRefreshManager(log);
+        var sourceSessions = new RotatingSessionProvider();
+        var tokenRefreshManager = new TokenRefreshManager(log, sourceSessions);
         ISession? source = null;
         ISession? target = null;
         try
         {
             source = CassandraClientFactory.CreateSourceSession(log, job, tokenRefreshManager);
-            tokenRefreshManager.SetManagedSourceSession(source);
+            sourceSessions.SetSession(source);
             target = await CassandraClientFactory.CreateTargetSessionAsync(log, job);
-            return new MigrationJobRunner(log, job, pipelineConfig, control, tokenRefreshManager, source, target);
+            return new MigrationJobRunner(
+                log, job, pipelineConfig, control, tokenRefreshManager,
+                sourceSessions, source, target);
         }
         catch
         {
             MigrationUtilities.SafeDisposeSession(target, "MigrationJobRunner target (CreateAsync rollback)");
             tokenRefreshManager.Dispose();
+            sourceSessions.Dispose();
             throw;
         }
     }
@@ -176,7 +183,7 @@ public class MigrationJobRunner : IAsyncDisposable
 
             _pipeline = new JobPipeline(
                 _log, job, _pipelineConfig, partitioning,
-                _tokenRefreshManager,
+                _sourceSessions,
                 new GatedSessionFactory(
                     new JobSessionFactory(_log, job)),
                 _control);
@@ -252,6 +259,7 @@ public class MigrationJobRunner : IAsyncDisposable
         _pipeline = null;
         MigrationUtilities.SafeDisposeSession(_targetSession, "MigrationJobRunner target session");
         _tokenRefreshManager.Dispose();
+        _sourceSessions.Dispose();
         return ValueTask.CompletedTask;
     }
 

@@ -8,31 +8,27 @@ namespace CassandraMigrationProcessor.CassandraDriver;
 /// Manages AAD token lifecycle and proactive refresh for
 /// Cosmos DB Cassandra API connections.
 /// </summary>
-public class TokenRefreshManager : ISessionProvider, IDisposable
+public class TokenRefreshManager : IDisposable
 {
     private Timer? _tokenRefreshTimer;
     private readonly object _refreshLock = new();
-    private ISession? _managedSourceSession;
-    private readonly HashSet<ISession> _retiredSourceSessions =
-        new(ReferenceEqualityComparer.Instance);
+    private readonly RotatingSessionProvider _sourceSessions;
     private readonly MigrationLog _log;
-    private bool _disposed;
     private DateTime _tokenExpiresAt = DateTime.MinValue;
     private int _consecutiveRefreshFailures;
     private const int MaxRefreshFailures = 6;
-    // A read attempt is capped at 60 seconds. Keep a rotated session alive
-    // for a generous bounded grace period so in-flight operations can finish,
-    // while each retry resolves and uses the newly refreshed session.
-    private static readonly TimeSpan RetiredSessionDisposalDelay =
-        TimeSpan.FromMinutes(10);
 
     private string? _lastSourceContactPoint;
     private int _lastSourcePort;
     private string? _lastSourceUsername;
 
-    public TokenRefreshManager(MigrationLog log)
+    public TokenRefreshManager(
+        MigrationLog log,
+        RotatingSessionProvider sourceSessions)
     {
         _log = log;
+        _sourceSessions = sourceSessions
+            ?? throw new ArgumentNullException(nameof(sourceSessions));
     }
 
     /// <summary>
@@ -160,8 +156,8 @@ public class TokenRefreshManager : ISessionProvider, IDisposable
                 string freshToken = GetFreshAadToken();
 
                 // If we have a managed session, recreate it
-                if (_managedSourceSession != null
-                    && !_managedSourceSession.IsDisposed
+                if (_sourceSessions.TryGetSession(out var currentSession)
+                    && !currentSession!.IsDisposed
                     && _lastSourceContactPoint != null)
                 {
                     var newSession = CassandraClientFactory.CreateSourceSession(
@@ -170,7 +166,7 @@ public class TokenRefreshManager : ISessionProvider, IDisposable
                         _lastSourcePort,
                         _lastSourceUsername ?? string.Empty,
                         freshToken);
-                    SetManagedSourceSession(newSession);
+                    _sourceSessions.SetSession(newSession);
                 }
 
                 // Schedule next refresh
@@ -204,73 +200,14 @@ public class TokenRefreshManager : ISessionProvider, IDisposable
     /// Set the managed source session so the token refresh
     /// timer can reconnect it proactively.
     /// </summary>
-    public void SetManagedSourceSession(ISession session)
-    {
-        ArgumentNullException.ThrowIfNull(session);
-
-        ISession? retiredSession = null;
-        lock (_refreshLock)
-        {
-            ObjectDisposedException.ThrowIf(_disposed, this);
-            if (ReferenceEquals(_managedSourceSession, session))
-                return;
-
-            retiredSession = _managedSourceSession;
-            _managedSourceSession = session;
-            if (retiredSession != null)
-                _retiredSourceSessions.Add(retiredSession);
-        }
-
-        if (retiredSession != null)
-            _ = DisposeRetiredSessionAfterDelayAsync(retiredSession);
-    }
-
-    public ISession GetSession()
-    {
-        lock (_refreshLock)
-        {
-            ObjectDisposedException.ThrowIf(_disposed, this);
-            return _managedSourceSession
-                ?? throw new InvalidOperationException("The source session has not been initialized.");
-        }
-    }
-
-    private async Task DisposeRetiredSessionAfterDelayAsync(ISession session)
-    {
-        await Task.Delay(RetiredSessionDisposalDelay).ConfigureAwait(false);
-
-        bool shouldDispose;
-        lock (_refreshLock)
-        {
-            shouldDispose = _retiredSourceSessions.Remove(session);
-        }
-
-        if (shouldDispose)
-        {
-            MigrationUtilities.SafeDisposeSession(
-                session, "TokenRefresh deferred source session");
-        }
-    }
+    public void RegisterSourceSession(ISession session)
+        => _sourceSessions.SetSession(session);
 
     public void Dispose()
     {
-        List<ISession> sessionsToDispose;
         lock (_refreshLock)
         {
-            if (_disposed) return;
-            _disposed = true;
             StopTokenRefreshTimer();
-            sessionsToDispose = _retiredSourceSessions.ToList();
-            _retiredSourceSessions.Clear();
-            if (_managedSourceSession != null)
-                sessionsToDispose.Add(_managedSourceSession);
-            _managedSourceSession = null;
-        }
-
-        foreach (var session in sessionsToDispose)
-        {
-            MigrationUtilities.SafeDisposeSession(
-                session, "TokenRefresh managed source session");
         }
     }
 }
