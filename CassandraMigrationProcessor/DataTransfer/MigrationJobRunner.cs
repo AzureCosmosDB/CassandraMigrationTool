@@ -177,8 +177,8 @@ public class MigrationJobRunner : IAsyncDisposable
             _pipeline = new JobPipeline(
                 _log, job, _pipelineConfig, partitioning,
                 _sourceSession,
-                new GatedTargetSessionFactory(
-                    new JobTargetSessionFactory(_log, job)),
+                new GatedSessionFactory(
+                    new JobSessionFactory(_log, job)),
                 _control);
             _pipeline.Start();
 

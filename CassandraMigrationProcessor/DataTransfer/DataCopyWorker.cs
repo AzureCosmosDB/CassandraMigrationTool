@@ -34,7 +34,7 @@ internal class DataCopyWorker
         try
         {
             reader = await PageReader.CreateAsync(_workerLog, ctx.SourceSession, ctx.ReaderConfig, _ct);
-            writer = await PageWriter.CreateAsync(_workerLog, ctx.TargetSessionFactory, ctx.WriterConfig, _ct);
+            writer = await PageWriter.CreateAsync(_workerLog, ctx.SessionFactory, ctx.WriterConfig, _ct);
 
             while (!_ct.IsCancellationRequested
                 && !ctx.Control.IsFatal)

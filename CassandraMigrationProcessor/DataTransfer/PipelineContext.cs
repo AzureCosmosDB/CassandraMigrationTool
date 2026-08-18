@@ -7,7 +7,7 @@ namespace CassandraMigrationProcessor.DataTransfer;
 /// Shared (job-wide) state passed to every worker. Holds the
 /// <see cref="DataTransfer.PartitionManager"/> that all tables seed into and
 /// every worker pulls from (and which owns the cooldown scheduler for
-/// delayed recycles), the shared source session, target-session factory,
+/// delayed recycles), the shared source session, worker session factory,
 /// reader / writer tunables, the replay configuration knobs, and
 /// the unified <see cref="JobControl"/> (cancellation + first-fault).
 /// Per-table state is resolved through <see cref="Partition"/>
@@ -16,7 +16,7 @@ namespace CassandraMigrationProcessor.DataTransfer;
 internal record PipelineContext(
     PartitionManager Partitions,
     ISession SourceSession,
-    ISessionFactory TargetSessionFactory,
+    ISessionFactory SessionFactory,
     ReaderConfig ReaderConfig,
     WriterConfig WriterConfig,
     bool EnableReplay,

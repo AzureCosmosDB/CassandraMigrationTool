@@ -23,7 +23,7 @@ internal sealed class JobPipeline : IDisposable, IAsyncDisposable
 
     public JobPipeline(MigrationLog log, Job job, PipelineConfig pipelineConfig,
         JobPartitioning partitioning, ISession sourceSession,
-        ISessionFactory targetSessionFactory,
+        ISessionFactory sessionFactory,
         JobControl control)
     {
         _log = log;
@@ -48,7 +48,7 @@ internal sealed class JobPipeline : IDisposable, IAsyncDisposable
         Context = new PipelineContext(
             _partitions,
             sourceSession,
-            targetSessionFactory,
+            sessionFactory,
             readerConfig,
             writerConfig,
             EnableReplay: enableReplay,
