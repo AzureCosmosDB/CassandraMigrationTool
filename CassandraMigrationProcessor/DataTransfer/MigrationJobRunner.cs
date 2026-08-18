@@ -85,14 +85,17 @@ public class MigrationJobRunner : IAsyncDisposable
         ArgumentNullException.ThrowIfNull(control);
 
         var pipelineConfig = PipelineConfig.Resolve(job, config);
-        var sourceSessions = new RotatingSessionProvider(
-            credential => CassandraClientFactory.CreateSourceSessionWithCredential(
-                log, job, credential));
-        var tokenRefreshManager = new TokenRefreshManager(log, sourceSessions);
+        RotatingSessionProvider? sourceSessions = null;
+        TokenRefreshManager? tokenRefreshManager = null;
         ISession? source = null;
         ISession? target = null;
         try
         {
+            var sourceSettings = CassandraClientFactory.ResolveSourceSessionSettings(job);
+            sourceSessions = new RotatingSessionProvider(
+                credential => CassandraClientFactory.CreateSourceSessionWithCredential(
+                    log, sourceSettings, credential));
+            tokenRefreshManager = new TokenRefreshManager(log, sourceSessions);
             string sourceCredential = CassandraClientFactory.ResolveSourceCredential(
                 job, tokenRefreshManager);
             source = sourceSessions.Initialize(sourceCredential);
@@ -106,8 +109,8 @@ public class MigrationJobRunner : IAsyncDisposable
         catch
         {
             MigrationUtilities.SafeDisposeSession(target, "MigrationJobRunner target (CreateAsync rollback)");
-            tokenRefreshManager.Dispose();
-            sourceSessions.Dispose();
+            tokenRefreshManager?.Dispose();
+            sourceSessions?.Dispose();
             throw;
         }
     }

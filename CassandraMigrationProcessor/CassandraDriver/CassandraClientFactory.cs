@@ -4,6 +4,13 @@ using System.Security.Authentication;
 using CassandraMigrationProcessor.Infrastructure;
 using CassandraMigrationProcessor.Models;
 namespace CassandraMigrationProcessor.CassandraDriver;
+
+internal sealed record SourceSessionSettings(
+    string ContactPoint,
+    int Port,
+    string Username,
+    int MaxConnectionsPerHost);
+
 /// <summary>
 /// Creates Cassandra ISession instances for source (Cosmos DB)
 /// and target (OSS Cassandra) clusters.
@@ -307,9 +314,10 @@ public static class CassandraClientFactory
         TokenRefreshManager? tokenRefreshManager = null)
     {
         string credential = ResolveSourceCredential(job, tokenRefreshManager);
+        var settings = ResolveSourceSessionSettings(job);
 
         return CreateSourceSessionWithCredential(
-            MigrationLog, job, credential, tokenRefreshManager);
+            MigrationLog, settings, credential, tokenRefreshManager);
     }
 
     internal static string ResolveSourceCredential(
@@ -336,38 +344,51 @@ public static class CassandraClientFactory
 
     internal static ISession CreateSourceSessionWithCredential(
         MigrationLog migrationLog,
-        Job job,
+        SourceSessionSettings settings,
         string credential)
     {
         return CreateSourceSessionWithCredential(
-            migrationLog, job, credential, tokenRefreshManager: null);
+            migrationLog, settings, credential, tokenRefreshManager: null);
     }
 
     private static ISession CreateSourceSessionWithCredential(
         MigrationLog migrationLog,
-        Job job,
+        SourceSessionSettings settings,
         string credential,
         TokenRefreshManager? tokenRefreshManager)
     {
-        // For AAD auth, derive username from hostname if not explicitly
-        // provided (account name = first segment of the contact point FQDN).
+        return CreateSourceSession(
+            migrationLog,
+            settings.ContactPoint,
+            settings.Port,
+            settings.Username,
+            credential,
+            tokenRefreshManager,
+            settings.MaxConnectionsPerHost);
+    }
+
+    internal static SourceSessionSettings ResolveSourceSessionSettings(Job job)
+    {
+        if (string.IsNullOrEmpty(job.SourceContactPoint))
+            throw new ArgumentException("Source contact point is required", nameof(job));
+
+        bool useAad = job.SourceUseAad
+            || string.IsNullOrEmpty(job.SourcePassword);
         string username = job.SourceUsername ?? string.Empty;
         if (string.IsNullOrWhiteSpace(username)
-            && job.SourceUseAad
-            && !string.IsNullOrEmpty(job.SourceContactPoint))
+            && useAad)
         {
             username = job.SourceContactPoint
                 .Split('.')[0];
         }
 
-        return CreateSourceSession(
-            migrationLog,
+        return new SourceSessionSettings(
             job.SourceContactPoint,
             job.SourcePort,
             username,
-            credential,
-            tokenRefreshManager,
-            maxConnectionsPerHost: ResolveMaxConnectionsPerHost(job.SourceMaxConnectionsPerHost, job.MaxConnectionsPerHost));
+            ResolveMaxConnectionsPerHost(
+                job.SourceMaxConnectionsPerHost,
+                job.MaxConnectionsPerHost));
     }
 
     /// <summary>
