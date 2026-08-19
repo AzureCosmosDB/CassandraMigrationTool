@@ -19,7 +19,6 @@ public class MigrationJobRunner : IAsyncDisposable
     private readonly Job _job;
     private readonly PipelineConfig _pipelineConfig;
     private readonly JobControl _control;
-    private readonly TokenRefreshManager _tokenRefreshManager;
     private readonly SourceSessionWrapper _sourceSessions;
     private int _consecutiveAuthErrors;
     // Last auth exception observed by HandleMigrationUnitError;
@@ -53,7 +52,6 @@ public class MigrationJobRunner : IAsyncDisposable
         Job job,
         PipelineConfig pipelineConfig,
         JobControl control,
-        TokenRefreshManager tokenRefreshManager,
         SourceSessionWrapper sourceSessions,
         ISession targetSession)
     {
@@ -61,7 +59,6 @@ public class MigrationJobRunner : IAsyncDisposable
         _job = job;
         _pipelineConfig = pipelineConfig;
         _control = control;
-        _tokenRefreshManager = tokenRefreshManager;
         _sourceSessions = sourceSessions;
         _targetSession = targetSession;
     }
@@ -82,29 +79,24 @@ public class MigrationJobRunner : IAsyncDisposable
 
         var pipelineConfig = PipelineConfig.Resolve(job, config);
         SourceSessionWrapper? sourceSessions = null;
-        TokenRefreshManager? tokenRefreshManager = null;
         ISession? target = null;
         try
         {
             var sourceSettings = CassandraClientFactory.ResolveSourceSessionSettings(
                 job, pipelineConfig.WorkerCount);
             sourceSessions = new SourceSessionWrapper(
+                log,
                 new SourceSessionFactory(log, sourceSettings));
-            tokenRefreshManager = new TokenRefreshManager(log, sourceSessions);
             string sourceCredential = CassandraClientFactory.ResolveSourceCredential(
-                job, tokenRefreshManager);
+                job);
             sourceSessions.Initialize(sourceCredential);
-            if (TokenRefreshManager.IsLikelyAadToken(sourceCredential))
-                tokenRefreshManager.StartTokenRefreshTimer(sourceCredential);
             target = await CassandraClientFactory.CreateTargetSessionAsync(log, job);
             return new MigrationJobRunner(
-                log, job, pipelineConfig, control, tokenRefreshManager,
-                sourceSessions, target);
+                log, job, pipelineConfig, control, sourceSessions, target);
         }
         catch
         {
             MigrationUtilities.SafeDisposeSession(target, "MigrationJobRunner target (CreateAsync rollback)");
-            tokenRefreshManager?.Dispose();
             sourceSessions?.Dispose();
             throw;
         }
@@ -257,11 +249,9 @@ public class MigrationJobRunner : IAsyncDisposable
     /// </summary>
     public ValueTask DisposeAsync()
     {
-        _tokenRefreshManager.StopTokenRefreshTimer();
         MigrationUtilities.SafeDispose(_pipeline, "JobPipeline (Dispose)");
         _pipeline = null;
         MigrationUtilities.SafeDisposeSession(_targetSession, "MigrationJobRunner target session");
-        _tokenRefreshManager.Dispose();
         _sourceSessions.Dispose();
         return ValueTask.CompletedTask;
     }
@@ -873,7 +863,7 @@ public class MigrationJobRunner : IAsyncDisposable
         // without waiting for the outer Task to observe the cancel.
         MigrationUtilities.SafeDispose(_pipeline, "JobPipeline (Stop)");
         _pipeline = null;
-        _tokenRefreshManager.StopTokenRefreshTimer();
+        _sourceSessions.StopTokenRefresh();
     }
 
     /// <summary>

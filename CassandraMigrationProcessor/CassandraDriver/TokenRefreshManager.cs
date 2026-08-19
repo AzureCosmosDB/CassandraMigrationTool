@@ -11,7 +11,7 @@ public class TokenRefreshManager : IDisposable
 {
     private Timer? _tokenRefreshTimer;
     private readonly object _refreshLock = new();
-    private readonly SourceSessionWrapper _sourceSessions;
+    private readonly Action<string> _refreshSession;
     private readonly MigrationLog _log;
     private bool _disposed;
     private DateTime _tokenExpiresAt = DateTime.MinValue;
@@ -20,11 +20,11 @@ public class TokenRefreshManager : IDisposable
 
     public TokenRefreshManager(
         MigrationLog log,
-        SourceSessionWrapper sourceSessions)
+        Action<string> refreshSession)
     {
         _log = log;
-        _sourceSessions = sourceSessions
-            ?? throw new ArgumentNullException(nameof(sourceSessions));
+        _refreshSession = refreshSession
+            ?? throw new ArgumentNullException(nameof(refreshSession));
     }
 
     /// <summary>
@@ -141,7 +141,7 @@ public class TokenRefreshManager : IDisposable
             {
                 string freshToken = GetFreshAadToken();
 
-                _sourceSessions.Refresh(freshToken);
+                _refreshSession(freshToken);
 
                 // Schedule next refresh
                 _consecutiveRefreshFailures = 0;

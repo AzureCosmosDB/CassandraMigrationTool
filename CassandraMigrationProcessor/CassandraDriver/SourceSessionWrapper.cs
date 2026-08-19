@@ -24,6 +24,7 @@ public sealed class SourceSessionWrapper : IDisposable
 
     private readonly object _sync = new();
     private readonly ICredentialSessionFactory _sessionFactory;
+    private readonly TokenRefreshManager _tokenRefreshManager;
     private readonly HashSet<ISession> _retiredSessions =
         new(ReferenceEqualityComparer.Instance);
     private readonly ConcurrentDictionary<(ISession Session, string Keyspace), Lazy<Task>>
@@ -31,10 +32,13 @@ public sealed class SourceSessionWrapper : IDisposable
     private ISession? _currentSession;
     private bool _disposed;
 
-    public SourceSessionWrapper(ICredentialSessionFactory sessionFactory)
+    public SourceSessionWrapper(
+        MigrationLog log,
+        ICredentialSessionFactory sessionFactory)
     {
         _sessionFactory = sessionFactory
             ?? throw new ArgumentNullException(nameof(sessionFactory));
+        _tokenRefreshManager = new TokenRefreshManager(log, Refresh);
     }
 
     public ISession GetSession()
@@ -100,7 +104,6 @@ public sealed class SourceSessionWrapper : IDisposable
                     throw new InvalidOperationException("The session provider is already initialized.");
                 _currentSession = session;
             }
-            return session;
         }
         catch
         {
@@ -108,6 +111,10 @@ public sealed class SourceSessionWrapper : IDisposable
                 session, "Unpublished initial session");
             throw;
         }
+
+        if (TokenRefreshManager.IsLikelyAadToken(credential))
+            _tokenRefreshManager.StartTokenRefreshTimer(credential);
+        return session;
     }
 
     public void Refresh(string credential)
@@ -166,8 +173,15 @@ public sealed class SourceSessionWrapper : IDisposable
         }
     }
 
+    public void StopTokenRefresh()
+    {
+        _tokenRefreshManager.StopTokenRefreshTimer();
+    }
+
     public void Dispose()
     {
+        _tokenRefreshManager.Dispose();
+
         List<ISession> sessionsToDispose;
         lock (_sync)
         {
