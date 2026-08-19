@@ -28,6 +28,8 @@ internal sealed class SourceSessionFactory : ICredentialSessionFactory
     }
 
     public ISession CreateSession(string credential)
-        => CassandraClientFactory.CreateSourceSessionWithCredential(
+    {
+        return CassandraClientFactory.CreateSourceSessionWithCredential(
             _log, _settings, credential);
+    }
 }

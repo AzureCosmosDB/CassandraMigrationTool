@@ -38,7 +38,9 @@ public sealed class SourceSessionWrapper : IDisposable
     }
 
     public ISession GetSession()
-        => GetCurrentSession();
+    {
+        return GetCurrentSession();
+    }
 
     public async Task<ISession> GetTypedSessionAsync(string keyspace)
     {

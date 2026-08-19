@@ -65,7 +65,11 @@ internal sealed class PageWriter : IDisposable
     }
 
     public void Dispose()
-        => MigrationUtilities.SafeDisposeSession(_targetSession, "PageWriter target session");
+    {
+        MigrationUtilities.SafeDisposeSession(
+            _targetSession,
+            "PageWriter target session");
+    }
 
     private Task<IRowWriteStrategy> GetStrategyAsync(Partition partition)
     {
