@@ -2,7 +2,6 @@ using Cassandra;
 using CassandraMigrationProcessor.Infrastructure;
 using CassandraMigrationProcessor.CassandraDriver;
 using CassandraMigrationProcessor.Models;
-using System.Collections.Concurrent;
 using System.Diagnostics;
 
 namespace CassandraMigrationProcessor.DataTransfer;
@@ -30,11 +29,11 @@ internal class PageReader
     private readonly WorkerLog _log;
     private readonly CancellationToken _ct;
     private readonly ISessionProvider _sourceSessionProvider;
+    private readonly SourceUdtRegistrationCache _sourceUdtRegistrations;
     private readonly int _pageSize;
     private readonly int _maxReadRetries;
     private readonly bool _preserveCellTtl;
     private readonly bool _useJsonCopy;
-    private readonly ConcurrentDictionary<(ISession Session, string Keyspace), Task> _udtRegistrations = new();
 
     /// <summary>
     /// Most recent transient exception observed during retry-exhausted
@@ -50,7 +49,12 @@ internal class PageReader
     // hints parking a worker for minutes.
     private const int MaxRetryDelayMs = 30_000;
 
-    private PageReader(WorkerLog log, ISessionProvider sourceSessionProvider, ReaderConfig config, CancellationToken cancellationToken)
+    private PageReader(
+        WorkerLog log,
+        ISessionProvider sourceSessionProvider,
+        SourceUdtRegistrationCache sourceUdtRegistrations,
+        ReaderConfig config,
+        CancellationToken cancellationToken)
     {
         _log = log;
         _ct = cancellationToken;
@@ -60,13 +64,22 @@ internal class PageReader
         _useJsonCopy = config.UseJsonCopy;
         _sourceSessionProvider = sourceSessionProvider
             ?? throw new ArgumentNullException(nameof(sourceSessionProvider));
+        _sourceUdtRegistrations = sourceUdtRegistrations
+            ?? throw new ArgumentNullException(nameof(sourceUdtRegistrations));
     }
 
     public static Task<PageReader> CreateAsync(WorkerLog log,
-        ISessionProvider sourceSessionProvider, ReaderConfig config,
+        ISessionProvider sourceSessionProvider,
+        SourceUdtRegistrationCache sourceUdtRegistrations,
+        ReaderConfig config,
         CancellationToken cancellationToken)
     {
-        return Task.FromResult(new PageReader(log, sourceSessionProvider, config, cancellationToken));
+        return Task.FromResult(new PageReader(
+            log,
+            sourceSessionProvider,
+            sourceUdtRegistrations,
+            config,
+            cancellationToken));
     }
 
     /// <summary>
@@ -82,21 +95,8 @@ internal class PageReader
 
         var sourceSession = _sourceSessionProvider.GetSession();
         var keyspace = partition.Table.Spec.KeyspaceName;
-        await _udtRegistrations.GetOrAdd((sourceSession, keyspace), async key =>
-        {
-            try
-            {
-                var allUdts = await SchemaManager.GetUserDefinedTypesAsync(key.Session, key.Keyspace);
-                await DynamicUdtRegistrar.RegisterAsync(key.Session, key.Keyspace, allUdts);
-            }
-            catch (Exception ex)
-            {
-                // Do NOT swallow: UDT mapping is required for correct
-                // row decoding. Surface as fatal.
-                _log.WriteLine($"FATAL: UDT mapping registration on source failed for {key.Keyspace}: {ex.Message}", LogType.Error);
-                throw;
-            }
-        }).ConfigureAwait(false);
+        await _sourceUdtRegistrations.EnsureRegisteredAsync(
+            sourceSession, keyspace, _log).ConfigureAwait(false);
     }
 
     /// <summary>

@@ -49,6 +49,7 @@ internal sealed class JobPipeline : IDisposable, IAsyncDisposable
         Context = new PipelineContext(
             _partitions,
             sourceSessionProvider,
+            new SourceUdtRegistrationCache(),
             sessionFactory,
             readerConfig,
             writerConfig,
