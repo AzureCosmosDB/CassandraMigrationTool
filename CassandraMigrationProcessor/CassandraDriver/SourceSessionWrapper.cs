@@ -4,6 +4,14 @@ using System.Collections.Concurrent;
 
 namespace CassandraMigrationProcessor.CassandraDriver;
 
+internal sealed class SourceUdtRegistrationException : Exception
+{
+    public SourceUdtRegistrationException(string keyspace, Exception innerException)
+        : base($"UDT mapping registration failed for source keyspace '{keyspace}'.", innerException)
+    {
+    }
+}
+
 /// <summary>
 /// Owns the shared source-session lifecycle and session-scoped UDT mappings.
 /// Rotated sessions remain available for a bounded grace period so in-flight
@@ -35,13 +43,24 @@ public sealed class SourceSessionWrapper : IDisposable
     public async Task<ISession> GetTypedSessionAsync(string keyspace)
     {
         var session = GetCurrentSession();
-        await _udtRegistrations.GetOrAdd(
-            (session, keyspace),
+        var key = (Session: session, Keyspace: keyspace);
+        var registration = _udtRegistrations.GetOrAdd(
+            key,
             key => new Lazy<Task>(
                 () => RegisterUdtsAsync(key.Session, key.Keyspace),
-                LazyThreadSafetyMode.ExecutionAndPublication))
-            .Value
-            .ConfigureAwait(false);
+                LazyThreadSafetyMode.ExecutionAndPublication));
+        try
+        {
+            await registration.Value.ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            ((ICollection<KeyValuePair<(ISession Session, string Keyspace), Lazy<Task>>>)
+                _udtRegistrations).Remove(new KeyValuePair<
+                    (ISession Session, string Keyspace), Lazy<Task>>(
+                    key, registration));
+            throw new SourceUdtRegistrationException(keyspace, ex);
+        }
         return session;
     }
 
@@ -130,8 +149,18 @@ public sealed class SourceSessionWrapper : IDisposable
 
         if (shouldDispose)
         {
+            RemoveUdtRegistrations(session);
             MigrationUtilities.SafeDisposeSession(
                 session, "Deferred rotated session");
+        }
+    }
+
+    private void RemoveUdtRegistrations(ISession session)
+    {
+        foreach (var key in _udtRegistrations.Keys)
+        {
+            if (ReferenceEquals(key.Session, session))
+                _udtRegistrations.TryRemove(key, out _);
         }
     }
 
@@ -147,6 +176,7 @@ public sealed class SourceSessionWrapper : IDisposable
             if (_currentSession != null)
                 sessionsToDispose.Add(_currentSession);
             _currentSession = null;
+            _udtRegistrations.Clear();
         }
 
         foreach (var session in sessionsToDispose)

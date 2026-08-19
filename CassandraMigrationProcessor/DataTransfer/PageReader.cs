@@ -202,7 +202,8 @@ internal class PageReader
                     .ConfigureAwait(false);
             },
             maxAttempts: _maxReadRetries,
-            shouldRetry: ExceptionClassifier.IsTransient,
+            shouldRetry: ex => ex is not SourceUdtRegistrationException
+                && ExceptionClassifier.IsTransient(ex),
             delayFor: (ex, attempt) => TimeSpan.FromMilliseconds(
                 Math.Min(ExceptionClassifier.GetRetryDelayMs(ex, attempt), MaxRetryDelayMs)),
             onRetry: (ex, attempt) =>

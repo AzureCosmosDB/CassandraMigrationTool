@@ -361,7 +361,9 @@ public static class CassandraClientFactory
             settings.MaxConnectionsPerHost);
     }
 
-    internal static SourceSessionSettings ResolveSourceSessionSettings(Job job)
+    internal static SourceSessionSettings ResolveSourceSessionSettings(
+        Job job,
+        int workerCount = 0)
     {
         if (string.IsNullOrEmpty(job.SourceContactPoint))
             throw new ArgumentException("Source contact point is required", nameof(job));
@@ -376,13 +378,22 @@ public static class CassandraClientFactory
                 .Split('.')[0];
         }
 
+        int maxConnectionsPerHost = ResolveMaxConnectionsPerHost(
+            job.SourceMaxConnectionsPerHost,
+            job.MaxConnectionsPerHost);
+        if (maxConnectionsPerHost == 0 && workerCount > 0)
+        {
+            maxConnectionsPerHost = Math.Clamp(
+                (workerCount + 31) / 32,
+                2,
+                8);
+        }
+
         return new SourceSessionSettings(
             job.SourceContactPoint,
             job.SourcePort,
             username,
-            ResolveMaxConnectionsPerHost(
-                job.SourceMaxConnectionsPerHost,
-                job.MaxConnectionsPerHost));
+            maxConnectionsPerHost);
     }
 
     /// <summary>

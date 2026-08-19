@@ -18,7 +18,7 @@ public interface ISessionFactory
 /// Limits simultaneous session opens. This prevents high-worker jobs from
 /// creating a connection storm during startup.
 /// </summary>
-public sealed class GatedSessionFactory : ISessionFactory, IDisposable
+public sealed class GatedSessionFactory : ISessionFactory
 {
     private const int MaxConcurrentSessionCreations = 20;
 
@@ -45,8 +45,6 @@ public sealed class GatedSessionFactory : ISessionFactory, IDisposable
             _creationGate.Release();
         }
     }
-
-    public void Dispose() => _creationGate.Dispose();
 }
 
 /// <summary>

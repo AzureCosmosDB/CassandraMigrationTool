@@ -13,6 +13,7 @@ public class TokenRefreshManager : IDisposable
     private readonly object _refreshLock = new();
     private readonly SourceSessionWrapper _sourceSessions;
     private readonly MigrationLog _log;
+    private bool _disposed;
     private DateTime _tokenExpiresAt = DateTime.MinValue;
     private int _consecutiveRefreshFailures;
     private const int MaxRefreshFailures = 6;
@@ -98,6 +99,7 @@ public class TokenRefreshManager : IDisposable
     {
         lock (_refreshLock)
         {
+            if (_disposed) return;
             StopTokenRefreshTimer();
 
             DateTime expiry = GetTokenExpiry(currentToken);
@@ -134,6 +136,7 @@ public class TokenRefreshManager : IDisposable
     {
         lock (_refreshLock)
         {
+            if (_disposed) return;
             try
             {
                 string freshToken = GetFreshAadToken();
@@ -171,6 +174,8 @@ public class TokenRefreshManager : IDisposable
     {
         lock (_refreshLock)
         {
+            if (_disposed) return;
+            _disposed = true;
             StopTokenRefreshTimer();
         }
     }

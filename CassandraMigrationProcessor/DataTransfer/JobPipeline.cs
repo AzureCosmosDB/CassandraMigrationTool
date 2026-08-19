@@ -18,7 +18,6 @@ internal sealed class JobPipeline : IDisposable, IAsyncDisposable
     private readonly JobControl _control;
     private readonly WorkerPool _workerPool;
     private readonly PartitionManager _partitions;
-    private readonly ISessionFactory _sessionFactory;
     public PipelineContext Context { get; }
 
     public JobPipeline(MigrationLog log, Job job, PipelineConfig pipelineConfig,
@@ -29,7 +28,6 @@ internal sealed class JobPipeline : IDisposable, IAsyncDisposable
         _log = log;
         _pipelineConfig = pipelineConfig;
         _control = control;
-        _sessionFactory = sessionFactory;
 
         bool enableReplay = job.IsOnline;
         _partitions = new PartitionManager(
@@ -101,7 +99,5 @@ internal sealed class JobPipeline : IDisposable, IAsyncDisposable
         // by JobManager — we never cancel or dispose it here.
         await _partitions.DisposeAsync().ConfigureAwait(false);
         MigrationUtilities.SafeDispose(_workerPool, "JobPipeline WorkerPool");
-        if (_sessionFactory is IDisposable disposableFactory)
-            MigrationUtilities.SafeDispose(disposableFactory, "JobPipeline SessionFactory");
     }
 }
