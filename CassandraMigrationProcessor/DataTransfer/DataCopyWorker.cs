@@ -33,7 +33,7 @@ internal class DataCopyWorker
         Partition? current = null;
         try
         {
-            reader = await PageReader.CreateAsync(
+            reader = new PageReader(
                 _workerLog,
                 ctx.SourceSession,
                 ctx.ReaderConfig,

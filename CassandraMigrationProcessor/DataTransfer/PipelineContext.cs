@@ -15,7 +15,7 @@ namespace CassandraMigrationProcessor.DataTransfer;
 internal record PipelineContext(
     PartitionManager Partitions,
     SourceSessionWrapper SourceSession,
-    ISessionFactory SessionFactory,
+    JobSessionFactory SessionFactory,
     ReaderConfig ReaderConfig,
     WriterConfig WriterConfig,
     bool EnableReplay,

@@ -1,8 +1,15 @@
 using Cassandra;
+using System.Diagnostics;
 using System.Security.Authentication;
 using CassandraMigrationProcessor.Infrastructure;
 using CassandraMigrationProcessor.Models;
 namespace CassandraMigrationProcessor.CassandraDriver;
+
+internal sealed record SourceSessionSettings(
+    string ContactPoint,
+    int Port,
+    string Username,
+    int MaxConnectionsPerHost);
 
 /// <summary>
 /// Creates Cassandra ISession instances for source (Cosmos DB)
@@ -49,21 +56,36 @@ public static class CassandraClientFactory
             contactPoint, port, username, password,
             useSsl: true, maxConnectionsPerHost);
 
+        // Single connect+register success path. The loop covers all
+        // attempts; the `when (attempt < MaxRetries)` filter swallows
+        // transient failures only on attempts 1..MaxRetries-1, so on
+        // the final attempt any exception — transient or not —
+        // propagates out unhandled, matching the original "Final
+        // attempt — let exception propagate" semantics.
         const int MaxRetries = 5;
-        var retryPolicy = RetryPolicy.Create(
-            MaxRetries,
-            ExceptionClassifier.IsTransient,
-            (exception, attempt) => TimeSpan.FromMilliseconds(
-                ExceptionClassifier.GetRetryDelayMs(exception, attempt)));
-        return RetryExecutor.Execute(
-            _ => ConnectCluster(builder),
-            retryPolicy,
-            (exception, attempt) =>
+        for (int attempt = 1; attempt <= MaxRetries; attempt++)
+        {
+            try
             {
+                return ConnectCluster(builder);
+            }
+            catch (Exception ex) when (
+                ExceptionClassifier.IsTransient(ex)
+                && attempt < MaxRetries)
+            {
+                int delayMs = ExceptionClassifier.GetRetryDelayMs(ex, attempt);
                 MigrationLog.WriteLine(
-                    $"Source connect retry {attempt}: {exception.Message}",
+                    $"Source connect retry " +
+                    $"{attempt}: {ex.Message}",
                     LogType.Warning);
-            });
+                Thread.Sleep(delayMs);
+            }
+        }
+
+        // Unreachable: the loop either returns on success or rethrows
+        // on the final attempt (the `when` filter is false when
+        // attempt == MaxRetries).
+        throw new UnreachableException();
     }
 
     /// <summary>
@@ -259,41 +281,6 @@ public static class CassandraClientFactory
         }
     }
 
-    /// <summary>
-    /// Create source session from a Job's properties.
-    /// If SourceUseAad is true or password is missing (e.g.
-    /// on resume after [JsonIgnore]), fetches a fresh AAD
-    /// token automatically.
-    /// </summary>
-    public static ISession CreateSourceSession(
-        MigrationLog MigrationLog, Job job)
-    {
-        string credential = ResolveSourceCredential(job);
-        var settings = ResolveSourceSessionSettings(job);
-
-        return CreateSourceSessionWithCredential(
-            MigrationLog, settings, credential);
-    }
-
-    internal static string ResolveSourceCredential(Job job)
-    {
-        if (string.IsNullOrEmpty(job.SourceContactPoint))
-            throw new ArgumentException("Source contact point is required", nameof(job));
-
-        string credential = job.SourcePassword ?? string.Empty;
-        if (string.IsNullOrEmpty(credential) || job.SourceUseAad)
-        {
-            credential = AcquireAadToken();
-            // SECURITY: do NOT write the AAD bearer token back into
-            // job.SourcePassword — even though [JsonIgnore] keeps it
-            // off disk, the Blazor "Update Connection Strings" modal
-            // would echo it into an <input value="…"> and leak the
-            // bearer JWT to the browser DOM.
-            job.SourceUseAad = true;
-        }
-        return credential;
-    }
-
     internal static string AcquireAadToken()
     {
         var credential = new Azure.Identity.DefaultAzureCredential();
@@ -303,21 +290,9 @@ public static class CassandraClientFactory
             .Token;
     }
 
-    internal static ISession CreateSourceSessionWithCredential(
-        MigrationLog migrationLog,
-        SourceSessionSettings settings,
-        string credential)
-    {
-        return CreateSourceSession(
-            migrationLog,
-            settings.ContactPoint,
-            settings.Port,
-            settings.Username,
-            credential,
-            settings.MaxConnectionsPerHost);
-    }
-
-    internal static SourceSessionSettings ResolveSourceSessionSettings(
+    internal static (
+        SourceSessionSettings Settings,
+        string Credential) ResolveSourceSession(
         Job job,
         int workerCount = 0)
     {
@@ -326,6 +301,15 @@ public static class CassandraClientFactory
 
         bool useAad = job.SourceUseAad
             || string.IsNullOrEmpty(job.SourcePassword);
+        string credential = job.SourcePassword ?? string.Empty;
+        if (useAad)
+        {
+            credential = AcquireAadToken();
+            // Do not write the bearer token back to SourcePassword. The
+            // connection editor would otherwise expose it in the browser DOM.
+            job.SourceUseAad = true;
+        }
+
         string username = job.SourceUsername ?? string.Empty;
         if (string.IsNullOrWhiteSpace(username)
             && useAad)
@@ -345,11 +329,13 @@ public static class CassandraClientFactory
                 8);
         }
 
-        return new SourceSessionSettings(
-            job.SourceContactPoint,
-            job.SourcePort,
-            username,
-            maxConnectionsPerHost);
+        return (
+            new SourceSessionSettings(
+                job.SourceContactPoint,
+                job.SourcePort,
+                username,
+                maxConnectionsPerHost),
+            credential);
     }
 
     /// <summary>

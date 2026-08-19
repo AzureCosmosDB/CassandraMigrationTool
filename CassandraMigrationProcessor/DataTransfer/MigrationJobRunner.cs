@@ -82,14 +82,8 @@ public class MigrationJobRunner : IAsyncDisposable
         ISession? target = null;
         try
         {
-            var sourceSettings = CassandraClientFactory.ResolveSourceSessionSettings(
-                job, pipelineConfig.WorkerCount);
-            sourceSessions = new SourceSessionWrapper(
-                log,
-                new SourceSessionFactory(log, sourceSettings));
-            string sourceCredential = CassandraClientFactory.ResolveSourceCredential(
-                job);
-            sourceSessions.Initialize(sourceCredential);
+            sourceSessions = SourceSessionWrapper.Create(
+                log, job, pipelineConfig.WorkerCount);
             target = await CassandraClientFactory.CreateTargetSessionAsync(log, job);
             return new MigrationJobRunner(
                 log, job, pipelineConfig, control, sourceSessions, target);
@@ -179,8 +173,6 @@ public class MigrationJobRunner : IAsyncDisposable
             _pipeline = new JobPipeline(
                 _log, job, _pipelineConfig, partitioning,
                 _sourceSessions,
-                new GatedSessionFactory(
-                    new JobSessionFactory(_log, job)),
                 _control);
             _pipeline.Start();
 
@@ -617,15 +609,14 @@ public class MigrationJobRunner : IAsyncDisposable
     private Task ProcessWithRetryAsync(Job job, TableMigration mu, JobPartitioning partitioning, CancellationToken token)
     {
         return RetryExecutor.ExecuteAsync<int>(
-            operation: async (_, _) =>
+            operation: async _ =>
             {
                 await ProcessMigrationUnitAsync(job, mu, partitioning, token);
                 return 0;
             },
-            policy: RetryPolicy.Create(
-                MigrationDefaults.MaxTableRetries,
-                ExceptionClassifier.IsTransient,
-                RetryPolicy.FromException),
+            maxAttempts: MigrationDefaults.MaxTableRetries,
+            shouldRetry: ExceptionClassifier.IsTransient,
+            delayFor: (ex, attempt) => RetryPolicy.FromException(ex, attempt),
             onRetry: (ex, attempt) => _log.WriteLine(
                 $"Table retry {attempt} for {mu.KeyspaceName}.{mu.TableName}: {ex.Message}",
                 LogType.Warning),
@@ -924,12 +915,16 @@ public class MigrationJobRunner : IAsyncDisposable
 
             try
             {
-                var sourceSession = _sourceSessions.GetSession();
-                var tables = await CassandraQueries.ListTablesAsync(sourceSession, keyspace);
+                var tables = await CassandraQueries.ListTablesAsync(
+                    _sourceSessions.GetSession(), keyspace);
                 foreach (var tableName in tables)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
-                    if (await IsTableAccessibleAsync(sourceSession, keyspace, tableName, cancellationToken))
+                    if (await IsTableAccessibleAsync(
+                        _sourceSessions.GetSession(),
+                        keyspace,
+                        tableName,
+                        cancellationToken))
                     {
                         AddExpandedUnit(keyspace, tableName);
                     }
@@ -958,7 +953,7 @@ public class MigrationJobRunner : IAsyncDisposable
         try
         {
             return await RetryExecutor.ExecuteAsync<bool>(
-                operation: (_, _) =>
+                operation: _ =>
                 {
                     var probe = new SimpleStatement(
                         $"SELECT * FROM \"{keyspace}\".\"{tableName}\" WHERE COSMOS_CHANGEFEED_FROM_START() = true");
@@ -968,11 +963,9 @@ public class MigrationJobRunner : IAsyncDisposable
                     session.Execute(probe);
                     return Task.FromResult(true);
                 },
-                policy: RetryPolicy.Create(
-                    10,
-                    ExceptionClassifier.IsThrottle,
-                    (_, attempt) => TimeSpan.FromSeconds(
-                        Math.Min(attempt * 3, 30))),
+                maxAttempts: 10,
+                shouldRetry: ExceptionClassifier.IsThrottle,
+                delayFor: (_, attempt) => TimeSpan.FromSeconds(Math.Min(attempt * 3, 30)),
                 cancellationToken: cancellationToken);
         }
         catch (OperationCanceledException)

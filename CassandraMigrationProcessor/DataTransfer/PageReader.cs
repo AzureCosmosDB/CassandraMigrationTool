@@ -21,8 +21,7 @@ internal record ReaderConfig(int PageSize, int MaxReadRetries, bool PreserveCell
 /// source session is keyspace-agnostic; per-table state (columns,
 /// identifiers, UDT registrations) is resolved from
 /// <see cref="Partition"/> at read time. UDT registration is
-/// cached per keyspace so the first partition for each table pays the
-/// cost and subsequent partitions reuse it.
+/// cached job-wide per physical session and keyspace.
 /// </summary>
 internal class PageReader
 {
@@ -48,7 +47,7 @@ internal class PageReader
     // hints parking a worker for minutes.
     private const int MaxRetryDelayMs = 30_000;
 
-    private PageReader(
+    public PageReader(
         WorkerLog log,
         SourceSessionWrapper sourceSession,
         ReaderConfig config,
@@ -62,18 +61,6 @@ internal class PageReader
         _useJsonCopy = config.UseJsonCopy;
         _sourceSession = sourceSession
             ?? throw new ArgumentNullException(nameof(sourceSession));
-    }
-
-    public static Task<PageReader> CreateAsync(WorkerLog log,
-        SourceSessionWrapper sourceSession,
-        ReaderConfig config,
-        CancellationToken cancellationToken)
-    {
-        return Task.FromResult(new PageReader(
-            log,
-            sourceSession,
-            config,
-            cancellationToken));
     }
 
     /// <summary>
@@ -191,7 +178,7 @@ internal class PageReader
         // intact and will retry the same page once the source stops
         // throttling.
         var resultSet = await RetryExecutor.ExecuteOrDefaultAsync<RowSet>(
-            operation: async (_, _) =>
+            operation: async _ =>
             {
                 var sourceSession = useJson
                     ? _sourceSession.GetSession()
@@ -201,15 +188,12 @@ internal class PageReader
                     .WaitAsync(_ct)
                     .ConfigureAwait(false);
             },
-            policy: RetryPolicy.Create(
-                _maxReadRetries,
-                ex => ex is not SourceUdtRegistrationException
-                    && ExceptionClassifier.IsTransient(ex),
-                (ex, attempt) => TimeSpan.FromMilliseconds(
-                    Math.Min(
-                        ExceptionClassifier.GetRetryDelayMs(ex, attempt),
-                        MaxRetryDelayMs))),
-            onFailure: (ex, attempt) =>
+            maxAttempts: _maxReadRetries,
+            shouldRetry: ex => ex is not SourceUdtRegistrationException
+                && ExceptionClassifier.IsTransient(ex),
+            delayFor: (ex, attempt) => TimeSpan.FromMilliseconds(
+                Math.Min(ExceptionClassifier.GetRetryDelayMs(ex, attempt), MaxRetryDelayMs)),
+            onRetry: (ex, attempt) =>
             {
                 LastRetryExhaustionException = ex;
                 _log.WriteLine(

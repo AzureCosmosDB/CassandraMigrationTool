@@ -19,7 +19,7 @@ internal sealed class SourceUdtRegistrationException : Exception
 /// Rotated sessions remain available for a bounded grace period so in-flight
 /// operations can complete.
 /// </summary>
-public sealed class SourceSessionWrapper : IDisposable
+internal sealed class SourceSessionWrapper : IDisposable
 {
     private static readonly TimeSpan RetiredSessionDisposalDelay =
         TimeSpan.FromMinutes(10);
@@ -28,7 +28,7 @@ public sealed class SourceSessionWrapper : IDisposable
     private readonly object _sync = new();
     private readonly object _refreshLock = new();
     private readonly MigrationLog _log;
-    private readonly ICredentialSessionFactory _sessionFactory;
+    private readonly SourceSessionSettings _settings;
     private readonly HashSet<ISession> _retiredSessions =
         new(ReferenceEqualityComparer.Instance);
     private readonly ConcurrentDictionary<(ISession Session, string Keyspace), Lazy<Task>>
@@ -41,23 +41,48 @@ public sealed class SourceSessionWrapper : IDisposable
     private bool _tokenRefreshDisposed;
     private bool _disposed;
 
-    public SourceSessionWrapper(
+    private SourceSessionWrapper(
         MigrationLog log,
-        ICredentialSessionFactory sessionFactory)
+        SourceSessionSettings settings)
     {
         _log = log ?? throw new ArgumentNullException(nameof(log));
-        _sessionFactory = sessionFactory
-            ?? throw new ArgumentNullException(nameof(sessionFactory));
+        _settings = settings
+            ?? throw new ArgumentNullException(nameof(settings));
+    }
+
+    public static SourceSessionWrapper Create(
+        MigrationLog log,
+        Job job,
+        int workerCount)
+    {
+        var source = CassandraClientFactory.ResolveSourceSession(
+            job, workerCount);
+        var wrapper = new SourceSessionWrapper(log, source.Settings);
+        try
+        {
+            wrapper.Initialize(source.Credential);
+            return wrapper;
+        }
+        catch
+        {
+            wrapper.Dispose();
+            throw;
+        }
     }
 
     public ISession GetSession()
     {
-        return GetCurrentSession();
+        lock (_sync)
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            return _currentSession
+                ?? throw new InvalidOperationException("The session provider has not been initialized.");
+        }
     }
 
     public async Task<ISession> GetTypedSessionAsync(string keyspace)
     {
-        var session = GetCurrentSession();
+        var session = GetSession();
         var key = (Session: session, Keyspace: keyspace);
         var registration = _udtRegistrations.GetOrAdd(
             key,
@@ -79,16 +104,6 @@ public sealed class SourceSessionWrapper : IDisposable
         return session;
     }
 
-    private ISession GetCurrentSession()
-    {
-        lock (_sync)
-        {
-            ObjectDisposedException.ThrowIf(_disposed, this);
-            return _currentSession
-                ?? throw new InvalidOperationException("The session provider has not been initialized.");
-        }
-    }
-
     private static async Task RegisterUdtsAsync(
         ISession session,
         string keyspace)
@@ -99,11 +114,11 @@ public sealed class SourceSessionWrapper : IDisposable
             session, keyspace, allUdts);
     }
 
-    public ISession Initialize(string credential)
+    public void Initialize(string credential)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(credential);
 
-        var session = _sessionFactory.CreateSession(credential);
+        var session = CreateSession(credential);
         try
         {
             lock (_sync)
@@ -121,16 +136,15 @@ public sealed class SourceSessionWrapper : IDisposable
             throw;
         }
 
-        if (IsLikelyAadToken(credential))
+        if (credential.Length > 200)
             StartTokenRefresh(credential);
-        return session;
     }
 
-    public void Refresh(string credential)
+    private void Refresh(string credential)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(credential);
 
-        var session = _sessionFactory.CreateSession(credential);
+        var session = CreateSession(credential);
         ISession? retiredSession;
         try
         {
@@ -153,6 +167,17 @@ public sealed class SourceSessionWrapper : IDisposable
         }
 
         _ = DisposeRetiredSessionAfterDelayAsync(retiredSession);
+    }
+
+    private ISession CreateSession(string credential)
+    {
+        return CassandraClientFactory.CreateSourceSession(
+            _log,
+            _settings.ContactPoint,
+            _settings.Port,
+            _settings.Username,
+            credential,
+            _settings.MaxConnectionsPerHost);
     }
 
     private async Task DisposeRetiredSessionAfterDelayAsync(ISession session)
@@ -180,11 +205,6 @@ public sealed class SourceSessionWrapper : IDisposable
             if (ReferenceEquals(key.Session, session))
                 _udtRegistrations.TryRemove(key, out _);
         }
-    }
-
-    private static bool IsLikelyAadToken(string? credential)
-    {
-        return credential != null && credential.Length > 200;
     }
 
     private static DateTime GetTokenExpiry(string token)
@@ -219,7 +239,7 @@ public sealed class SourceSessionWrapper : IDisposable
 
     private void ScheduleTokenRefresh(string currentToken)
     {
-        _tokenRefreshTimer?.Dispose();
+        StopTokenRefreshCore();
 
         DateTime expiry = GetTokenExpiry(currentToken);
         if (expiry == DateTime.MaxValue)
@@ -272,7 +292,7 @@ public sealed class SourceSessionWrapper : IDisposable
                 Console.WriteLine($"[{severity}] {message}");
                 _log.WriteLine(message, severity);
 
-                _tokenRefreshTimer?.Dispose();
+                StopTokenRefreshCore();
                 if (_tokenRefreshEnabled && !_tokenRefreshDisposed)
                 {
                     _tokenRefreshTimer = new Timer(
@@ -289,9 +309,14 @@ public sealed class SourceSessionWrapper : IDisposable
         lock (_refreshLock)
         {
             _tokenRefreshEnabled = false;
-            _tokenRefreshTimer?.Dispose();
-            _tokenRefreshTimer = null;
+            StopTokenRefreshCore();
         }
+    }
+
+    private void StopTokenRefreshCore()
+    {
+        _tokenRefreshTimer?.Dispose();
+        _tokenRefreshTimer = null;
     }
 
     public void Dispose()
@@ -301,8 +326,7 @@ public sealed class SourceSessionWrapper : IDisposable
             if (_tokenRefreshDisposed) return;
             _tokenRefreshDisposed = true;
             _tokenRefreshEnabled = false;
-            _tokenRefreshTimer?.Dispose();
-            _tokenRefreshTimer = null;
+            StopTokenRefreshCore();
         }
 
         List<ISession> sessionsToDispose;

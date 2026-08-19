@@ -721,30 +721,34 @@ public static class SchemaManager
         if (!tables.Contains(table, StringComparer.OrdinalIgnoreCase))
             return false;
 
-        var retryPolicy = RetryPolicy.Create(
-            ThrottleMaxRetries,
-            ExceptionClassifier.IsThrottle,
-            (_, attempt) => TimeSpan.FromSeconds(
-                Math.Min(attempt * 3, 30)));
-        try
+        for (int attempt = 1; attempt <= ThrottleMaxRetries; attempt++)
         {
-            return await RetryExecutor.ExecuteAsync(
-                async (_, _) =>
+            try
+            {
+                var probe = new SimpleStatement(
+                    $"SELECT * FROM \"{keyspace}\".\"{table}\" LIMIT 1");
+                probe.SetPageSize(1);
+                probe.SetAutoPage(false);
+                probe.SetReadTimeoutMillis(ProbeTimeoutMs);
+                await session.ExecuteAsync(probe);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                if (ExceptionClassifier.IsThrottle(ex) && attempt < ThrottleMaxRetries)
                 {
-                    var probe = new SimpleStatement(
-                        $"SELECT * FROM \"{keyspace}\".\"{table}\" LIMIT 1");
-                    probe.SetPageSize(1);
-                    probe.SetAutoPage(false);
-                    probe.SetReadTimeoutMillis(ProbeTimeoutMs);
-                    await session.ExecuteAsync(probe);
-                    return true;
-                },
-                retryPolicy);
+                    int delaySec = Math.Min(attempt * 3, 30);
+                    await Task.Delay(delaySec * 1000);
+                    continue;
+                }
+
+                if (ExceptionClassifier.IsNotFound(ex))
+                    return false;
+
+                throw;
+            }
         }
-        catch (Exception ex) when (ExceptionClassifier.IsNotFound(ex))
-        {
-            return false;
-        }
+        return false;
     }
 
     /// <summary>

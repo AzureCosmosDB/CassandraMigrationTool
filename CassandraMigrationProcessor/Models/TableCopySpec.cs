@@ -4,7 +4,7 @@ namespace CassandraMigrationProcessor.Models;
 /// Immutable description of a single table copy. Identifies the source
 /// and target keyspace/table; runtime sessions are not threaded through
 /// here — readers use the job-wide source session and writers open
-/// worker-owned sessions through <c>ISessionFactory</c>.
+/// worker-owned sessions through <c>JobSessionFactory</c>.
 /// </summary>
 public record TableCopySpec(
     string KeyspaceName,
