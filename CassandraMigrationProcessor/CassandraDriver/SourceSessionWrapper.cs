@@ -33,10 +33,11 @@ internal sealed class SourceSessionWrapper : IDisposable
         new(ReferenceEqualityComparer.Instance);
     private readonly ConcurrentDictionary<(ISession Session, string Keyspace), Lazy<Task>>
         _udtRegistrations = new();
-    private ISession? _currentSession;
+    private ISession _currentSession;
     private Timer? _tokenRefreshTimer;
     private DateTime _tokenExpiresAt = DateTime.MinValue;
     private int _consecutiveRefreshFailures;
+    private int _disposed;
 
     public SourceSessionWrapper(
         MigrationLog log,
@@ -49,16 +50,15 @@ internal sealed class SourceSessionWrapper : IDisposable
         _settings = source.Settings;
         _currentSession = CreateSession(source.Credential);
         if (source.Credential.Length > 200)
-            StartTokenRefresh(source.Credential);
+            ScheduleTokenRefresh(source.Credential);
     }
 
     public ISession GetSession()
     {
-        lock (_sync)
-        {
-            return _currentSession
-                ?? throw new ObjectDisposedException(nameof(SourceSessionWrapper));
-        }
+        ObjectDisposedException.ThrowIf(
+            Volatile.Read(ref _disposed) != 0,
+            this);
+        return Volatile.Read(ref _currentSession);
     }
 
     public async Task<ISession> GetTypedSessionAsync(string keyspace)
@@ -105,11 +105,12 @@ internal sealed class SourceSessionWrapper : IDisposable
         {
             lock (_sync)
             {
-                if (_currentSession == null)
-                    throw new ObjectDisposedException(nameof(SourceSessionWrapper));
+                ObjectDisposedException.ThrowIf(
+                    Volatile.Read(ref _disposed) != 0,
+                    this);
 
                 retiredSession = _currentSession;
-                _currentSession = session;
+                Volatile.Write(ref _currentSession, session);
                 _retiredSessions.Add(retiredSession);
             }
         }
@@ -181,14 +182,6 @@ internal sealed class SourceSessionWrapper : IDisposable
         return DateTime.MaxValue;
     }
 
-    private void StartTokenRefresh(string currentToken)
-    {
-        lock (_refreshLock)
-        {
-            ScheduleTokenRefresh(currentToken);
-        }
-    }
-
     private void ScheduleTokenRefresh(string currentToken)
     {
         StopTokenRefreshCore();
@@ -213,7 +206,9 @@ internal sealed class SourceSessionWrapper : IDisposable
     {
         lock (_refreshLock)
         {
-            if (_tokenRefreshTimer == null) return;
+            if (Volatile.Read(ref _disposed) != 0
+                || _tokenRefreshTimer == null)
+                return;
 
             try
             {
@@ -245,10 +240,13 @@ internal sealed class SourceSessionWrapper : IDisposable
                 _log.WriteLine(message, severity);
 
                 StopTokenRefreshCore();
-                _tokenRefreshTimer = new Timer(
-                    RefreshTokenCallback, null,
-                    TimeSpan.FromSeconds(seconds),
-                    Timeout.InfiniteTimeSpan);
+                if (Volatile.Read(ref _disposed) == 0)
+                {
+                    _tokenRefreshTimer = new Timer(
+                        RefreshTokenCallback, null,
+                        TimeSpan.FromSeconds(seconds),
+                        Timeout.InfiniteTimeSpan);
+                }
             }
         }
     }
@@ -261,20 +259,20 @@ internal sealed class SourceSessionWrapper : IDisposable
 
     public void Dispose()
     {
+        List<ISession> sessionsToDispose;
         lock (_refreshLock)
         {
+            if (Interlocked.Exchange(ref _disposed, 1) != 0)
+                return;
             StopTokenRefreshCore();
-        }
 
-        List<ISession> sessionsToDispose;
-        lock (_sync)
-        {
-            sessionsToDispose = _retiredSessions.ToList();
-            _retiredSessions.Clear();
-            if (_currentSession != null)
+            lock (_sync)
+            {
+                sessionsToDispose = _retiredSessions.ToList();
+                _retiredSessions.Clear();
                 sessionsToDispose.Add(_currentSession);
-            _currentSession = null;
-            _udtRegistrations.Clear();
+                _udtRegistrations.Clear();
+            }
         }
 
         foreach (var session in sessionsToDispose)
