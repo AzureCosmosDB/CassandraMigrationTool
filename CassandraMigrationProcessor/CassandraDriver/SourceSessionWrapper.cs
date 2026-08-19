@@ -1,6 +1,8 @@
 using Cassandra;
 using CassandraMigrationProcessor.Infrastructure;
+using CassandraMigrationProcessor.Models;
 using System.Collections.Concurrent;
+using System.IdentityModel.Tokens.Jwt;
 
 namespace CassandraMigrationProcessor.CassandraDriver;
 
@@ -21,24 +23,31 @@ public sealed class SourceSessionWrapper : IDisposable
 {
     private static readonly TimeSpan RetiredSessionDisposalDelay =
         TimeSpan.FromMinutes(10);
+    private const int MaxRefreshFailures = 6;
 
     private readonly object _sync = new();
+    private readonly object _refreshLock = new();
+    private readonly MigrationLog _log;
     private readonly ICredentialSessionFactory _sessionFactory;
-    private readonly TokenRefreshManager _tokenRefreshManager;
     private readonly HashSet<ISession> _retiredSessions =
         new(ReferenceEqualityComparer.Instance);
     private readonly ConcurrentDictionary<(ISession Session, string Keyspace), Lazy<Task>>
         _udtRegistrations = new();
     private ISession? _currentSession;
+    private Timer? _tokenRefreshTimer;
+    private DateTime _tokenExpiresAt = DateTime.MinValue;
+    private int _consecutiveRefreshFailures;
+    private bool _tokenRefreshEnabled;
+    private bool _tokenRefreshDisposed;
     private bool _disposed;
 
     public SourceSessionWrapper(
         MigrationLog log,
         ICredentialSessionFactory sessionFactory)
     {
+        _log = log ?? throw new ArgumentNullException(nameof(log));
         _sessionFactory = sessionFactory
             ?? throw new ArgumentNullException(nameof(sessionFactory));
-        _tokenRefreshManager = new TokenRefreshManager(log, Refresh);
     }
 
     public ISession GetSession()
@@ -112,8 +121,8 @@ public sealed class SourceSessionWrapper : IDisposable
             throw;
         }
 
-        if (TokenRefreshManager.IsLikelyAadToken(credential))
-            _tokenRefreshManager.StartTokenRefreshTimer(credential);
+        if (IsLikelyAadToken(credential))
+            StartTokenRefresh(credential);
         return session;
     }
 
@@ -173,14 +182,128 @@ public sealed class SourceSessionWrapper : IDisposable
         }
     }
 
+    private static bool IsLikelyAadToken(string? credential)
+    {
+        return credential != null && credential.Length > 200;
+    }
+
+    private static DateTime GetTokenExpiry(string token)
+    {
+        try
+        {
+            var handler = new JwtSecurityTokenHandler();
+            if (handler.CanReadToken(token))
+            {
+                var jwt = handler.ReadJwtToken(token);
+                return jwt.ValidTo;
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine(
+                $"[Warning] Failed to read AAD token expiry: {ex.Message}");
+        }
+
+        return DateTime.MaxValue;
+    }
+
+    private void StartTokenRefresh(string currentToken)
+    {
+        lock (_refreshLock)
+        {
+            if (_tokenRefreshDisposed) return;
+            _tokenRefreshEnabled = true;
+            ScheduleTokenRefresh(currentToken);
+        }
+    }
+
+    private void ScheduleTokenRefresh(string currentToken)
+    {
+        _tokenRefreshTimer?.Dispose();
+
+        DateTime expiry = GetTokenExpiry(currentToken);
+        if (expiry == DateTime.MaxValue)
+            expiry = DateTime.UtcNow.AddMinutes(50);
+
+        _tokenExpiresAt = expiry;
+
+        TimeSpan delay = expiry - DateTime.UtcNow
+            - TimeSpan.FromMinutes(5);
+        if (delay < TimeSpan.FromMinutes(1))
+            delay = TimeSpan.FromMinutes(1);
+
+        _tokenRefreshTimer = new Timer(
+            RefreshTokenCallback, null,
+            delay, Timeout.InfiniteTimeSpan);
+    }
+
+    private void RefreshTokenCallback(object? state)
+    {
+        lock (_refreshLock)
+        {
+            if (_tokenRefreshDisposed || !_tokenRefreshEnabled) return;
+
+            try
+            {
+                string freshToken = CassandraClientFactory.AcquireAadToken();
+                Refresh(freshToken);
+
+                _consecutiveRefreshFailures = 0;
+                ScheduleTokenRefresh(freshToken);
+            }
+            catch (Exception ex)
+            {
+                _consecutiveRefreshFailures++;
+                int seconds = Math.Min(
+                    300,
+                    30 * (1 << Math.Min(
+                        _consecutiveRefreshFailures - 1, 4)));
+                bool tokenAlreadyExpired =
+                    DateTime.UtcNow >= _tokenExpiresAt;
+                LogType severity =
+                    _consecutiveRefreshFailures >= MaxRefreshFailures
+                    || tokenAlreadyExpired
+                        ? LogType.Error
+                        : LogType.Warning;
+                string message =
+                    $"Token refresh failed (attempt {_consecutiveRefreshFailures}, " +
+                    $"retrying in {seconds}s, tokenExpiresAt={_tokenExpiresAt:O}): " +
+                    ex.Message;
+                Console.WriteLine($"[{severity}] {message}");
+                _log.WriteLine(message, severity);
+
+                _tokenRefreshTimer?.Dispose();
+                if (_tokenRefreshEnabled && !_tokenRefreshDisposed)
+                {
+                    _tokenRefreshTimer = new Timer(
+                        RefreshTokenCallback, null,
+                        TimeSpan.FromSeconds(seconds),
+                        Timeout.InfiniteTimeSpan);
+                }
+            }
+        }
+    }
+
     public void StopTokenRefresh()
     {
-        _tokenRefreshManager.StopTokenRefreshTimer();
+        lock (_refreshLock)
+        {
+            _tokenRefreshEnabled = false;
+            _tokenRefreshTimer?.Dispose();
+            _tokenRefreshTimer = null;
+        }
     }
 
     public void Dispose()
     {
-        _tokenRefreshManager.Dispose();
+        lock (_refreshLock)
+        {
+            if (_tokenRefreshDisposed) return;
+            _tokenRefreshDisposed = true;
+            _tokenRefreshEnabled = false;
+            _tokenRefreshTimer?.Dispose();
+            _tokenRefreshTimer = null;
+        }
 
         List<ISession> sessionsToDispose;
         lock (_sync)

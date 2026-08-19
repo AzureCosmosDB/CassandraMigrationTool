@@ -8,8 +8,7 @@ namespace CassandraMigrationProcessor.CassandraDriver;
 /// <summary>
 /// Creates Cassandra ISession instances for source (Cosmos DB)
 /// and target (OSS Cassandra) clusters.
-/// Delegates AAD token management to TokenRefreshManager and
-/// ARM credential discovery to ArmCredentialDiscovery.
+/// Delegates ARM credential discovery to ArmCredentialDiscovery.
 /// </summary>
 public static class CassandraClientFactory
 {
@@ -36,8 +35,6 @@ public static class CassandraClientFactory
     /// <summary>
     /// Create a session to a Cosmos DB Cassandra API account.
     /// Uses SSL on port 10350 with PlainTextAuthProvider.
-    /// Starts proactive token refresh if the password is a
-    /// JWT/AAD token.
     /// Retries on 429/OverloadedException with backoff.
     /// </summary>
     public static ISession CreateSourceSession(
@@ -46,7 +43,6 @@ public static class CassandraClientFactory
         int port,
         string username,
         string password,
-        TokenRefreshManager? tokenRefreshManager = null,
         int maxConnectionsPerHost = 0)
     {
         // Source always uses SSL (Cosmos DB requires it)
@@ -65,9 +61,7 @@ public static class CassandraClientFactory
         {
             try
             {
-                var session = ConnectCluster(builder);
-                RegisterAadTokenRefresh(password, tokenRefreshManager);
-                return session;
+                return ConnectCluster(builder);
             }
             catch (Exception ex) when (
                 ExceptionClassifier.IsTransient(ex)
@@ -86,22 +80,6 @@ public static class CassandraClientFactory
         // on the final attempt (the `when` filter is false when
         // attempt == MaxRetries).
         throw new UnreachableException();
-    }
-
-    /// <summary>
-    /// When <paramref name="password"/> looks like an AAD/JWT bearer
-    /// token and the caller wired up a <see cref="TokenRefreshManager"/>,
-    /// start the proactive refresh timer so the bearer is rotated before it
-    /// expires.
-    /// No-op when the password is a static credential or the manager is
-    /// not supplied.
-    /// </summary>
-    private static void RegisterAadTokenRefresh(
-        string password,
-        TokenRefreshManager? tokenRefreshManager)
-    {
-        if (!TokenRefreshManager.IsLikelyAadToken(password)) return;
-        tokenRefreshManager?.StartTokenRefreshTimer(password);
     }
 
     /// <summary>
@@ -304,19 +282,16 @@ public static class CassandraClientFactory
     /// token automatically.
     /// </summary>
     public static ISession CreateSourceSession(
-        MigrationLog MigrationLog, Job job,
-        TokenRefreshManager? tokenRefreshManager = null)
+        MigrationLog MigrationLog, Job job)
     {
-        string credential = ResolveSourceCredential(job, tokenRefreshManager);
+        string credential = ResolveSourceCredential(job);
         var settings = ResolveSourceSessionSettings(job);
 
         return CreateSourceSessionWithCredential(
-            MigrationLog, settings, credential, tokenRefreshManager);
+            MigrationLog, settings, credential);
     }
 
-    internal static string ResolveSourceCredential(
-        Job job,
-        TokenRefreshManager? tokenRefreshManager = null)
+    internal static string ResolveSourceCredential(Job job)
     {
         if (string.IsNullOrEmpty(job.SourceContactPoint))
             throw new ArgumentException("Source contact point is required", nameof(job));
@@ -324,8 +299,7 @@ public static class CassandraClientFactory
         string credential = job.SourcePassword ?? string.Empty;
         if (string.IsNullOrEmpty(credential) || job.SourceUseAad)
         {
-            credential = tokenRefreshManager?.GetFreshAadToken()
-                ?? TokenRefreshManager.AcquireAadToken();
+            credential = AcquireAadToken();
             // SECURITY: do NOT write the AAD bearer token back into
             // job.SourcePassword — even though [JsonIgnore] keeps it
             // off disk, the Blazor "Update Connection Strings" modal
@@ -336,20 +310,19 @@ public static class CassandraClientFactory
         return credential;
     }
 
+    internal static string AcquireAadToken()
+    {
+        var credential = new Azure.Identity.DefaultAzureCredential();
+        return credential.GetToken(
+            new Azure.Core.TokenRequestContext(
+                new[] { "https://cosmos.azure.com/.default" }))
+            .Token;
+    }
+
     internal static ISession CreateSourceSessionWithCredential(
         MigrationLog migrationLog,
         SourceSessionSettings settings,
         string credential)
-    {
-        return CreateSourceSessionWithCredential(
-            migrationLog, settings, credential, tokenRefreshManager: null);
-    }
-
-    private static ISession CreateSourceSessionWithCredential(
-        MigrationLog migrationLog,
-        SourceSessionSettings settings,
-        string credential,
-        TokenRefreshManager? tokenRefreshManager)
     {
         return CreateSourceSession(
             migrationLog,
@@ -357,7 +330,6 @@ public static class CassandraClientFactory
             settings.Port,
             settings.Username,
             credential,
-            tokenRefreshManager,
             settings.MaxConnectionsPerHost);
     }
 
