@@ -11,7 +11,7 @@ public class TokenRefreshManager : IDisposable
 {
     private Timer? _tokenRefreshTimer;
     private readonly object _refreshLock = new();
-    private readonly RotatingSessionProvider _sourceSessions;
+    private readonly SourceSessionWrapper _sourceSessions;
     private readonly MigrationLog _log;
     private DateTime _tokenExpiresAt = DateTime.MinValue;
     private int _consecutiveRefreshFailures;
@@ -19,7 +19,7 @@ public class TokenRefreshManager : IDisposable
 
     public TokenRefreshManager(
         MigrationLog log,
-        RotatingSessionProvider sourceSessions)
+        SourceSessionWrapper sourceSessions)
     {
         _log = log;
         _sourceSessions = sourceSessions

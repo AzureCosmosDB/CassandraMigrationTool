@@ -22,7 +22,7 @@ internal sealed class JobPipeline : IDisposable, IAsyncDisposable
     public PipelineContext Context { get; }
 
     public JobPipeline(MigrationLog log, Job job, PipelineConfig pipelineConfig,
-        JobPartitioning partitioning, ISessionProvider sourceSessionProvider,
+        JobPartitioning partitioning, SourceSessionWrapper sourceSession,
         ISessionFactory sessionFactory,
         JobControl control)
     {
@@ -48,8 +48,7 @@ internal sealed class JobPipeline : IDisposable, IAsyncDisposable
 
         Context = new PipelineContext(
             _partitions,
-            sourceSessionProvider,
-            new SourceUdtRegistrationCache(),
+            sourceSession,
             sessionFactory,
             readerConfig,
             writerConfig,

@@ -9,6 +9,11 @@ internal sealed record SourceSessionSettings(
     string Username,
     int MaxConnectionsPerHost);
 
+public interface ICredentialSessionFactory
+{
+    ISession CreateSession(string credential);
+}
+
 internal sealed class SourceSessionFactory : ICredentialSessionFactory
 {
     private readonly MigrationLog _log;

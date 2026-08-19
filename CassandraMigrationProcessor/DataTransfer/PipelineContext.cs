@@ -14,8 +14,7 @@ namespace CassandraMigrationProcessor.DataTransfer;
 /// </summary>
 internal record PipelineContext(
     PartitionManager Partitions,
-    ISessionProvider SourceSessionProvider,
-    SourceUdtRegistrationCache SourceUdtRegistrations,
+    SourceSessionWrapper SourceSession,
     ISessionFactory SessionFactory,
     ReaderConfig ReaderConfig,
     WriterConfig WriterConfig,

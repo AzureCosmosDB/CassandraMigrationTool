@@ -20,7 +20,7 @@ public class MigrationJobRunner : IAsyncDisposable
     private readonly PipelineConfig _pipelineConfig;
     private readonly JobControl _control;
     private readonly TokenRefreshManager _tokenRefreshManager;
-    private readonly RotatingSessionProvider _sourceSessions;
+    private readonly SourceSessionWrapper _sourceSessions;
     private int _consecutiveAuthErrors;
     // Last auth exception observed by HandleMigrationUnitError;
     // attached as inner when the consecutive-auth threshold trips so
@@ -56,7 +56,7 @@ public class MigrationJobRunner : IAsyncDisposable
         PipelineConfig pipelineConfig,
         JobControl control,
         TokenRefreshManager tokenRefreshManager,
-        RotatingSessionProvider sourceSessions,
+        SourceSessionWrapper sourceSessions,
         ISession sourceSession,
         ISession targetSession)
     {
@@ -85,14 +85,14 @@ public class MigrationJobRunner : IAsyncDisposable
         ArgumentNullException.ThrowIfNull(control);
 
         var pipelineConfig = PipelineConfig.Resolve(job, config);
-        RotatingSessionProvider? sourceSessions = null;
+        SourceSessionWrapper? sourceSessions = null;
         TokenRefreshManager? tokenRefreshManager = null;
         ISession? source = null;
         ISession? target = null;
         try
         {
             var sourceSettings = CassandraClientFactory.ResolveSourceSessionSettings(job);
-            sourceSessions = new RotatingSessionProvider(
+            sourceSessions = new SourceSessionWrapper(
                 new SourceSessionFactory(log, sourceSettings));
             tokenRefreshManager = new TokenRefreshManager(log, sourceSessions);
             string sourceCredential = CassandraClientFactory.ResolveSourceCredential(

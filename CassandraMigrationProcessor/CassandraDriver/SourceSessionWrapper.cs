@@ -1,23 +1,15 @@
 using Cassandra;
 using CassandraMigrationProcessor.Infrastructure;
+using System.Collections.Concurrent;
 
 namespace CassandraMigrationProcessor.CassandraDriver;
 
 /// <summary>
-/// Resolves the current shared session while retaining rotated sessions for a
-/// bounded grace period so in-flight operations can complete.
+/// Owns the shared source-session lifecycle and session-scoped UDT mappings.
+/// Rotated sessions remain available for a bounded grace period so in-flight
+/// operations can complete.
 /// </summary>
-public interface ISessionProvider
-{
-    ISession GetSession();
-}
-
-public interface ICredentialSessionFactory
-{
-    ISession CreateSession(string credential);
-}
-
-public sealed class RotatingSessionProvider : ISessionProvider, IDisposable
+public sealed class SourceSessionWrapper : IDisposable
 {
     private static readonly TimeSpan RetiredSessionDisposalDelay =
         TimeSpan.FromMinutes(10);
@@ -26,16 +18,36 @@ public sealed class RotatingSessionProvider : ISessionProvider, IDisposable
     private readonly ICredentialSessionFactory _sessionFactory;
     private readonly HashSet<ISession> _retiredSessions =
         new(ReferenceEqualityComparer.Instance);
+    private readonly ConcurrentDictionary<(ISession Session, string Keyspace), Lazy<Task>>
+        _udtRegistrations = new();
     private ISession? _currentSession;
     private bool _disposed;
 
-    public RotatingSessionProvider(ICredentialSessionFactory sessionFactory)
+    public SourceSessionWrapper(ICredentialSessionFactory sessionFactory)
     {
         _sessionFactory = sessionFactory
             ?? throw new ArgumentNullException(nameof(sessionFactory));
     }
 
-    public ISession GetSession()
+    public async Task<ISession> GetSessionForReadAsync(
+        string keyspace,
+        bool registerUdts)
+    {
+        var session = GetSession();
+        if (registerUdts)
+        {
+            await _udtRegistrations.GetOrAdd(
+                (session, keyspace),
+                key => new Lazy<Task>(
+                    () => RegisterUdtsAsync(key.Session, key.Keyspace),
+                    LazyThreadSafetyMode.ExecutionAndPublication))
+                .Value
+                .ConfigureAwait(false);
+        }
+        return session;
+    }
+
+    private ISession GetSession()
     {
         lock (_sync)
         {
@@ -43,6 +55,16 @@ public sealed class RotatingSessionProvider : ISessionProvider, IDisposable
             return _currentSession
                 ?? throw new InvalidOperationException("The session provider has not been initialized.");
         }
+    }
+
+    private static async Task RegisterUdtsAsync(
+        ISession session,
+        string keyspace)
+    {
+        var allUdts = await SchemaManager.GetUserDefinedTypesAsync(
+            session, keyspace);
+        await DynamicUdtRegistrar.RegisterAsync(
+            session, keyspace, allUdts);
     }
 
     public ISession Initialize(string credential)
@@ -132,7 +154,7 @@ public sealed class RotatingSessionProvider : ISessionProvider, IDisposable
         foreach (var session in sessionsToDispose)
         {
             MigrationUtilities.SafeDisposeSession(
-                session, "Rotating session provider");
+                session, "Source session wrapper");
         }
     }
 }
