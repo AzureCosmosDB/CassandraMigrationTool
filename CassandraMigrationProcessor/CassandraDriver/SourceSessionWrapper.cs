@@ -29,25 +29,23 @@ public sealed class SourceSessionWrapper : IDisposable
             ?? throw new ArgumentNullException(nameof(sessionFactory));
     }
 
-    public async Task<ISession> GetSessionForReadAsync(
-        string keyspace,
-        bool registerUdts)
+    public ISession GetSession()
+        => GetCurrentSession();
+
+    public async Task<ISession> GetTypedSessionAsync(string keyspace)
     {
-        var session = GetSession();
-        if (registerUdts)
-        {
-            await _udtRegistrations.GetOrAdd(
-                (session, keyspace),
-                key => new Lazy<Task>(
-                    () => RegisterUdtsAsync(key.Session, key.Keyspace),
-                    LazyThreadSafetyMode.ExecutionAndPublication))
-                .Value
-                .ConfigureAwait(false);
-        }
+        var session = GetCurrentSession();
+        await _udtRegistrations.GetOrAdd(
+            (session, keyspace),
+            key => new Lazy<Task>(
+                () => RegisterUdtsAsync(key.Session, key.Keyspace),
+                LazyThreadSafetyMode.ExecutionAndPublication))
+            .Value
+            .ConfigureAwait(false);
         return session;
     }
 
-    private ISession GetSession()
+    private ISession GetCurrentSession()
     {
         lock (_sync)
         {

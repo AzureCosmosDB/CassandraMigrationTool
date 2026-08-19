@@ -193,9 +193,10 @@ internal class PageReader
         var resultSet = await RetryExecutor.ExecuteOrDefaultAsync<RowSet>(
             operation: async _ =>
             {
-                var sourceSession = await _sourceSession.GetSessionForReadAsync(
-                    partition.Table.Spec.KeyspaceName,
-                    registerUdts: !useJson).ConfigureAwait(false);
+                var sourceSession = useJson
+                    ? _sourceSession.GetSession()
+                    : await _sourceSession.GetTypedSessionAsync(
+                        partition.Table.Spec.KeyspaceName).ConfigureAwait(false);
                 return await sourceSession.ExecuteAsync(stmt)
                     .WaitAsync(_ct)
                     .ConfigureAwait(false);
