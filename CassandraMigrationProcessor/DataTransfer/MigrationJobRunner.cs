@@ -617,14 +617,15 @@ public class MigrationJobRunner : IAsyncDisposable
     private Task ProcessWithRetryAsync(Job job, TableMigration mu, JobPartitioning partitioning, CancellationToken token)
     {
         return RetryExecutor.ExecuteAsync<int>(
-            operation: async _ =>
+            operation: async (_, _) =>
             {
                 await ProcessMigrationUnitAsync(job, mu, partitioning, token);
                 return 0;
             },
-            maxAttempts: MigrationDefaults.MaxTableRetries,
-            shouldRetry: ExceptionClassifier.IsTransient,
-            delayFor: (ex, attempt) => RetryPolicy.FromException(ex, attempt),
+            policy: RetryPolicy.Create(
+                MigrationDefaults.MaxTableRetries,
+                ExceptionClassifier.IsTransient,
+                RetryPolicy.FromException),
             onRetry: (ex, attempt) => _log.WriteLine(
                 $"Table retry {attempt} for {mu.KeyspaceName}.{mu.TableName}: {ex.Message}",
                 LogType.Warning),
@@ -957,7 +958,7 @@ public class MigrationJobRunner : IAsyncDisposable
         try
         {
             return await RetryExecutor.ExecuteAsync<bool>(
-                operation: _ =>
+                operation: (_, _) =>
                 {
                     var probe = new SimpleStatement(
                         $"SELECT * FROM \"{keyspace}\".\"{tableName}\" WHERE COSMOS_CHANGEFEED_FROM_START() = true");
@@ -967,9 +968,11 @@ public class MigrationJobRunner : IAsyncDisposable
                     session.Execute(probe);
                     return Task.FromResult(true);
                 },
-                maxAttempts: 10,
-                shouldRetry: ExceptionClassifier.IsThrottle,
-                delayFor: (_, attempt) => TimeSpan.FromSeconds(Math.Min(attempt * 3, 30)),
+                policy: RetryPolicy.Create(
+                    10,
+                    ExceptionClassifier.IsThrottle,
+                    (_, attempt) => TimeSpan.FromSeconds(
+                        Math.Min(attempt * 3, 30))),
                 cancellationToken: cancellationToken);
         }
         catch (OperationCanceledException)

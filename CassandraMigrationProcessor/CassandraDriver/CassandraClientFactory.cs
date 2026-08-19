@@ -1,5 +1,4 @@
 using Cassandra;
-using System.Diagnostics;
 using System.Security.Authentication;
 using CassandraMigrationProcessor.Infrastructure;
 using CassandraMigrationProcessor.Models;
@@ -50,36 +49,21 @@ public static class CassandraClientFactory
             contactPoint, port, username, password,
             useSsl: true, maxConnectionsPerHost);
 
-        // Single connect+register success path. The loop covers all
-        // attempts; the `when (attempt < MaxRetries)` filter swallows
-        // transient failures only on attempts 1..MaxRetries-1, so on
-        // the final attempt any exception — transient or not —
-        // propagates out unhandled, matching the original "Final
-        // attempt — let exception propagate" semantics.
         const int MaxRetries = 5;
-        for (int attempt = 1; attempt <= MaxRetries; attempt++)
-        {
-            try
+        var retryPolicy = RetryPolicy.Create(
+            MaxRetries,
+            ExceptionClassifier.IsTransient,
+            (exception, attempt) => TimeSpan.FromMilliseconds(
+                ExceptionClassifier.GetRetryDelayMs(exception, attempt)));
+        return RetryExecutor.Execute(
+            _ => ConnectCluster(builder),
+            retryPolicy,
+            (exception, attempt) =>
             {
-                return ConnectCluster(builder);
-            }
-            catch (Exception ex) when (
-                ExceptionClassifier.IsTransient(ex)
-                && attempt < MaxRetries)
-            {
-                int delayMs = ExceptionClassifier.GetRetryDelayMs(ex, attempt);
                 MigrationLog.WriteLine(
-                    $"Source connect retry " +
-                    $"{attempt}: {ex.Message}",
+                    $"Source connect retry {attempt}: {exception.Message}",
                     LogType.Warning);
-                Thread.Sleep(delayMs);
-            }
-        }
-
-        // Unreachable: the loop either returns on success or rethrows
-        // on the final attempt (the `when` filter is false when
-        // attempt == MaxRetries).
-        throw new UnreachableException();
+            });
     }
 
     /// <summary>

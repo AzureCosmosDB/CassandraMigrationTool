@@ -191,7 +191,7 @@ internal class PageReader
         // intact and will retry the same page once the source stops
         // throttling.
         var resultSet = await RetryExecutor.ExecuteOrDefaultAsync<RowSet>(
-            operation: async _ =>
+            operation: async (_, _) =>
             {
                 var sourceSession = useJson
                     ? _sourceSession.GetSession()
@@ -201,12 +201,15 @@ internal class PageReader
                     .WaitAsync(_ct)
                     .ConfigureAwait(false);
             },
-            maxAttempts: _maxReadRetries,
-            shouldRetry: ex => ex is not SourceUdtRegistrationException
-                && ExceptionClassifier.IsTransient(ex),
-            delayFor: (ex, attempt) => TimeSpan.FromMilliseconds(
-                Math.Min(ExceptionClassifier.GetRetryDelayMs(ex, attempt), MaxRetryDelayMs)),
-            onRetry: (ex, attempt) =>
+            policy: RetryPolicy.Create(
+                _maxReadRetries,
+                ex => ex is not SourceUdtRegistrationException
+                    && ExceptionClassifier.IsTransient(ex),
+                (ex, attempt) => TimeSpan.FromMilliseconds(
+                    Math.Min(
+                        ExceptionClassifier.GetRetryDelayMs(ex, attempt),
+                        MaxRetryDelayMs))),
+            onFailure: (ex, attempt) =>
             {
                 LastRetryExhaustionException = ex;
                 _log.WriteLine(

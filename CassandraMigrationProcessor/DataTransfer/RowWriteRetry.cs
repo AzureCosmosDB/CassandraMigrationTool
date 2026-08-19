@@ -95,41 +95,42 @@ internal static class RowWriteRetry
             string rowKind,
             CancellationToken cancellationToken)
     {
-        for (int n = 1; n <= policy.MaxAttempts; n++)
+        int attempts = 0;
+        try
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            var start = Stopwatch.GetTimestamp();
-            try
-            {
-                await attempt();
-                long elapsed = (Stopwatch.GetTimestamp() - start) * 1000 / Stopwatch.Frequency;
-                return (WriteOutcome.Success, elapsed, null);
-            }
-            catch (OperationCanceledException)
-            {
-                throw;
-            }
-            catch (Exception ex)
-            {
-                if (ExceptionClassifier.IsFatal(ex))
+            long elapsed = await RetryExecutor.ExecuteAsync(
+                async (attemptNumber, _) =>
                 {
-                    log.WriteLine($"FATAL {rowKind}: {ex.GetType().Name}: {ex.Message}",
-                        LogType.Error);
-                    return (WriteOutcome.Fatal, 0, ex);
-                }
-
-                if (ExceptionClassifier.IsTransient(ex) && n < policy.MaxAttempts)
-                {
-                    await Task.Delay(policy.DelayBeforeRetry(n), cancellationToken);
-                    continue;
-                }
-
-                log.WriteLine($"{rowKind} FAILED after {n} attempt(s): {ex.GetType().Name}: {ex.Message}",
-                    LogType.Error);
-                return (WriteOutcome.Failed, 0, ex);
-            }
+                    attempts = attemptNumber;
+                    var start = Stopwatch.GetTimestamp();
+                    await attempt().ConfigureAwait(false);
+                    return (Stopwatch.GetTimestamp() - start)
+                        * 1000 / Stopwatch.Frequency;
+                },
+                policy,
+                cancellationToken: cancellationToken);
+            return (WriteOutcome.Success, elapsed, null);
         }
-        return (WriteOutcome.Failed, 0, null);
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            if (ExceptionClassifier.IsFatal(ex))
+            {
+                log.WriteLine(
+                    $"FATAL {rowKind}: {ex.GetType().Name}: {ex.Message}",
+                    LogType.Error);
+                return (WriteOutcome.Fatal, 0, ex);
+            }
+
+            log.WriteLine(
+                $"{rowKind} FAILED after {attempts} attempt(s): " +
+                $"{ex.GetType().Name}: {ex.Message}",
+                LogType.Error);
+            return (WriteOutcome.Failed, 0, ex);
+        }
     }
 
     private static void ApplyToCounters(

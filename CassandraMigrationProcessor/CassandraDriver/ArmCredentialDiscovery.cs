@@ -1,3 +1,4 @@
+using CassandraMigrationProcessor.Infrastructure;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Text.Json;
@@ -28,6 +29,17 @@ public static class ArmCredentialDiscovery
 
     private const int ThrottleRetries = 3;
 
+    private sealed class ArmThrottleException : Exception
+    {
+        public TimeSpan RetryAfter { get; }
+
+        public ArmThrottleException(TimeSpan retryAfter)
+            : base("ARM request was throttled.")
+        {
+            RetryAfter = retryAfter;
+        }
+    }
+
     /// <summary>Azure Instance Metadata Service — well-known endpoint (docs.microsoft.com/azure/virtual-machines/instance-metadata-service)</summary>
     private const string ImdsEndpoint = "http://169.254.169.254/metadata/instance";
 
@@ -42,78 +54,86 @@ public static class ArmCredentialDiscovery
     private static async Task<HttpResponseMessage?> SendArmRequestAsync(
         Func<HttpRequestMessage> buildRequest, string context)
     {
-        for (int attempt = 1; attempt <= ThrottleRetries; attempt++)
-        {
-            using var req = buildRequest();
-            var resp = await _armHttpClient.SendAsync(req);
-
-            if (resp.IsSuccessStatusCode)
-                return resp;
-
-            switch (resp.StatusCode)
+        var retryPolicy = RetryPolicy.Create(
+            ThrottleRetries,
+            exception => exception is ArmThrottleException,
+            (exception, _) =>
+                ((ArmThrottleException)exception).RetryAfter);
+        return await RetryExecutor.ExecuteOrDefaultAsync<HttpResponseMessage>(
+            async (attempt, _) =>
             {
-                case HttpStatusCode.NotFound:
-                    Console.WriteLine(
-                        $"[INFO] ARM ({context}): 404 — no matching " +
-                        $"resource in this subscription.");
-                    resp.Dispose();
-                    return null;
+                using var request = buildRequest();
+                var response = await _armHttpClient.SendAsync(request);
 
-                case HttpStatusCode.Unauthorized:
-                    resp.Dispose();
-                    throw new InvalidOperationException(
-                        $"ARM ({context}) returned 401 Unauthorized. " +
-                        $"The current identity's token was rejected. " +
-                        $"Re-acquire credentials and try again.");
+                if (response.IsSuccessStatusCode)
+                    return response;
 
-                case HttpStatusCode.Forbidden:
-                    resp.Dispose();
-                    throw new InvalidOperationException(
-                        $"ARM ({context}) returned 403 Forbidden. " +
-                        $"The caller lacks the RBAC role required " +
-                        $"(typically 'Cosmos DB Account Reader Role' " +
-                        $"or 'DocumentDB Account Contributor').");
+                switch (response.StatusCode)
+                {
+                    case HttpStatusCode.NotFound:
+                        Console.WriteLine(
+                            $"[INFO] ARM ({context}): 404 — no matching " +
+                            $"resource in this subscription.");
+                        response.Dispose();
+                        return null!;
 
-                case HttpStatusCode.TooManyRequests:
-                    // Retry-After comes in two RFC 7231 §7.1.3 shapes
-                    // that are mutually exclusive on the wire:
-                    //   "Retry-After: 30"           -> Delta
-                    //   "Retry-After: Wed, 21 Oct"  -> Date
-                    // ARM normally uses Delta but is allowed to send
-                    // Date; we previously silently fell through to
-                    // 2*attempt seconds on the Date form and pounded
-                    // a still-throttled endpoint.
-                    var ra = resp.Headers.RetryAfter;
-                    TimeSpan retryAfter = ra?.Delta
-                        ?? (ra?.Date is { } d
-                                ? d - DateTimeOffset.UtcNow
-                                : (TimeSpan?)null)
-                        ?? TimeSpan.FromSeconds(2 * attempt);
-                    if (retryAfter < TimeSpan.Zero)
-                        retryAfter = TimeSpan.FromSeconds(2 * attempt);
-                    Console.WriteLine(
-                        $"[WARN] ARM ({context}): 429 throttle — " +
-                        $"sleeping {retryAfter.TotalSeconds:F1}s " +
-                        $"(attempt {attempt}/{ThrottleRetries}).");
-                    resp.Dispose();
-                    if (attempt == ThrottleRetries) return null;
-                    await Task.Delay(retryAfter);
-                    continue;
+                    case HttpStatusCode.Unauthorized:
+                        response.Dispose();
+                        throw new InvalidOperationException(
+                            $"ARM ({context}) returned 401 Unauthorized. " +
+                            $"The current identity's token was rejected. " +
+                            $"Re-acquire credentials and try again.");
 
-                default:
-                    var code = (int)resp.StatusCode;
-                    resp.Dispose();
-                    if (code >= 500)
+                    case HttpStatusCode.Forbidden:
+                        response.Dispose();
+                        throw new InvalidOperationException(
+                            $"ARM ({context}) returned 403 Forbidden. " +
+                            $"The caller lacks the RBAC role required " +
+                            $"(typically 'Cosmos DB Account Reader Role' " +
+                            $"or 'DocumentDB Account Contributor').");
+
+                    case HttpStatusCode.TooManyRequests:
+                        var retryAfter = ResolveRetryAfter(
+                            response.Headers.RetryAfter,
+                            TimeSpan.FromSeconds(2 * attempt));
+                        response.Dispose();
+                        throw new ArmThrottleException(retryAfter);
+
+                    default:
+                        var code = (int)response.StatusCode;
+                        var statusCode = response.StatusCode;
+                        response.Dispose();
+                        if (code >= 500)
+                            throw new InvalidOperationException(
+                                $"ARM ({context}) returned {code} " +
+                                $"({statusCode}) — service outage. " +
+                                $"Retry later.");
                         throw new InvalidOperationException(
                             $"ARM ({context}) returned {code} " +
-                            $"({resp.StatusCode}) — service outage. " +
-                            $"Retry later.");
-                    throw new InvalidOperationException(
-                        $"ARM ({context}) returned {code} " +
-                        $"({resp.StatusCode}).");
-            }
-        }
-        return null;
+                            $"({statusCode}).");
+                }
+            },
+            retryPolicy,
+            (exception, attempt) =>
+            {
+                var throttled = (ArmThrottleException)exception;
+                Console.WriteLine(
+                    $"[WARN] ARM ({context}): 429 throttle — " +
+                    $"sleeping {throttled.RetryAfter.TotalSeconds:F1}s " +
+                    $"(attempt {attempt}/{ThrottleRetries}).");
+            });
+    }
+
+    private static TimeSpan ResolveRetryAfter(
+        RetryConditionHeaderValue? retryAfter,
+        TimeSpan fallback)
+    {
+        TimeSpan delay = retryAfter?.Delta
+            ?? (retryAfter?.Date is { } date
+                    ? date - DateTimeOffset.UtcNow
+                    : (TimeSpan?)null)
+            ?? fallback;
+        return delay < TimeSpan.Zero ? fallback : delay;
     }
 
     /// <summary>
