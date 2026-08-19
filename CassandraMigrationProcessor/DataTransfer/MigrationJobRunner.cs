@@ -82,7 +82,7 @@ public class MigrationJobRunner : IAsyncDisposable
         ISession? target = null;
         try
         {
-            sourceSessions = SourceSessionWrapper.Create(
+            sourceSessions = new SourceSessionWrapper(
                 log, job, pipelineConfig.WorkerCount);
             target = await CassandraClientFactory.CreateTargetSessionAsync(log, job);
             return new MigrationJobRunner(
@@ -855,7 +855,6 @@ public class MigrationJobRunner : IAsyncDisposable
         // without waiting for the outer Task to observe the cancel.
         MigrationUtilities.SafeDispose(_pipeline, "JobPipeline (Stop)");
         _pipeline = null;
-        _sourceSessions.StopTokenRefresh();
     }
 
     /// <summary>
