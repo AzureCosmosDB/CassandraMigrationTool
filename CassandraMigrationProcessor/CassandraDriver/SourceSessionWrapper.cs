@@ -25,8 +25,7 @@ internal sealed class SourceSessionWrapper : IDisposable
         TimeSpan.FromMinutes(10);
     private const int MaxRefreshFailures = 6;
 
-    private readonly object _sync = new();
-    private readonly object _refreshLock = new();
+    private readonly object _lifecycleLock = new();
     private readonly MigrationLog _log;
     private readonly SourceSessionSettings _settings;
     private readonly HashSet<ISession> _retiredSessions =
@@ -45,8 +44,36 @@ internal sealed class SourceSessionWrapper : IDisposable
         int workerCount)
     {
         _log = log ?? throw new ArgumentNullException(nameof(log));
-        _settings = CassandraClientFactory.ResolveSourceSessionSettings(
-            job, workerCount);
+        ArgumentNullException.ThrowIfNull(job);
+        if (string.IsNullOrEmpty(job.SourceContactPoint))
+            throw new ArgumentException(
+                "Source contact point is required",
+                nameof(job));
+
+        string username = job.SourceUsername ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(username)
+            && job.SourceUseAad)
+        {
+            username = job.SourceContactPoint.Split('.')[0];
+        }
+
+        int maxConnectionsPerHost =
+            CassandraClientFactory.ResolveMaxConnectionsPerHost(
+                job.SourceMaxConnectionsPerHost,
+                job.MaxConnectionsPerHost);
+        if (maxConnectionsPerHost == 0 && workerCount > 0)
+        {
+            maxConnectionsPerHost = Math.Clamp(
+                (workerCount + 31) / 32,
+                2,
+                8);
+        }
+
+        _settings = new SourceSessionSettings(
+            job.SourceContactPoint,
+            job.SourcePort,
+            username,
+            maxConnectionsPerHost);
         string credential = ResolveCredential(job);
         _currentSession = CreateSession(credential);
         if (job.SourceUseAad)
@@ -97,29 +124,10 @@ internal sealed class SourceSessionWrapper : IDisposable
 
     private void Refresh(string credential)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(credential);
-
         var session = CreateSession(credential);
-        ISession? retiredSession;
-        try
-        {
-            lock (_sync)
-            {
-                ObjectDisposedException.ThrowIf(
-                    Volatile.Read(ref _disposed) != 0,
-                    this);
-
-                retiredSession = _currentSession;
-                Volatile.Write(ref _currentSession, session);
-                _retiredSessions.Add(retiredSession);
-            }
-        }
-        catch
-        {
-            MigrationUtilities.SafeDisposeSession(
-                session, "Unpublished refreshed session");
-            throw;
-        }
+        var retiredSession = _currentSession;
+        Volatile.Write(ref _currentSession, session);
+        _retiredSessions.Add(retiredSession);
 
         _ = DisposeRetiredSessionAfterDelayAsync(retiredSession);
     }
@@ -140,7 +148,7 @@ internal sealed class SourceSessionWrapper : IDisposable
         await Task.Delay(RetiredSessionDisposalDelay).ConfigureAwait(false);
 
         bool shouldDispose;
-        lock (_sync)
+        lock (_lifecycleLock)
         {
             shouldDispose = _retiredSessions.Remove(session);
         }
@@ -221,7 +229,7 @@ internal sealed class SourceSessionWrapper : IDisposable
 
     private void RefreshTokenCallback(object? state)
     {
-        lock (_refreshLock)
+        lock (_lifecycleLock)
         {
             if (Volatile.Read(ref _disposed) != 0
                 || _tokenRefreshTimer == null)
@@ -277,19 +285,16 @@ internal sealed class SourceSessionWrapper : IDisposable
     public void Dispose()
     {
         List<ISession> sessionsToDispose;
-        lock (_refreshLock)
+        lock (_lifecycleLock)
         {
             if (Interlocked.Exchange(ref _disposed, 1) != 0)
                 return;
             StopTokenRefreshCore();
 
-            lock (_sync)
-            {
-                sessionsToDispose = _retiredSessions.ToList();
-                _retiredSessions.Clear();
-                sessionsToDispose.Add(_currentSession);
-                _udtRegistrations.Clear();
-            }
+            sessionsToDispose = _retiredSessions.ToList();
+            _retiredSessions.Clear();
+            sessionsToDispose.Add(_currentSession);
+            _udtRegistrations.Clear();
         }
 
         foreach (var session in sessionsToDispose)
@@ -298,4 +303,10 @@ internal sealed class SourceSessionWrapper : IDisposable
                 session, "Source session wrapper");
         }
     }
+
+    private sealed record SourceSessionSettings(
+        string ContactPoint,
+        int Port,
+        string Username,
+        int MaxConnectionsPerHost);
 }

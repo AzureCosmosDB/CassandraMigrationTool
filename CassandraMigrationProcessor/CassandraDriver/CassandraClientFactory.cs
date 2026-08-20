@@ -5,12 +5,6 @@ using CassandraMigrationProcessor.Infrastructure;
 using CassandraMigrationProcessor.Models;
 namespace CassandraMigrationProcessor.CassandraDriver;
 
-internal sealed record SourceSessionSettings(
-    string ContactPoint,
-    int Port,
-    string Username,
-    int MaxConnectionsPerHost);
-
 /// <summary>
 /// Creates Cassandra ISession instances for source (Cosmos DB)
 /// and target (OSS Cassandra) clusters.
@@ -279,39 +273,6 @@ public static class CassandraClientFactory
             cluster?.Dispose();
             throw;
         }
-    }
-
-    internal static SourceSessionSettings ResolveSourceSessionSettings(
-        Job job,
-        int workerCount = 0)
-    {
-        if (string.IsNullOrEmpty(job.SourceContactPoint))
-            throw new ArgumentException("Source contact point is required", nameof(job));
-
-        string username = job.SourceUsername ?? string.Empty;
-        if (string.IsNullOrWhiteSpace(username)
-            && job.SourceUseAad)
-        {
-            username = job.SourceContactPoint
-                .Split('.')[0];
-        }
-
-        int maxConnectionsPerHost = ResolveMaxConnectionsPerHost(
-            job.SourceMaxConnectionsPerHost,
-            job.MaxConnectionsPerHost);
-        if (maxConnectionsPerHost == 0 && workerCount > 0)
-        {
-            maxConnectionsPerHost = Math.Clamp(
-                (workerCount + 31) / 32,
-                2,
-                8);
-        }
-
-        return new SourceSessionSettings(
-            job.SourceContactPoint,
-            job.SourcePort,
-            username,
-            maxConnectionsPerHost);
     }
 
     /// <summary>
