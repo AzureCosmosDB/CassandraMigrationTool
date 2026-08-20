@@ -45,12 +45,12 @@ internal sealed class SourceSessionWrapper : IDisposable
         int workerCount)
     {
         _log = log ?? throw new ArgumentNullException(nameof(log));
-        var source = CassandraClientFactory.ResolveSourceSession(
+        _settings = CassandraClientFactory.ResolveSourceSessionSettings(
             job, workerCount);
-        _settings = source.Settings;
-        _currentSession = CreateSession(source.Credential);
-        if (source.Credential.Length > 200)
-            ScheduleTokenRefresh(source.Credential);
+        string credential = ResolveCredential(job);
+        _currentSession = CreateSession(credential);
+        if (job.SourceUseAad)
+            ScheduleTokenRefresh(credential);
     }
 
     public ISession GetSession()
@@ -182,6 +182,29 @@ internal sealed class SourceSessionWrapper : IDisposable
         return DateTime.MaxValue;
     }
 
+    private static string ResolveCredential(Job job)
+    {
+        string credential = job.SourcePassword ?? string.Empty;
+        if (string.IsNullOrEmpty(credential) || job.SourceUseAad)
+        {
+            credential = AcquireAadToken();
+            // Do not write the bearer token back to SourcePassword. The
+            // connection editor would otherwise expose it in the browser DOM.
+            job.SourceUseAad = true;
+        }
+
+        return credential;
+    }
+
+    private static string AcquireAadToken()
+    {
+        var credential = new Azure.Identity.DefaultAzureCredential();
+        return credential.GetToken(
+            new Azure.Core.TokenRequestContext(
+                new[] { "https://cosmos.azure.com/.default" }))
+            .Token;
+    }
+
     private void ScheduleTokenRefresh(string currentToken)
     {
         StopTokenRefreshCore();
@@ -212,7 +235,7 @@ internal sealed class SourceSessionWrapper : IDisposable
 
             try
             {
-                string freshToken = CassandraClientFactory.AcquireAadToken();
+                string freshToken = AcquireAadToken();
                 Refresh(freshToken);
 
                 _consecutiveRefreshFailures = 0;

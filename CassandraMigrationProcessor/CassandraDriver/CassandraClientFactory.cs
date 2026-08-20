@@ -281,18 +281,7 @@ public static class CassandraClientFactory
         }
     }
 
-    internal static string AcquireAadToken()
-    {
-        var credential = new Azure.Identity.DefaultAzureCredential();
-        return credential.GetToken(
-            new Azure.Core.TokenRequestContext(
-                new[] { "https://cosmos.azure.com/.default" }))
-            .Token;
-    }
-
-    internal static (
-        SourceSessionSettings Settings,
-        string Credential) ResolveSourceSession(
+    internal static SourceSessionSettings ResolveSourceSessionSettings(
         Job job,
         int workerCount = 0)
     {
@@ -301,15 +290,6 @@ public static class CassandraClientFactory
 
         bool useAad = job.SourceUseAad
             || string.IsNullOrEmpty(job.SourcePassword);
-        string credential = job.SourcePassword ?? string.Empty;
-        if (useAad)
-        {
-            credential = AcquireAadToken();
-            // Do not write the bearer token back to SourcePassword. The
-            // connection editor would otherwise expose it in the browser DOM.
-            job.SourceUseAad = true;
-        }
-
         string username = job.SourceUsername ?? string.Empty;
         if (string.IsNullOrWhiteSpace(username)
             && useAad)
@@ -329,13 +309,11 @@ public static class CassandraClientFactory
                 8);
         }
 
-        return (
-            new SourceSessionSettings(
-                job.SourceContactPoint,
-                job.SourcePort,
-                username,
-                maxConnectionsPerHost),
-            credential);
+        return new SourceSessionSettings(
+            job.SourceContactPoint,
+            job.SourcePort,
+            username,
+            maxConnectionsPerHost);
     }
 
     /// <summary>
