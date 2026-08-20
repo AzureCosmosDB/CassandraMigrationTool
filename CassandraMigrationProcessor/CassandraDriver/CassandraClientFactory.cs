@@ -288,11 +288,9 @@ public static class CassandraClientFactory
         if (string.IsNullOrEmpty(job.SourceContactPoint))
             throw new ArgumentException("Source contact point is required", nameof(job));
 
-        bool useAad = job.SourceUseAad
-            || string.IsNullOrEmpty(job.SourcePassword);
         string username = job.SourceUsername ?? string.Empty;
         if (string.IsNullOrWhiteSpace(username)
-            && useAad)
+            && job.SourceUseAad)
         {
             username = job.SourceContactPoint
                 .Split('.')[0];

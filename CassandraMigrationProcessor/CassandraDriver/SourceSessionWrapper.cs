@@ -184,16 +184,10 @@ internal sealed class SourceSessionWrapper : IDisposable
 
     private static string ResolveCredential(Job job)
     {
-        string credential = job.SourcePassword ?? string.Empty;
-        if (string.IsNullOrEmpty(credential) || job.SourceUseAad)
-        {
-            credential = AcquireAadToken();
-            // Do not write the bearer token back to SourcePassword. The
-            // connection editor would otherwise expose it in the browser DOM.
-            job.SourceUseAad = true;
-        }
+        if (job.SourceUseAad)
+            return AcquireAadToken();
 
-        return credential;
+        return job.SourcePassword ?? string.Empty;
     }
 
     private static string AcquireAadToken()
