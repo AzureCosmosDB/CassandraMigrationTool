@@ -218,11 +218,15 @@ internal sealed class SourceSessionWrapper : IDisposable
     {
         StopTokenRefreshCore();
 
-        TimeSpan refreshLeadTime = ResolveTokenRefreshLeadTime();
+        TimeSpan refreshLeadTime =
+            ResolveTokenRefreshLeadTime(out bool isConfigured);
         TimeSpan delay = expiry - DateTime.UtcNow
             - refreshLeadTime;
-        if (delay < TimeSpan.FromMinutes(1))
-            delay = TimeSpan.FromMinutes(1);
+        TimeSpan minimumDelay = isConfigured
+            ? TimeSpan.FromSeconds(10)
+            : TimeSpan.FromMinutes(1);
+        if (delay < minimumDelay)
+            delay = minimumDelay;
 
         _tokenRefreshTimer = new Timer(
             RefreshTokenCallback, null,
@@ -233,13 +237,17 @@ internal sealed class SourceSessionWrapper : IDisposable
             LogType.Info);
     }
 
-    private static TimeSpan ResolveTokenRefreshLeadTime()
+    private static TimeSpan ResolveTokenRefreshLeadTime(
+        out bool isConfigured)
     {
         string? configured =
             Environment.GetEnvironmentVariable(
                 TokenRefreshLeadMinutesSetting);
         if (string.IsNullOrWhiteSpace(configured))
+        {
+            isConfigured = false;
             return DefaultTokenRefreshLeadTime;
+        }
 
         if (!int.TryParse(configured, out int minutes)
             || minutes <= 0)
@@ -248,6 +256,7 @@ internal sealed class SourceSessionWrapper : IDisposable
                 $"{TokenRefreshLeadMinutesSetting} must be a positive integer.");
         }
 
+        isConfigured = true;
         return TimeSpan.FromMinutes(minutes);
     }
 
