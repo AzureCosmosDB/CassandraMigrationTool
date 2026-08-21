@@ -159,6 +159,9 @@ internal sealed class SourceSessionWrapper : IDisposable
             RemoveUdtRegistrations(session);
             MigrationUtilities.SafeDisposeSession(
                 session, "Deferred rotated session");
+            _log.WriteLine(
+                "Retired AAD source session disposed after the rotation grace period.",
+                LogType.Info);
         }
     }
 
@@ -219,6 +222,10 @@ internal sealed class SourceSessionWrapper : IDisposable
         _tokenRefreshTimer = new Timer(
             RefreshTokenCallback, null,
             delay, Timeout.InfiniteTimeSpan);
+        _log.WriteLine(
+            $"AAD source token refresh scheduled for " +
+            $"{DateTime.UtcNow.Add(delay):O}; token expires {expiry:O}.",
+            LogType.Info);
     }
 
     private void RefreshTokenCallback(object? state)
@@ -236,6 +243,9 @@ internal sealed class SourceSessionWrapper : IDisposable
                 DateTime expiry = GetTokenExpiry(freshToken);
                 Refresh(freshToken);
                 ScheduleTokenRefresh(expiry);
+                _log.WriteLine(
+                    "AAD source session refreshed successfully.",
+                    LogType.Info);
             }
             catch (Exception ex)
             {
