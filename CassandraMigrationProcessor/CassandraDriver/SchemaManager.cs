@@ -662,10 +662,11 @@ public static class SchemaManager
         {
             log?.WriteLine(
                 $"Could not read replication for source keyspace " +
-                $"\"{sourceKeyspace}\" ({ex.GetType().Name}: {ex.Message}); " +
-                $"falling back to SimpleStrategy default.",
-                LogType.Warning);
-            return new KeyspaceReplicationInfo(null, null, null);
+                $"\"{sourceKeyspace}\" ({ex.GetType().Name}: {ex.Message}).",
+                LogType.Error);
+            throw new InvalidOperationException(
+                $"Failed to read replication for source keyspace '{sourceKeyspace}'.",
+                ex);
         }
     }
 
@@ -697,7 +698,7 @@ public static class SchemaManager
                 if (!string.IsNullOrWhiteSpace(dc)) dcs.Add(dc);
             }
         }
-        catch
+        catch (InvalidQueryException)
         {
             // Targets that do not expose system.local/system.peers
             // (or reject the query) fall through to single-DC
@@ -1153,10 +1154,12 @@ public static class SchemaManager
         catch (Exception ex)
         {
             log?.WriteLine(
-                $"[Schema] {keyspace}.{table}: failed to read source table options ({ex.GetType().Name}: {ex.Message}); " +
-                $"target table will use distribution defaults for TTL / gc_grace / compaction / compression / caching.",
-                LogType.Warning);
-            return new ForwardableTableOptions(string.Empty, Array.Empty<string>());
+                $"[Schema] {keyspace}.{table}: failed to read source table options " +
+                $"({ex.GetType().Name}: {ex.Message}).",
+                LogType.Error);
+            throw new InvalidOperationException(
+                $"Failed to read source table options for '{keyspace}.{table}'.",
+                ex);
         }
     }
 
@@ -1189,7 +1192,7 @@ public static class SchemaManager
             var v = row.GetValue<T>(column);
             return v is null ? fallback : v;
         }
-        catch { return fallback; }
+        catch (ArgumentException) { return fallback; }
     }
 
     private static bool RowHasNonEmptyMap(Row row, string column)
@@ -1199,6 +1202,6 @@ public static class SchemaManager
             var map = row.GetValue<IDictionary<string, string>>(column);
             return map != null && map.Count > 0;
         }
-        catch { return false; }
+        catch (ArgumentException) { return false; }
     }
 }

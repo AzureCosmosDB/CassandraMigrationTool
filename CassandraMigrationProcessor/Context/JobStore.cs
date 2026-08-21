@@ -1,5 +1,4 @@
 using System.Collections.Concurrent;
-using CassandraMigrationProcessor.Infrastructure;
 using CassandraMigrationProcessor.Models;
 namespace CassandraMigrationProcessor.Context;
 
@@ -71,15 +70,12 @@ public static class JobStore
         if (_jobs.TryGetValue(jobId, out var cached))
             return cached;
 
-        return MigrationUtilities.SafeExecute(() =>
-        {
-            var loadedObject = JsonStore.Read<Job>(
-                GetJobDefinitionPath(jobId));
-            if (loadedObject == null)
-                return null;
-            _jobs[jobId] = loadedObject;
-            return loadedObject;
-        }, (Job?)null, $"LoadJob({jobId})");
+        var loadedObject = JsonStore.Read<Job>(
+            GetJobDefinitionPath(jobId));
+        if (loadedObject == null)
+            return null;
+        _jobs[jobId] = loadedObject;
+        return loadedObject;
     }
 
     /// <summary>Retrieves a job by ID, preferring the active in-memory job if it matches.</summary>
@@ -102,27 +98,24 @@ public static class JobStore
     /// <summary>Persists a job to disk and updates the in-memory cache.</summary>
     public static bool SaveJob(Job job)
     {
-        return MigrationUtilities.SafeExecute(() =>
+        lock (_writeJobLock)
         {
-            lock (_writeJobLock)
+            SerializeAndPersist(job);
+            _jobs[job.Id] = job;
+            if (!string.IsNullOrEmpty(
+                    MigrationJobContext.Instance
+                        .ActiveMigrationJobId)
+                && job.Id
+                    == MigrationJobContext.Instance
+                        .ActiveMigrationJobId)
             {
-                SerializeAndPersist(job);
-                _jobs[job.Id] = job;
-                if (!string.IsNullOrEmpty(
-                        MigrationJobContext.Instance
-                            .ActiveMigrationJobId)
-                    && job.Id
-                        == MigrationJobContext.Instance
-                            .ActiveMigrationJobId)
+                lock (_cacheLock)
                 {
-                    lock (_cacheLock)
-                    {
-                        _cachedActiveJob = job;
-                    }
+                    _cachedActiveJob = job;
                 }
             }
-            return true;
-        }, false, "SaveJob");
+        }
+        return true;
     }
 
     internal static void PersistActiveJobUnderLock()

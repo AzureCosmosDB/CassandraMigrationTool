@@ -22,7 +22,7 @@ public static class TableDiscovery
     private static List<TableMapping>? TryDeserializeJson(string input, string context)
     {
         try { return JsonConvert.DeserializeObject<List<TableMapping>>(input); }
-        catch (Exception ex)
+        catch (JsonException ex)
         {
             Console.WriteLine($"[WARN] {context}: {ex.Message}");
             return null;
@@ -130,9 +130,12 @@ public static class TableDiscovery
                     // Tolerates the '*' wildcard sentinel; see ParseNamespaceEntries.
                     (keyspace, table) = CqlIdentifier.SplitNamespaceEntry(fullName);
                 }
-                catch (ArgumentException)
+                catch (ArgumentException ex)
                 {
-                    continue; // skip malformed entries
+                    throw new ArgumentException(
+                        $"Invalid namespace entry '{fullName}'.",
+                        nameof(namespacesToMigrate),
+                        ex);
                 }
 
                 if (!unitsToAdd.Any(x =>
@@ -189,4 +192,3 @@ public static class TableDiscovery
         return Tuple.Create(true, normalizedOutput, string.Empty);
     }
 }
-

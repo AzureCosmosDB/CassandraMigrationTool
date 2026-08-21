@@ -58,13 +58,18 @@ internal sealed class PageWriter : IDisposable
         _targetSession = targetSession;
     }
 
-    public static async Task<PageWriter> CreateAsync(WorkerLog log, ISessionFactory sessionFactory, WriterConfig config, CancellationToken cancellationToken)
+    public static async Task<PageWriter> CreateAsync(WorkerLog log, JobSessionFactory sessionFactory, WriterConfig config, CancellationToken cancellationToken)
     {
-        var targetSession = await sessionFactory.CreateTargetSessionAsync();
+        var targetSession = await sessionFactory.CreateSessionAsync(cancellationToken);
         return new PageWriter(log, targetSession, config, cancellationToken);
     }
 
-    public void Dispose() => MigrationUtilities.SafeDisposeSession(_targetSession, "PageWriter target session");
+    public void Dispose()
+    {
+        MigrationUtilities.SafeDisposeSession(
+            _targetSession,
+            "PageWriter target session");
+    }
 
     private Task<IRowWriteStrategy> GetStrategyAsync(Partition partition)
     {

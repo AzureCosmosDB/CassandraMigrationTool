@@ -13,38 +13,35 @@ public static class TableMigrationMapper
 
     public static bool UpdateParentJob(TableMigration unit)
     {
-        if (unit.ParentJob == null) return false;
+        if (unit.ParentJob == null)
+            throw new InvalidOperationException(
+                $"Migration unit '{unit.KeyspaceName}.{unit.TableName}' has no parent job.");
 
-        try
+        lock (_updateParentLock)
         {
-            lock (_updateParentLock)
-            {
-                var index = unit.ParentJob.Tables
-                    .FindIndex(mu => mu.Id == unit.Id);
-                if (index == -1) return false;
+            var index = unit.ParentJob.Tables
+                .FindIndex(mu => mu.Id == unit.Id);
+            if (index == -1)
+                throw new InvalidOperationException(
+                    $"Migration unit '{unit.KeyspaceName}.{unit.TableName}' is missing from its parent job.");
 
-                var target = unit.ParentJob.Tables[index];
-                // Flush-and-reset the per-batch accumulator at the
-                // explicit sync boundary, then surface the unit via
-                // ToSummary. Only overwrite the sticky "last flushed
-                // batch" when this flush actually drained fresh
-                // activity (flushed > 0); idle ticks preserve the
-                // previous sticky value so the dashboard does not zero
-                // the column between UI renders while replay is
-                // actively applying rows.
-                long flushed = Interlocked.Exchange(
-                    ref unit._changeFeedUpdatesInLastBatch, 0);
-                if (flushed > 0)
-                    Interlocked.Exchange(
-                        ref unit._changeFeedLastFlushedBatch, flushed);
-                ToSummary(unit, target);
-            }
-            return true;
+            var target = unit.ParentJob.Tables[index];
+            // Flush-and-reset the per-batch accumulator at the
+            // explicit sync boundary, then surface the unit via
+            // ToSummary. Only overwrite the sticky "last flushed
+            // batch" when this flush actually drained fresh
+            // activity (flushed > 0); idle ticks preserve the
+            // previous sticky value so the dashboard does not zero
+            // the column between UI renders while replay is
+            // actively applying rows.
+            long flushed = Interlocked.Exchange(
+                ref unit._changeFeedUpdatesInLastBatch, 0);
+            if (flushed > 0)
+                Interlocked.Exchange(
+                    ref unit._changeFeedLastFlushedBatch, flushed);
+            ToSummary(unit, target);
         }
-        catch
-        {
-            return false;
-        }
+        return true;
     }
 
     public static TableMigrationSummary ToSummary(

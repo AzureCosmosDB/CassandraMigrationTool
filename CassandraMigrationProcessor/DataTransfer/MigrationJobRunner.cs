@@ -19,7 +19,7 @@ public class MigrationJobRunner : IAsyncDisposable
     private readonly Job _job;
     private readonly PipelineConfig _pipelineConfig;
     private readonly JobControl _control;
-    private readonly TokenRefreshManager _tokenRefreshManager;
+    private readonly SourceSessionWrapper _sourceSessions;
     private int _consecutiveAuthErrors;
     // Last auth exception observed by HandleMigrationUnitError;
     // attached as inner when the consecutive-auth threshold trips so
@@ -31,14 +31,13 @@ public class MigrationJobRunner : IAsyncDisposable
     private JobPipeline? _pipeline;
 
     /// <summary>
-    /// Runner-wide source / target sessions opened once in
-    /// <see cref="CreateAsync"/> and reused across wildcard expansion,
-    /// schema provisioning, and partition discovery. Disposed in
-    /// <see cref="DisposeAsync"/>. Copy workers mint their own sessions
-    /// via <see cref="ISessionFactory"/> for throughput isolation.
+    /// Runner-wide target session opened once in <see cref="CreateAsync"/>.
+    /// Source operations resolve the current session through
+    /// <see cref="_sourceSessions"/> so AAD rotation is honored throughout
+    /// wildcard expansion, schema provisioning, partition discovery, and copy.
+    /// Copy workers retain independent target sessions for write throughput.
     /// For simulated runs the target session is a <see cref="NullSession"/>.
     /// </summary>
-    private readonly ISession _sourceSession;
     private readonly ISession _targetSession;
 
     /// <summary>
@@ -53,16 +52,14 @@ public class MigrationJobRunner : IAsyncDisposable
         Job job,
         PipelineConfig pipelineConfig,
         JobControl control,
-        TokenRefreshManager tokenRefreshManager,
-        ISession sourceSession,
+        SourceSessionWrapper sourceSessions,
         ISession targetSession)
     {
         _log = log;
         _job = job;
         _pipelineConfig = pipelineConfig;
         _control = control;
-        _tokenRefreshManager = tokenRefreshManager;
-        _sourceSession = sourceSession;
+        _sourceSessions = sourceSessions;
         _targetSession = targetSession;
     }
 
@@ -81,20 +78,23 @@ public class MigrationJobRunner : IAsyncDisposable
         ArgumentNullException.ThrowIfNull(control);
 
         var pipelineConfig = PipelineConfig.Resolve(job, config);
-        var tokenRefreshManager = new TokenRefreshManager(log);
-        ISession? source = null;
+        SourceSessionWrapper? sourceSessions = null;
         ISession? target = null;
         try
         {
-            source = CassandraClientFactory.CreateSourceSession(log, job, tokenRefreshManager);
+            sourceSessions = new SourceSessionWrapper(
+                log,
+                job,
+                pipelineConfig.WorkerCount,
+                control.ReportFault);
             target = await CassandraClientFactory.CreateTargetSessionAsync(log, job);
-            return new MigrationJobRunner(log, job, pipelineConfig, control, tokenRefreshManager, source, target);
+            return new MigrationJobRunner(
+                log, job, pipelineConfig, control, sourceSessions, target);
         }
         catch
         {
             MigrationUtilities.SafeDisposeSession(target, "MigrationJobRunner target (CreateAsync rollback)");
-            MigrationUtilities.SafeDisposeSession(source, "MigrationJobRunner source (CreateAsync rollback)");
-            tokenRefreshManager.StopTokenRefreshTimer();
+            sourceSessions?.Dispose();
             throw;
         }
     }
@@ -173,7 +173,10 @@ public class MigrationJobRunner : IAsyncDisposable
             var partitioning = await RunPartitioningPhaseAsync(
                 job, units, cancellationToken);
 
-            _pipeline = new JobPipeline(_log, job, _pipelineConfig, partitioning, _tokenRefreshManager, _control);
+            _pipeline = new JobPipeline(
+                _log, job, _pipelineConfig, partitioning,
+                _sourceSessions,
+                _control);
             _pipeline.Start();
 
             await RunCopyPhaseAsync(job, units, partitioning, cancellationToken);
@@ -241,11 +244,10 @@ public class MigrationJobRunner : IAsyncDisposable
     /// </summary>
     public ValueTask DisposeAsync()
     {
-        _tokenRefreshManager.StopTokenRefreshTimer();
         MigrationUtilities.SafeDispose(_pipeline, "JobPipeline (Dispose)");
         _pipeline = null;
         MigrationUtilities.SafeDisposeSession(_targetSession, "MigrationJobRunner target session");
-        MigrationUtilities.SafeDisposeSession(_sourceSession, "MigrationJobRunner source session");
+        _sourceSessions.Dispose();
         return ValueTask.CompletedTask;
     }
 
@@ -355,7 +357,7 @@ public class MigrationJobRunner : IAsyncDisposable
                 .Distinct(StringComparer.Ordinal)
                 .ToList();
             await SchemaManager.WarnAboutUnreplicatedSchemaAsync(
-                _sourceSession, inScopeKeyspaces, _log);
+                _sourceSessions.GetSession(), inScopeKeyspaces, _log);
         }
         catch (Exception ex)
         {
@@ -485,7 +487,9 @@ public class MigrationJobRunner : IAsyncDisposable
             _log.WriteLine($"[Partitioning] Discovering partitions for {mu.KeyspaceName}.{mu.TableName}", LogType.Info);
             try
             {
-                await DiscoverUnitPartitioningAsync(job, mu, _sourceSession, partitioner, chunks, collectLock);
+                await DiscoverUnitPartitioningAsync(
+                    job, mu, _sourceSessions.GetSession(),
+                    partitioner, chunks, collectLock);
             }
             catch (OperationCanceledException)
             {
@@ -767,7 +771,7 @@ public class MigrationJobRunner : IAsyncDisposable
         }
 
         bool existed = await SchemaManager.TableExistsAsync(_targetSession, mu.KeyspaceName, mu.TableName);
-        await SchemaManager.SyncSchemaAsync(_sourceSession, _targetSession,
+        await SchemaManager.SyncSchemaAsync(_sourceSessions.GetSession(), _targetSession,
             mu.KeyspaceName, mu.TableName, mu.KeyspaceName, mu.TableName, _log);
         if (!existed)
             _log.WriteLine($"Created target table {mu.KeyspaceName}.{mu.TableName}", LogType.Info);
@@ -854,7 +858,6 @@ public class MigrationJobRunner : IAsyncDisposable
         // without waiting for the outer Task to observe the cancel.
         MigrationUtilities.SafeDispose(_pipeline, "JobPipeline (Stop)");
         _pipeline = null;
-        _tokenRefreshManager.StopTokenRefreshTimer();
     }
 
     /// <summary>
@@ -893,17 +896,16 @@ public class MigrationJobRunner : IAsyncDisposable
             }
             catch (ArgumentException ex)
             {
-                _log.WriteLine(
-                    $"Skipping invalid namespace entry '{fullName}': {ex.Message}",
-                    LogType.Warning);
-                continue;
+                throw new ArgumentException(
+                    $"Invalid namespace entry '{fullName}'.",
+                    nameof(job.Namespaces),
+                    ex);
             }
             if (string.IsNullOrEmpty(keyspace) || string.IsNullOrEmpty(table))
             {
-                _log.WriteLine(
-                    $"Skipping namespace entry '{fullName}' — empty keyspace or table after parsing.",
-                    LogType.Warning);
-                continue;
+                throw new ArgumentException(
+                    $"Namespace entry '{fullName}' contains an empty keyspace or table.",
+                    nameof(job.Namespaces));
             }
 
             if (table != "*")
@@ -914,11 +916,16 @@ public class MigrationJobRunner : IAsyncDisposable
 
             try
             {
-                var tables = await CassandraQueries.ListTablesAsync(_sourceSession, keyspace);
+                var tables = await CassandraQueries.ListTablesAsync(
+                    _sourceSessions.GetSession(), keyspace);
                 foreach (var tableName in tables)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
-                    if (await IsTableAccessibleAsync(_sourceSession, keyspace, tableName, cancellationToken))
+                    if (await IsTableAccessibleAsync(
+                        _sourceSessions.GetSession(),
+                        keyspace,
+                        tableName,
+                        cancellationToken))
                     {
                         AddExpandedUnit(keyspace, tableName);
                     }
@@ -930,7 +937,9 @@ public class MigrationJobRunner : IAsyncDisposable
             }
             catch (Exception ex)
             {
-                _log.WriteLine($"Failed to discover tables in keyspace {keyspace}: {ex.Message}", LogType.Error);
+                throw new InvalidOperationException(
+                    $"Failed to discover tables in source keyspace '{keyspace}'.",
+                    ex);
             }
         }
 
@@ -968,8 +977,9 @@ public class MigrationJobRunner : IAsyncDisposable
         }
         catch (Exception vex)
         {
-            _log.WriteLine($"Skipping {keyspace}.{tableName}: {vex.Message}", LogType.Warning);
-            return false;
+            throw new InvalidOperationException(
+                $"Source table accessibility check failed for '{keyspace}.{tableName}'.",
+                vex);
         }
     }
 }

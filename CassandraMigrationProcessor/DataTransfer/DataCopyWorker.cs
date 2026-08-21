@@ -33,7 +33,11 @@ internal class DataCopyWorker
         Partition? current = null;
         try
         {
-            reader = await PageReader.CreateAsync(_workerLog, ctx.SessionFactory, ctx.ReaderConfig, _ct);
+            reader = new PageReader(
+                _workerLog,
+                ctx.SourceSession,
+                ctx.ReaderConfig,
+                _ct);
             writer = await PageWriter.CreateAsync(_workerLog, ctx.SessionFactory, ctx.WriterConfig, _ct);
 
             while (!_ct.IsCancellationRequested
@@ -159,7 +163,6 @@ internal class DataCopyWorker
             // instant any worker exits. Channel completion is driven
             // by the orchestrator (offline) or _cts.Cancel (fatal).
             MigrationUtilities.SafeDispose(writer, "worker PageWriter");
-            MigrationUtilities.SafeDispose(reader, "worker PageReader");
         }
     }
 

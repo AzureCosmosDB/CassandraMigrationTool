@@ -2,7 +2,6 @@ using Cassandra;
 using CassandraMigrationProcessor.Infrastructure;
 using CassandraMigrationProcessor.CassandraDriver;
 using CassandraMigrationProcessor.Models;
-using System.Collections.Concurrent;
 using System.Diagnostics;
 
 namespace CassandraMigrationProcessor.DataTransfer;
@@ -22,19 +21,17 @@ internal record ReaderConfig(int PageSize, int MaxReadRetries, bool PreserveCell
 /// source session is keyspace-agnostic; per-table state (columns,
 /// identifiers, UDT registrations) is resolved from
 /// <see cref="Partition"/> at read time. UDT registration is
-/// cached per keyspace so the first partition for each table pays the
-/// cost and subsequent partitions reuse it.
+/// cached job-wide per physical session and keyspace.
 /// </summary>
-internal class PageReader : IDisposable
+internal class PageReader
 {
     private readonly WorkerLog _log;
     private readonly CancellationToken _ct;
-    private readonly ISession _sourceSession;
+    private readonly SourceSessionWrapper _sourceSession;
     private readonly int _pageSize;
     private readonly int _maxReadRetries;
     private readonly bool _preserveCellTtl;
     private readonly bool _useJsonCopy;
-    private readonly ConcurrentDictionary<string, Task> _udtRegistrations = new();
 
     /// <summary>
     /// Most recent transient exception observed during retry-exhausted
@@ -50,7 +47,11 @@ internal class PageReader : IDisposable
     // hints parking a worker for minutes.
     private const int MaxRetryDelayMs = 30_000;
 
-    private PageReader(WorkerLog log, ISessionFactory sessionFactory, ReaderConfig config, CancellationToken cancellationToken)
+    public PageReader(
+        WorkerLog log,
+        SourceSessionWrapper sourceSession,
+        ReaderConfig config,
+        CancellationToken cancellationToken)
     {
         _log = log;
         _ct = cancellationToken;
@@ -58,44 +59,8 @@ internal class PageReader : IDisposable
         _maxReadRetries = config.MaxReadRetries;
         _preserveCellTtl = config.PreserveCellTtlAndWritetime;
         _useJsonCopy = config.UseJsonCopy;
-        _sourceSession = sessionFactory.CreateSourceSession();
-    }
-
-    public static Task<PageReader> CreateAsync(WorkerLog log,
-        ISessionFactory sessionFactory, ReaderConfig config,
-        CancellationToken cancellationToken)
-    {
-        return Task.FromResult(new PageReader(log, sessionFactory, config, cancellationToken));
-    }
-
-    public void Dispose() => MigrationUtilities.SafeDisposeSession(_sourceSession, "PageReader source session");
-
-    /// <summary>
-    /// Lazy, idempotent UDT registration for typed reads. The first typed
-    /// table registers every UDT in the keyspace because this reader can
-    /// subsequently process other tables that reference different UDTs.
-    /// </summary>
-    private Task EnsureUdtsRegisteredAsync(Partition partition)
-    {
-        // JSON read path bypasses CLR-side UDT decoding entirely.
-        if (!partition.Table.IsCounterTable && _useJsonCopy)
-            return Task.CompletedTask;
-
-        return _udtRegistrations.GetOrAdd(partition.Table.Spec.KeyspaceName, async ks =>
-        {
-            try
-            {
-                var allUdts = await SchemaManager.GetUserDefinedTypesAsync(_sourceSession, ks);
-                await DynamicUdtRegistrar.RegisterAsync(_sourceSession, ks, allUdts);
-            }
-            catch (Exception ex)
-            {
-                // Do NOT swallow: UDT mapping is required for correct
-                // row decoding. Surface as fatal.
-                _log.WriteLine($"FATAL: UDT mapping registration on source failed for {ks}: {ex.Message}", LogType.Error);
-                throw;
-            }
-        });
+        _sourceSession = sourceSession
+            ?? throw new ArgumentNullException(nameof(sourceSession));
     }
 
     /// <summary>
@@ -136,8 +101,6 @@ internal class PageReader : IDisposable
     /// </summary>
     private async Task<ReadResult?> ReadJsonPageAsync(Partition partition)
     {
-        await EnsureUdtsRegisteredAsync(partition);
-
         var stopwatch = Stopwatch.StartNew();
         var (resultSet, elapsed) = await ExecutePageAsync(partition, useJson: true, stopwatch);
         if (resultSet == null) return null;
@@ -175,8 +138,6 @@ internal class PageReader : IDisposable
     /// </summary>
     private async Task<ReadResult?> ReadTypedPageAsync(Partition partition)
     {
-        await EnsureUdtsRegisteredAsync(partition);
-
         var stopwatch = Stopwatch.StartNew();
         var (resultSet, elapsed) = await ExecutePageAsync(partition, useJson: false, stopwatch);
         if (resultSet == null) return null;
@@ -217,9 +178,19 @@ internal class PageReader : IDisposable
         // intact and will retry the same page once the source stops
         // throttling.
         var resultSet = await RetryExecutor.ExecuteOrDefaultAsync<RowSet>(
-            operation: _ => _sourceSession.ExecuteAsync(stmt).WaitAsync(_ct),
+            operation: async _ =>
+            {
+                var sourceSession = useJson
+                    ? _sourceSession.GetSession()
+                    : await _sourceSession.GetTypedSessionAsync(
+                        partition.Table.Spec.KeyspaceName).ConfigureAwait(false);
+                return await sourceSession.ExecuteAsync(stmt)
+                    .WaitAsync(_ct)
+                    .ConfigureAwait(false);
+            },
             maxAttempts: _maxReadRetries,
-            shouldRetry: ExceptionClassifier.IsTransient,
+            shouldRetry: ex => ex is not SourceUdtRegistrationException
+                && ExceptionClassifier.IsTransient(ex),
             delayFor: (ex, attempt) => TimeSpan.FromMilliseconds(
                 Math.Min(ExceptionClassifier.GetRetryDelayMs(ex, attempt), MaxRetryDelayMs)),
             onRetry: (ex, attempt) =>

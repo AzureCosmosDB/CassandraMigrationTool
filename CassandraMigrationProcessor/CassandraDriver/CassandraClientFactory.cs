@@ -4,11 +4,11 @@ using System.Security.Authentication;
 using CassandraMigrationProcessor.Infrastructure;
 using CassandraMigrationProcessor.Models;
 namespace CassandraMigrationProcessor.CassandraDriver;
+
 /// <summary>
 /// Creates Cassandra ISession instances for source (Cosmos DB)
 /// and target (OSS Cassandra) clusters.
-/// Delegates AAD token management to TokenRefreshManager and
-/// ARM credential discovery to ArmCredentialDiscovery.
+/// Delegates ARM credential discovery to ArmCredentialDiscovery.
 /// </summary>
 public static class CassandraClientFactory
 {
@@ -35,8 +35,6 @@ public static class CassandraClientFactory
     /// <summary>
     /// Create a session to a Cosmos DB Cassandra API account.
     /// Uses SSL on port 10350 with PlainTextAuthProvider.
-    /// Starts proactive token refresh if the password is a
-    /// JWT/AAD token.
     /// Retries on 429/OverloadedException with backoff.
     /// </summary>
     public static ISession CreateSourceSession(
@@ -45,13 +43,8 @@ public static class CassandraClientFactory
         int port,
         string username,
         string password,
-        TokenRefreshManager? tokenRefreshManager = null,
         int maxConnectionsPerHost = 0)
     {
-        // Cache parameters for token refresh reconnection
-        tokenRefreshManager?.CacheSourceConnectionParams(
-            contactPoint, port, username);
-
         // Source always uses SSL (Cosmos DB requires it)
         var builder = CreateBaseBuilder(
             contactPoint, port, username, password,
@@ -68,9 +61,7 @@ public static class CassandraClientFactory
         {
             try
             {
-                var session = ConnectCluster(builder);
-                RegisterAadTokenRefresh(session, password, tokenRefreshManager);
-                return session;
+                return ConnectCluster(builder);
             }
             catch (Exception ex) when (
                 ExceptionClassifier.IsTransient(ex)
@@ -89,24 +80,6 @@ public static class CassandraClientFactory
         // on the final attempt (the `when` filter is false when
         // attempt == MaxRetries).
         throw new UnreachableException();
-    }
-
-    /// <summary>
-    /// When <paramref name="password"/> looks like an AAD/JWT bearer
-    /// token and the caller wired up a <see cref="TokenRefreshManager"/>,
-    /// hand the freshly-connected <paramref name="session"/> off so the
-    /// proactive refresh timer can rotate the bearer before it expires.
-    /// No-op when the password is a static credential or the manager is
-    /// not supplied.
-    /// </summary>
-    private static void RegisterAadTokenRefresh(
-        ISession session,
-        string password,
-        TokenRefreshManager? tokenRefreshManager)
-    {
-        if (!TokenRefreshManager.IsLikelyAadToken(password)) return;
-        tokenRefreshManager?.SetManagedSourceSession(session);
-        tokenRefreshManager?.StartTokenRefreshTimer(password);
     }
 
     /// <summary>
@@ -303,58 +276,6 @@ public static class CassandraClientFactory
     }
 
     /// <summary>
-    /// Create source session from a Job's properties.
-    /// If SourceUseAad is true or password is missing (e.g.
-    /// on resume after [JsonIgnore]), fetches a fresh AAD
-    /// token automatically.
-    /// </summary>
-    public static ISession CreateSourceSession(
-        MigrationLog MigrationLog, Job job,
-        TokenRefreshManager? tokenRefreshManager = null)
-    {
-        if (string.IsNullOrEmpty(job.SourceContactPoint))
-            throw new ArgumentException("Source contact point is required", nameof(job));
-
-        string password = job.SourcePassword ?? string.Empty;
-
-        // If password is empty (resume) or AAD is enabled,
-        // fetch a fresh token via managed identity
-        if (string.IsNullOrEmpty(password) || job.SourceUseAad)
-        {
-            password = tokenRefreshManager?.GetFreshAadToken()
-                ?? TokenRefreshManager.AcquireAadToken();
-            // SECURITY: do NOT write the AAD bearer token back into
-            // job.SourcePassword — even though [JsonIgnore] keeps it
-            // off disk, the Blazor "Update Connection Strings" modal
-            // would echo it into a <input value="…"> and leak the
-            // bearer JWT to the browser DOM. Azure.Identity caches
-            // tokens in-process so re-acquiring per call is free.
-            job.SourceUseAad = true;
-        }
-
-        // For AAD auth, derive username from hostname if
-        // not explicitly provided (account name = first
-        // segment of the contact point FQDN).
-        string username = job.SourceUsername ?? string.Empty;
-        if (string.IsNullOrWhiteSpace(username)
-            && job.SourceUseAad
-            && !string.IsNullOrEmpty(job.SourceContactPoint))
-        {
-            username = job.SourceContactPoint
-                .Split('.')[0];
-        }
-
-        return CreateSourceSession(
-            MigrationLog,
-            job.SourceContactPoint,
-            job.SourcePort,
-            username,
-            password,
-            tokenRefreshManager,
-            maxConnectionsPerHost: ResolveMaxConnectionsPerHost(job.SourceMaxConnectionsPerHost, job.MaxConnectionsPerHost));
-    }
-
-    /// <summary>
     /// Per-side connection pool sizing. The per-side override
     /// (<see cref="Job.SourceMaxConnectionsPerHost"/> /
     /// <see cref="Job.TargetMaxConnectionsPerHost"/>) takes precedence
@@ -407,7 +328,12 @@ public static class CassandraClientFactory
             }
             catch (Exception ex)
             {
-                MigrationLog?.WriteLine($"ARM credential discovery failed: {ex.Message}", LogType.Debug);
+                MigrationLog?.WriteLine(
+                    $"ARM target credential discovery failed: {ex.Message}",
+                    LogType.Error);
+                throw new InvalidOperationException(
+                    "ARM target credential discovery failed.",
+                    ex);
             }
         }
 

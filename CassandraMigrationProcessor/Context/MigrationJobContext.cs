@@ -321,16 +321,13 @@ public class MigrationJobContext
 
     public bool SaveJobList()
     {
-        return MigrationUtilities.SafeExecute(() =>
+        if (JobIndex != null)
         {
-            if (JobIndex != null)
+            lock (_writeJobListLock)
             {
-                lock (_writeJobListLock)
-                {
-                    JsonStore.Write(JobStore.JobRegistryPath, JobIndex);
-                }
+                JsonStore.Write(JobStore.JobRegistryPath, JobIndex);
             }
-            return true;
-        }, false, "SaveJobList");
+        }
+        return true;
     }
 }

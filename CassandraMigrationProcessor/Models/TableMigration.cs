@@ -294,7 +294,7 @@ public class TableMigration : TableMigrationSummary
         {
             return node.ToObject<T>();
         }
-        catch (Exception ex)
+        catch (JsonException ex)
         {
             readFailed = true;
             Console.Error.WriteLine(

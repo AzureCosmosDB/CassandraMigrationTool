@@ -30,35 +30,32 @@ public static class UnitStore
     public static bool SaveUnit(
         TableMigration mu, bool updateParent)
     {
-        return MigrationUtilities.SafeExecute(() =>
+        ArgumentNullException.ThrowIfNull(mu);
+
+        if (mu.ParentJob == null && MigrationJobContext.Instance.CurrentlyActiveJob != null)
+            mu.ParentJob =
+                MigrationJobContext.Instance.CurrentlyActiveJob;
+
+        if (mu.ParentJob != null && updateParent)
+            TableMigrationMapper.UpdateParentJob(mu);
+
+        lock (_writeMULock)
         {
-            if (mu == null) return false;
+            JsonStore.Write(
+                JobStore.GetUnitDocumentPath(mu.JobId, mu.Id), mu);
+        }
 
-            if (mu.ParentJob == null && MigrationJobContext.Instance.CurrentlyActiveJob != null)
-                mu.ParentJob =
-                    MigrationJobContext.Instance.CurrentlyActiveJob;
+        if (MigrationJobContext.Instance.CurrentlyActiveJob != null
+            && updateParent)
+        {
+            JobStore.PersistActiveJobUnderLock();
+        }
 
-            if (mu.ParentJob != null && updateParent)
-                TableMigrationMapper.UpdateParentJob(mu);
+        if (MigrationJobContext.Instance.MigrationUnitsCache != null)
+            MigrationJobContext.Instance.MigrationUnitsCache
+                .UpdateMigrationUnit(mu);
 
-            lock (_writeMULock)
-            {
-                JsonStore.Write(
-                    JobStore.GetUnitDocumentPath(mu.JobId, mu.Id), mu);
-            }
-
-            if (MigrationJobContext.Instance.CurrentlyActiveJob != null
-                && updateParent)
-            {
-                JobStore.PersistActiveJobUnderLock();
-            }
-
-            if (MigrationJobContext.Instance.MigrationUnitsCache != null)
-                MigrationJobContext.Instance.MigrationUnitsCache
-                    .UpdateMigrationUnit(mu);
-
-            return true;
-        }, false, "SaveUnit");
+        return true;
     }
 
     /// <summary>Removes a migration unit from its parent job and deletes it from storage.</summary>
@@ -67,33 +64,28 @@ public static class UnitStore
         if (unit == null || unit.ParentJob == null)
             return false;
 
-        return MigrationUtilities.SafeExecute(() =>
-        {
-            var job = unit.ParentJob;
-            var index = job.Tables
-                .FindIndex(mu => mu.Id == unit.Id);
-            if (index == -1) return false;
+        var job = unit.ParentJob;
+        var index = job.Tables
+            .FindIndex(mu => mu.Id == unit.Id);
+        if (index == -1) return false;
 
-            job.Tables.RemoveAt(index);
+        job.Tables.RemoveAt(index);
 
-            if (!MigrationJobContext.Instance.SaveMigrationJob(job))
-                return false;
+        MigrationJobContext.Instance.SaveMigrationJob(job);
 
-            var filePath = JobStore.GetUnitDocumentPath(unit.JobId, unit.Id);
-            MigrationJobContext.Instance.Store.Delete(filePath);
+        var filePath = JobStore.GetUnitDocumentPath(unit.JobId, unit.Id);
+        if (!MigrationJobContext.Instance.Store.Delete(filePath))
+            throw new IOException(
+                $"Failed to delete migration unit '{filePath}'.");
 
-            return true;
-        }, false, "RemoveUnit");
+        return true;
     }
 
     public static TableMigration GetFromStorage(
         string jobId, string unitId)
     {
-        return MigrationUtilities.SafeExecute(() =>
-        {
-            return JsonStore.Read<TableMigration>(
-                JobStore.GetUnitDocumentPath(jobId, unitId));
-        }, (TableMigration)null, $"GetFromStorage({jobId}, {unitId})");
+        return JsonStore.Read<TableMigration>(
+            JobStore.GetUnitDocumentPath(jobId, unitId));
     }
 
     public static List<TableMigration> GetMigrationUnitsToMigrate(

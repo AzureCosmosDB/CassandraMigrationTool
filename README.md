@@ -6,7 +6,7 @@ A .NET 9 Blazor Server web app that migrates data from **Azure Cosmos DB for Apa
 
 - **Schema auto-sync** — discovers source keyspaces, tables, columns, clustering keys, and static columns; generates DDL on the target automatically.
 - **Feed-range partitioned bulk copy** — splits each table into token-range chunks and copies them with configurable parallelism.
-- **Per-worker Cassandra sessions** — each parallel worker maintains its own driver session for maximum throughput.
+- **Efficient Cassandra sessions** — workers share the thread-safe source session while retaining independent target sessions for write throughput.
 - **Checkpoint-based pause / resume** — stop at any time and continue later with zero data loss; state is persisted to disk.
 - **Online mode (change feed)** — after the initial bulk copy, replays Cosmos DB change feed events to keep the target in sync until cutover.
 - **Wildcard table selection** — migrate all tables in a keyspace with `keyspace.*` or pick individual tables.

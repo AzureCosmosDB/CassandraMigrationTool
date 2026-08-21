@@ -96,7 +96,10 @@ public static class ArmCredentialDiscovery
                         $"sleeping {retryAfter.TotalSeconds:F1}s " +
                         $"(attempt {attempt}/{ThrottleRetries}).");
                     resp.Dispose();
-                    if (attempt == ThrottleRetries) return null;
+                    if (attempt == ThrottleRetries)
+                        throw new InvalidOperationException(
+                            $"ARM ({context}) remained throttled after " +
+                            $"{ThrottleRetries} attempts.");
                     await Task.Delay(retryAfter);
                     continue;
 
@@ -265,7 +268,9 @@ public static class ArmCredentialDiscovery
         }
         catch (Exception ex)
         {
-            Console.Error.WriteLine($"ARM discovery: {ex.Message}");
+            throw new InvalidOperationException(
+                "ARM target credential discovery failed.",
+                ex);
         }
         return null;
     }
@@ -351,7 +356,9 @@ public static class ArmCredentialDiscovery
         }
         catch (Exception ex)
         {
-            Console.Error.WriteLine($"ARM discovery: {ex.Message}");
+            throw new InvalidOperationException(
+                "ARM target credential discovery failed.",
+                ex);
         }
         return null;
     }
