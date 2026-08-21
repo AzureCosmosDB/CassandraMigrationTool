@@ -371,16 +371,7 @@ public class JobManager
         foreach (var staleJob in staleRunningJobs)
         {
             staleJob.Status = JobStatus.Pending;
-            try
-            {
-                _context.SaveMigrationJob(staleJob);
-            }
-            catch (Exception ex)
-            {
-                _log.WriteLine(
-                    $"Failed to clear stale Running status for job {staleJob.Id}: {ex.Message}",
-                    LogType.Warning);
-            }
+            _context.SaveMigrationJob(staleJob);
         }
 
         _context.ActiveMigrationJobId = job.Id;

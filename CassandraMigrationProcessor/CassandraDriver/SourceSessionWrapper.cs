@@ -23,10 +23,10 @@ internal sealed class SourceSessionWrapper : IDisposable
 {
     private static readonly TimeSpan RetiredSessionDisposalDelay =
         TimeSpan.FromMinutes(10);
-    private const int MaxRefreshFailures = 6;
 
     private readonly object _lifecycleLock = new();
     private readonly MigrationLog _log;
+    private readonly Action<Exception> _reportFatalFailure;
     private readonly SourceSessionSettings _settings;
     private readonly HashSet<ISession> _retiredSessions =
         new(ReferenceEqualityComparer.Instance);
@@ -34,16 +34,17 @@ internal sealed class SourceSessionWrapper : IDisposable
         _udtRegistrations = new();
     private ISession _currentSession;
     private Timer? _tokenRefreshTimer;
-    private DateTime _tokenExpiresAt = DateTime.MinValue;
-    private int _consecutiveRefreshFailures;
     private int _disposed;
 
     public SourceSessionWrapper(
         MigrationLog log,
         Job job,
-        int workerCount)
+        int workerCount,
+        Action<Exception> reportFatalFailure)
     {
         _log = log ?? throw new ArgumentNullException(nameof(log));
+        _reportFatalFailure = reportFatalFailure
+            ?? throw new ArgumentNullException(nameof(reportFatalFailure));
         ArgumentNullException.ThrowIfNull(job);
         if (string.IsNullOrEmpty(job.SourceContactPoint))
             throw new ArgumentException(
@@ -77,7 +78,7 @@ internal sealed class SourceSessionWrapper : IDisposable
         string credential = ResolveCredential(job);
         _currentSession = CreateSession(credential);
         if (job.SourceUseAad)
-            ScheduleTokenRefresh(credential);
+            ScheduleTokenRefresh(GetTokenExpiry(credential));
     }
 
     public ISession GetSession()
@@ -172,22 +173,21 @@ internal sealed class SourceSessionWrapper : IDisposable
 
     private static DateTime GetTokenExpiry(string token)
     {
-        try
-        {
-            var handler = new JwtSecurityTokenHandler();
-            if (handler.CanReadToken(token))
-            {
-                var jwt = handler.ReadJwtToken(token);
-                return jwt.ValidTo;
-            }
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine(
-                $"[Warning] Failed to read AAD token expiry: {ex.Message}");
-        }
+        if (string.IsNullOrWhiteSpace(token))
+            throw new InvalidOperationException(
+                "AAD token acquisition returned an empty token.");
 
-        return DateTime.MaxValue;
+        var handler = new JwtSecurityTokenHandler();
+        if (!handler.CanReadToken(token))
+            throw new InvalidOperationException(
+                "AAD token acquisition returned a token that is not a readable JWT.");
+
+        var expiry = handler.ReadJwtToken(token).ValidTo;
+        if (expiry == DateTime.MinValue)
+            throw new InvalidOperationException(
+                "AAD token does not contain a valid expiration time.");
+
+        return expiry;
     }
 
     private static string ResolveCredential(Job job)
@@ -207,15 +207,9 @@ internal sealed class SourceSessionWrapper : IDisposable
             .Token;
     }
 
-    private void ScheduleTokenRefresh(string currentToken)
+    private void ScheduleTokenRefresh(DateTime expiry)
     {
         StopTokenRefreshCore();
-
-        DateTime expiry = GetTokenExpiry(currentToken);
-        if (expiry == DateTime.MaxValue)
-            expiry = DateTime.UtcNow.AddMinutes(50);
-
-        _tokenExpiresAt = expiry;
 
         TimeSpan delay = expiry - DateTime.UtcNow
             - TimeSpan.FromMinutes(5);
@@ -229,6 +223,7 @@ internal sealed class SourceSessionWrapper : IDisposable
 
     private void RefreshTokenCallback(object? state)
     {
+        Exception? fatalFailure = null;
         lock (_lifecycleLock)
         {
             if (Volatile.Read(ref _disposed) != 0
@@ -238,42 +233,22 @@ internal sealed class SourceSessionWrapper : IDisposable
             try
             {
                 string freshToken = AcquireAadToken();
+                DateTime expiry = GetTokenExpiry(freshToken);
                 Refresh(freshToken);
-
-                _consecutiveRefreshFailures = 0;
-                ScheduleTokenRefresh(freshToken);
+                ScheduleTokenRefresh(expiry);
             }
             catch (Exception ex)
             {
-                _consecutiveRefreshFailures++;
-                int seconds = Math.Min(
-                    300,
-                    30 * (1 << Math.Min(
-                        _consecutiveRefreshFailures - 1, 4)));
-                bool tokenAlreadyExpired =
-                    DateTime.UtcNow >= _tokenExpiresAt;
-                LogType severity =
-                    _consecutiveRefreshFailures >= MaxRefreshFailures
-                    || tokenAlreadyExpired
-                        ? LogType.Error
-                        : LogType.Warning;
                 string message =
-                    $"Token refresh failed (attempt {_consecutiveRefreshFailures}, " +
-                    $"retrying in {seconds}s, tokenExpiresAt={_tokenExpiresAt:O}): " +
-                    ex.Message;
-                Console.WriteLine($"[{severity}] {message}");
-                _log.WriteLine(message, severity);
-
+                    $"AAD token refresh failed. Aborting migration job: {ex.Message}";
+                _log.WriteLine(message, LogType.Error);
                 StopTokenRefreshCore();
-                if (Volatile.Read(ref _disposed) == 0)
-                {
-                    _tokenRefreshTimer = new Timer(
-                        RefreshTokenCallback, null,
-                        TimeSpan.FromSeconds(seconds),
-                        Timeout.InfiniteTimeSpan);
-                }
+                fatalFailure = new InvalidOperationException(message, ex);
             }
         }
+
+        if (fatalFailure != null)
+            _reportFatalFailure(fatalFailure);
     }
 
     private void StopTokenRefreshCore()

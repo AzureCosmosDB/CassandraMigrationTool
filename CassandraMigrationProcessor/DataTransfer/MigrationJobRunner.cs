@@ -83,7 +83,10 @@ public class MigrationJobRunner : IAsyncDisposable
         try
         {
             sourceSessions = new SourceSessionWrapper(
-                log, job, pipelineConfig.WorkerCount);
+                log,
+                job,
+                pipelineConfig.WorkerCount,
+                control.ReportFault);
             target = await CassandraClientFactory.CreateTargetSessionAsync(log, job);
             return new MigrationJobRunner(
                 log, job, pipelineConfig, control, sourceSessions, target);
@@ -893,17 +896,16 @@ public class MigrationJobRunner : IAsyncDisposable
             }
             catch (ArgumentException ex)
             {
-                _log.WriteLine(
-                    $"Skipping invalid namespace entry '{fullName}': {ex.Message}",
-                    LogType.Warning);
-                continue;
+                throw new ArgumentException(
+                    $"Invalid namespace entry '{fullName}'.",
+                    nameof(job.Namespaces),
+                    ex);
             }
             if (string.IsNullOrEmpty(keyspace) || string.IsNullOrEmpty(table))
             {
-                _log.WriteLine(
-                    $"Skipping namespace entry '{fullName}' — empty keyspace or table after parsing.",
-                    LogType.Warning);
-                continue;
+                throw new ArgumentException(
+                    $"Namespace entry '{fullName}' contains an empty keyspace or table.",
+                    nameof(job.Namespaces));
             }
 
             if (table != "*")
@@ -935,7 +937,9 @@ public class MigrationJobRunner : IAsyncDisposable
             }
             catch (Exception ex)
             {
-                _log.WriteLine($"Failed to discover tables in keyspace {keyspace}: {ex.Message}", LogType.Error);
+                throw new InvalidOperationException(
+                    $"Failed to discover tables in source keyspace '{keyspace}'.",
+                    ex);
             }
         }
 
@@ -973,8 +977,9 @@ public class MigrationJobRunner : IAsyncDisposable
         }
         catch (Exception vex)
         {
-            _log.WriteLine($"Skipping {keyspace}.{tableName}: {vex.Message}", LogType.Warning);
-            return false;
+            throw new InvalidOperationException(
+                $"Source table accessibility check failed for '{keyspace}.{tableName}'.",
+                vex);
         }
     }
 }

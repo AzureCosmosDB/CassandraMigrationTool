@@ -33,17 +33,22 @@ internal static class JsonStore
 
     /// <summary>
     /// Serializes <paramref name="value"/> to JSON and writes it to
-    /// <paramref name="path"/>. Returns the underlying
-    /// <see cref="IDocumentStorage.Write"/> result, or <c>false</c>
-    /// when the store is unavailable.
+    /// <paramref name="path"/>. Persistence failures are propagated so
+    /// callers cannot report a successful checkpoint or state transition
+    /// that was never durably written.
     /// </summary>
     internal static bool Write<T>(
         string path, T value, bool indented = true)
     {
         var store = Store;
-        if (store == null) return false;
+        if (store == null)
+            throw new InvalidOperationException(
+                "Document store is not initialized.");
         var json = JsonConvert.SerializeObject(
             value, indented ? Formatting.Indented : Formatting.None);
-        return store.Write(path, json);
+        if (!store.Write(path, json))
+            throw new IOException(
+                $"Document store failed to write '{path}'.");
+        return true;
     }
 }

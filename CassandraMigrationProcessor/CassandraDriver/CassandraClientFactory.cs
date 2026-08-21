@@ -328,7 +328,12 @@ public static class CassandraClientFactory
             }
             catch (Exception ex)
             {
-                MigrationLog?.WriteLine($"ARM credential discovery failed: {ex.Message}", LogType.Debug);
+                MigrationLog?.WriteLine(
+                    $"ARM target credential discovery failed: {ex.Message}",
+                    LogType.Error);
+                throw new InvalidOperationException(
+                    "ARM target credential discovery failed.",
+                    ex);
             }
         }
 

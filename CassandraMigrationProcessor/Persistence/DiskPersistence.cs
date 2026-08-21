@@ -159,9 +159,7 @@ public class DiskPersistence : IDocumentStorage, ILogStorage
         if (string.IsNullOrWhiteSpace(jsonContent))
             throw new ArgumentException("JSON content cannot be null or empty", nameof(jsonContent));
 
-        return MigrationUtilities.SafeExecute(
-            () => FileSystem.WriteAllText(GetFilePath(id), jsonContent),
-            false, $"Write({id})");
+        return FileSystem.WriteAllText(GetFilePath(id), jsonContent);
     }
 
     public string? Read(string id)
@@ -169,9 +167,10 @@ public class DiskPersistence : IDocumentStorage, ILogStorage
         _ = Logs();
         RequireJsonId(id, nameof(id));
 
-        return MigrationUtilities.SafeExecute<string?>(
-            () => FileSystem.ReadAllText(GetFilePath(id)),
-            null, $"Read({id})");
+        var path = GetFilePath(id);
+        return FileSystem.Exists(path)
+            ? FileSystem.ReadAllText(path)
+            : null;
     }
 
     public bool Exists(string id)
@@ -181,9 +180,7 @@ public class DiskPersistence : IDocumentStorage, ILogStorage
         if (!id.EndsWith(FILE_EXTENSION))
             throw new ArgumentException($"ID must end with {FILE_EXTENSION} extension", nameof(id));
 
-        return MigrationUtilities.SafeExecute(
-            () => FileSystem.Exists(GetFilePath(id)),
-            false, $"Exists({id})");
+        return FileSystem.Exists(GetFilePath(id));
     }
 
     /// <summary>
@@ -196,32 +193,27 @@ public class DiskPersistence : IDocumentStorage, ILogStorage
         if (string.IsNullOrWhiteSpace(id))
             throw new ArgumentException("ID cannot be null or empty", nameof(id));
 
-        return MigrationUtilities.SafeExecute(() =>
+        if (id.EndsWith(FILE_EXTENSION))
         {
-            if (id.EndsWith(FILE_EXTENSION))
-            {
-                var filePath = GetFilePath(id);
-                if (!FileSystem.Exists(filePath)) return false;
-                FileSystem.DeleteIfExists(filePath);
-                return true;
-            }
-            return FileSystem.DeleteDirectory(GetDirectoryPath(id), recursive: true);
-        }, false, $"Delete({id})");
+            var filePath = GetFilePath(id);
+            if (!FileSystem.Exists(filePath)) return false;
+            FileSystem.DeleteIfExists(filePath);
+            return true;
+        }
+        return FileSystem.DeleteDirectory(GetDirectoryPath(id), recursive: true);
     }
 
     public List<string> ListIds()
     {
         _ = Logs();
 
-        return MigrationUtilities.SafeExecute(() =>
-        {
-            var files = FileSystem.ListFiles(_storagePath, "*" + FILE_EXTENSION, recursive: true);
-            return files
-                .Select(f => Path.GetRelativePath(_storagePath, f)
-                    .Replace('/', '\\')
-                    .Replace(Path.DirectorySeparatorChar, '\\'))
-                .ToList();
-        }, new List<string>(), "ListIds");
+        var files = FileSystem.ListFiles(
+            _storagePath, "*" + FILE_EXTENSION, recursive: true);
+        return files
+            .Select(f => Path.GetRelativePath(_storagePath, f)
+                .Replace('/', '\\')
+                .Replace(Path.DirectorySeparatorChar, '\\'))
+            .ToList();
     }
 
     // --- Log operations delegated to LogPersistence ---
