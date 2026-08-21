@@ -23,6 +23,10 @@ internal sealed class SourceSessionWrapper : IDisposable
 {
     private static readonly TimeSpan RetiredSessionDisposalDelay =
         TimeSpan.FromMinutes(10);
+    private static readonly TimeSpan DefaultTokenRefreshLeadTime =
+        TimeSpan.FromMinutes(5);
+    private const string TokenRefreshLeadMinutesSetting =
+        "CMT_AAD_TOKEN_REFRESH_LEAD_MINUTES";
 
     private readonly object _lifecycleLock = new();
     private readonly MigrationLog _log;
@@ -214,8 +218,9 @@ internal sealed class SourceSessionWrapper : IDisposable
     {
         StopTokenRefreshCore();
 
+        TimeSpan refreshLeadTime = ResolveTokenRefreshLeadTime();
         TimeSpan delay = expiry - DateTime.UtcNow
-            - TimeSpan.FromMinutes(5);
+            - refreshLeadTime;
         if (delay < TimeSpan.FromMinutes(1))
             delay = TimeSpan.FromMinutes(1);
 
@@ -226,6 +231,24 @@ internal sealed class SourceSessionWrapper : IDisposable
             $"AAD source token refresh scheduled for " +
             $"{DateTime.UtcNow.Add(delay):O}; token expires {expiry:O}.",
             LogType.Info);
+    }
+
+    private static TimeSpan ResolveTokenRefreshLeadTime()
+    {
+        string? configured =
+            Environment.GetEnvironmentVariable(
+                TokenRefreshLeadMinutesSetting);
+        if (string.IsNullOrWhiteSpace(configured))
+            return DefaultTokenRefreshLeadTime;
+
+        if (!int.TryParse(configured, out int minutes)
+            || minutes <= 0)
+        {
+            throw new InvalidOperationException(
+                $"{TokenRefreshLeadMinutesSetting} must be a positive integer.");
+        }
+
+        return TimeSpan.FromMinutes(minutes);
     }
 
     private void RefreshTokenCallback(object? state)
