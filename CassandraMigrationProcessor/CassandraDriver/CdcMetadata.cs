@@ -53,12 +53,12 @@ internal sealed record CdcRowMetadata(
     /// diverges from the row-level values and cell-level preservation is
     /// enabled. When false the writer takes the single-statement fast
     /// path (one <c>INSERT … JSON ? USING TIMESTAMP ? AND TTL ?</c>);
-    /// when true it splits the row into one partial <c>INSERT … JSON ?
-    /// DEFAULT UNSET USING TIMESTAMP ? AND TTL ?</c> per distinct
-    /// (writetime, expiry) group so each cell lands with its own
-    /// timestamp and TTL. <see cref="PerColumn"/> is populated only for
-    /// the columns whose metadata differs; every other column falls back
-    /// to the row-level (writetime, expiry) group.
+    /// when true it restores the row-level liveness marker with one
+    /// partial INSERT and applies divergent cells with UPDATE statements
+    /// so each cell lands with its own timestamp and TTL without replacing
+    /// that marker. <see cref="PerColumn"/> is populated only for the
+    /// columns whose metadata differs; every other column remains in the
+    /// row-level INSERT.
     /// </summary>
     public bool HasPerColumnDivergence => PerColumn is { Count: > 0 };
 
@@ -119,4 +119,3 @@ internal sealed record CdcRowMetadata(
 internal readonly record struct CdcCellMetadata(
     long? WritetimeMicros,
     long? ExpiryEpochSeconds);
-

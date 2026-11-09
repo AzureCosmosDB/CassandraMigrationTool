@@ -196,12 +196,10 @@ public static class CassandraQueries
 
     /// <summary>
     /// Build a prepared partial <c>INSERT … JSON ? DEFAULT UNSET USING
-    /// TIMESTAMP ? AND TTL ?</c> used by cell-level TTL/writetime
-    /// preservation. <c>DEFAULT UNSET</c> makes columns absent from the
-    /// bound JSON stay untouched rather than being overwritten with
-    /// <c>null</c>, so a single source row can be written as several
-    /// partial inserts — one per distinct (writetime, ttl) group — each
-    /// carrying only its primary key plus that group's columns. Bind
+    /// TIMESTAMP ? AND TTL ?</c> used to restore the source row-liveness
+    /// marker before divergent cells are replayed with UPDATE statements.
+    /// <c>DEFAULT UNSET</c> makes columns absent from the baseline payload
+    /// stay untouched rather than being overwritten with <c>null</c>. Bind
     /// order matches <see cref="PrepareInsertJsonAsync"/>:
     /// (json, writetime, ttl).
     /// </summary>
@@ -218,6 +216,45 @@ public static class CassandraQueries
             $"INSERT INTO \"{keyspace}\".\"{table}\" JSON ? DEFAULT UNSET " +
             "USING TIMESTAMP ? AND TTL ?";
         return await session.PrepareAsync(cql);
+    }
+
+    /// <summary>
+    /// Build a prepared UPDATE for one column whose value is supplied in
+    /// Cassandra's JSON representation. Using UPDATE is important here:
+    /// unlike a partial INSERT, it does not replace the row-liveness marker
+    /// when a newer TTL-bearing cell is replayed. Bind order is
+    /// (writetime, ttl, jsonValue, primary-key JSON values in key order).
+    /// </summary>
+    public static async Task<PreparedStatement>
+        PrepareUpdateJsonColumnAsync(
+            ISession session,
+            string keyspace,
+            string table,
+            string column,
+            IReadOnlyList<CassandraColumn> primaryKeyColumns)
+    {
+        if (primaryKeyColumns.Count == 0)
+            throw new ArgumentException(
+                $"Cannot prepare UPDATE for {keyspace}.{table} without primary-key columns.",
+                nameof(primaryKeyColumns));
+
+        var cql = BuildUpdateJsonColumnCql(
+            keyspace, table, column, primaryKeyColumns);
+        return await session.PrepareAsync(cql);
+    }
+
+    internal static string BuildUpdateJsonColumnCql(
+        string keyspace,
+        string table,
+        string column,
+        IReadOnlyList<CassandraColumn> primaryKeyColumns)
+    {
+        var whereClause = string.Join(" AND ",
+            primaryKeyColumns.Select(c => $"\"{c.Name}\" = fromJson(?)"));
+        return
+            $"UPDATE \"{keyspace}\".\"{table}\" " +
+            $"USING TIMESTAMP ? AND TTL ? " +
+            $"SET \"{column}\" = fromJson(?) WHERE {whereClause}";
     }
 
     /// <summary>

@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Collections.Concurrent;
 using System.Text;
 using System.Text.Json;
 using Cassandra;
@@ -26,10 +27,11 @@ namespace CassandraMigrationProcessor.DataTransfer;
 /// Cell-level preservation: when enabled and the source row carries
 /// per-column writetime/TTL that diverges from the row-level values
 /// (<see cref="CdcRowMetadata.HasPerColumnDivergence"/>), the row is
-/// split into one partial <c>INSERT … JSON ? DEFAULT UNSET USING
-/// TIMESTAMP ? AND TTL ?</c> per distinct (writetime, ttl) group so each
-/// cell lands with its own timestamp and TTL. Uniform rows keep the
-/// single-statement fast path unchanged.
+/// written as one baseline <c>INSERT … JSON ? DEFAULT UNSET</c> carrying
+/// the source row-liveness metadata, followed by timestamped/TTL-bearing
+/// <c>UPDATE</c>s for divergent cells. UPDATE preserves the baseline
+/// row-liveness marker while still applying each cell's own metadata.
+/// Uniform rows keep the single-statement fast path unchanged.
 /// </para>
 /// </summary>
 internal sealed class RegularRowWriteStrategy : IRowWriteStrategy
@@ -38,11 +40,16 @@ internal sealed class RegularRowWriteStrategy : IRowWriteStrategy
     private readonly ISession _targetSession;
     private readonly PreparedStatement _preparedInsertJson;
 
-    // Non-null only when cell-level preservation is enabled: the
-    // DEFAULT UNSET partial insert plus the set of primary-key column
-    // names that must appear in every partial write.
+    // Non-null only when cell-level preservation is enabled: the DEFAULT
+    // UNSET baseline insert, ordered primary-key metadata, and lazy cache
+    // of one JSON UPDATE statement per divergent column.
     private readonly PreparedStatement? _preparedInsertJsonPartial;
-    private readonly HashSet<string>? _primaryKeyColumns;
+    private readonly IReadOnlyList<CassandraColumn>? _primaryKeyColumns;
+    private readonly HashSet<string>? _primaryKeyColumnNames;
+    private readonly ConcurrentDictionary<string, Lazy<Task<PreparedStatement>>>
+        _preparedColumnUpdates = new(StringComparer.Ordinal);
+    private readonly string _targetKeyspace;
+    private readonly string _targetTable;
 
     private readonly RetryPolicy _retryPolicy;
     private readonly ConsistencyLevel _writeConsistencyLevel;
@@ -51,18 +58,26 @@ internal sealed class RegularRowWriteStrategy : IRowWriteStrategy
     private RegularRowWriteStrategy(WorkerLog log, ISession targetSession,
         PreparedStatement preparedInsertJson,
         PreparedStatement? preparedInsertJsonPartial,
-        HashSet<string>? primaryKeyColumns,
+        IReadOnlyList<CassandraColumn>? primaryKeyColumns,
         RetryPolicy retryPolicy,
-        ConsistencyLevel writeConsistencyLevel, string tableLabel)
+        ConsistencyLevel writeConsistencyLevel,
+        string targetKeyspace,
+        string targetTable)
     {
         _log = log;
         _targetSession = targetSession;
         _preparedInsertJson = preparedInsertJson;
         _preparedInsertJsonPartial = preparedInsertJsonPartial;
         _primaryKeyColumns = primaryKeyColumns;
+        _primaryKeyColumnNames = primaryKeyColumns is null
+            ? null
+            : new HashSet<string>(
+                primaryKeyColumns.Select(c => c.Name), StringComparer.Ordinal);
         _retryPolicy = retryPolicy;
         _writeConsistencyLevel = writeConsistencyLevel;
-        _rowKind = $"JSON row[{tableLabel}]";
+        _targetKeyspace = targetKeyspace;
+        _targetTable = targetTable;
+        _rowKind = $"JSON row[{targetKeyspace}.{targetTable}]";
     }
 
     /// <summary>
@@ -84,7 +99,7 @@ internal sealed class RegularRowWriteStrategy : IRowWriteStrategy
             targetSession, targetKeyspace, targetTable, columns);
 
         PreparedStatement? psPartial = null;
-        HashSet<string>? pkColumns = null;
+        IReadOnlyList<CassandraColumn>? pkColumns = null;
         if (preserveCellLevel)
         {
             // Prepared eagerly so a target that cannot honour DEFAULT UNSET
@@ -92,16 +107,16 @@ internal sealed class RegularRowWriteStrategy : IRowWriteStrategy
             // silently degrading cell-level fidelity mid-migration.
             psPartial = await CassandraQueries.PrepareInsertJsonPartialAsync(
                 targetSession, targetKeyspace, targetTable, columns);
-            pkColumns = new HashSet<string>(
-                columns
-                    .Where(c => c.Kind is "partition_key" or "clustering")
-                    .Select(c => c.Name),
-                StringComparer.Ordinal);
+            pkColumns = columns
+                .Where(c => c.Kind is "partition_key" or "clustering")
+                .OrderBy(c => c.Kind == "partition_key" ? 0 : 1)
+                .ThenBy(c => c.Position)
+                .ToArray();
         }
 
         return new RegularRowWriteStrategy(
             log, targetSession, psJson, psPartial, pkColumns, retryPolicy,
-            writeConsistencyLevel, tableLabel: $"{targetKeyspace}.{targetTable}");
+            writeConsistencyLevel, targetKeyspace, targetTable);
     }
 
     public Task<WriteOutcome> WriteRowAsync(
@@ -149,85 +164,134 @@ internal sealed class RegularRowWriteStrategy : IRowWriteStrategy
     }
 
     /// <summary>
-    /// Split one source row into per-(writetime, ttl) partial inserts so
-    /// each cell is re-applied with its own <c>USING TIMESTAMP</c> and
-    /// <c>USING TTL</c>. Primary-key columns are replicated into every
-    /// group; a column with no per-cell metadata (nulls, non-frozen
-    /// collections) falls back to the row-level group. Groups are written
-    /// under one shared retry budget and counted as a single row.
+    /// Restore the source row-liveness marker with one baseline partial
+    /// INSERT, then replay each divergent cell with UPDATE so newer
+    /// TTL-bearing cells cannot replace that marker. A column with no
+    /// per-cell metadata (nulls, non-frozen collections) stays in the
+    /// baseline INSERT. All statements share one retry budget and count as
+    /// a single row.
     /// </summary>
-    private Task<WriteOutcome> WriteSplitRowAsync(
+    private async Task<WriteOutcome> WriteSplitRowAsync(
         string cleanedJson,
         CdcRowMetadata metadata,
         WriteCounters counters,
         CancellationToken cancellationToken)
     {
-        var groups = BuildGroups(cleanedJson, metadata);
-        var attempts = new List<Func<Task>>(groups.Count);
+        var plan = BuildSplitWritePlan(
+            cleanedJson, metadata, _primaryKeyColumns!, _primaryKeyColumnNames!);
+        var attempts = new List<Func<Task>>(plan.CellWrites.Count + 1);
         long fallbackTs = NowMicros();
-        foreach (var group in groups)
+
+        int baselineTtlSeconds =
+            ResolveTtlSecondsFromExpiry(metadata.ExpiryEpochSeconds);
+        long baselineTs = metadata.WritetimeMicros ?? fallbackTs;
+        var baseline = _preparedInsertJsonPartial!.Bind(
+            plan.BaselineJson, baselineTs, baselineTtlSeconds);
+        baseline.SetReadTimeoutMillis(RowWriteRetry.WriteTimeoutMs);
+        baseline.SetConsistencyLevel(_writeConsistencyLevel);
+        attempts.Add(() =>
+            _targetSession.ExecuteAsync(baseline).WaitAsync(cancellationToken));
+
+        foreach (var cellWrite in plan.CellWrites)
         {
-            int ttlSeconds = ResolveTtlSecondsFromExpiry(group.Key.Expiry);
-            long ts = group.Key.Writetime ?? fallbackTs;
-            var bound = _preparedInsertJsonPartial!.Bind(group.Json, ts, ttlSeconds);
+            var prepared = await GetPreparedColumnUpdateAsync(cellWrite.Column);
+            int ttlSeconds =
+                ResolveTtlSecondsFromExpiry(cellWrite.Key.Expiry);
+            long ts = cellWrite.Key.Writetime ?? fallbackTs;
+            var bindValues = new object[3 + plan.PrimaryKeyValues.Count];
+            bindValues[0] = ts;
+            bindValues[1] = ttlSeconds;
+            bindValues[2] = cellWrite.JsonValue;
+            for (int i = 0; i < plan.PrimaryKeyValues.Count; i++)
+                bindValues[i + 3] = plan.PrimaryKeyValues[i];
+
+            var bound = prepared.Bind(bindValues);
             bound.SetReadTimeoutMillis(RowWriteRetry.WriteTimeoutMs);
             bound.SetConsistencyLevel(_writeConsistencyLevel);
             attempts.Add(() => _targetSession.ExecuteAsync(bound).WaitAsync(cancellationToken));
         }
 
-        return RowWriteRetry.ExecuteRowGroupsAsync(
+        return await RowWriteRetry.ExecuteRowGroupsAsync(
             attempts, _retryPolicy, _log, _rowKind, counters, cancellationToken);
     }
 
-    private readonly record struct GroupKey(long? Writetime, long? Expiry);
+    internal readonly record struct GroupKey(long? Writetime, long? Expiry);
 
-    private readonly record struct GroupWrite(GroupKey Key, string Json);
+    internal readonly record struct CellWrite(
+        GroupKey Key, string Column, string JsonValue);
+
+    internal sealed record SplitWritePlan(
+        string BaselineJson,
+        IReadOnlyList<string> PrimaryKeyValues,
+        IReadOnlyList<CellWrite> CellWrites);
 
     /// <summary>
-    /// Parse the cleaned envelope and materialise one JSON payload per
-    /// distinct (writetime, expiry) group. Each payload carries the row's
-    /// primary-key columns plus that group's data columns.
+    /// Parse the cleaned envelope into a baseline INSERT payload and the
+    /// divergent cells that must be replayed with UPDATE.
     /// </summary>
-    private List<GroupWrite> BuildGroups(string cleanedJson, CdcRowMetadata metadata)
+    internal static SplitWritePlan BuildSplitWritePlan(
+        string cleanedJson,
+        CdcRowMetadata metadata,
+        IReadOnlyList<CassandraColumn> primaryKeyColumns,
+        IReadOnlySet<string> primaryKeyColumnNames)
     {
         using var doc = JsonDocument.Parse(cleanedJson);
         var root = doc.RootElement;
 
-        var pkProps = new List<JsonProperty>();
-        // Preserve stable, insertion-like ordering of groups for
-        // deterministic output; grouping-key equality drives membership.
-        var order = new List<GroupKey>();
-        var byKey = new Dictionary<GroupKey, List<JsonProperty>>();
-
-        var rowKey = new GroupKey(metadata.WritetimeMicros, metadata.ExpiryEpochSeconds);
+        var pkByName = new Dictionary<string, JsonProperty>(StringComparer.Ordinal);
+        var baselineProps = new List<JsonProperty>();
+        var cellWrites = new List<CellWrite>();
         var perColumn = metadata.PerColumn!;
 
         foreach (var prop in root.EnumerateObject())
         {
-            if (_primaryKeyColumns!.Contains(prop.Name))
+            if (primaryKeyColumnNames.Contains(prop.Name))
             {
-                pkProps.Add(prop);
+                pkByName[prop.Name] = prop;
                 continue;
             }
 
-            GroupKey key = perColumn.TryGetValue(prop.Name, out var cell)
-                ? new GroupKey(cell.WritetimeMicros, cell.ExpiryEpochSeconds)
-                : rowKey;
-
-            if (!byKey.TryGetValue(key, out var list))
+            if (perColumn.TryGetValue(prop.Name, out var cell))
             {
-                list = new List<JsonProperty>();
-                byKey[key] = list;
-                order.Add(key);
+                cellWrites.Add(new CellWrite(
+                    new GroupKey(cell.WritetimeMicros, cell.ExpiryEpochSeconds),
+                    prop.Name,
+                    prop.Value.GetRawText()));
             }
-            list.Add(prop);
+            else
+            {
+                baselineProps.Add(prop);
+            }
         }
 
-        var result = new List<GroupWrite>(order.Count);
-        foreach (var key in order)
-            result.Add(new GroupWrite(key, WriteSubsetJson(pkProps, byKey[key])));
-        return result;
+        var pkProps = new List<JsonProperty>(primaryKeyColumns.Count);
+        var pkValues = new List<string>(primaryKeyColumns.Count);
+        foreach (var keyColumn in primaryKeyColumns)
+        {
+            if (!pkByName.TryGetValue(keyColumn.Name, out var prop))
+                throw new JsonException(
+                    $"Row payload is missing primary-key column '{keyColumn.Name}'.");
+            pkProps.Add(prop);
+            pkValues.Add(prop.Value.GetRawText());
+        }
+
+        return new SplitWritePlan(
+            WriteSubsetJson(pkProps, baselineProps),
+            pkValues,
+            cellWrites);
     }
+
+    private Task<PreparedStatement> GetPreparedColumnUpdateAsync(string column)
+        => _preparedColumnUpdates.GetOrAdd(
+            column,
+            name => new Lazy<Task<PreparedStatement>>(
+                () => CassandraQueries.PrepareUpdateJsonColumnAsync(
+                    _targetSession,
+                    _targetKeyspace,
+                    _targetTable,
+                    name,
+                    _primaryKeyColumns!),
+                LazyThreadSafetyMode.ExecutionAndPublication)).Value;
 
     /// <summary>
     /// Emit a JSON object containing the primary-key columns followed by
@@ -272,4 +336,3 @@ internal sealed class RegularRowWriteStrategy : IRowWriteStrategy
         return remaining > 0 ? (int)Math.Min(remaining, int.MaxValue) : 1;
     }
 }
-

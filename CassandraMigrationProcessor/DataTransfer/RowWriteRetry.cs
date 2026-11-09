@@ -35,17 +35,17 @@ internal static class RowWriteRetry
 
     /// <summary>
     /// Executes one source row that must be written as <em>several</em>
-    /// statements (per-cell TTL/writetime preservation splits a row into
-    /// one partial <c>INSERT … DEFAULT UNSET</c> per distinct
-    /// (writetime, ttl) group). Each group attempt gets the same bounded
+    /// statements (per-cell TTL/writetime preservation uses one baseline
+    /// <c>INSERT … DEFAULT UNSET</c> followed by UPDATE statements for
+    /// divergent cells). Each group attempt gets the same bounded
     /// retry as a single-statement row, but the shared
     /// <see cref="WriteCounters"/> are advanced <em>once</em> for the whole
     /// row so page-level "all rows written" accounting stays correct.
     /// Groups run sequentially and stop at the first fatal outcome; the
     /// row's outcome is the worst of its groups (Fatal &gt; Failed &gt;
     /// Success). Re-running the page on resume is safe because every
-    /// partial insert binds the source <c>USING TIMESTAMP</c>, making the
-    /// writes idempotent.
+    /// statement binds the source <c>USING TIMESTAMP</c>, making the writes
+    /// idempotent.
     /// </summary>
     public static async Task<WriteOutcome> ExecuteRowGroupsAsync(
         IReadOnlyList<Func<Task>> groupAttempts,
