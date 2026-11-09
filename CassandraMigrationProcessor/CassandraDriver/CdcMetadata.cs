@@ -28,16 +28,16 @@ namespace CassandraMigrationProcessor.CassandraDriver;
 ///         Unix epoch. Suitable for <c>USING TIMESTAMP</c> on the
 ///         destination INSERT so LWW conflict-resolution matches the
 ///         source.</item>
-///   <item><c>__sys_clttl[0]</c> — absolute expiry epoch in seconds
-///         (not a duration). The destination's <c>USING TTL</c> takes
-///         a duration, so we compute
-///         <c>remaining = expiry - now_epoch_seconds</c> at write
-///         time.</item>
-///   <item><c>__sys_rw_ttl[0]</c> — original TTL duration in seconds
-///         as declared at write time on the source. We do NOT use this
-///         for the destination TTL because re-applying the original
-///         duration would silently extend the row's lifetime past its
-///         intended source expiry.</item>
+///   <item><c>__sys_rw_ttl[0]</c> identifies whether the row-liveness
+///         marker itself has a TTL. When it is positive,
+///         <c>__sys_clttl[0]</c> supplies its absolute expiry epoch.
+///         When it is zero, the row marker is permanent even if
+///         individual cells have TTLs.</item>
+///   <item><c>__sys_clttl[0]</c> is the absolute cell-expiry base in
+///         seconds. It is also the row-marker expiry only when
+///         <c>__sys_rw_ttl[0]</c> is positive. The destination's
+///         <c>USING TTL</c> takes a duration, so the writer computes
+///         <c>remaining = expiry - now_epoch_seconds</c>.</item>
 ///   <item>Both <c>*ttl</c> arrays are <c>[0, 0]</c> when the source
 ///         row has no TTL — that's how we distinguish "no expiry"
 ///         from "already expired".</item>

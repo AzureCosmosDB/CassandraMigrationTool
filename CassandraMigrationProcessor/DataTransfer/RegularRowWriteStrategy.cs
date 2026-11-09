@@ -46,6 +46,7 @@ internal sealed class RegularRowWriteStrategy : IRowWriteStrategy
     private readonly PreparedStatement? _preparedInsertJsonPartial;
     private readonly IReadOnlyList<CassandraColumn>? _primaryKeyColumns;
     private readonly HashSet<string>? _primaryKeyColumnNames;
+    private readonly IReadOnlyDictionary<string, CassandraColumn>? _columnsByName;
     private readonly ConcurrentDictionary<string, Lazy<Task<PreparedStatement>>>
         _preparedColumnUpdates = new(StringComparer.Ordinal);
     private readonly string _targetKeyspace;
@@ -59,6 +60,7 @@ internal sealed class RegularRowWriteStrategy : IRowWriteStrategy
         PreparedStatement preparedInsertJson,
         PreparedStatement? preparedInsertJsonPartial,
         IReadOnlyList<CassandraColumn>? primaryKeyColumns,
+        IReadOnlyDictionary<string, CassandraColumn>? columnsByName,
         RetryPolicy retryPolicy,
         ConsistencyLevel writeConsistencyLevel,
         string targetKeyspace,
@@ -69,6 +71,7 @@ internal sealed class RegularRowWriteStrategy : IRowWriteStrategy
         _preparedInsertJson = preparedInsertJson;
         _preparedInsertJsonPartial = preparedInsertJsonPartial;
         _primaryKeyColumns = primaryKeyColumns;
+        _columnsByName = columnsByName;
         _primaryKeyColumnNames = primaryKeyColumns is null
             ? null
             : new HashSet<string>(
@@ -100,6 +103,7 @@ internal sealed class RegularRowWriteStrategy : IRowWriteStrategy
 
         PreparedStatement? psPartial = null;
         IReadOnlyList<CassandraColumn>? pkColumns = null;
+        IReadOnlyDictionary<string, CassandraColumn>? columnsByName = null;
         if (preserveCellLevel)
         {
             // Prepared eagerly so a target that cannot honour DEFAULT UNSET
@@ -112,10 +116,11 @@ internal sealed class RegularRowWriteStrategy : IRowWriteStrategy
                 .OrderBy(c => c.Kind == "partition_key" ? 0 : 1)
                 .ThenBy(c => c.Position)
                 .ToArray();
+            columnsByName = columns.ToDictionary(c => c.Name, StringComparer.Ordinal);
         }
 
         return new RegularRowWriteStrategy(
-            log, targetSession, psJson, psPartial, pkColumns, retryPolicy,
+            log, targetSession, psJson, psPartial, pkColumns, columnsByName, retryPolicy,
             writeConsistencyLevel, targetKeyspace, targetTable);
     }
 
@@ -178,12 +183,27 @@ internal sealed class RegularRowWriteStrategy : IRowWriteStrategy
         CancellationToken cancellationToken)
     {
         var plan = BuildSplitWritePlan(
-            cleanedJson, metadata, _primaryKeyColumns!, _primaryKeyColumnNames!);
+            cleanedJson,
+            metadata,
+            _primaryKeyColumns!,
+            _primaryKeyColumnNames!,
+            _columnsByName!);
         var attempts = new List<Func<Task>>(plan.CellWrites.Count + 1);
         long fallbackTs = NowMicros();
 
+        var preparedCellWrites = new List<(CellWrite Cell, PreparedStatement Prepared)>(
+            plan.CellWrites.Count);
+        foreach (var cellWrite in plan.CellWrites)
+        {
+            preparedCellWrites.Add((
+                cellWrite,
+                await GetPreparedColumnUpdateAsync(cellWrite.Column)));
+        }
+
+        long nowEpochSeconds = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
         int baselineTtlSeconds =
-            ResolveTtlSecondsFromExpiry(metadata.ExpiryEpochSeconds);
+            ResolveTtlSecondsFromExpiry(
+                metadata.ExpiryEpochSeconds, nowEpochSeconds);
         long baselineTs = metadata.WritetimeMicros ?? fallbackTs;
         var baseline = _preparedInsertJsonPartial!.Bind(
             plan.BaselineJson, baselineTs, baselineTtlSeconds);
@@ -192,20 +212,24 @@ internal sealed class RegularRowWriteStrategy : IRowWriteStrategy
         attempts.Add(() =>
             _targetSession.ExecuteAsync(baseline).WaitAsync(cancellationToken));
 
-        foreach (var cellWrite in plan.CellWrites)
+        foreach (var preparedCellWrite in preparedCellWrites)
         {
-            var prepared = await GetPreparedColumnUpdateAsync(cellWrite.Column);
+            var cellWrite = preparedCellWrite.Cell;
             int ttlSeconds =
-                ResolveTtlSecondsFromExpiry(cellWrite.Key.Expiry);
+                ResolveTtlSecondsFromExpiry(
+                    cellWrite.Key.Expiry, nowEpochSeconds);
             long ts = cellWrite.Key.Writetime ?? fallbackTs;
-            var bindValues = new object[3 + plan.PrimaryKeyValues.Count];
+            var keyValues = cellWrite.Column.Kind == "static"
+                ? plan.PartitionKeyValues
+                : plan.PrimaryKeyValues;
+            var bindValues = new object[3 + keyValues.Count];
             bindValues[0] = ts;
             bindValues[1] = ttlSeconds;
             bindValues[2] = cellWrite.JsonValue;
-            for (int i = 0; i < plan.PrimaryKeyValues.Count; i++)
-                bindValues[i + 3] = plan.PrimaryKeyValues[i];
+            for (int i = 0; i < keyValues.Count; i++)
+                bindValues[i + 3] = keyValues[i];
 
-            var bound = prepared.Bind(bindValues);
+            var bound = preparedCellWrite.Prepared.Bind(bindValues);
             bound.SetReadTimeoutMillis(RowWriteRetry.WriteTimeoutMs);
             bound.SetConsistencyLevel(_writeConsistencyLevel);
             attempts.Add(() => _targetSession.ExecuteAsync(bound).WaitAsync(cancellationToken));
@@ -218,11 +242,12 @@ internal sealed class RegularRowWriteStrategy : IRowWriteStrategy
     internal readonly record struct GroupKey(long? Writetime, long? Expiry);
 
     internal readonly record struct CellWrite(
-        GroupKey Key, string Column, string JsonValue);
+        GroupKey Key, CassandraColumn Column, string JsonValue);
 
     internal sealed record SplitWritePlan(
         string BaselineJson,
         IReadOnlyList<string> PrimaryKeyValues,
+        IReadOnlyList<string> PartitionKeyValues,
         IReadOnlyList<CellWrite> CellWrites);
 
     /// <summary>
@@ -233,7 +258,8 @@ internal sealed class RegularRowWriteStrategy : IRowWriteStrategy
         string cleanedJson,
         CdcRowMetadata metadata,
         IReadOnlyList<CassandraColumn> primaryKeyColumns,
-        IReadOnlySet<string> primaryKeyColumnNames)
+        IReadOnlySet<string> primaryKeyColumnNames,
+        IReadOnlyDictionary<string, CassandraColumn> columnsByName)
     {
         using var doc = JsonDocument.Parse(cleanedJson);
         var root = doc.RootElement;
@@ -253,9 +279,12 @@ internal sealed class RegularRowWriteStrategy : IRowWriteStrategy
 
             if (perColumn.TryGetValue(prop.Name, out var cell))
             {
+                if (!columnsByName.TryGetValue(prop.Name, out var column))
+                    throw new JsonException(
+                        $"Row payload contains unknown column '{prop.Name}'.");
                 cellWrites.Add(new CellWrite(
                     new GroupKey(cell.WritetimeMicros, cell.ExpiryEpochSeconds),
-                    prop.Name,
+                    column,
                     prop.Value.GetRawText()));
             }
             else
@@ -266,6 +295,7 @@ internal sealed class RegularRowWriteStrategy : IRowWriteStrategy
 
         var pkProps = new List<JsonProperty>(primaryKeyColumns.Count);
         var pkValues = new List<string>(primaryKeyColumns.Count);
+        var partitionKeyValues = new List<string>();
         foreach (var keyColumn in primaryKeyColumns)
         {
             if (!pkByName.TryGetValue(keyColumn.Name, out var prop))
@@ -273,25 +303,60 @@ internal sealed class RegularRowWriteStrategy : IRowWriteStrategy
                     $"Row payload is missing primary-key column '{keyColumn.Name}'.");
             pkProps.Add(prop);
             pkValues.Add(prop.Value.GetRawText());
+            if (keyColumn.Kind == "partition_key")
+                partitionKeyValues.Add(prop.Value.GetRawText());
         }
 
         return new SplitWritePlan(
             WriteSubsetJson(pkProps, baselineProps),
             pkValues,
+            partitionKeyValues,
             cellWrites);
     }
 
-    private Task<PreparedStatement> GetPreparedColumnUpdateAsync(string column)
-        => _preparedColumnUpdates.GetOrAdd(
-            column,
-            name => new Lazy<Task<PreparedStatement>>(
-                () => CassandraQueries.PrepareUpdateJsonColumnAsync(
+    private async Task<PreparedStatement> GetPreparedColumnUpdateAsync(
+        CassandraColumn column)
+    {
+        var lazy = _preparedColumnUpdates.GetOrAdd(
+            column.Name,
+            _ => new Lazy<Task<PreparedStatement>>(
+                () => PrepareColumnUpdateWithRetryAsync(column),
+                LazyThreadSafetyMode.ExecutionAndPublication));
+        try
+        {
+            return await lazy.Value;
+        }
+        catch
+        {
+            _preparedColumnUpdates.TryRemove(
+                new KeyValuePair<string, Lazy<Task<PreparedStatement>>>(
+                    column.Name, lazy));
+            throw;
+        }
+    }
+
+    private async Task<PreparedStatement> PrepareColumnUpdateWithRetryAsync(
+        CassandraColumn column)
+    {
+        for (int attempt = 1; ; attempt++)
+        {
+            try
+            {
+                return await CassandraQueries.PrepareUpdateJsonColumnAsync(
                     _targetSession,
                     _targetKeyspace,
                     _targetTable,
-                    name,
-                    _primaryKeyColumns!),
-                LazyThreadSafetyMode.ExecutionAndPublication)).Value;
+                    column,
+                    _primaryKeyColumns!);
+            }
+            catch (Exception ex) when (
+                attempt < _retryPolicy.MaxAttempts
+                && ExceptionClassifier.IsTransient(ex))
+            {
+                await Task.Delay(_retryPolicy.DelayBeforeRetry(attempt));
+            }
+        }
+    }
 
     /// <summary>
     /// Emit a JSON object containing the primary-key columns followed by
@@ -329,10 +394,16 @@ internal sealed class RegularRowWriteStrategy : IRowWriteStrategy
     /// took; no TTL writes with TTL=0 (no expiry).
     /// </summary>
     private static int ResolveTtlSecondsFromExpiry(long? expiryEpochSeconds)
+        => ResolveTtlSecondsFromExpiry(
+            expiryEpochSeconds,
+            DateTimeOffset.UtcNow.ToUnixTimeSeconds());
+
+    private static int ResolveTtlSecondsFromExpiry(
+        long? expiryEpochSeconds,
+        long nowEpochSeconds)
     {
         if (expiryEpochSeconds is not long expiry) return 0;
-        long now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-        long remaining = expiry - now;
+        long remaining = expiry - nowEpochSeconds;
         return remaining > 0 ? (int)Math.Min(remaining, int.MaxValue) : 1;
     }
 }

@@ -230,7 +230,7 @@ public static class CassandraQueries
             ISession session,
             string keyspace,
             string table,
-            string column,
+            CassandraColumn column,
             IReadOnlyList<CassandraColumn> primaryKeyColumns)
     {
         if (primaryKeyColumns.Count == 0)
@@ -246,15 +246,18 @@ public static class CassandraQueries
     internal static string BuildUpdateJsonColumnCql(
         string keyspace,
         string table,
-        string column,
+        CassandraColumn column,
         IReadOnlyList<CassandraColumn> primaryKeyColumns)
     {
+        var restrictedKeys = column.Kind == "static"
+            ? primaryKeyColumns.Where(c => c.Kind == "partition_key")
+            : primaryKeyColumns;
         var whereClause = string.Join(" AND ",
-            primaryKeyColumns.Select(c => $"\"{c.Name}\" = fromJson(?)"));
+            restrictedKeys.Select(c => $"\"{c.Name}\" = fromJson(?)"));
         return
             $"UPDATE \"{keyspace}\".\"{table}\" " +
             $"USING TIMESTAMP ? AND TTL ? " +
-            $"SET \"{column}\" = fromJson(?) WHERE {whereClause}";
+            $"SET \"{column.Name}\" = fromJson(?) WHERE {whereClause}";
     }
 
     /// <summary>

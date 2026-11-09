@@ -38,12 +38,15 @@ internal sealed class CdcJsonRowParser
     // class) because they are an implementation contract of THIS
     // decoder, not of the rest of the codebase.
     internal const string SysRwTimestampColumn = "__sys_rw_ts";
+    internal const string SysRwTtlColumn = "__sys_rw_ttl";
     internal const string SysCellLevelTtlColumn = "__sys_clttl";
     internal const string SysCellLevelWritetimeColumn = "__sys_clts";
 
     // Zero-alloc UTF-8 keys for property-name comparison on the hot path.
     private static readonly byte[] SysRwTimestampUtf8 =
         Encoding.UTF8.GetBytes(SysRwTimestampColumn);
+    private static readonly byte[] SysRwTtlUtf8 =
+        Encoding.UTF8.GetBytes(SysRwTtlColumn);
     private static readonly byte[] SysCellLevelTtlUtf8 =
         Encoding.UTF8.GetBytes(SysCellLevelTtlColumn);
     private static readonly byte[] SysCellLevelWritetimeUtf8 =
@@ -118,7 +121,8 @@ internal sealed class CdcJsonRowParser
         int len = Encoding.UTF8.GetBytes(jsonRow, _utf8);
 
         long? writetime = null;
-        long? expiryEpochSeconds = null;
+        long? rowTtlDurationSeconds = null;
+        long? cellBaseExpiryEpochSeconds = null;
         if (_preserveCellLevel)
         {
             _colWritetime.Clear();
@@ -155,6 +159,31 @@ internal sealed class CdcJsonRowParser
                 continue;
             }
 
+            if (reader.ValueTextEquals(SysRwTtlUtf8))
+            {
+                reader.Read();
+                if (reader.TokenType == JsonTokenType.Null)
+                    continue;
+                if (reader.TokenType != JsonTokenType.StartArray)
+                    throw new JsonException(
+                        $"Malformed row payload: '{SysRwTtlColumn}' was " +
+                        $"{reader.TokenType}, expected an array or Null.");
+
+                if (!reader.Read() || reader.TokenType != JsonTokenType.Number)
+                    throw new JsonException(
+                        $"Malformed row payload: '{SysRwTtlColumn}'[0] " +
+                        "must be the row TTL duration as a Number.");
+                long duration = reader.GetInt64();
+                if (duration > 0) rowTtlDurationSeconds = duration;
+
+                while (reader.Read() && reader.TokenType != JsonTokenType.EndArray)
+                    reader.Skip();
+                if (reader.TokenType != JsonTokenType.EndArray)
+                    throw new JsonException(
+                        $"Malformed row payload: '{SysRwTtlColumn}' did not terminate.");
+                continue;
+            }
+
             if (reader.ValueTextEquals(SysCellLevelTtlUtf8))
             {
                 // __sys_clttl shape: [<expiry-epoch-seconds-or-0>, {<details>}]
@@ -186,7 +215,8 @@ internal sealed class CdcJsonRowParser
                                 $"Malformed row payload: '{SysCellLevelTtlColumn}'[0] " +
                                 $"was {reader.TokenType}, expected the expiry epoch as a Number.");
                         baseExpiry = reader.GetInt64();
-                        if (baseExpiry > 0) expiryEpochSeconds = baseExpiry;
+                        if (baseExpiry > 0)
+                            cellBaseExpiryEpochSeconds = baseExpiry;
                         first = false;
                     }
                     else if (_preserveCellLevel
@@ -267,10 +297,18 @@ internal sealed class CdcJsonRowParser
             throw new JsonException("Unexpected trailing content after row object.");
 
         var cleaned = Encoding.UTF8.GetString(_buffer.WrittenSpan);
+        long? rowExpiryEpochSeconds =
+            rowTtlDurationSeconds.HasValue && cellBaseExpiryEpochSeconds.HasValue
+                ? cellBaseExpiryEpochSeconds
+                : null;
         var perColumn = _preserveCellLevel
-            ? BuildPerColumnDivergence(writetime, expiryEpochSeconds)
+            ? BuildPerColumnDivergence(
+                writetime,
+                rowExpiryEpochSeconds,
+                cellBaseExpiryEpochSeconds)
             : null;
-        return (cleaned, new CdcRowMetadata(writetime, expiryEpochSeconds, perColumn));
+        return (cleaned, new CdcRowMetadata(
+            writetime, rowExpiryEpochSeconds, perColumn));
     }
 
     /// <summary>
@@ -331,7 +369,9 @@ if (reader.TokenType != JsonTokenType.EndArray)
     /// <c>null</c> and the writer keeps its single-statement fast path.
     /// </summary>
     private Dictionary<string, CdcCellMetadata>? BuildPerColumnDivergence(
-        long? rowWritetime, long? rowExpiry)
+        long? rowWritetime,
+        long? rowExpiry,
+        long? cellBaseExpiry)
     {
         if (_colWritetime.Count == 0 && _colExpiry.Count == 0)
             return null;
@@ -341,7 +381,9 @@ if (reader.TokenType != JsonTokenType.EndArray)
         foreach (var col in EnumerateCellColumns())
         {
             long? cellWt = _colWritetime.TryGetValue(col, out var wt) ? wt : rowWritetime;
-            long? cellExp = _colExpiry.TryGetValue(col, out var exp) ? exp : rowExpiry;
+            long? cellExp = _colExpiry.TryGetValue(col, out var exp)
+                ? exp
+                : cellBaseExpiry;
 
             if (cellWt != rowWritetime || cellExp != rowExpiry)
             {
