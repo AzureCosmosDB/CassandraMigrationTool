@@ -66,6 +66,7 @@ public sealed class RegularRowWriteStrategyTests
         Assert.False(root.TryGetProperty("favorite_toy", out _));
 
         Assert.Equal(["\"tenant-1\"", "\"cat-1\""], plan.PrimaryKeyValues);
+        Assert.True(plan.WriteBaseline);
         var update = Assert.Single(plan.CellWrites);
         Assert.Equal(FavoriteToyColumn, update.Column);
         Assert.Equal("\"Ball\"", update.JsonValue);
@@ -99,9 +100,95 @@ public sealed class RegularRowWriteStrategyTests
             ColumnsByName);
 
         using var baseline = JsonDocument.Parse(plan.BaselineJson);
+        Assert.True(plan.WriteBaseline);
         Assert.Equal(2, baseline.RootElement.EnumerateObject().Count());
         Assert.True(baseline.RootElement.TryGetProperty("tenant_id", out _));
         Assert.True(baseline.RootElement.TryGetProperty("cat_id", out _));
+    }
+
+    [Fact]
+    public void BuildSplitWritePlan_UpdateOnlyRowSkipsBaselineAndUpdatesEveryValue()
+    {
+        const string json =
+            """
+            {
+              "tenant_id": "tenant-1",
+              "cat_id": "cat-1",
+              "favorite_toy": "Ball",
+              "name": "Milo"
+            }
+            """;
+        var metadata = new CdcRowMetadata(
+            WritetimeMicros: null,
+            ExpiryEpochSeconds: null,
+            PerColumn: new Dictionary<string, CdcCellMetadata>
+            {
+                ["favorite_toy"] = new(200, 300)
+            });
+
+        var plan = RegularRowWriteStrategy.BuildSplitWritePlan(
+            json,
+            metadata,
+            PrimaryKeyColumns,
+            PrimaryKeyColumnNames,
+            ColumnsByName);
+
+        Assert.False(plan.WriteBaseline);
+        Assert.Equal(2, plan.CellWrites.Count);
+        Assert.Contains(
+            plan.CellWrites,
+            write => write.Column.Name == "favorite_toy"
+                && write.Key == new RegularRowWriteStrategy.GroupKey(200, 300));
+        Assert.Contains(
+            plan.CellWrites,
+            write => write.Column.Name == "name"
+                && write.Key == new RegularRowWriteStrategy.GroupKey(null, null));
+    }
+
+    [Fact]
+    public void BuildSplitWritePlan_NormalizesQuotedJsonIdentifiers()
+    {
+        CassandraColumn[] quotedKeyColumns =
+        [
+            new("TenantId", "text", "partition_key", "none", 0),
+            new("CatId", "text", "clustering", "asc", 0)
+        ];
+        var quotedKeyNames = new HashSet<string>(
+            quotedKeyColumns.Select(c => c.Name),
+            StringComparer.Ordinal);
+        var columnsByName = quotedKeyColumns
+            .Append(new CassandraColumn(
+                "FavoriteToy", "text", "regular", "none", -1))
+            .ToDictionary(c => c.Name, StringComparer.Ordinal);
+        const string json =
+            """
+            {
+              "\"TenantId\"": "tenant-1",
+              "\"CatId\"": "cat-1",
+              "\"FavoriteToy\"": "Ball"
+            }
+            """;
+        var metadata = new CdcRowMetadata(
+            WritetimeMicros: 100,
+            ExpiryEpochSeconds: null,
+            PerColumn: new Dictionary<string, CdcCellMetadata>
+            {
+                ["FavoriteToy"] = new(200, 300)
+            });
+
+        var plan = RegularRowWriteStrategy.BuildSplitWritePlan(
+            json,
+            metadata,
+            quotedKeyColumns,
+            quotedKeyNames,
+            columnsByName);
+
+        Assert.Equal(["\"tenant-1\"", "\"cat-1\""], plan.PrimaryKeyValues);
+        using var baseline = JsonDocument.Parse(plan.BaselineJson);
+        Assert.True(baseline.RootElement.TryGetProperty("\"TenantId\"", out _));
+        Assert.True(baseline.RootElement.TryGetProperty("\"CatId\"", out _));
+        var update = Assert.Single(plan.CellWrites);
+        Assert.Equal("FavoriteToy", update.Column.Name);
     }
 
     [Fact]
@@ -224,5 +311,34 @@ public sealed class RegularRowWriteStrategyTests
 
         Assert.Equal(2000, metadata.ExpiryEpochSeconds);
         Assert.Null(metadata.PerColumn);
+    }
+
+    [Fact]
+    public void Parse_NonFrozenCollectionUsesCellBaseExpiryFallback()
+    {
+        const string json =
+            """
+            {
+              "tenant_id": "tenant-1",
+              "cat_id": "cat-1",
+              "tags": ["friendly", "indoor"],
+              "__sys_rw_ts": 100,
+              "__sys_rw_ttl": [0, 0],
+              "__sys_clttl": [2000, {
+                "tags": [[30, 0], [30, 0]]
+              }],
+              "__sys_clts": {
+                "tags": [100, 100]
+              }
+            }
+            """;
+
+        var (_, metadata) = CdcJsonRowParser.ParseOnce(
+            json, preserveCellLevel: true);
+
+        Assert.Null(metadata.ExpiryEpochSeconds);
+        var tags = Assert.Single(metadata.PerColumn!);
+        Assert.Equal("tags", tags.Key);
+        Assert.Equal(new CdcCellMetadata(100, 2000), tags.Value);
     }
 }

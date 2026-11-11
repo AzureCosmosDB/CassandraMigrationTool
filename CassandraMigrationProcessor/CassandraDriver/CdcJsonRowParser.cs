@@ -249,7 +249,7 @@ internal sealed class CdcJsonRowParser
                 {
                     while (reader.Read() && reader.TokenType != JsonTokenType.EndObject)
                     {
-                        string col = reader.GetString()!;
+                        string col = CqlIdentifier.Unquote(reader.GetString());
                         reader.Read();
                         if (reader.TokenType == JsonTokenType.Number)
                             _colWritetime[col] = reader.GetInt64();
@@ -321,8 +321,8 @@ internal sealed class CdcJsonRowParser
     /// has no TTL (recorded as a present-but-null entry so it is
     /// distinguishable from "inherit the row expiry"). Non-frozen
     /// collection columns present an array-of-arrays instead of a
-    /// <c>[dur, offset]</c> pair; those cannot be preserved per element and
-    /// are skipped, falling back to the row-level TTL for the whole column.
+    /// <c>[dur, offset]</c> pair; those cannot be preserved per element, so
+    /// the cell-expiry base is retained as a whole-column approximation.
     /// The reader is positioned on the detail <c>StartObject</c> and is left
     /// on its matching <c>EndObject</c>.
     /// </summary>
@@ -330,7 +330,7 @@ internal sealed class CdcJsonRowParser
     {
         while (reader.Read() && reader.TokenType != JsonTokenType.EndObject)
         {
-            string col = reader.GetString()!;
+            string col = CqlIdentifier.Unquote(reader.GetString());
             reader.Read();
             if (reader.TokenType != JsonTokenType.StartArray)
             {
@@ -344,7 +344,10 @@ internal sealed class CdcJsonRowParser
             peek.Read();
             if (peek.TokenType != JsonTokenType.Number)
             {
-                // Collection column — cannot preserve per element; skip whole.
+                // Collection column — CQL cannot preserve element-level
+                // metadata, so retain the cell expiry base as the best
+                // whole-column approximation and replay it through UPDATE.
+                _colExpiry[col] = baseExpiry > 0 ? baseExpiry : null;
                 reader.Skip();
                 continue;
             }

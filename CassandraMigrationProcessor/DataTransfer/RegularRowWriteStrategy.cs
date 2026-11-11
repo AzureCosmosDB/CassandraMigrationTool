@@ -31,7 +31,9 @@ namespace CassandraMigrationProcessor.DataTransfer;
 /// the source row-liveness metadata, followed by timestamped/TTL-bearing
 /// <c>UPDATE</c>s for divergent cells. UPDATE preserves the baseline
 /// row-liveness marker while still applying each cell's own metadata.
-/// Uniform rows keep the single-statement fast path unchanged.
+/// Uniform rows with a source marker keep the single-statement fast path;
+/// UPDATE-only rows are replayed without an INSERT so marker absence is
+/// preserved.
 /// </para>
 /// </summary>
 internal sealed class RegularRowWriteStrategy : IRowWriteStrategy
@@ -144,11 +146,12 @@ internal sealed class RegularRowWriteStrategy : IRowWriteStrategy
         CdcRowMetadata? metadata,
         CancellationToken cancellationToken)
     {
-        // Cell-level split path: only when preservation is enabled (partial
-        // statement prepared) AND the row actually diverges. Everything
-        // else takes the unchanged single-statement fast path.
+        // Cell-level split path: rows with divergent cells need independent
+        // UPDATEs, and UPDATE-only source rows must avoid creating a marker
+        // through the normal INSERT path.
         if (_preparedInsertJsonPartial is not null
-            && metadata is { HasPerColumnDivergence: true })
+            && metadata is not null
+            && (metadata.HasPerColumnDivergence || !metadata.HasRowMarker))
         {
             return WriteSplitRowAsync(cleanedJson, metadata, counters, cancellationToken);
         }
@@ -171,10 +174,10 @@ internal sealed class RegularRowWriteStrategy : IRowWriteStrategy
     /// <summary>
     /// Restore the source row-liveness marker with one baseline partial
     /// INSERT, then replay each divergent cell with UPDATE so newer
-    /// TTL-bearing cells cannot replace that marker. A column with no
-    /// per-cell metadata (nulls, non-frozen collections) stays in the
-    /// baseline INSERT. All statements share one retry budget and count as
-    /// a single row.
+    /// TTL-bearing cells cannot replace that marker. UPDATE-only source rows
+    /// skip the baseline INSERT and replay every value through UPDATE so no
+    /// destination marker is introduced. All statements share one retry
+    /// budget and count as a single row.
     /// </summary>
     private async Task<WriteOutcome> WriteSplitRowAsync(
         string cleanedJson,
@@ -188,7 +191,8 @@ internal sealed class RegularRowWriteStrategy : IRowWriteStrategy
             _primaryKeyColumns!,
             _primaryKeyColumnNames!,
             _columnsByName!);
-        var attempts = new List<Func<Task>>(plan.CellWrites.Count + 1);
+        var attempts = new List<Func<Task>>(
+            plan.CellWrites.Count + (plan.WriteBaseline ? 1 : 0));
         long fallbackTs = NowMicros();
 
         var preparedCellWrites = new List<(CellWrite Cell, PreparedStatement Prepared)>(
@@ -203,16 +207,20 @@ internal sealed class RegularRowWriteStrategy : IRowWriteStrategy
         }
 
         long nowEpochSeconds = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-        int baselineTtlSeconds =
-            ResolveTtlSecondsFromExpiry(
-                metadata.ExpiryEpochSeconds, nowEpochSeconds);
-        long baselineTs = metadata.WritetimeMicros ?? fallbackTs;
-        var baseline = _preparedInsertJsonPartial!.Bind(
-            plan.BaselineJson, baselineTs, baselineTtlSeconds);
-        baseline.SetReadTimeoutMillis(RowWriteRetry.WriteTimeoutMs);
-        baseline.SetConsistencyLevel(_writeConsistencyLevel);
-        attempts.Add(() =>
-            _targetSession.ExecuteAsync(baseline).WaitAsync(cancellationToken));
+        if (plan.WriteBaseline)
+        {
+            int baselineTtlSeconds =
+                ResolveTtlSecondsFromExpiry(
+                    metadata.ExpiryEpochSeconds, nowEpochSeconds);
+            var baseline = _preparedInsertJsonPartial!.Bind(
+                plan.BaselineJson,
+                metadata.WritetimeMicros!.Value,
+                baselineTtlSeconds);
+            baseline.SetReadTimeoutMillis(RowWriteRetry.WriteTimeoutMs);
+            baseline.SetConsistencyLevel(_writeConsistencyLevel);
+            attempts.Add(() =>
+                _targetSession.ExecuteAsync(baseline).WaitAsync(cancellationToken));
+        }
 
         foreach (var preparedCellWrite in preparedCellWrites)
         {
@@ -248,6 +256,7 @@ internal sealed class RegularRowWriteStrategy : IRowWriteStrategy
 
     internal sealed record SplitWritePlan(
         string BaselineJson,
+        bool WriteBaseline,
         IReadOnlyList<string> PrimaryKeyValues,
         IReadOnlyList<string> PartitionKeyValues,
         IReadOnlyList<CellWrite> CellWrites);
@@ -269,21 +278,31 @@ internal sealed class RegularRowWriteStrategy : IRowWriteStrategy
         var pkByName = new Dictionary<string, JsonProperty>(StringComparer.Ordinal);
         var baselineProps = new List<JsonProperty>();
         var cellWrites = new List<CellWrite>();
-        var perColumn = metadata.PerColumn!;
+        var perColumn = metadata.PerColumn
+            ?? new Dictionary<string, CdcCellMetadata>(StringComparer.Ordinal);
+        bool writeBaseline = metadata.HasRowMarker;
 
         foreach (var prop in root.EnumerateObject())
         {
-            if (primaryKeyColumnNames.Contains(prop.Name))
+            string columnName = CqlIdentifier.Unquote(prop.Name);
+            if (primaryKeyColumnNames.Contains(columnName))
             {
-                pkByName[prop.Name] = prop;
+                pkByName[columnName] = prop;
                 continue;
             }
 
-            if (perColumn.TryGetValue(prop.Name, out var cell))
+            bool hasCellMetadata = perColumn.TryGetValue(columnName, out var cell);
+            if (hasCellMetadata || !writeBaseline)
             {
-                if (!columnsByName.TryGetValue(prop.Name, out var column))
+                if (!columnsByName.TryGetValue(columnName, out var column))
                     throw new JsonException(
                         $"Row payload contains unknown column '{prop.Name}'.");
+                if (!hasCellMetadata)
+                {
+                    cell = new CdcCellMetadata(
+                        metadata.WritetimeMicros,
+                        metadata.ExpiryEpochSeconds);
+                }
                 cellWrites.Add(new CellWrite(
                     new GroupKey(cell.WritetimeMicros, cell.ExpiryEpochSeconds),
                     column,
@@ -311,6 +330,7 @@ internal sealed class RegularRowWriteStrategy : IRowWriteStrategy
 
         return new SplitWritePlan(
             WriteSubsetJson(pkProps, baselineProps),
+            writeBaseline,
             pkValues,
             partitionKeyValues,
             cellWrites);

@@ -49,6 +49,14 @@ internal sealed record CdcRowMetadata(
     IReadOnlyDictionary<string, CdcCellMetadata>? PerColumn = null)
 {
     /// <summary>
+    /// True when the source row has a row-liveness marker. A null
+    /// <c>__sys_rw_ts</c> denotes an UPDATE-only row whose cells must be
+    /// replayed without an INSERT, otherwise the destination would gain a
+    /// marker that outlives its cells.
+    /// </summary>
+    public bool HasRowMarker => WritetimeMicros.HasValue;
+
+    /// <summary>
     /// True when the source row carries per-column writetime/TTL that
     /// diverges from the row-level values and cell-level preservation is
     /// enabled. When false the writer takes the single-statement fast
@@ -98,17 +106,16 @@ internal sealed record CdcRowMetadata(
 }
 
 /// <summary>
-/// Per-column (per-cell) change-feed metadata for a single scalar or
-/// frozen column, decoded from the source's <c>__sys_clts</c> (writetime)
-/// and <c>__sys_clttl[1]</c> (per-column TTL) maps. Only populated when
-/// cell-level preservation is enabled and the row actually diverges from
-/// its row-level metadata.
+/// Per-column (per-cell) change-feed metadata decoded from the source's
+/// <c>__sys_clts</c> (writetime) and <c>__sys_clttl[1]</c> (per-column TTL)
+/// maps. Only populated when cell-level preservation is enabled and the
+/// row actually diverges from its row-level metadata.
 /// </summary>
 /// <remarks>
 /// Non-frozen collection columns expose <em>per-element</em> writetime/TTL
-/// (arrays rather than scalars in those maps); CQL cannot re-apply
-/// per-element TTL through a single statement, so such columns are
-/// deliberately excluded here and fall back to the row-level group.
+/// (arrays rather than scalars in those maps). CQL cannot re-apply that
+/// metadata per element, so they use the cell-expiry base as a
+/// whole-column TTL approximation and are replayed through UPDATE.
 /// </remarks>
 /// <param name="WritetimeMicros">Cell writetime in microseconds since the
 /// Unix epoch (from <c>__sys_clts[col]</c>), or <c>null</c> to inherit the
