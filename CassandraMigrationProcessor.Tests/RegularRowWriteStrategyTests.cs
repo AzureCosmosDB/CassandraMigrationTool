@@ -173,6 +173,33 @@ public sealed class RegularRowWriteStrategyTests
     }
 
     [Fact]
+    public void Parse_CellBaseExpiryIsRetainedWhenPerCellPreservationIsDisabled()
+    {
+        const string json =
+            """
+            {
+              "tenant_id": "tenant-1",
+              "cat_id": "cat-1",
+              "favorite_toy": "Ball",
+              "__sys_rw_ts": 100,
+              "__sys_rw_ttl": [0, 0],
+              "__sys_clttl": [2000, {
+                "favorite_toy": [30, 0]
+              }],
+              "__sys_clts": {
+                "favorite_toy": 200
+              }
+            }
+            """;
+
+        var (_, metadata) = CdcJsonRowParser.ParseOnce(
+            json, preserveCellLevel: false);
+
+        Assert.Equal(2000, metadata.ExpiryEpochSeconds);
+        Assert.Null(metadata.PerColumn);
+    }
+
+    [Fact]
     public void Parse_RowMarkerExpiryUsesCellBaseWhenRowTtlIsPresent()
     {
         const string json =

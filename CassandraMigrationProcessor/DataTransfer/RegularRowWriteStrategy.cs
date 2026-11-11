@@ -197,7 +197,9 @@ internal sealed class RegularRowWriteStrategy : IRowWriteStrategy
         {
             preparedCellWrites.Add((
                 cellWrite,
-                await GetPreparedColumnUpdateAsync(cellWrite.Column)));
+                await GetPreparedColumnUpdateAsync(
+                    cellWrite.Column,
+                    cancellationToken)));
         }
 
         long nowEpochSeconds = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
@@ -315,16 +317,23 @@ internal sealed class RegularRowWriteStrategy : IRowWriteStrategy
     }
 
     private async Task<PreparedStatement> GetPreparedColumnUpdateAsync(
-        CassandraColumn column)
+        CassandraColumn column,
+        CancellationToken cancellationToken)
     {
         var lazy = _preparedColumnUpdates.GetOrAdd(
             column.Name,
             _ => new Lazy<Task<PreparedStatement>>(
                 () => PrepareColumnUpdateWithRetryAsync(column),
                 LazyThreadSafetyMode.ExecutionAndPublication));
+        var preparationTask = lazy.Value;
         try
         {
-            return await lazy.Value;
+            return await preparationTask.WaitAsync(cancellationToken);
+        }
+        catch (OperationCanceledException)
+            when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
         }
         catch
         {

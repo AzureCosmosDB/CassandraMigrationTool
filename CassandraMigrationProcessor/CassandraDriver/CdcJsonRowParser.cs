@@ -1,5 +1,4 @@
 using System.Buffers;
-using System.Linq;
 using System.Text;
 using System.Text.Json;
 
@@ -297,18 +296,21 @@ internal sealed class CdcJsonRowParser
             throw new JsonException("Unexpected trailing content after row object.");
 
         var cleaned = Encoding.UTF8.GetString(_buffer.WrittenSpan);
-        long? rowExpiryEpochSeconds =
+        long? rowMarkerExpiryEpochSeconds =
             rowTtlDurationSeconds.HasValue && cellBaseExpiryEpochSeconds.HasValue
                 ? cellBaseExpiryEpochSeconds
                 : null;
+        long? effectiveExpiryEpochSeconds = _preserveCellLevel
+            ? rowMarkerExpiryEpochSeconds
+            : cellBaseExpiryEpochSeconds;
         var perColumn = _preserveCellLevel
             ? BuildPerColumnDivergence(
                 writetime,
-                rowExpiryEpochSeconds,
+                rowMarkerExpiryEpochSeconds,
                 cellBaseExpiryEpochSeconds)
             : null;
         return (cleaned, new CdcRowMetadata(
-            writetime, rowExpiryEpochSeconds, perColumn));
+            writetime, effectiveExpiryEpochSeconds, perColumn));
     }
 
     /// <summary>
