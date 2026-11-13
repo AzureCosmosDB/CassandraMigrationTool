@@ -99,10 +99,25 @@
                                 </td>
                                 <td style="font-size: 12px; white-space: nowrap;">
                                     @{
-                                        long copiedRows = migration.Tables?.Sum(mu => mu.CopyRowsCopied) ?? 0;
-                                        long totalDocs = migration.Tables?.Sum(mu => mu.TotalRowCount) ?? 0;
+                                        var migrationTables = migration.Tables?
+                                            .Where(mu => mu.TableName != "*")
+                                            .ToList() ?? [];
+                                        var tablesWithReliableRowCounts = migrationTables
+                                            .Where(mu => !migration.IsOnline || !mu.IsCounterTable)
+                                            .ToList();
+                                        int unavailableCounterTables = migration.IsOnline
+                                            ? migrationTables.Count(mu => mu.IsCounterTable)
+                                            : 0;
+                                        bool allRowCountsUnavailable = migrationTables.Count > 0
+                                            && tablesWithReliableRowCounts.Count == 0;
+                                        long copiedRows = tablesWithReliableRowCounts.Sum(mu => mu.CopyRowsCopied);
+                                        long totalDocs = tablesWithReliableRowCounts.Sum(mu => mu.TotalRowCount);
                                     }
-                                    @if (totalDocs > 0)
+                                    @if (allRowCountsUnavailable)
+                                    {
+                                        <span title="Distinct row count is unavailable for online counter migration.">Unavailable</span>
+                                    }
+                                    else if (totalDocs > 0)
                                     {
                                         <span title="Rows copied / Total documents">@copiedRows.ToString("N0") / @totalDocs.ToString("N0")</span>
                                     }
@@ -113,6 +128,13 @@
                                     else
                                     {
                                         <span style="color: var(--az-text-disabled, #a19f9d);">—</span>
+                                    }
+                                    @if (!allRowCountsUnavailable && unavailableCounterTables > 0)
+                                    {
+                                        <span class="text-muted ms-1"
+                                              title="@($"{unavailableCounterTables} online counter {(unavailableCounterTables == 1 ? "table is" : "tables are")} excluded.")">
+                                            *
+                                        </span>
                                     }
                                 </td>
                                 <td style="font-size: 12px; white-space: nowrap;">

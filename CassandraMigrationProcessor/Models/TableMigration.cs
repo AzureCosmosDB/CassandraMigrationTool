@@ -32,6 +32,14 @@ public class TableMigrationSummary
     public string? TargetKeyspaceName { get; set; }
     public string? TargetTableName { get; set; }
 
+    /// <summary>
+    /// True when the source schema contains a counter column. Online counter
+    /// migration uses the Cosmos change feed, which can surface multiple
+    /// versions of one logical row; its processed-item count must therefore
+    /// not be presented as a distinct row count.
+    /// </summary>
+    public bool IsCounterTable { get; set; }
+
     // ── Change Feed Summary ──
 
     public long ChangeFeedUpdatesInLastBatch { get; set; }
@@ -39,8 +47,9 @@ public class TableMigrationSummary
     public double ChangeFeedAvgWriteLatencyInMS { get; set; }
     public DateTime? ChangeFeedLastChecked { get; set; }
 
-    // Cumulative replay counters, propagated from the live
-    // TableMigration by TableMigrationMapper.ToSummary.
+    // Cumulative replay operation counters, propagated from the live
+    // TableMigration by TableMigrationMapper.ToSummary. The serialized names
+    // are retained for compatibility; neither value is a distinct-row count.
     public long ChangeFeedRowsInserted { get; set; }
     public long ChangeFeedInsertEvents { get; set; }
 
