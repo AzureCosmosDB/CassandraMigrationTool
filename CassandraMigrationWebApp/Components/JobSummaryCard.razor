@@ -25,10 +25,10 @@
         : realUnits;
     bool allRowCountsUnavailable = realUnits.Count > 0 && countableUnits.Count == 0;
     long bulkRows = countableUnits.Sum(u => (long)u.CopyRowsCopied);
-    long replayWrites = realUnits.Sum(u => (long)u.ChangeFeedRowsInserted);
+    long replayItems = realUnits.Sum(u => (long)u.ChangeFeedRowsInserted);
     long totalDocs = countableUnits.Sum(u => (long)u.TotalRowCount);
     double avgSpeed = countableUnits.Where(u => u.CopyRowsPerSecond > 0).Select(u => u.CopyRowsPerSecond).DefaultIfEmpty(0).Sum();
-    bool showReplayWrites = sj.IsOnline && replayWrites > 0;
+    bool showReplayItems = sj.IsOnline && replayItems > 0;
     string rowsTooltip = onlineCounterTables > 0
         ? "Online counter tables are excluded because Cosmos change feed items are not distinct logical rows."
         : "Rows written during the bulk-copy phase. CDC replay writes are counted separately.";
@@ -122,13 +122,13 @@
                         }
                     </small>
                 </div>
-                @if (showReplayWrites)
+                @if (showReplayItems)
                 {
                     <div class="col-auto">
                         <small class="text-muted"
-                               title="Successful CDC replay write operations. Repeated updates to the same logical row are counted separately.">
+                               title="Successfully processed CDC replay items. Repeated updates to the same logical row are counted separately; counter reconciliation may require no target UPDATE.">
                             <i class="bi bi-arrow-repeat"></i>
-                            <strong>CDC writes applied:</strong> @replayWrites.ToString("N0")
+                            <strong>CDC items processed:</strong> @replayItems.ToString("N0")
                         </small>
                     </div>
                 }

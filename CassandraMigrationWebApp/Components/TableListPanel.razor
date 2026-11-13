@@ -71,9 +71,9 @@
                 </th>
                 @if (Job != null && Job.IsOnline)
                 {
-                    <th class="sortable-header @GetSortClass("ReplayWrites")" @onclick='() => SortBy("ReplayWrites")' style="cursor: pointer;">
-                        CDC Writes Applied
-                        <i class="bi @GetSortIcon("ReplayWrites") ms-1"></i>
+                    <th class="sortable-header @GetSortClass("ReplayItems")" @onclick='() => SortBy("ReplayItems")' style="cursor: pointer;">
+                        CDC Items Processed
+                        <i class="bi @GetSortIcon("ReplayItems") ms-1"></i>
                     </th>
                     <th class="sortable-header @GetSortClass("TimeSinceLastChange")" @onclick='() => SortBy("TimeSinceLastChange")' style="cursor: pointer;">
                         Last Checked
@@ -183,7 +183,7 @@
 
                         @if (Job.IsOnline)
                         {
-                            <td title="Successful CDC replay write operations. Repeated updates to one logical row are counted separately.">
+                            <td title="Successfully processed CDC replay items. Repeated updates to one logical row are counted separately; counter reconciliation may require no target UPDATE.">
                                 @(mu.ChangeFeedRowsInserted > 0
                                     ? mu.ChangeFeedRowsInserted.ToString("N0")
                                     : "-")
@@ -422,7 +422,7 @@
             "RowsCopied"          => u => Job?.IsOnline == true && u.IsCounterTable
                 ? -1L
                 : u.CopyRowsCopied,
-            "ReplayWrites"        => u => u.ChangeFeedRowsInserted,
+            "ReplayItems"         => u => u.ChangeFeedRowsInserted,
             "TimeSinceLastChange" => u => GetSortValueForTimestamp(u),
             "LastBatchChanges"    => u => u.ChangeFeedUpdatesInLastBatch,
             _ => null

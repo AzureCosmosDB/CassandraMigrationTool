@@ -54,7 +54,7 @@
                                     @if (Job?.IsOnline == true && TableMigration.IsCounterTable)
                                     {
                                         <div><span class="lbl">Distinct rows:</span> Unavailable for online counter migration</div>
-                                        <div><span class="lbl">Bulk writes applied:</span> @FormatLong(totals.Inserted)</div>
+                                        <div><span class="lbl">Bulk items processed:</span> @FormatLong(totals.Inserted)</div>
                                     }
                                     else
                                     {
@@ -72,7 +72,7 @@
                                     {
                                         <div><span class="lbl">Started On (UTC):</span> @(TableMigration.ChangeFeedStartedOn?.ToString() ?? "N/A")</div>
                                         <div><span class="lbl">Continuation Token:</span> @(TableMigration.ChangeFeedContinuationToken ?? "N/A")</div>
-                                        <div><span class="lbl">Writes applied:</span> @FormatLong(TableMigration.ChangeFeedRowsInserted) (from @FormatLong(TableMigration.ChangeFeedInsertEvents) source events)</div>
+                                        <div><span class="lbl">Items processed:</span> @FormatLong(TableMigration.ChangeFeedRowsInserted)</div>
                                         <div><span class="lbl">Failed (with retries):</span> @FormatLong(TableMigration.ChangeFeedErrors)</div>
                                         <div><span class="lbl">Avg Read Latency (ms):</span> @TableMigration.ChangeFeedAvgReadLatencyInMS.ToString("F2")</div>
                                         <div><span class="lbl">Avg Write Latency (ms):</span> @TableMigration.ChangeFeedAvgWriteLatencyInMS.ToString("F2")</div>

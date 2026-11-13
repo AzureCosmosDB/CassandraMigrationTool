@@ -66,10 +66,10 @@ public static class TableMigrationMapper
             unit.ChangeFeedAvgWriteLatencyInMS;
         // Cumulative replay counters: snapshot the internal Interlocked
         // fields so the dashboard sees a consistent, monotonically-
-        // increasing post-bulk operation count. The legacy property names say
-        // "rows inserted", but replay applies writes/upserts and can process
-        // the same logical row repeatedly. Distinguishing source operation
-        // kinds requires Full-Fidelity Change Feed.
+        // increasing post-bulk processed-item count. The legacy property names
+        // say "rows inserted", but a successful item can be an upsert or a
+        // counter reconciliation that needs no target UPDATE. The same logical
+        // row can also be processed repeatedly.
         target.ChangeFeedRowsInserted =
             Volatile.Read(ref unit._changeFeedRowsInserted);
         target.ChangeFeedInsertEvents =
