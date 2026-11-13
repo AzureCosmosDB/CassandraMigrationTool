@@ -242,8 +242,9 @@ internal sealed class CdcJsonRowParser
             {
                 // __sys_clts shape: {col: <writetime-micros> | [per-element…]}.
                 // Scalar (and frozen) columns carry a single writetime number;
-                // non-frozen collections carry a per-element array that CQL
-                // cannot re-apply per element, so those are skipped.
+                // non-frozen collections carry a per-element array. CQL can
+                // replay the collection as one value only when every element
+                // has the same writetime.
                 reader.Read();
                 if (reader.TokenType == JsonTokenType.StartObject)
                 {
@@ -253,13 +254,20 @@ internal sealed class CdcJsonRowParser
                         reader.Read();
                         if (reader.TokenType == JsonTokenType.Number)
                             _colWritetime[col] = reader.GetInt64();
+                        else if (reader.TokenType == JsonTokenType.StartArray)
+                            ParseCollectionWritetime(ref reader, col);
                         else
-                            reader.Skip();
+                            throw new JsonException(
+                                $"Malformed row payload: '{SysCellLevelWritetimeColumn}' " +
+                                $"detail for '{col}' was {reader.TokenType}, expected a " +
+                                "Number or per-element array.");
                     }
                 }
                 else if (reader.TokenType != JsonTokenType.Null)
                 {
-                    reader.Skip();
+                    throw new JsonException(
+                        $"Malformed row payload: '{SysCellLevelWritetimeColumn}' was " +
+                        $"{reader.TokenType}, expected an object or Null.");
                 }
                 continue;
             }
@@ -321,8 +329,9 @@ internal sealed class CdcJsonRowParser
     /// has no TTL (recorded as a present-but-null entry so it is
     /// distinguishable from "inherit the row expiry"). Non-frozen
     /// collection columns present an array-of-arrays instead of a
-    /// <c>[dur, offset]</c> pair; those cannot be preserved per element, so
-    /// the cell-expiry base is retained as a whole-column approximation.
+    /// <c>[dur, offset]</c> pair. They are collapsed to one column expiry only
+    /// when every element has the same expiry; heterogeneous element expiry
+    /// cannot be represented by one CQL UPDATE and fails explicitly.
     /// The reader is positioned on the detail <c>StartObject</c> and is left
     /// on its matching <c>EndObject</c>.
     /// </summary>
@@ -334,36 +343,172 @@ internal sealed class CdcJsonRowParser
             reader.Read();
             if (reader.TokenType != JsonTokenType.StartArray)
             {
-                reader.Skip();
-                continue;
+                throw new JsonException(
+                    $"Malformed row payload: '{SysCellLevelTtlColumn}' detail " +
+                    $"for '{col}' was {reader.TokenType}, expected an array.");
             }
 
             // Peek the first array element on a copy of the reader to tell a
             // scalar [dur, offset] pair from a collection [[dur,off],…].
             var peek = reader;
-            peek.Read();
-            if (peek.TokenType != JsonTokenType.Number)
+            if (!peek.Read())
+                throw new JsonException(
+                    $"Malformed row payload: '{SysCellLevelTtlColumn}' detail " +
+                    $"for '{col}' did not terminate.");
+
+            if (peek.TokenType == JsonTokenType.EndArray)
             {
-                // Collection column — CQL cannot preserve element-level
-                // metadata, so retain the cell expiry base as the best
-                // whole-column approximation and replay it through UPDATE.
-                _colExpiry[col] = baseExpiry > 0 ? baseExpiry : null;
                 reader.Skip();
                 continue;
             }
 
-            reader.Read();
-            long dur = reader.TokenType == JsonTokenType.Number ? reader.GetInt64() : 0;
-            reader.Read();
-            long offset = reader.TokenType == JsonTokenType.Number ? reader.GetInt64() : 0;
-while (reader.TokenType != JsonTokenType.EndArray && reader.Read()) { }
-if (reader.TokenType != JsonTokenType.EndArray)
-    throw new JsonException($"Malformed row payload: '{SysCellLevelTtlColumn}' detail for '{col}' did not terminate with EndArray.");
+            if (peek.TokenType == JsonTokenType.StartArray)
+            {
+                ParseCollectionTtl(ref reader, col, baseExpiry);
+                continue;
+            }
 
-            _colExpiry[col] = (dur > 0 && baseExpiry > 0)
-                ? baseExpiry + offset
-                : (long?)null;
+            if (peek.TokenType != JsonTokenType.Number)
+                throw new JsonException(
+                    $"Malformed row payload: '{SysCellLevelTtlColumn}' detail " +
+                    $"for '{col}' began with {peek.TokenType}, expected a TTL " +
+                    "duration or per-element array.");
+
+            _colExpiry[col] = ParseTtlPair(ref reader, col, baseExpiry);
         }
+    }
+
+    /// <summary>
+    /// Collapse a non-frozen collection's per-element writetimes to one
+    /// column writetime. A heterogeneous collection cannot be reconstructed
+    /// exactly through one whole-column UPDATE, so fail instead of silently
+    /// changing last-write-wins semantics.
+    /// </summary>
+    private void ParseCollectionWritetime(
+        ref Utf8JsonReader reader,
+        string col)
+    {
+        bool hasValue = false;
+        long commonWritetime = 0;
+
+        while (reader.Read())
+        {
+            if (reader.TokenType == JsonTokenType.EndArray)
+            {
+                if (hasValue)
+                    _colWritetime[col] = commonWritetime;
+                return;
+            }
+
+            if (reader.TokenType != JsonTokenType.Number)
+                throw new JsonException(
+                    $"Malformed row payload: '{SysCellLevelWritetimeColumn}' " +
+                    $"element metadata for '{col}' was {reader.TokenType}, " +
+                    "expected a Number.");
+
+            long elementWritetime = reader.GetInt64();
+            if (!hasValue)
+            {
+                commonWritetime = elementWritetime;
+                hasValue = true;
+            }
+            else if (elementWritetime != commonWritetime)
+            {
+                throw new NotSupportedException(
+                    $"Cannot preserve element-level writetimes for non-frozen " +
+                    $"collection column '{col}' because its elements have " +
+                    "different writetimes.");
+            }
+        }
+
+        throw new JsonException(
+            $"Malformed row payload: '{SysCellLevelWritetimeColumn}' element " +
+            $"metadata for '{col}' did not terminate.");
+    }
+
+    /// <summary>
+    /// Collapse a non-frozen collection's per-element TTL pairs to one
+    /// absolute column expiry, retaining each pair's offset from the shared
+    /// base. Empty collections contribute no cell metadata.
+    /// </summary>
+    private void ParseCollectionTtl(
+        ref Utf8JsonReader reader,
+        string col,
+        long baseExpiry)
+    {
+        bool hasValue = false;
+        long? commonExpiry = null;
+
+        while (reader.Read())
+        {
+            if (reader.TokenType == JsonTokenType.EndArray)
+            {
+                if (hasValue)
+                    _colExpiry[col] = commonExpiry;
+                return;
+            }
+
+            if (reader.TokenType != JsonTokenType.StartArray)
+                throw new JsonException(
+                    $"Malformed row payload: '{SysCellLevelTtlColumn}' element " +
+                    $"metadata for '{col}' was {reader.TokenType}, expected an array.");
+
+            long? elementExpiry = ParseTtlPair(ref reader, col, baseExpiry);
+            if (!hasValue)
+            {
+                commonExpiry = elementExpiry;
+                hasValue = true;
+            }
+            else if (elementExpiry != commonExpiry)
+            {
+                throw new NotSupportedException(
+                    $"Cannot preserve element-level TTL for non-frozen collection " +
+                    $"column '{col}' because its elements have different expiries.");
+            }
+        }
+
+        throw new JsonException(
+            $"Malformed row payload: '{SysCellLevelTtlColumn}' element metadata " +
+            $"for '{col}' did not terminate.");
+    }
+
+    /// <summary>
+    /// Parse one <c>[duration, offset]</c> pair. The reader starts on the
+    /// pair's <c>StartArray</c> and ends on its <c>EndArray</c>.
+    /// </summary>
+    private static long? ParseTtlPair(
+        ref Utf8JsonReader reader,
+        string col,
+        long baseExpiry)
+    {
+        if (!reader.Read() || reader.TokenType != JsonTokenType.Number)
+            throw new JsonException(
+                $"Malformed row payload: '{SysCellLevelTtlColumn}' TTL duration " +
+                $"for '{col}' must be a Number.");
+        long duration = reader.GetInt64();
+        if (duration < 0)
+            throw new JsonException(
+                $"Malformed row payload: '{SysCellLevelTtlColumn}' TTL duration " +
+                $"for '{col}' cannot be negative.");
+
+        if (!reader.Read() || reader.TokenType != JsonTokenType.Number)
+            throw new JsonException(
+                $"Malformed row payload: '{SysCellLevelTtlColumn}' expiry offset " +
+                $"for '{col}' must be a Number.");
+        long offset = reader.GetInt64();
+
+        if (!reader.Read() || reader.TokenType != JsonTokenType.EndArray)
+            throw new JsonException(
+                $"Malformed row payload: '{SysCellLevelTtlColumn}' TTL detail " +
+                $"for '{col}' must contain exactly two numbers.");
+
+        if (duration == 0)
+            return null;
+        if (baseExpiry <= 0)
+            throw new JsonException(
+                $"Malformed row payload: '{SysCellLevelTtlColumn}' has a positive " +
+                $"TTL for '{col}' but no positive base expiry.");
+        return checked(baseExpiry + offset);
     }
 
     /// <summary>

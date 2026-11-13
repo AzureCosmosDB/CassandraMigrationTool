@@ -314,7 +314,7 @@ public sealed class RegularRowWriteStrategyTests
     }
 
     [Fact]
-    public void Parse_NonFrozenCollectionUsesCellBaseExpiryFallback()
+    public void Parse_NonFrozenCollectionUsesUniformElementMetadata()
     {
         const string json =
             """
@@ -325,10 +325,10 @@ public sealed class RegularRowWriteStrategyTests
               "__sys_rw_ts": 100,
               "__sys_rw_ttl": [0, 0],
               "__sys_clttl": [2000, {
-                "tags": [[30, 0], [30, 0]]
+                "tags": [[300, 300], [300, 300]]
               }],
               "__sys_clts": {
-                "tags": [100, 100]
+                "tags": [200, 200]
               }
             }
             """;
@@ -339,6 +339,131 @@ public sealed class RegularRowWriteStrategyTests
         Assert.Null(metadata.ExpiryEpochSeconds);
         var tags = Assert.Single(metadata.PerColumn!);
         Assert.Equal("tags", tags.Key);
-        Assert.Equal(new CdcCellMetadata(100, 2000), tags.Value);
+        Assert.Equal(new CdcCellMetadata(200, 2300), tags.Value);
+    }
+
+    [Fact]
+    public void Parse_NonFrozenCollectionsRetainDifferentColumnTtls()
+    {
+        const string json =
+            """
+            {
+              "tenant_id": "tenant-1",
+              "cat_id": "cat-1",
+              "short_list": ["a", "b"],
+              "long_set": ["c", "d"],
+              "permanent_map": {"e": "f"},
+              "__sys_rw_ts": 100,
+              "__sys_rw_ttl": [0, 0],
+              "__sys_clttl": [2000, {
+                "short_list": [[300, 0], [300, 0]],
+                "long_set": [[600, 300], [600, 300]],
+                "permanent_map": [[0, 0], [0, 0]]
+              }],
+              "__sys_clts": {
+                "short_list": [200, 200],
+                "long_set": [300, 300],
+                "permanent_map": [400, 400]
+              }
+            }
+            """;
+
+        var (_, metadata) = CdcJsonRowParser.ParseOnce(
+            json, preserveCellLevel: true);
+
+        Assert.Null(metadata.ExpiryEpochSeconds);
+        Assert.Equal(3, metadata.PerColumn!.Count);
+        Assert.Equal(
+            new CdcCellMetadata(200, 2000),
+            metadata.PerColumn["short_list"]);
+        Assert.Equal(
+            new CdcCellMetadata(300, 2300),
+            metadata.PerColumn["long_set"]);
+        Assert.Equal(
+            new CdcCellMetadata(400, null),
+            metadata.PerColumn["permanent_map"]);
+    }
+
+    [Fact]
+    public void Parse_NonFrozenCollectionWithDifferentElementTtlsFails()
+    {
+        const string json =
+            """
+            {
+              "tenant_id": "tenant-1",
+              "cat_id": "cat-1",
+              "tags": ["friendly", "indoor"],
+              "__sys_rw_ts": 100,
+              "__sys_rw_ttl": [0, 0],
+              "__sys_clttl": [2000, {
+                "tags": [[300, 0], [600, 300]]
+              }],
+              "__sys_clts": {
+                "tags": [200, 200]
+              }
+            }
+            """;
+
+        var exception = Assert.Throws<NotSupportedException>(
+            () => CdcJsonRowParser.ParseOnce(
+                json, preserveCellLevel: true));
+
+        Assert.Contains("tags", exception.Message);
+        Assert.Contains("different expiries", exception.Message);
+    }
+
+    [Fact]
+    public void Parse_NonFrozenCollectionWithDifferentElementWritetimesFails()
+    {
+        const string json =
+            """
+            {
+              "tenant_id": "tenant-1",
+              "cat_id": "cat-1",
+              "tags": ["friendly", "indoor"],
+              "__sys_rw_ts": 100,
+              "__sys_rw_ttl": [0, 0],
+              "__sys_clttl": [2000, {
+                "tags": [[300, 0], [300, 0]]
+              }],
+              "__sys_clts": {
+                "tags": [200, 300]
+              }
+            }
+            """;
+
+        var exception = Assert.Throws<NotSupportedException>(
+            () => CdcJsonRowParser.ParseOnce(
+                json, preserveCellLevel: true));
+
+        Assert.Contains("tags", exception.Message);
+        Assert.Contains("different writetimes", exception.Message);
+    }
+
+    [Fact]
+    public void Parse_EmptyCollectionMetadataDoesNotSynthesizeCellTtl()
+    {
+        const string json =
+            """
+            {
+              "tenant_id": "tenant-1",
+              "cat_id": "cat-1",
+              "tags": [],
+              "__sys_rw_ts": 100,
+              "__sys_rw_ttl": [0, 0],
+              "__sys_clttl": [2000, {
+                "tags": []
+              }],
+              "__sys_clts": {
+                "tags": []
+              }
+            }
+            """;
+
+        var (_, metadata) = CdcJsonRowParser.ParseOnce(
+            json, preserveCellLevel: true);
+
+        Assert.Null(metadata.ExpiryEpochSeconds);
+        Assert.Null(metadata.PerColumn);
     }
 }
