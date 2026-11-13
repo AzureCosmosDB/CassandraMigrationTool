@@ -28,16 +28,16 @@ namespace CassandraMigrationProcessor.CassandraDriver;
 ///         Unix epoch. Suitable for <c>USING TIMESTAMP</c> on the
 ///         destination INSERT so LWW conflict-resolution matches the
 ///         source.</item>
-///   <item><c>__sys_clttl[0]</c> — absolute expiry epoch in seconds
-///         (not a duration). The destination's <c>USING TTL</c> takes
-///         a duration, so we compute
-///         <c>remaining = expiry - now_epoch_seconds</c> at write
-///         time.</item>
-///   <item><c>__sys_rw_ttl[0]</c> — original TTL duration in seconds
-///         as declared at write time on the source. We do NOT use this
-///         for the destination TTL because re-applying the original
-///         duration would silently extend the row's lifetime past its
-///         intended source expiry.</item>
+///   <item><c>__sys_rw_ttl[0]</c> identifies whether the row-liveness
+///         marker itself has a TTL. When it is positive,
+///         <c>__sys_clttl[0]</c> supplies its absolute expiry epoch.
+///         When it is zero, the row marker is permanent even if
+///         individual cells have TTLs.</item>
+///   <item><c>__sys_clttl[0]</c> is the absolute cell-expiry base in
+///         seconds. It is also the row-marker expiry only when
+///         <c>__sys_rw_ttl[0]</c> is positive. The destination's
+///         <c>USING TTL</c> takes a duration, so the writer computes
+///         <c>remaining = expiry - now_epoch_seconds</c>.</item>
 ///   <item>Both <c>*ttl</c> arrays are <c>[0, 0]</c> when the source
 ///         row has no TTL — that's how we distinguish "no expiry"
 ///         from "already expired".</item>
@@ -49,16 +49,24 @@ internal sealed record CdcRowMetadata(
     IReadOnlyDictionary<string, CdcCellMetadata>? PerColumn = null)
 {
     /// <summary>
+    /// True when the source row has a row-liveness marker. A null
+    /// <c>__sys_rw_ts</c> denotes an UPDATE-only row whose cells must be
+    /// replayed without an INSERT, otherwise the destination would gain a
+    /// marker that outlives its cells.
+    /// </summary>
+    public bool HasRowMarker => WritetimeMicros.HasValue;
+
+    /// <summary>
     /// True when the source row carries per-column writetime/TTL that
     /// diverges from the row-level values and cell-level preservation is
     /// enabled. When false the writer takes the single-statement fast
     /// path (one <c>INSERT … JSON ? USING TIMESTAMP ? AND TTL ?</c>);
-    /// when true it splits the row into one partial <c>INSERT … JSON ?
-    /// DEFAULT UNSET USING TIMESTAMP ? AND TTL ?</c> per distinct
-    /// (writetime, expiry) group so each cell lands with its own
-    /// timestamp and TTL. <see cref="PerColumn"/> is populated only for
-    /// the columns whose metadata differs; every other column falls back
-    /// to the row-level (writetime, expiry) group.
+    /// when true it restores the row-level liveness marker with one
+    /// partial INSERT and applies divergent cells with UPDATE statements
+    /// so each cell lands with its own timestamp and TTL without replacing
+    /// that marker. <see cref="PerColumn"/> is populated only for the
+    /// columns whose metadata differs; every other column remains in the
+    /// row-level INSERT.
     /// </summary>
     public bool HasPerColumnDivergence => PerColumn is { Count: > 0 };
 
@@ -98,17 +106,16 @@ internal sealed record CdcRowMetadata(
 }
 
 /// <summary>
-/// Per-column (per-cell) change-feed metadata for a single scalar or
-/// frozen column, decoded from the source's <c>__sys_clts</c> (writetime)
-/// and <c>__sys_clttl[1]</c> (per-column TTL) maps. Only populated when
-/// cell-level preservation is enabled and the row actually diverges from
-/// its row-level metadata.
+/// Per-column (per-cell) change-feed metadata decoded from the source's
+/// <c>__sys_clts</c> (writetime) and <c>__sys_clttl[1]</c> (per-column TTL)
+/// maps. Only populated when cell-level preservation is enabled and the
+/// row actually diverges from its row-level metadata.
 /// </summary>
 /// <remarks>
 /// Non-frozen collection columns expose <em>per-element</em> writetime/TTL
-/// (arrays rather than scalars in those maps); CQL cannot re-apply
-/// per-element TTL through a single statement, so such columns are
-/// deliberately excluded here and fall back to the row-level group.
+/// (arrays rather than scalars in those maps). CQL cannot re-apply that
+/// metadata per element, so they use the cell-expiry base as a
+/// whole-column TTL approximation and are replayed through UPDATE.
 /// </remarks>
 /// <param name="WritetimeMicros">Cell writetime in microseconds since the
 /// Unix epoch (from <c>__sys_clts[col]</c>), or <c>null</c> to inherit the
@@ -119,4 +126,3 @@ internal sealed record CdcRowMetadata(
 internal readonly record struct CdcCellMetadata(
     long? WritetimeMicros,
     long? ExpiryEpochSeconds);
-

@@ -186,7 +186,7 @@
                         </select>
                     </div>
                     <div class="mb-3">
-                        <label for="preserveCellTtl" class="form-label" title="Preserve per-column (per-cell) writetime and TTL instead of a single row-level value. When a row's columns were written at different times or with different TTLs, the row is split into one partial INSERT ... JSON DEFAULT UNSET USING TIMESTAMP ... AND TTL ... per distinct (writetime, TTL) group, so each cell lands on the target with its own timestamp and expiry. Requires the JSON copy mode. Opt-in: the target must support INSERT JSON ... DEFAULT UNSET, and divergent rows issue extra writes. Non-frozen collection element-level TTLs cannot be reconstructed via CQL and still fall back to the row-level TTL. Uniform rows are unaffected.">
+                        <label for="preserveCellTtl" class="form-label" title="Preserve per-column (per-cell) writetime and TTL instead of a single row-level value. Divergent rows use one partial INSERT for the row-level metadata followed by timestamped and TTL-bearing UPDATE statements for divergent cells, preserving both cell metadata and row liveness. Requires the JSON copy mode and issues extra writes. Non-frozen collection element-level TTLs cannot be reconstructed via CQL and still fall back to the row-level TTL. Uniform rows are unaffected.">
                             <input type="checkbox" id="preserveCellTtl" disabled="@(!NewMode || !useJsonCopy)" @bind="preserveCellTtlAndWritetime" />
                             Preserve per-cell TTL and writetime (splits rows with divergent column timestamps/TTLs)
                         </label>
