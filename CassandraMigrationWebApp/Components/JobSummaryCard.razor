@@ -17,16 +17,22 @@
     int inProgress = realUnits.Count(u => !u.CopyComplete
         && (u.CopyPercent > 0 || u.CopyRowsCopied > 0 || u.CopyRowsPerSecond > 0));
     int failedTables = realUnits.Count(u => u.SourceStatus == TableStatus.Failed);
-    long bulkRows = realUnits.Sum(u => (long)u.CopyRowsCopied);
-    long replayRows = realUnits.Sum(u => (long)u.ChangeFeedRowsInserted);
-    long totalRows = bulkRows + replayRows;
-    long totalDocs = realUnits.Sum(u => (long)u.TotalRowCount);
-    double avgSpeed = realUnits.Where(u => u.CopyRowsPerSecond > 0).Select(u => u.CopyRowsPerSecond).DefaultIfEmpty(0).Sum();
-    bool showReplaySuffix = sj.IsOnline && replayRows > 0;
-    string rowsTooltip = showReplaySuffix
-        ? $"Bulk: {bulkRows:N0} · Replay (CDC): {replayRows:N0}"
-        : string.Empty;
-    bool denominatorStale = totalDocs > 0 && totalRows > totalDocs;
+    int onlineCounterTables = sj.IsOnline
+        ? realUnits.Count(u => u.IsCounterTable)
+        : 0;
+    var countableUnits = sj.IsOnline
+        ? realUnits.Where(u => !u.IsCounterTable).ToList()
+        : realUnits;
+    bool allRowCountsUnavailable = realUnits.Count > 0 && countableUnits.Count == 0;
+    long bulkRows = countableUnits.Sum(u => (long)u.CopyRowsCopied);
+    long replayItems = realUnits.Sum(u => (long)u.ChangeFeedRowsInserted);
+    long totalDocs = countableUnits.Sum(u => (long)u.TotalRowCount);
+    double avgSpeed = countableUnits.Where(u => u.CopyRowsPerSecond > 0).Select(u => u.CopyRowsPerSecond).DefaultIfEmpty(0).Sum();
+    bool showReplayItems = sj.IsOnline && replayItems > 0;
+    string rowsTooltip = onlineCounterTables > 0
+        ? "Online counter tables are excluded because Cosmos change feed items are not distinct logical rows."
+        : "Rows written during the bulk-copy phase. CDC replay writes are counted separately.";
+    bool denominatorStale = totalDocs > 0 && bulkRows > totalDocs;
 
     @if (sj.IsSimulatedRun)
     {
@@ -92,20 +98,40 @@
                 <div class="col-auto">
                     <small class="text-muted" title="@rowsTooltip">
                         <i class="bi bi-files"></i>
-                        <strong>Rows copied:</strong> @totalRows.ToString("N0")@(!denominatorStale && totalDocs > 0 ? $" / {totalDocs:N0}" : "")
-                        @if (denominatorStale)
+                        <strong>Rows copied:</strong>
+                        @if (allRowCountsUnavailable)
                         {
-                            <span class="text-warning ms-1" style="font-size: 0.75rem;"
-                                  title="@($"Source likely received writes during bulk copy: numerator ({totalRows:N0}) exceeded the pre-job estimate ({totalDocs:N0}). The / denominator is hidden to avoid showing > 100% completion.")">
-                                (estimate stale)
-                            </span>
+                            <span>Unavailable for online counter migration</span>
                         }
-                        @if (showReplaySuffix)
+                        else
                         {
-                            <span class="text-muted ms-1" style="font-size: 0.75rem;" title="@rowsTooltip">(+@replayRows.ToString("N0") CDC)</span>
+                            <span>@bulkRows.ToString("N0")@(!denominatorStale && totalDocs > 0 ? $" / {totalDocs:N0}" : "")</span>
+                            @if (denominatorStale)
+                            {
+                                <span class="text-warning ms-1" style="font-size: 0.75rem;"
+                                      title="@($"Source likely received writes during bulk copy: numerator ({bulkRows:N0}) exceeded the pre-job estimate ({totalDocs:N0}). The / denominator is hidden to avoid showing > 100% completion.")">
+                                    (estimate stale)
+                                </span>
+                            }
+                            @if (onlineCounterTables > 0)
+                            {
+                                <span class="text-muted ms-1" style="font-size: 0.75rem;">
+                                    (excludes @onlineCounterTables counter @(onlineCounterTables == 1 ? "table" : "tables"))
+                                </span>
+                            }
                         }
                     </small>
                 </div>
+                @if (showReplayItems)
+                {
+                    <div class="col-auto">
+                        <small class="text-muted"
+                               title="Successfully processed CDC replay items. Repeated updates to the same logical row are counted separately; counter reconciliation may require no target UPDATE.">
+                            <i class="bi bi-arrow-repeat"></i>
+                            <strong>CDC items processed:</strong> @replayItems.ToString("N0")
+                        </small>
+                    </div>
+                }
                 @if (totalDocs > 0)
                 {
                 <div class="col-auto">
@@ -122,13 +148,13 @@
                         @(avgSpeed >= 1000 ? $"{avgSpeed/1000:F1}k/s" : $"{avgSpeed:F0}/s")
                     </small>
                 </div>
-                @if (avgSpeed > 0 && totalDocs > totalRows)
+                @if (!allRowCountsUnavailable && avgSpeed > 0 && totalDocs > bulkRows)
                 {
                 <div class="col-auto">
                     <small class="text-muted">
                         <i class="bi bi-clock-history"></i>
                         <strong>ETA:</strong>
-                        @JobLifecycle.FormatEta(totalDocs - totalRows, avgSpeed)
+                        @JobLifecycle.FormatEta(totalDocs - bulkRows, avgSpeed)
                     </small>
                 </div>
                 }

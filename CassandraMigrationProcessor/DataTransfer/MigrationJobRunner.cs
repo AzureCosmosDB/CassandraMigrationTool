@@ -646,6 +646,7 @@ public class MigrationJobRunner : IAsyncDisposable
             MarkUnitFailedAndSave(mu, $"No columns for {mu.KeyspaceName}.{mu.TableName}", TableStatus.Failed);
             return;
         }
+        mu.IsCounterTable = CassandraQueries.IsCounterTable(columns);
 
         bool isOnline = job.IsOnline;
         if (mu.BulkDownloaded == true && !isOnline)

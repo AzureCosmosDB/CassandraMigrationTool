@@ -71,6 +71,10 @@
                 </th>
                 @if (Job != null && Job.IsOnline)
                 {
+                    <th class="sortable-header @GetSortClass("ReplayItems")" @onclick='() => SortBy("ReplayItems")' style="cursor: pointer;">
+                        CDC Items Processed
+                        <i class="bi @GetSortIcon("ReplayItems") ms-1"></i>
+                    </th>
                     <th class="sortable-header @GetSortClass("TimeSinceLastChange")" @onclick='() => SortBy("TimeSinceLastChange")' style="cursor: pointer;">
                         Last Checked
                         <i class="bi @GetSortIcon("TimeSinceLastChange") ms-1"></i>
@@ -160,22 +164,16 @@
                             </div>
                         </td>
                         <td>
-                            @{
-                                long bulkRows = mu.CopyRowsCopied;
-                                long replayRows = mu.ChangeFeedRowsInserted;
-                                long totalRows = bulkRows + replayRows;
-                                bool showReplay = Job.IsOnline && replayRows > 0;
-                                string tip = showReplay
-                                    ? $"Bulk: {bulkRows:N0} · Replay: {replayRows:N0}"
-                                    : "";
-                            }
-                            @if (totalRows > 0)
+                            @if (Job.IsOnline && mu.IsCounterTable)
                             {
-                                <span title="@tip">@totalRows.ToString("N0")</span>
-                                @if (showReplay)
-                                {
-                                    <span class="text-muted ms-1" style="font-size: 0.75rem;" title="@tip">(+@replayRows.ToString("N0"))</span>
-                                }
+                                <span class="text-muted"
+                                      title="Cosmos change feed can emit multiple versions of one counter row, so processed items are not a distinct row count.">
+                                    Unavailable
+                                </span>
+                            }
+                            else if (mu.CopyRowsCopied > 0)
+                            {
+                                <span>@mu.CopyRowsCopied.ToString("N0")</span>
                             }
                             else
                             {
@@ -185,6 +183,11 @@
 
                         @if (Job.IsOnline)
                         {
+                            <td title="Successfully processed CDC replay items. Repeated updates to one logical row are counted separately; counter reconciliation may require no target UPDATE.">
+                                @(mu.ChangeFeedRowsInserted > 0
+                                    ? mu.ChangeFeedRowsInserted.ToString("N0")
+                                    : "-")
+                            </td>
                             <td title="Avg Read Latency: @mu.ChangeFeedAvgReadLatencyInMS.ToString("F2") ms | Avg Write Latency: @mu.ChangeFeedAvgWriteLatencyInMS.ToString("F2") ms">                           
                                 @(mu.ChangeFeedLastChecked.HasValue ? MigrationUtilities.GetTimestampDiff(mu.ChangeFeedLastChecked.Value) : "NA")
                             </td>
@@ -416,7 +419,10 @@
             "KeyspaceName"        => u => u.KeyspaceName ?? string.Empty,
             "TableName"           => u => u.TableName ?? string.Empty,
             "CopyStatus"          => u => GetSortValueForStatus(u),
-            "RowsCopied"          => u => u.CopyRowsCopied + u.ChangeFeedRowsInserted,
+            "RowsCopied"          => u => Job?.IsOnline == true && u.IsCounterTable
+                ? -1L
+                : u.CopyRowsCopied,
+            "ReplayItems"         => u => u.ChangeFeedRowsInserted,
             "TimeSinceLastChange" => u => GetSortValueForTimestamp(u),
             "LastBatchChanges"    => u => u.ChangeFeedUpdatesInLastBatch,
             _ => null

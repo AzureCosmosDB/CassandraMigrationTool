@@ -57,6 +57,7 @@ public static class TableMigrationMapper
         target.TableName = unit.TableName;
         target.TargetKeyspaceName = unit.TargetKeyspaceName;
         target.TargetTableName = unit.TargetTableName;
+        target.IsCounterTable = unit.IsCounterTable;
         target.ChangeFeedUpdatesInLastBatch =
             Volatile.Read(ref unit._changeFeedLastFlushedBatch);
         target.ChangeFeedAvgReadLatencyInMS =
@@ -65,11 +66,10 @@ public static class TableMigrationMapper
             unit.ChangeFeedAvgWriteLatencyInMS;
         // Cumulative replay counters: snapshot the internal Interlocked
         // fields so the dashboard sees a consistent, monotonically-
-        // increasing post-bulk count. Insert-only pipeline today —
-        // every replay write lands in _changeFeedRowsInserted
-        // regardless of whether the source operation was a true insert
-        // or an upsert. Distinguishing requires Full-Fidelity Change
-        // Feed (currently reserved on the model).
+        // increasing post-bulk processed-item count. The legacy property names
+        // say "rows inserted", but a successful item can be an upsert or a
+        // counter reconciliation that needs no target UPDATE. The same logical
+        // row can also be processed repeatedly.
         target.ChangeFeedRowsInserted =
             Volatile.Read(ref unit._changeFeedRowsInserted);
         target.ChangeFeedInsertEvents =

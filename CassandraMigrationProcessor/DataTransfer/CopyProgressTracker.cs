@@ -92,7 +92,10 @@ public class CopyProgressTracker
 
     /// <summary>
     /// Called by each worker after applying a replay-phase page (post
-    /// bulk drain). Bumps the MU's change-feed counters and timestamps.
+    /// bulk drain). Bumps the MU's successfully processed-item counters and
+    /// timestamps. These are not distinct rows or guaranteed target writes:
+    /// counter reconciliation can succeed without an UPDATE when the target is
+    /// already current, and repeated source updates are counted repeatedly.
     /// Always force-flushes the MU on the next UpdateMigrationUnit call
     /// — CF pages are infrequent and each one is irreplaceable progress.
     /// </summary>
