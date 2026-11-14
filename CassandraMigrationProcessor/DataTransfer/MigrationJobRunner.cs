@@ -614,7 +614,7 @@ public class MigrationJobRunner : IAsyncDisposable
         while (!cancellationToken.IsCancellationRequested)
         {
             await Task.Delay(MigrationDefaults.CopyPhaseWatchdogIntervalMs, cancellationToken);
-            if (cancellationToken.IsCancellationRequested || _control.IsFatal)
+            if (cancellationToken.IsCancellationRequested || _control.ShouldStop || _control.IsFatal)
                 return;
 
             // Stop/cutover can null out _pipeline concurrently; snapshot it once.
@@ -627,7 +627,7 @@ public class MigrationJobRunner : IAsyncDisposable
             {
                 // Re-check after the snapshot: a worker that exited
                 // because of a legitimate cancel/fault races this probe.
-                if (cancellationToken.IsCancellationRequested || _control.IsFatal)
+                if (cancellationToken.IsCancellationRequested || _control.ShouldStop || _control.IsFatal)
                     return;
                 var msg = $"{exited} copy worker(s) exited unexpectedly before the copy phase completed " +
                           $"(faulted={pipeline.FaultedWorkerCount}). Aborting migration job to avoid a silent stall; " +
