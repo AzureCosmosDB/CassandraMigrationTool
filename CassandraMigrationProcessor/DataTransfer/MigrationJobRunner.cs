@@ -617,7 +617,12 @@ public class MigrationJobRunner : IAsyncDisposable
             if (cancellationToken.IsCancellationRequested || _control.IsFatal)
                 return;
 
-            int exited = _pipeline!.ExitedWorkerCount;
+            // Stop/cutover can null out _pipeline concurrently; snapshot it once.
+            var pipeline = _pipeline;
+            if (pipeline is null)
+                return;
+
+            int exited = pipeline.ExitedWorkerCount;
             if (exited > 0)
             {
                 // Re-check after the snapshot: a worker that exited
@@ -625,7 +630,7 @@ public class MigrationJobRunner : IAsyncDisposable
                 if (cancellationToken.IsCancellationRequested || _control.IsFatal)
                     return;
                 var msg = $"{exited} copy worker(s) exited unexpectedly before the copy phase completed " +
-                          $"(faulted={_pipeline.FaultedWorkerCount}). Aborting migration job to avoid a silent stall; " +
+                          $"(faulted={pipeline.FaultedWorkerCount}). Aborting migration job to avoid a silent stall; " +
                           "resume from the last checkpoint after reviewing the worker errors above.";
                 _log.WriteLine($"FATAL: {msg}", LogType.Error);
                 _control.ReportFault(new MigrationFatalException(msg));
