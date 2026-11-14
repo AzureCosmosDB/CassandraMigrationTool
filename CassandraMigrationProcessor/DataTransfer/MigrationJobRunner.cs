@@ -179,7 +179,19 @@ public class MigrationJobRunner : IAsyncDisposable
                 _control);
             _pipeline.Start();
 
-            await RunCopyPhaseAsync(job, units, partitioning, cancellationToken);
+            using (var watchdogCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
+            {
+                var watchdog = RunCopyPhaseWorkerWatchdogAsync(watchdogCts.Token);
+                try
+                {
+                    await RunCopyPhaseAsync(job, units, partitioning, cancellationToken);
+                }
+                finally
+                {
+                    watchdogCts.Cancel();
+                    try { await watchdog; } catch (OperationCanceledException) { }
+                }
+            }
 
             // All tables have either drained or completed. Online jobs
             // keep the shared pool alive for change-feed tailing; offline
@@ -587,6 +599,43 @@ public class MigrationJobRunner : IAsyncDisposable
                     "Fatal error tripped during online replay.");
             }
             await Task.Delay(2000, cancellationToken);
+        }
+    }
+
+    /// <summary>
+    /// During the copy phase the partition channel is still open, so a
+    /// worker task should only exit on cancellation or after reporting
+    /// a fault. A worker that exits any other way silently drops its
+    /// in-flight partition, the table never drains, and the coordinator
+    /// waits forever (issue #69). Detect that and fail the job loudly.
+    /// </summary>
+    private async Task RunCopyPhaseWorkerWatchdogAsync(CancellationToken cancellationToken)
+    {
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            await Task.Delay(MigrationDefaults.CopyPhaseWatchdogIntervalMs, cancellationToken);
+            if (cancellationToken.IsCancellationRequested || _control.ShouldStop || _control.IsFatal)
+                return;
+
+            // Stop/cutover can null out _pipeline concurrently; snapshot it once.
+            var pipeline = _pipeline;
+            if (pipeline is null)
+                return;
+
+            int exited = pipeline.ExitedWorkerCount;
+            if (exited > 0)
+            {
+                // Re-check after the snapshot: a worker that exited
+                // because of a legitimate cancel/fault races this probe.
+                if (cancellationToken.IsCancellationRequested || _control.ShouldStop || _control.IsFatal)
+                    return;
+                var msg = $"{exited} copy worker(s) exited unexpectedly before the copy phase completed " +
+                          $"(faulted={pipeline.FaultedWorkerCount}). Aborting migration job to avoid a silent stall; " +
+                          "resume from the last checkpoint after reviewing the worker errors above.";
+                _log.WriteLine($"FATAL: {msg}", LogType.Error);
+                _control.ReportFault(new MigrationFatalException(msg));
+                return;
+            }
         }
     }
 

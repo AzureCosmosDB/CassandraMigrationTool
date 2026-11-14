@@ -120,11 +120,15 @@ internal class DataCopyWorker
                 current = null;
             }
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) when (_ct.IsCancellationRequested || ctx.Control.IsFatal)
         {
             // Cancellation observed — no fault to report; the cancel is
             // either user-driven (pause/stop/cutover) or already a
-            // cascade from a sibling worker's ReportFault.
+            // cascade from a sibling worker's ReportFault. Any other
+            // OperationCanceledException (e.g. a driver timeout surfacing
+            // as TaskCanceledException) falls through to the fatal
+            // handler below so the job fails loudly instead of losing the
+            // in-flight partition and stalling forever (issue #69).
         }
         catch (Exception ex)
         {
@@ -141,7 +145,9 @@ internal class DataCopyWorker
             // a generic retry-exhaustion abort.
             string operatorMsg = IsOutOfMemory(ex)
                 ? $"Worker out-of-memory while processing {tag}. The shared worker pool is too large for this host's available memory. Reduce the 'Shared workers' value on the Advanced tab (try halving it, or leave blank for auto) and resume from the last checkpoint."
-                : $"Worker exhausted retries for table {tag}. Aborting migration job (resume from last checkpoint).";
+                : ex is OperationCanceledException
+                    ? $"Worker operation timed out or was cancelled unexpectedly while processing {tag}. Aborting migration job (resume from last checkpoint). Check source/target cluster health and network latency."
+                    : $"Worker exhausted retries for table {tag}. Aborting migration job (resume from last checkpoint).";
             _workerLog.WriteLine($"FATAL: {operatorMsg}", LogType.Error);
             ctx.Control.ReportFault(new MigrationFatalException(operatorMsg, ex));
         }
@@ -156,7 +162,16 @@ internal class DataCopyWorker
             // the loop also call UpdateMigrationUnit, so the cadence-based
             // checkpoint still runs; this final ForceFlush only matters
             // when the worker exited via cancellation between checkpoints.
-            if (current != null) current.Table.Tracker.ForceFlush();
+            if (current != null)
+            {
+                try { current.Table.Tracker.ForceFlush(); }
+                catch (Exception flushEx)
+                {
+                    _workerLog.WriteLine(
+                        $"Failed to flush progress for {current.Table.FullTableName} on worker exit: {flushEx.GetType().Name}: {flushEx.Message}",
+                        LogType.Warning);
+                }
+            }
             // Do NOT call ctx.Partitions.Complete() here. The shared
             // channel is owned by JobPipeline; closing it from one
             // worker's finally would cut off every other worker the
