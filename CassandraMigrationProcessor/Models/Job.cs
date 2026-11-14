@@ -206,7 +206,7 @@ public class Job
     {
         get
         {
-            if (Tables.Count == 0) return false;
+            if (IsOnline || Tables is not { Count: > 0 }) return false;
             foreach (var t in Tables.Where(t => t.IsValid))
             {
                 if (!t.CopyComplete) return false;

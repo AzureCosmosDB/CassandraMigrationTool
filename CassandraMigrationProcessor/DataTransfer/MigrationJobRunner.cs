@@ -116,43 +116,28 @@ public class MigrationJobRunner : IAsyncDisposable
             var units = UnitStore.GetMigrationUnitsToMigrate(job);
             if (units.Count == 0)
             {
-                // Distinguish two distinct zero-unit outcomes from
-                // UnitStore.GetMigrationUnitsToMigrate:
-                //   (a) operator-supplied input didn't resolve to any
-                //       table on the source — a typo. Fault loudly so
-                //       the homepage badge tells the truth.
-                //   (b) every job.Tables entry was filtered as terminal
-                //       (CopyComplete on an offline job, or
-                //       SkippedDueToMaxRetries). That's the
-                //       resume-after-completion or re-run path
-                //       JobManager.StartMigration explicitly permits;
-                //       faulting here would flip Completed/Pending
-                //       jobs to Faulted on re-run.
+                // Nothing left to run. The finally block derives the
+                // final status from table state, so a resume of an
+                // already-copied offline job finalises as Completed.
+                // The one case to fault here is operator input that
+                // resolved to no valid source table (e.g. a typo).
                 bool operatorRequestedTables =
                     !string.IsNullOrWhiteSpace(job.Namespaces)
-                    || (job.Tables != null && job.Tables.Count > 0);
-                bool anyUnitWasFilteredAsTerminal =
-                    job.Tables != null
-                    && job.Tables.Any(t => t.IsValid
-                        && ((t.CopyComplete && !job.IsOnline)
-                            || t.SkippedDueToMaxRetries));
-                if (operatorRequestedTables && !anyUnitWasFilteredAsTerminal)
+                    || job.Tables.Count > 0;
+                if (operatorRequestedTables && !job.Tables.Any(t => t.IsValid))
                 {
                     string requested = !string.IsNullOrWhiteSpace(job.Namespaces)
                         ? job.Namespaces!
-                        : string.Join(", ", (job.Tables ?? new List<TableMigrationSummary>())
-                            .Select(t => $"{t.KeyspaceName}.{t.TableName}"));
+                        : string.Join(", ", job.Tables.Select(t => $"{t.KeyspaceName}.{t.TableName}"));
                     string msg =
                         $"Tables To Migrate '{requested}' did not match any source tables. " +
                         "Check that the keyspace and table names exist on the source cluster.";
                     _log.WriteLine(msg, LogType.Error);
-                    job.Status = JobStatus.Faulted;
-                    StampEndedOnIfTerminal(job);
-                    MigrationJobContext.Instance.SaveMigrationJob(job);
+                    failure = new InvalidOperationException(msg);
                 }
                 else
                 {
-                    _log.WriteLine("No remaining migration units.", LogType.Warning);
+                    _log.WriteLine("No remaining migration units.", LogType.Info);
                 }
                 return;
             }
@@ -207,7 +192,7 @@ public class MigrationJobRunner : IAsyncDisposable
             if (job.IsOnline)
                 await RunOnlineTailLoopAsync(cancellationToken);
             else
-                await RunOfflineFinalizeAsync(job);
+                await RunOfflineDrainAsync();
         }
         catch (OperationCanceledException)
         {
@@ -265,59 +250,55 @@ public class MigrationJobRunner : IAsyncDisposable
 
     /// <summary>
     /// Single writer of <see cref="Job.Status"/> for a run that
-    /// reached <see cref="StartAsync"/>. Faults outrank user intent
-    /// (a Faulted run is visible even if the operator clicked Pause
-    /// after the failure had already happened); user intent then
-    /// distinguishes Paused from Cancelled; otherwise the run is
-    /// either left at its already-terminal status (e.g. Completed
-    /// written by <see cref="RunOfflineFinalizeAsync"/>) or
-    /// normalised from Running to Pending.
+    /// reached <see cref="StartAsync"/>. Every exit path — full run,
+    /// early return, cancellation, exception — funnels through here,
+    /// and the status is derived by <see cref="ResolveFinalStatus"/>
+    /// from the outcome plus persisted table state rather than from
+    /// which code path happened to execute.
     ///
-    /// Fault sources, in priority order: (1) the exception that
-    /// escaped <see cref="StartAsync"/>'s try/catch, (2) any per-table
-    /// <see cref="TableStatus.Failed"/> stamp set by the schema /
-    /// online-replay paths, (3) the first fault captured on
-    /// <see cref="JobControl.FirstFault"/> — worker self-aborts route
-    /// here without throwing out of <see cref="StartAsync"/> or
-    /// marking the unit Failed, so without consulting FirstFault a
-    /// fatal worker fault would collapse to Pending.
+    /// Fault sources: (1) the exception that escaped
+    /// <see cref="StartAsync"/>'s try/catch, (2) the first fault
+    /// captured on <see cref="JobControl.FirstFault"/> — worker
+    /// self-aborts route here without throwing out of
+    /// <see cref="StartAsync"/>, (3) any per-table
+    /// <see cref="TableStatus.Failed"/> stamp (checked inside
+    /// <see cref="ResolveFinalStatus"/>).
     /// </summary>
     private void WriteFinalJobStatus(Job job, JobControl control, Exception? failure)
     {
         failure ??= control.FirstFault;
+        if (failure != null)
+            _log.WriteLine($"Job finalised as Faulted: {failure.GetType().Name}: {failure.Message}", LogType.Error);
 
-        bool tableFailed = job.Tables?.Any(
-            t => t.SourceStatus == TableStatus.Failed) ?? false;
-
-        if (failure != null || tableFailed || control.IsFatal)
-        {
-            if (failure != null)
-                _log.WriteLine($"Job finalised as Faulted: {failure.GetType().Name}: {failure.Message}", LogType.Error);
-            job.Status = JobStatus.Faulted;
-        }
-        else if (control.Requested == JobCommand.CutoverRequested)
-        {
-            // Operator chose to finalise an online job — terminal,
-            // not resumable. Distinct from Stop so the log and UI
-            // can show "Completed (cutover)" rather than "Cancelled".
-            job.Status = JobStatus.Completed;
-        }
-        else if (control.Requested == JobCommand.StopRequested)
-        {
-            job.Status = JobStatus.Cancelled;
-        }
-        else if (control.Requested == JobCommand.PauseRequested)
-        {
-            job.Status = JobStatus.Paused;
-        }
-        else if (job.Status == JobStatus.Running)
-        {
-            job.Status = JobStatus.Pending;
-        }
+        job.Status = ResolveFinalStatus(job, control.Requested, faulted: failure != null);
+        if (job.Status == JobStatus.Completed)
+            _log.WriteLine($"Job {job.Id} Completed", LogType.Info);
 
         StampEndedOnIfTerminal(job);
 
         MigrationJobContext.Instance.SaveMigrationJob(job);
+    }
+
+    /// <summary>
+    /// Pure status decision, in priority order: faults outrank user
+    /// intent (a Faulted run stays visible even if the operator
+    /// clicked Pause afterwards); explicit intent (cutover / stop /
+    /// pause) comes next; otherwise an offline job whose every valid
+    /// table has finished bulk copy is Completed, and anything else
+    /// is Pending (resumable).
+    /// </summary>
+    internal static JobStatus ResolveFinalStatus(Job job, JobCommand requested, bool faulted)
+    {
+        if (faulted || (job.Tables?.Any(t => t.SourceStatus == TableStatus.Failed) ?? false))
+            return JobStatus.Faulted;
+
+        return requested switch
+        {
+            JobCommand.CutoverRequested => JobStatus.Completed,
+            JobCommand.StopRequested    => JobStatus.Cancelled,
+            JobCommand.PauseRequested   => JobStatus.Paused,
+            _ => job.IsOfflineCompleted ? JobStatus.Completed : JobStatus.Pending,
+        };
     }
 
     /// <summary>
@@ -640,22 +621,15 @@ public class MigrationJobRunner : IAsyncDisposable
     }
 
     /// <summary>
-    /// Offline finalize: complete the partition channel so workers
-    /// drain and exit, await pool completion, then mark the job
-    /// completed if every unit reached the terminal state.
+    /// Offline drain: complete the partition channel so workers
+    /// finish and exit, then await pool completion. The resulting
+    /// Completed/Pending status is derived in
+    /// <see cref="WriteFinalJobStatus"/>.
     /// </summary>
-    private async Task RunOfflineFinalizeAsync(Job job)
+    private async Task RunOfflineDrainAsync()
     {
         _pipeline!.CompletePartitionChannel();
         await _pipeline.WaitForCompletionAsync();
-
-        if (job.IsOfflineCompleted)
-        {
-            _log.WriteLine($"Job {job.Id} Completed", LogType.Info);
-            job.Status = JobStatus.Completed;
-            StampEndedOnIfTerminal(job);
-            MigrationJobContext.Instance.SaveMigrationJob(job);
-        }
     }
 
     private Task ProcessWithRetryAsync(Job job, TableMigration mu, JobPartitioning partitioning, CancellationToken token)
