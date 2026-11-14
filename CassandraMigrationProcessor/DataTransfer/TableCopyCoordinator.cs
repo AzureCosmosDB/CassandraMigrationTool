@@ -91,7 +91,7 @@ internal sealed class TableCopyCoordinator
             TableMigrationMapper.UpdateParentJob(tableMigration);
             MigrationJobContext.Instance.SaveMigrationUnit(tableMigration, true);
             if (!isOnline)
-                MigrationJobContext.Instance.MigrationUnitsCache.RemoveMigrationUnit(tableMigration.Id);
+                MigrationJobContext.Instance.MigrationUnitsCache?.RemoveMigrationUnit(tableMigration.Id);
         }
         else if (!isOnline)
         {

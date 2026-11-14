@@ -28,7 +28,6 @@ public class MigrationJobRunner : IAsyncDisposable
     // Interlocked.Exchange of _consecutiveAuthErrors so writers race
     // safely with the threshold-check reader in RunCopyPhaseAsync.
     private Exception? _lastAuthException;
-    private JobPipeline? _pipeline;
 
     /// <summary>
     /// Runner-wide target session opened once in <see cref="CreateAsync"/>.
@@ -104,9 +103,18 @@ public class MigrationJobRunner : IAsyncDisposable
         var job = _job;
         var cancellationToken = _control.Token;
         Exception? failure = null;
+        // Owned exclusively by this call: created after partitioning,
+        // disposed only in the finally below. Pause/stop/cutover never
+        // touch it — they cancel the shared token and every loop that
+        // uses the pipeline exits on its own.
+        JobPipeline? pipeline = null;
 
         try
         {
+            // Pause/Stop can land while CreateAsync is still opening
+            // sessions; honour it before doing any work.
+            cancellationToken.ThrowIfCancellationRequested();
+
             if (job.Tables.Count == 0
                 || job.Tables.Any(m => m.TableName == "*"))
             {
@@ -158,15 +166,15 @@ public class MigrationJobRunner : IAsyncDisposable
             var partitioning = await RunPartitioningPhaseAsync(
                 job, units, cancellationToken);
 
-            _pipeline = new JobPipeline(
+            pipeline = new JobPipeline(
                 _log, job, _pipelineConfig, partitioning,
                 _sourceSessions,
                 _control);
-            _pipeline.Start();
+            pipeline.Start();
 
             using (var watchdogCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
             {
-                var watchdog = RunCopyPhaseWorkerWatchdogAsync(watchdogCts.Token);
+                var watchdog = RunCopyPhaseWorkerWatchdogAsync(pipeline, watchdogCts.Token);
                 try
                 {
                     await RunCopyPhaseAsync(job, units, partitioning, cancellationToken);
@@ -190,9 +198,9 @@ public class MigrationJobRunner : IAsyncDisposable
             // new work from spinning up against broken credentials;
             // no additional throw is needed here.
             if (job.IsOnline)
-                await RunOnlineTailLoopAsync(cancellationToken);
+                await RunOnlineTailLoopAsync(pipeline, cancellationToken);
             else
-                await RunOfflineDrainAsync();
+                await RunOfflineDrainAsync(pipeline);
         }
         catch (OperationCanceledException)
         {
@@ -225,8 +233,7 @@ public class MigrationJobRunner : IAsyncDisposable
             // Sessions and the token-refresh timer are owned by the
             // runner itself and torn down in DisposeAsync; here we
             // only release per-run resources scoped to this call.
-            MigrationUtilities.SafeDispose(_pipeline, "JobPipeline");
-            _pipeline = null;
+            MigrationUtilities.SafeDispose(pipeline, "JobPipeline");
 
             WriteFinalJobStatus(job, _control, failure);
         }
@@ -237,12 +244,11 @@ public class MigrationJobRunner : IAsyncDisposable
     /// token-refresh timer. Idempotent and safe to call even if
     /// <see cref="StartAsync"/> was never invoked (e.g. the run was
     /// cancelled between <see cref="CreateAsync"/> and the start
-    /// trigger).
+    /// trigger). Must only be called after <see cref="StartAsync"/>
+    /// has returned.
     /// </summary>
     public ValueTask DisposeAsync()
     {
-        MigrationUtilities.SafeDispose(_pipeline, "JobPipeline (Dispose)");
-        _pipeline = null;
         MigrationUtilities.SafeDisposeSession(_targetSession, "MigrationJobRunner target session");
         _sourceSessions.Dispose();
         return ValueTask.CompletedTask;
@@ -482,7 +488,7 @@ public class MigrationJobRunner : IAsyncDisposable
             {
                 await DiscoverUnitPartitioningAsync(
                     job, mu, _sourceSessions.GetSession(),
-                    partitioner, chunks, collectLock);
+                    partitioner, chunks, collectLock, token);
             }
             catch (OperationCanceledException)
             {
@@ -563,14 +569,14 @@ public class MigrationJobRunner : IAsyncDisposable
     /// copied — silent data loss. Probe the pool each tick and throw
     /// so the run is recorded as Faulted.
     /// </summary>
-    private async Task RunOnlineTailLoopAsync(CancellationToken cancellationToken)
+    private async Task RunOnlineTailLoopAsync(JobPipeline pipeline, CancellationToken cancellationToken)
     {
         _log.WriteLine("All tables drained. Change feed replaying on shared worker pool.", LogType.Info);
         while (!cancellationToken.IsCancellationRequested)
         {
-            if (_pipeline!.AllWorkersExited)
+            if (pipeline.AllWorkersExited)
             {
-                int faulted = _pipeline.FaultedWorkerCount;
+                int faulted = pipeline.FaultedWorkerCount;
                 throw new InvalidOperationException(
                     $"Online worker pool has stopped (faulted={faulted}).");
             }
@@ -590,17 +596,12 @@ public class MigrationJobRunner : IAsyncDisposable
     /// in-flight partition, the table never drains, and the coordinator
     /// waits forever (issue #69). Detect that and fail the job loudly.
     /// </summary>
-    private async Task RunCopyPhaseWorkerWatchdogAsync(CancellationToken cancellationToken)
+    private async Task RunCopyPhaseWorkerWatchdogAsync(JobPipeline pipeline, CancellationToken cancellationToken)
     {
         while (!cancellationToken.IsCancellationRequested)
         {
             await Task.Delay(MigrationDefaults.CopyPhaseWatchdogIntervalMs, cancellationToken);
             if (cancellationToken.IsCancellationRequested || _control.ShouldStop || _control.IsFatal)
-                return;
-
-            // Stop/cutover can null out _pipeline concurrently; snapshot it once.
-            var pipeline = _pipeline;
-            if (pipeline is null)
                 return;
 
             int exited = pipeline.ExitedWorkerCount;
@@ -626,10 +627,10 @@ public class MigrationJobRunner : IAsyncDisposable
     /// Completed/Pending status is derived in
     /// <see cref="WriteFinalJobStatus"/>.
     /// </summary>
-    private async Task RunOfflineDrainAsync()
+    private static async Task RunOfflineDrainAsync(JobPipeline pipeline)
     {
-        _pipeline!.CompletePartitionChannel();
-        await _pipeline.WaitForCompletionAsync();
+        pipeline.CompletePartitionChannel();
+        await pipeline.WaitForCompletionAsync();
     }
 
     private Task ProcessWithRetryAsync(Job job, TableMigration mu, JobPartitioning partitioning, CancellationToken token)
@@ -655,13 +656,18 @@ public class MigrationJobRunner : IAsyncDisposable
         ISession sourceSession,
         Partitioner partitioner,
         List<TablePartitioning> chunks,
-        object chunksLock)
+        object chunksLock,
+        CancellationToken ct)
     {
+        // The driver calls below do not take a token, so check between
+        // steps: a cancel during partitioning must not go on to count
+        // and partition the remaining tables (#208).
         if (!await SchemaManager.TableExistsAsync(sourceSession, mu.KeyspaceName, mu.TableName))
         {
             MarkUnitFailedAndSave(mu, $"Source table {mu.KeyspaceName}.{mu.TableName} not found.", TableStatus.NotFound);
             return;
         }
+        ct.ThrowIfCancellationRequested();
 
         var columns = await SchemaManager.GetTableColumnsAsync(sourceSession, mu.KeyspaceName, mu.TableName);
         if (columns.Count == 0)
@@ -669,6 +675,7 @@ public class MigrationJobRunner : IAsyncDisposable
             MarkUnitFailedAndSave(mu, $"No columns for {mu.KeyspaceName}.{mu.TableName}", TableStatus.Failed);
             return;
         }
+        ct.ThrowIfCancellationRequested();
         mu.IsCounterTable = CassandraQueries.IsCounterTable(columns);
 
         bool isOnline = job.IsOnline;
@@ -696,7 +703,10 @@ public class MigrationJobRunner : IAsyncDisposable
         }
         else
         {
-            rowCount = await CassandraQueries.GetRowCountAsync(sourceSession, mu.KeyspaceName, mu.TableName);
+            // A full-table COUNT(*) can run for minutes; stop waiting
+            // on it as soon as the job is cancelled.
+            rowCount = await CassandraQueries.GetRowCountAsync(sourceSession, mu.KeyspaceName, mu.TableName)
+                .WaitAsync(ct);
             if (rowCount > 0)
             {
                 mu.EstimatedRowCount = rowCount;
@@ -712,6 +722,7 @@ public class MigrationJobRunner : IAsyncDisposable
         // TableResources and Partition materialization stay here so the
         // partitioner does not need to know about per-table resource wiring.
         var plan = await partitioner.PartitionAsync(sourceSession, mu, enableReplay: isOnline);
+        ct.ThrowIfCancellationRequested();
 
         var resources = new TableResources(spec, columns, tracker, plan.TotalFeedRanges);
         // Restore the bulk-completed counter on resume so PageWriter's
@@ -871,17 +882,6 @@ public class MigrationJobRunner : IAsyncDisposable
         _log.WriteLine(errorMessage, LogType.Error);
         mu.SourceStatus = status;
         MigrationJobContext.Instance.SaveMigrationUnit(mu, true);
-    }
-
-    public void Stop()
-    {
-        // JobControl token (already cancelled by the caller via
-        // RequestPause/RequestStop/RequestCutover) cascades cancellation
-        // to every running coordinator and every worker. Here we just
-        // eagerly tear down the pipeline so resources are released
-        // without waiting for the outer Task to observe the cancel.
-        MigrationUtilities.SafeDispose(_pipeline, "JobPipeline (Stop)");
-        _pipeline = null;
     }
 
     /// <summary>
