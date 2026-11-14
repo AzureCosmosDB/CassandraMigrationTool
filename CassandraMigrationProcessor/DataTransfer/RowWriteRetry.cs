@@ -105,7 +105,7 @@ internal static class RowWriteRetry
                 long elapsed = (Stopwatch.GetTimestamp() - start) * 1000 / Stopwatch.Frequency;
                 return (WriteOutcome.Success, elapsed, null);
             }
-            catch (OperationCanceledException)
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
                 throw;
             }
@@ -118,7 +118,12 @@ internal static class RowWriteRetry
                     return (WriteOutcome.Fatal, 0, ex);
                 }
 
-                if (ExceptionClassifier.IsTransient(ex) && n < policy.MaxAttempts)
+                // An OperationCanceledException/TaskCanceledException that
+                // was NOT caused by the job token is a driver/socket timeout.
+                // Rethrowing it used to silently kill the copy worker and
+                // stall the job (issue #69); treat it as a transient timeout.
+                bool isTimeoutCancel = ex is OperationCanceledException;
+                if ((isTimeoutCancel || ExceptionClassifier.IsTransient(ex)) && n < policy.MaxAttempts)
                 {
                     await Task.Delay(policy.DelayBeforeRetry(n), cancellationToken);
                     continue;

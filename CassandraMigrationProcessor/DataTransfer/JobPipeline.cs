@@ -77,6 +77,9 @@ internal sealed class JobPipeline : IDisposable, IAsyncDisposable
     /// <summary>Number of workers that completed with faults.</summary>
     public int FaultedWorkerCount => _workerPool.FaultedCount;
 
+    /// <summary>Number of worker tasks that have exited for any reason.</summary>
+    public int ExitedWorkerCount => _workerPool.ExitedCount;
+
     /// <summary>
     /// Pipeline-wide cancellation token — the shared
     /// <see cref="JobControl.Token"/>. Any of pause / stop / cutover /

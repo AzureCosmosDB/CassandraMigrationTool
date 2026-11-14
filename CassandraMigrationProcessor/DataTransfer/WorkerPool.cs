@@ -77,6 +77,9 @@ internal sealed class WorkerPool : IDisposable
     /// </summary>
     internal int FaultedCount => _workers?.Count(t => t.IsFaulted) ?? 0;
 
+    /// <summary>Number of worker tasks that have finished (success, fault, or cancel).</summary>
+    internal int ExitedCount => _workers?.Count(t => t.IsCompleted) ?? 0;
+
     /// <summary>True if every worker task has finished (success, fault, or cancel).</summary>
     internal bool AllExited => _workers != null && _workers.All(t => t.IsCompleted);
 

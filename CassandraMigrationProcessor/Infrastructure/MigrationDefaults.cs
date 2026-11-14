@@ -14,6 +14,10 @@ public static class MigrationDefaults
     public const int CheckpointIntervalSeconds = 10;
     public const int MaxReconnectAttempts = 50;
 
+    // Poll interval (ms) for the copy-phase watchdog that fails the job
+    // if a worker exits unexpectedly while partitions are still queued.
+    public const int CopyPhaseWatchdogIntervalMs = 2_000;
+
     // Per-page read retry count when the source SELECT fails
     // transiently. Used by PageReader.
     public const int DefaultMaxReadRetries = 3;
