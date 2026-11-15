@@ -88,20 +88,24 @@ public static class UnitStore
             JobStore.GetUnitDocumentPath(jobId, unitId));
     }
 
+    /// <summary>
+    /// Whether a table still has work for the runner. For online jobs,
+    /// CopyComplete tables count too: the merged DataCopyWorker re-seeds
+    /// their feed ranges in Replay phase to keep tailing the change feed.
+    /// </summary>
+    public static bool HasRemainingWork(Job job, TableMigrationSummary summary) =>
+        summary.IsValid
+        && !(summary.CopyComplete && !job.IsOnline)
+        && !summary.SkippedDueToMaxRetries;
+
     public static List<TableMigration> GetMigrationUnitsToMigrate(
         Job job)
     {
         List<TableMigration> units = new();
         if (job == null) return units;
 
-        foreach (var summary in job.Tables.Where(summary => summary.IsValid))
+        foreach (var summary in job.Tables.Where(summary => HasRemainingWork(job, summary)))
         {
-            // For online jobs, include CopyComplete tables too — the
-            // merged DataCopyWorker re-seeds their feed ranges in
-            // Replay phase to keep tailing the change feed.
-            if (summary.CopyComplete && !job.IsOnline) continue;
-            if (summary.SkippedDueToMaxRetries) continue;
-
             var mu = GetUnit(summary.Id);
             if (mu != null)
             {

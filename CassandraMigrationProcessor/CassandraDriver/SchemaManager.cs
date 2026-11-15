@@ -145,10 +145,16 @@ public static class SchemaManager
     /// </summary>
     private static Task<RowSet> ExecuteSchemaQueryAsync(
         ISession session, string cql, params object[] args)
+        => ExecuteSchemaQueryAsync(session, CancellationToken.None, cql, args);
+
+    private static Task<RowSet> ExecuteSchemaQueryAsync(
+        ISession session, CancellationToken ct, string cql, params object[] args)
     {
         var statement = new SimpleStatement(cql, args);
         statement.SetReadTimeoutMillis(MigrationDefaults.SchemaQueryTimeoutMs);
-        return RetryExecutor.ExecuteAsync(() => session.ExecuteAsync(statement));
+        return RetryExecutor.ExecuteAsync(
+            () => session.ExecuteAsync(statement).WaitAsync(ct),
+            cancellationToken: ct);
     }
 
     /// <summary>
@@ -714,11 +720,12 @@ public static class SchemaManager
     /// Cosmos DB can return metadata for ghost tables
     /// that 404 on data reads.
     /// </summary>
-    public static async Task<bool> TableExistsAsync(ISession session, string keyspace, string table)
+    public static async Task<bool> TableExistsAsync(
+        ISession session, string keyspace, string table, CancellationToken ct = default)
     {
         CqlIdentifier.Validate(keyspace);
         CqlIdentifier.Validate(table);
-        var tables = await CassandraQueries.ListTablesAsync(session, keyspace);
+        var tables = await CassandraQueries.ListTablesAsync(session, keyspace).WaitAsync(ct);
         if (!tables.Contains(table, StringComparer.OrdinalIgnoreCase))
             return false;
 
@@ -731,15 +738,19 @@ public static class SchemaManager
                 probe.SetPageSize(1);
                 probe.SetAutoPage(false);
                 probe.SetReadTimeoutMillis(ProbeTimeoutMs);
-                await session.ExecuteAsync(probe);
+                await session.ExecuteAsync(probe).WaitAsync(ct);
                 return true;
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                throw;
             }
             catch (Exception ex)
             {
                 if (ExceptionClassifier.IsThrottle(ex) && attempt < ThrottleMaxRetries)
                 {
                     int delaySec = Math.Min(attempt * 3, 30);
-                    await Task.Delay(delaySec * 1000);
+                    await Task.Delay(delaySec * 1000, ct);
                     continue;
                 }
 
@@ -762,10 +773,11 @@ public static class SchemaManager
     /// position = ordinal within key group
     /// </summary>
     public static async Task<List<CassandraColumn>>
-        GetTableColumnsAsync(ISession session, string keyspace, string table)
+        GetTableColumnsAsync(ISession session, string keyspace, string table, CancellationToken ct = default)
     {
         var resultSet = await ExecuteSchemaQueryAsync(
             session,
+            ct,
             "SELECT column_name, type, kind, clustering_order, position " +
             "FROM system_schema.columns WHERE keyspace_name = ? AND table_name = ?",
             keyspace, table);

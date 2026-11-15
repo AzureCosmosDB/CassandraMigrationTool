@@ -40,8 +40,9 @@ public sealed class JobControl : IDisposable
     public CancellationToken Token => _cts.Token;
 
     /// <summary>
-    /// Latest user intent. <see cref="JobCommand.None"/> if no
-    /// pause/stop/cutover has been requested.
+    /// Latched user intent. <see cref="JobCommand.None"/> if no
+    /// pause/stop/cutover has been requested. See
+    /// <see cref="CanTransition"/> for the latch rules.
     /// </summary>
     public JobCommand Requested
         => (JobCommand)Volatile.Read(ref _requested);
@@ -59,28 +60,47 @@ public sealed class JobControl : IDisposable
     /// <summary>True iff the token has been cancelled (any reason).</summary>
     public bool ShouldStop => _cts.IsCancellationRequested;
 
-    public void RequestPause()
-    {
-        Interlocked.CompareExchange(ref _requested,
-            (int)JobCommand.PauseRequested, (int)JobCommand.None);
-        SafeCancel();
-    }
+    /// <summary>Requests a resumable pause. Returns false if another intent is already latched.</summary>
+    public bool RequestPause() => Request(JobCommand.PauseRequested);
 
-    public void RequestStop()
-    {
-        Volatile.Write(ref _requested, (int)JobCommand.StopRequested);
-        SafeCancel();
-    }
+    /// <summary>Requests a terminal cancel. Returns false if a stop/cutover is already latched.</summary>
+    public bool RequestStop() => Request(JobCommand.StopRequested);
 
     /// <summary>
     /// User-initiated cutover on an Online/CDC job. Honoured by the
     /// runner's finally as a terminal-Completed signal (vs.
-    /// Cancel which writes terminal-Cancelled).
+    /// Cancel which writes terminal-Cancelled). Returns false if a
+    /// stop/cutover is already latched.
     /// </summary>
-    public void RequestCutover()
+    public bool RequestCutover() => Request(JobCommand.CutoverRequested);
+
+    /// <summary>
+    /// Intent latch rules: the first intent wins, except that a pending
+    /// pause may be upgraded to a terminal stop/cutover. Terminal
+    /// intents never overwrite each other, so a late or double click
+    /// cannot relabel a cancel as a completed cutover (or vice versa).
+    /// </summary>
+    internal static bool CanTransition(JobCommand from, JobCommand to) =>
+        from == JobCommand.None
+        || (from == JobCommand.PauseRequested
+            && to is JobCommand.StopRequested or JobCommand.CutoverRequested);
+
+    private bool Request(JobCommand command)
     {
-        Volatile.Write(ref _requested, (int)JobCommand.CutoverRequested);
+        bool accepted = false;
+        int current = Volatile.Read(ref _requested);
+        while (CanTransition((JobCommand)current, command))
+        {
+            int seen = Interlocked.CompareExchange(ref _requested, (int)command, current);
+            if (seen == current)
+            {
+                accepted = true;
+                break;
+            }
+            current = seen;
+        }
         SafeCancel();
+        return accepted;
     }
 
     /// <summary>

@@ -28,7 +28,6 @@ public class MigrationJobRunner : IAsyncDisposable
     // Interlocked.Exchange of _consecutiveAuthErrors so writers race
     // safely with the threshold-check reader in RunCopyPhaseAsync.
     private Exception? _lastAuthException;
-    private JobPipeline? _pipeline;
 
     /// <summary>
     /// Runner-wide target session opened once in <see cref="CreateAsync"/>.
@@ -67,7 +66,10 @@ public class MigrationJobRunner : IAsyncDisposable
     /// Asynchronous factory: resolves the pipeline configuration, opens
     /// source and target sessions, and only then materialises the runner.
     /// On any failure during session acquisition all partially-opened
-    /// resources are torn down before the exception propagates.
+    /// resources are torn down before the exception propagates. A
+    /// pause/stop on <paramref name="control"/> abandons a slow or hung
+    /// connect immediately with <see cref="OperationCanceledException"/>;
+    /// sessions that open afterwards are disposed in the background.
     /// </summary>
     public static async Task<MigrationJobRunner> CreateAsync(
         MigrationLog log, Job job, AppSettings config, JobControl control)
@@ -78,6 +80,24 @@ public class MigrationJobRunner : IAsyncDisposable
         ArgumentNullException.ThrowIfNull(control);
 
         var pipelineConfig = PipelineConfig.Resolve(job, config);
+        // Driver connects block synchronously, so run them off-thread to
+        // let the cancel token win the race against a dead contact point.
+        var open = Task.Run(() => OpenSessionsAsync(log, job, pipelineConfig.WorkerCount, control));
+        var (sourceSessions, target) = await AwaitOrAbandonAsync(
+            open,
+            sessions =>
+            {
+                MigrationUtilities.SafeDisposeSession(sessions.Target, "MigrationJobRunner target (abandoned open)");
+                sessions.Source.Dispose();
+            },
+            control.Token);
+        return new MigrationJobRunner(
+            log, job, pipelineConfig, control, sourceSessions, target);
+    }
+
+    private static async Task<(SourceSessionWrapper Source, ISession Target)> OpenSessionsAsync(
+        MigrationLog log, Job job, int workerCount, JobControl control)
+    {
         SourceSessionWrapper? sourceSessions = null;
         ISession? target = null;
         try
@@ -85,11 +105,10 @@ public class MigrationJobRunner : IAsyncDisposable
             sourceSessions = new SourceSessionWrapper(
                 log,
                 job,
-                pipelineConfig.WorkerCount,
+                workerCount,
                 control.ReportFault);
             target = await CassandraClientFactory.CreateTargetSessionAsync(log, job);
-            return new MigrationJobRunner(
-                log, job, pipelineConfig, control, sourceSessions, target);
+            return (sourceSessions, target);
         }
         catch
         {
@@ -99,14 +118,51 @@ public class MigrationJobRunner : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// Awaits <paramref name="work"/> unless <paramref name="cancellationToken"/>
+    /// trips first. On cancellation the work keeps running unobserved;
+    /// if it later succeeds its result is handed to
+    /// <paramref name="disposeLate"/> so nothing leaks.
+    /// </summary>
+    internal static async Task<T> AwaitOrAbandonAsync<T>(
+        Task<T> work, Action<T> disposeLate, CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await work.WaitAsync(cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            _ = work.ContinueWith(
+                t =>
+                {
+                    if (t.IsCompletedSuccessfully) disposeLate(t.Result);
+                    else _ = t.Exception;
+                },
+                CancellationToken.None,
+                TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
+            throw;
+        }
+    }
+
     public async Task StartAsync()
     {
         var job = _job;
         var cancellationToken = _control.Token;
         Exception? failure = null;
+        // Owned exclusively by this call: created after partitioning,
+        // disposed only in the finally below. Pause/stop/cutover never
+        // touch it — they cancel the shared token and every loop that
+        // uses the pipeline exits on its own.
+        JobPipeline? pipeline = null;
 
         try
         {
+            // Pause/Stop can land while CreateAsync is still opening
+            // sessions; honour it before doing any work.
+            cancellationToken.ThrowIfCancellationRequested();
+
             if (job.Tables.Count == 0
                 || job.Tables.Any(m => m.TableName == "*"))
             {
@@ -116,43 +172,18 @@ public class MigrationJobRunner : IAsyncDisposable
             var units = UnitStore.GetMigrationUnitsToMigrate(job);
             if (units.Count == 0)
             {
-                // Distinguish two distinct zero-unit outcomes from
-                // UnitStore.GetMigrationUnitsToMigrate:
-                //   (a) operator-supplied input didn't resolve to any
-                //       table on the source — a typo. Fault loudly so
-                //       the homepage badge tells the truth.
-                //   (b) every job.Tables entry was filtered as terminal
-                //       (CopyComplete on an offline job, or
-                //       SkippedDueToMaxRetries). That's the
-                //       resume-after-completion or re-run path
-                //       JobManager.StartMigration explicitly permits;
-                //       faulting here would flip Completed/Pending
-                //       jobs to Faulted on re-run.
-                bool operatorRequestedTables =
-                    !string.IsNullOrWhiteSpace(job.Namespaces)
-                    || (job.Tables != null && job.Tables.Count > 0);
-                bool anyUnitWasFilteredAsTerminal =
-                    job.Tables != null
-                    && job.Tables.Any(t => t.IsValid
-                        && ((t.CopyComplete && !job.IsOnline)
-                            || t.SkippedDueToMaxRetries));
-                if (operatorRequestedTables && !anyUnitWasFilteredAsTerminal)
+                // Nothing left to run. The finally block derives the
+                // final status from table state, so a resume of an
+                // already-copied offline job finalises as Completed.
+                string? fault = ResolveZeroUnitFault(job);
+                if (fault != null)
                 {
-                    string requested = !string.IsNullOrWhiteSpace(job.Namespaces)
-                        ? job.Namespaces!
-                        : string.Join(", ", (job.Tables ?? new List<TableMigrationSummary>())
-                            .Select(t => $"{t.KeyspaceName}.{t.TableName}"));
-                    string msg =
-                        $"Tables To Migrate '{requested}' did not match any source tables. " +
-                        "Check that the keyspace and table names exist on the source cluster.";
-                    _log.WriteLine(msg, LogType.Error);
-                    job.Status = JobStatus.Faulted;
-                    StampEndedOnIfTerminal(job);
-                    MigrationJobContext.Instance.SaveMigrationJob(job);
+                    _log.WriteLine(fault, LogType.Error);
+                    failure = new InvalidOperationException(fault);
                 }
                 else
                 {
-                    _log.WriteLine("No remaining migration units.", LogType.Warning);
+                    _log.WriteLine("No remaining migration units.", LogType.Info);
                 }
                 return;
             }
@@ -173,15 +204,15 @@ public class MigrationJobRunner : IAsyncDisposable
             var partitioning = await RunPartitioningPhaseAsync(
                 job, units, cancellationToken);
 
-            _pipeline = new JobPipeline(
+            pipeline = new JobPipeline(
                 _log, job, _pipelineConfig, partitioning,
                 _sourceSessions,
                 _control);
-            _pipeline.Start();
+            pipeline.Start();
 
             using (var watchdogCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
             {
-                var watchdog = RunCopyPhaseWorkerWatchdogAsync(watchdogCts.Token);
+                var watchdog = RunCopyPhaseWorkerWatchdogAsync(pipeline, watchdogCts.Token);
                 try
                 {
                     await RunCopyPhaseAsync(job, units, partitioning, cancellationToken);
@@ -205,24 +236,13 @@ public class MigrationJobRunner : IAsyncDisposable
             // new work from spinning up against broken credentials;
             // no additional throw is needed here.
             if (job.IsOnline)
-                await RunOnlineTailLoopAsync(cancellationToken);
+                await RunOnlineTailLoopAsync(pipeline, cancellationToken);
             else
-                await RunOfflineFinalizeAsync(job);
+                await RunOfflineDrainAsync(pipeline);
         }
         catch (OperationCanceledException)
         {
-            // Differentiate the operator-facing message based on the
-            // intent captured in JobControl: pause keeps the job
-            // resumable; stop is terminal; bare token cancel (e.g.
-            // process shutdown) falls back to "cancelled".
-            string message = _control.Requested switch
-            {
-                JobCommand.PauseRequested   => "Migration was paused (resumable).",
-                JobCommand.StopRequested    => "Migration was stopped.",
-                JobCommand.CutoverRequested => "Migration was cutover (completed).",
-                _                           => "Migration was cancelled.",
-            };
-            _log.WriteLine(message, LogType.Info);
+            _log.WriteLine(IntentMessage(_control.Requested), LogType.Info);
         }
         catch (Exception ex)
         {
@@ -240,84 +260,155 @@ public class MigrationJobRunner : IAsyncDisposable
             // Sessions and the token-refresh timer are owned by the
             // runner itself and torn down in DisposeAsync; here we
             // only release per-run resources scoped to this call.
-            MigrationUtilities.SafeDispose(_pipeline, "JobPipeline");
-            _pipeline = null;
+            MigrationUtilities.SafeDispose(pipeline, "JobPipeline");
 
-            WriteFinalJobStatus(job, _control, failure);
+            WriteFinalJobStatus(_log, job, _control, failure);
         }
     }
+
+    /// <summary>
+    /// Operator-facing message for a run that ended on its cancel token:
+    /// pause keeps the job resumable; stop is terminal; bare token cancel
+    /// (e.g. process shutdown) falls back to "cancelled".
+    /// </summary>
+    private static string IntentMessage(JobCommand requested) => requested switch
+    {
+        JobCommand.PauseRequested   => "Migration was paused (resumable).",
+        JobCommand.StopRequested    => "Migration was stopped.",
+        JobCommand.CutoverRequested => "Migration was cutover (completed).",
+        _                           => "Migration was cancelled.",
+    };
+
+    /// <summary>
+    /// Finalises a run whose <see cref="CreateAsync"/> threw, so
+    /// <see cref="StartAsync"/> (and its finally) never ran. Applies the
+    /// same rules as a started run: a pause/stop that abandoned session
+    /// opening honours the latched intent; any other failure is a fault.
+    /// </summary>
+    public static void FinaliseUnstartedRun(MigrationLog log, Job job, JobControl control, Exception ex)
+    {
+        ArgumentNullException.ThrowIfNull(log);
+        ArgumentNullException.ThrowIfNull(job);
+        ArgumentNullException.ThrowIfNull(control);
+        ArgumentNullException.ThrowIfNull(ex);
+
+        Exception? failure = UnstartedRunFailure(ex, control.Requested);
+        if (failure == null)
+            log.WriteLine(IntentMessage(control.Requested), LogType.Info);
+        else
+            log.WriteLine($"Migration failed: {ex}", LogType.Error);
+
+        WriteFinalJobStatus(log, job, control, failure);
+    }
+
+    /// <summary>
+    /// The fault to record for a run that never started, or null when the
+    /// exception is just the cancel token honouring a latched intent.
+    /// </summary>
+    internal static Exception? UnstartedRunFailure(Exception ex, JobCommand requested) =>
+        ex is OperationCanceledException && requested != JobCommand.None ? null : ex;
 
     /// <summary>
     /// Releases the source / target sessions and stops the AAD
     /// token-refresh timer. Idempotent and safe to call even if
     /// <see cref="StartAsync"/> was never invoked (e.g. the run was
     /// cancelled between <see cref="CreateAsync"/> and the start
-    /// trigger).
+    /// trigger). Must only be called after <see cref="StartAsync"/>
+    /// has returned.
     /// </summary>
     public ValueTask DisposeAsync()
     {
-        MigrationUtilities.SafeDispose(_pipeline, "JobPipeline (Dispose)");
-        _pipeline = null;
         MigrationUtilities.SafeDisposeSession(_targetSession, "MigrationJobRunner target session");
         _sourceSessions.Dispose();
         return ValueTask.CompletedTask;
     }
 
     /// <summary>
-    /// Single writer of <see cref="Job.Status"/> for a run that
-    /// reached <see cref="StartAsync"/>. Faults outrank user intent
-    /// (a Faulted run is visible even if the operator clicked Pause
-    /// after the failure had already happened); user intent then
-    /// distinguishes Paused from Cancelled; otherwise the run is
-    /// either left at its already-terminal status (e.g. Completed
-    /// written by <see cref="RunOfflineFinalizeAsync"/>) or
-    /// normalised from Running to Pending.
+    /// Single writer of <see cref="Job.Status"/> for a run. Every exit
+    /// path of <see cref="StartAsync"/> — full run, early return,
+    /// cancellation, exception — funnels through here, as does
+    /// <see cref="FinaliseUnstartedRun"/> when sessions never opened,
+    /// and the status is derived by <see cref="ResolveFinalStatus"/>
+    /// from the outcome plus persisted table state rather than from
+    /// which code path happened to execute.
     ///
-    /// Fault sources, in priority order: (1) the exception that
-    /// escaped <see cref="StartAsync"/>'s try/catch, (2) any per-table
-    /// <see cref="TableStatus.Failed"/> stamp set by the schema /
-    /// online-replay paths, (3) the first fault captured on
-    /// <see cref="JobControl.FirstFault"/> — worker self-aborts route
-    /// here without throwing out of <see cref="StartAsync"/> or
-    /// marking the unit Failed, so without consulting FirstFault a
-    /// fatal worker fault would collapse to Pending.
+    /// Fault sources: (1) the exception that escaped
+    /// <see cref="StartAsync"/>'s try/catch, (2) the first fault
+    /// captured on <see cref="JobControl.FirstFault"/> — worker
+    /// self-aborts route here without throwing out of
+    /// <see cref="StartAsync"/>, (3) any per-table
+    /// <see cref="TableStatus.Failed"/> stamp (checked inside
+    /// <see cref="ResolveFinalStatus"/>).
     /// </summary>
-    private void WriteFinalJobStatus(Job job, JobControl control, Exception? failure)
+    private static void WriteFinalJobStatus(MigrationLog log, Job job, JobControl control, Exception? failure)
     {
         failure ??= control.FirstFault;
+        if (failure != null)
+            log.WriteLine($"Job finalised as Faulted: {failure.GetType().Name}: {failure.Message}", LogType.Error);
 
-        bool tableFailed = job.Tables?.Any(
-            t => t.SourceStatus == TableStatus.Failed) ?? false;
-
-        if (failure != null || tableFailed || control.IsFatal)
-        {
-            if (failure != null)
-                _log.WriteLine($"Job finalised as Faulted: {failure.GetType().Name}: {failure.Message}", LogType.Error);
-            job.Status = JobStatus.Faulted;
-        }
-        else if (control.Requested == JobCommand.CutoverRequested)
-        {
-            // Operator chose to finalise an online job — terminal,
-            // not resumable. Distinct from Stop so the log and UI
-            // can show "Completed (cutover)" rather than "Cancelled".
-            job.Status = JobStatus.Completed;
-        }
-        else if (control.Requested == JobCommand.StopRequested)
-        {
-            job.Status = JobStatus.Cancelled;
-        }
-        else if (control.Requested == JobCommand.PauseRequested)
-        {
-            job.Status = JobStatus.Paused;
-        }
-        else if (job.Status == JobStatus.Running)
-        {
-            job.Status = JobStatus.Pending;
-        }
+        job.Status = ResolveFinalStatus(job, control.Requested, faulted: failure != null);
+        if (job.Status == JobStatus.Completed)
+            log.WriteLine($"Job {job.Id} Completed", LogType.Info);
 
         StampEndedOnIfTerminal(job);
 
         MigrationJobContext.Instance.SaveMigrationJob(job);
+    }
+
+    /// <summary>
+    /// When there are no migration units to run, decides whether that
+    /// is a fault (returns the message) or a legitimate no-op (null):
+    /// operator input that resolved to no valid source table (a typo),
+    /// or tables that still have work but whose persisted migration
+    /// units are missing — resuming them would otherwise silently do
+    /// nothing and leave the job Pending.
+    /// </summary>
+    internal static string? ResolveZeroUnitFault(Job job)
+    {
+        bool operatorRequestedTables =
+            !string.IsNullOrWhiteSpace(job.Namespaces) || job.Tables.Count > 0;
+        if (operatorRequestedTables && !job.Tables.Any(t => t.IsValid))
+        {
+            string requested = !string.IsNullOrWhiteSpace(job.Namespaces)
+                ? job.Namespaces!
+                : string.Join(", ", job.Tables.Select(t => $"{t.KeyspaceName}.{t.TableName}"));
+            return $"Tables To Migrate '{requested}' did not match any source tables. " +
+                   "Check that the keyspace and table names exist on the source cluster.";
+        }
+
+        var orphaned = job.Tables
+            .Where(t => UnitStore.HasRemainingWork(job, t))
+            .Select(t => $"{t.KeyspaceName}.{t.TableName}")
+            .ToList();
+        if (orphaned.Count > 0)
+        {
+            return $"Saved migration state for {string.Join(", ", orphaned)} could not be loaded, " +
+                   "so these tables cannot be resumed. Recreate the job to migrate them.";
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Pure status decision, in priority order: faults outrank user
+    /// intent (a Faulted run stays visible even if the operator
+    /// clicked Pause afterwards); explicit intent (cutover / stop /
+    /// pause) comes next; otherwise an offline job whose every valid
+    /// table has finished bulk copy is Completed, and anything else
+    /// is Pending (resumable).
+    /// </summary>
+    internal static JobStatus ResolveFinalStatus(Job job, JobCommand requested, bool faulted)
+    {
+        if (faulted || (job.Tables?.Any(t => t.SourceStatus == TableStatus.Failed) ?? false))
+            return JobStatus.Faulted;
+
+        return requested switch
+        {
+            JobCommand.CutoverRequested => JobStatus.Completed,
+            JobCommand.StopRequested    => JobStatus.Cancelled,
+            JobCommand.PauseRequested   => JobStatus.Paused,
+            _ => job.IsOfflineCompleted ? JobStatus.Completed : JobStatus.Pending,
+        };
     }
 
     /// <summary>
@@ -501,11 +592,18 @@ public class MigrationJobRunner : IAsyncDisposable
             {
                 await DiscoverUnitPartitioningAsync(
                     job, mu, _sourceSessions.GetSession(),
-                    partitioner, chunks, collectLock);
+                    partitioner, chunks, collectLock, token);
             }
             catch (OperationCanceledException)
             {
                 throw;
+            }
+            catch (Exception) when (token.IsCancellationRequested)
+            {
+                // A query that failed because the job was being
+                // cancelled must surface as a cancel, not mark the
+                // table Failed (which would finalise the job Faulted).
+                throw new OperationCanceledException(token);
             }
             catch (Exception ex)
             {
@@ -582,14 +680,14 @@ public class MigrationJobRunner : IAsyncDisposable
     /// copied — silent data loss. Probe the pool each tick and throw
     /// so the run is recorded as Faulted.
     /// </summary>
-    private async Task RunOnlineTailLoopAsync(CancellationToken cancellationToken)
+    private async Task RunOnlineTailLoopAsync(JobPipeline pipeline, CancellationToken cancellationToken)
     {
         _log.WriteLine("All tables drained. Change feed replaying on shared worker pool.", LogType.Info);
         while (!cancellationToken.IsCancellationRequested)
         {
-            if (_pipeline!.AllWorkersExited)
+            if (pipeline.AllWorkersExited)
             {
-                int faulted = _pipeline.FaultedWorkerCount;
+                int faulted = pipeline.FaultedWorkerCount;
                 throw new InvalidOperationException(
                     $"Online worker pool has stopped (faulted={faulted}).");
             }
@@ -609,17 +707,12 @@ public class MigrationJobRunner : IAsyncDisposable
     /// in-flight partition, the table never drains, and the coordinator
     /// waits forever (issue #69). Detect that and fail the job loudly.
     /// </summary>
-    private async Task RunCopyPhaseWorkerWatchdogAsync(CancellationToken cancellationToken)
+    private async Task RunCopyPhaseWorkerWatchdogAsync(JobPipeline pipeline, CancellationToken cancellationToken)
     {
         while (!cancellationToken.IsCancellationRequested)
         {
             await Task.Delay(MigrationDefaults.CopyPhaseWatchdogIntervalMs, cancellationToken);
             if (cancellationToken.IsCancellationRequested || _control.ShouldStop || _control.IsFatal)
-                return;
-
-            // Stop/cutover can null out _pipeline concurrently; snapshot it once.
-            var pipeline = _pipeline;
-            if (pipeline is null)
                 return;
 
             int exited = pipeline.ExitedWorkerCount;
@@ -640,22 +733,15 @@ public class MigrationJobRunner : IAsyncDisposable
     }
 
     /// <summary>
-    /// Offline finalize: complete the partition channel so workers
-    /// drain and exit, await pool completion, then mark the job
-    /// completed if every unit reached the terminal state.
+    /// Offline drain: complete the partition channel so workers
+    /// finish and exit, then await pool completion. The resulting
+    /// Completed/Pending status is derived in
+    /// <see cref="WriteFinalJobStatus"/>.
     /// </summary>
-    private async Task RunOfflineFinalizeAsync(Job job)
+    private static async Task RunOfflineDrainAsync(JobPipeline pipeline)
     {
-        _pipeline!.CompletePartitionChannel();
-        await _pipeline.WaitForCompletionAsync();
-
-        if (job.IsOfflineCompleted)
-        {
-            _log.WriteLine($"Job {job.Id} Completed", LogType.Info);
-            job.Status = JobStatus.Completed;
-            StampEndedOnIfTerminal(job);
-            MigrationJobContext.Instance.SaveMigrationJob(job);
-        }
+        pipeline.CompletePartitionChannel();
+        await pipeline.WaitForCompletionAsync();
     }
 
     private Task ProcessWithRetryAsync(Job job, TableMigration mu, JobPartitioning partitioning, CancellationToken token)
@@ -681,15 +767,23 @@ public class MigrationJobRunner : IAsyncDisposable
         ISession sourceSession,
         Partitioner partitioner,
         List<TablePartitioning> chunks,
-        object chunksLock)
+        object chunksLock,
+        CancellationToken ct)
     {
-        if (!await SchemaManager.TableExistsAsync(sourceSession, mu.KeyspaceName, mu.TableName))
+        // Every source query below observes the token, and state is
+        // checked again before each table-state mutation, so a cancel
+        // during partitioning stops promptly and never marks a table
+        // NotFound/Failed on its way out.
+        bool exists = await SchemaManager.TableExistsAsync(sourceSession, mu.KeyspaceName, mu.TableName, ct);
+        ct.ThrowIfCancellationRequested();
+        if (!exists)
         {
             MarkUnitFailedAndSave(mu, $"Source table {mu.KeyspaceName}.{mu.TableName} not found.", TableStatus.NotFound);
             return;
         }
 
-        var columns = await SchemaManager.GetTableColumnsAsync(sourceSession, mu.KeyspaceName, mu.TableName);
+        var columns = await SchemaManager.GetTableColumnsAsync(sourceSession, mu.KeyspaceName, mu.TableName, ct);
+        ct.ThrowIfCancellationRequested();
         if (columns.Count == 0)
         {
             MarkUnitFailedAndSave(mu, $"No columns for {mu.KeyspaceName}.{mu.TableName}", TableStatus.Failed);
@@ -722,7 +816,10 @@ public class MigrationJobRunner : IAsyncDisposable
         }
         else
         {
-            rowCount = await CassandraQueries.GetRowCountAsync(sourceSession, mu.KeyspaceName, mu.TableName);
+            // A full-table COUNT(*) can run for minutes; stop waiting
+            // on it as soon as the job is cancelled.
+            rowCount = await CassandraQueries.GetRowCountAsync(sourceSession, mu.KeyspaceName, mu.TableName)
+                .WaitAsync(ct);
             if (rowCount > 0)
             {
                 mu.EstimatedRowCount = rowCount;
@@ -737,7 +834,8 @@ public class MigrationJobRunner : IAsyncDisposable
         // hands back descriptors for still-pending ranges.
         // TableResources and Partition materialization stay here so the
         // partitioner does not need to know about per-table resource wiring.
-        var plan = await partitioner.PartitionAsync(sourceSession, mu, enableReplay: isOnline);
+        var plan = await partitioner.PartitionAsync(sourceSession, mu, enableReplay: isOnline, ct);
+        ct.ThrowIfCancellationRequested();
 
         var resources = new TableResources(spec, columns, tracker, plan.TotalFeedRanges);
         // Restore the bulk-completed counter on resume so PageWriter's
@@ -897,17 +995,6 @@ public class MigrationJobRunner : IAsyncDisposable
         _log.WriteLine(errorMessage, LogType.Error);
         mu.SourceStatus = status;
         MigrationJobContext.Instance.SaveMigrationUnit(mu, true);
-    }
-
-    public void Stop()
-    {
-        // JobControl token (already cancelled by the caller via
-        // RequestPause/RequestStop/RequestCutover) cascades cancellation
-        // to every running coordinator and every worker. Here we just
-        // eagerly tear down the pipeline so resources are released
-        // without waiting for the outer Task to observe the cancel.
-        MigrationUtilities.SafeDispose(_pipeline, "JobPipeline (Stop)");
-        _pipeline = null;
     }
 
     /// <summary>

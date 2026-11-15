@@ -6,7 +6,6 @@ using CassandraMigrationProcessor.Context;
 namespace CassandraMigrationWebApp.Service;
 public class JobManager
 {
-    private MigrationJobRunner? MigrationJobRunner { get; set; }
     private readonly MigrationLog _log;
     private JobControl? _control;
     private string _runningJobId = string.Empty;
@@ -181,16 +180,22 @@ public class JobManager
     /// <summary>
     /// Shared terminate-run preamble for <see cref="StopMigration"/>
     /// and <see cref="RequestCutover"/>. Holds the state lock, claims
-    /// the running job (no-op if none), signals the supplied intent on
-    /// <see cref="JobControl"/>, then eagerly tears the pipeline down.
+    /// the running job (no-op if none) and signals the supplied intent
+    /// on <see cref="JobControl"/>. Cancelling the shared token is
+    /// enough: the runner owns its pipeline and tears it down itself
+    /// once every coordinator has observed the cancel.
     /// </summary>
-    private void TerminateRun(string action, Action<JobControl> requestOnControl)
+    private void TerminateRun(string action, Func<JobControl, bool> requestOnControl)
     {
         lock (_stateLock)
         {
-            if (!TryClaimRunningJob(action, out _)) return;
-            if (_control != null) requestOnControl(_control);
-            MigrationJobRunner?.Stop();
+            if (!TryClaimRunningJob(action, out var jobId)) return;
+            if (_control != null && !requestOnControl(_control))
+            {
+                _log.WriteLine(
+                    $"{action} ignored for job {jobId}: {_control.Requested} was already requested.",
+                    LogType.Warning);
+            }
         }
     }
 
@@ -310,7 +315,7 @@ public class JobManager
                 log.WriteLine(
                     $"User requested {(isResume ? "RESUME" : "START")} for job {job.Id} (prior status={job.Status})",
                     LogType.Info);
-                // MigrationJobRunner is published below, once its sessions
+                // The runner is published below, once its sessions
                 // are open (built via async factory). Claiming _runningJobId
                 // here is enough to make concurrent StartMigration calls
                 // see the slot as taken; Pause/Stop arriving during the
@@ -398,17 +403,31 @@ public class JobManager
                 runner = await MigrationJobRunner.CreateAsync(runLog!, job, config, runControl!);
                 lock (_stateLock)
                 {
-                    MigrationJobRunner = runner;
                     _context.ActiveRunner = runner;
                 }
                 await runner.StartAsync();
             }
+            catch (Exception ex) when (runner == null)
+            {
+                // Sessions never opened (bad credentials, unreachable
+                // host, or a pause/stop that abandoned the connect), so
+                // the runner's own finally never ran. Let it apply the
+                // same intent/fault rules instead of forcing Faulted.
+                Console.WriteLine($"Migration failed to start for Job ID: {job.Id}: {ex.Message}");
+                try
+                {
+                    MigrationJobRunner.FinaliseUnstartedRun(runLog!, job, runControl!, ex);
+                }
+                catch (Exception finaliseEx)
+                {
+                    Console.WriteLine($"[Manager] FinaliseUnstartedRun threw for {job.Id}: {finaliseEx}");
+                }
+            }
             catch (Exception ex)
             {
                 // Defensive: StartAsync handles its own failures. This
-                // catch only exists to keep an unexpected escape (e.g.
-                // failure during CreateAsync session acquisition) from
-                // leaving the job stuck in Running.
+                // catch only keeps an unexpected escape from leaving the
+                // job stuck in Running.
                 Console.WriteLine($"Migration unexpectedly threw for Job ID: {job.Id}: {ex}");
                 runLog!.WriteLine($"Migration unexpectedly threw: {ex}", LogType.Error);
                 // Ensure escaped exceptions always produce persisted terminal metadata.
@@ -418,8 +437,8 @@ public class JobManager
                 {
                     job.Status = JobStatus.Faulted;
                 }
-                // Stamp EndedOn here too: if CreateAsync throws before StartAsync runs,
-                // the runner's StampEndedOnIfTerminal never fires.
+                // StartAsync stamps EndedOn on its normal terminal path;
+                // an escape may have skipped it.
                 if (!job.EndedOn.HasValue)
                     job.EndedOn = DateTime.UtcNow;
                 _context.SaveMigrationJob(job);
@@ -454,7 +473,6 @@ public class JobManager
                     lock (_stateLock)
                     {
                         _context.ActiveRunner = null;
-                        MigrationJobRunner = null;
                         _control?.Dispose();
                         _control = null;
                         _runningJobId = string.Empty;

@@ -58,9 +58,10 @@ internal sealed class Partitioner
     public async Task<Plan> PartitionAsync(
         ISession sourceSession,
         TableMigration mu,
-        bool enableReplay)
+        bool enableReplay,
+        CancellationToken ct = default)
     {
-        var feedRanges = await ReconcileFeedRangesAsync(sourceSession, mu);
+        var feedRanges = await ReconcileFeedRangesAsync(sourceSession, mu, ct);
 
         int alreadyCompleted = mu.Partitions.Values.Count(p => p.BulkCompleted);
 
@@ -96,7 +97,7 @@ internal sealed class Partitioner
         return new Plan(feedRanges.Count, alreadyCompleted, pending, AllRangesAlreadyComplete: false);
     }
 
-    private async Task<IReadOnlyList<string>> ReconcileFeedRangesAsync(ISession sourceSession, TableMigration mu)
+    private async Task<IReadOnlyList<string>> ReconcileFeedRangesAsync(ISession sourceSession, TableMigration mu, CancellationToken ct)
     {
         string cacheKey = string.IsNullOrEmpty(mu.Id) ? $"{mu.KeyspaceName}.{mu.TableName}" : mu.Id;
         if (_feedRangeCache.TryGetValue(cacheKey, out var cached))
@@ -107,7 +108,7 @@ internal sealed class Partitioner
             storedBefore = mu.Partitions.Count;
 
         var sourceRanges = await CassandraQueries.GetFeedRangesAsync(
-            sourceSession, mu.KeyspaceName, mu.TableName);
+            sourceSession, mu.KeyspaceName, mu.TableName).WaitAsync(ct);
 
         int addedFromSource = 0;
         IReadOnlyList<string> working;
