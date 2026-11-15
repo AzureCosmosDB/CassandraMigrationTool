@@ -24,10 +24,13 @@ namespace CassandraMigrationProcessor.CassandraDriver;
 /// </code>
 /// Field semantics:
 /// <list type="bullet">
-///   <item><c>__sys_rw_ts</c> — row writetime, microseconds since
-///         Unix epoch. Suitable for <c>USING TIMESTAMP</c> on the
-///         destination INSERT so LWW conflict-resolution matches the
-///         source.</item>
+///   <item><c>__sys_rw_ts</c> — row-liveness marker writetime,
+///         microseconds since Unix epoch. An UPDATE does not advance it,
+///         so the whole-row INSERT uses the newest of this and the
+///         <c>__sys_clts</c> cell writetimes
+///         (<see cref="RowWriteTimestampMicros"/>).</item>
+///   <item><c>__sys_clts</c> — per-cell writetime map
+///         <c>{col: micros | [per-element micros]}</c>.</item>
 ///   <item><c>__sys_rw_ttl[0]</c> identifies whether the row-liveness
 ///         marker itself has a TTL. When it is positive,
 ///         <c>__sys_clttl[0]</c> supplies its absolute expiry epoch.
@@ -46,8 +49,29 @@ namespace CassandraMigrationProcessor.CassandraDriver;
 internal sealed record CdcRowMetadata(
     long? WritetimeMicros,
     long? ExpiryEpochSeconds,
-    IReadOnlyDictionary<string, CdcCellMetadata>? PerColumn = null)
+    IReadOnlyDictionary<string, CdcCellMetadata>? PerColumn = null,
+    long? LatestCellWritetimeMicros = null)
 {
+    /// <summary>
+    /// Timestamp for a single-statement whole-row write: the newest of the
+    /// row-marker writetime (<c>__sys_rw_ts</c>) and every cell writetime
+    /// (<c>__sys_clts</c>). An UPDATE advances only the cells it touches, not
+    /// the row marker, so writing the row at <c>__sys_rw_ts</c> alone would
+    /// give the updated cells the same timestamp as the copy already on the
+    /// destination; Cassandra then breaks the tie by value and can keep the
+    /// stale cell. Using the newest writetime guarantees the replayed row
+    /// supersedes earlier copies of it. <c>null</c> when the source exposed
+    /// neither value.
+    /// </summary>
+    public long? RowWriteTimestampMicros =>
+        (WritetimeMicros, LatestCellWritetimeMicros) switch
+        {
+            (long row, long cell) => Math.Max(row, cell),
+            (long row, null) => row,
+            (null, long cell) => cell,
+            _ => null,
+        };
+
     /// <summary>
     /// True when the source row has a row-liveness marker. A null
     /// <c>__sys_rw_ts</c> denotes an UPDATE-only row whose cells must be

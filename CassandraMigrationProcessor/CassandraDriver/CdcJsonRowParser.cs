@@ -71,9 +71,10 @@ internal sealed class CdcJsonRowParser
     // (__sys_clttl[1]) maps and, when they diverge from the row-level
     // values, exposes them on CdcRowMetadata.PerColumn so the writer can
     // re-apply each cell's own USING TIMESTAMP / USING TTL. When disabled
-    // (the default) the parser behaves exactly as the row-level decoder:
-    // these maps fall through to the __sys_* stripping branch at zero
-    // added cost. The two scratch dictionaries are reused across rows
+    // (the default) the parser only reduces __sys_clts to its newest
+    // writetime (so the whole-row INSERT supersedes earlier copies of an
+    // updated row) and strips the TTL detail map. The two
+    // scratch dictionaries are reused across rows
     // (cleared, not reallocated) so a page of divergent rows does not
     // allocate a fresh map per row.
     private readonly bool _preserveCellLevel;
@@ -120,6 +121,7 @@ internal sealed class CdcJsonRowParser
         int len = Encoding.UTF8.GetBytes(jsonRow, _utf8);
 
         long? writetime = null;
+        long? latestCellWritetime = null;
         long? rowTtlDurationSeconds = null;
         long? cellBaseExpiryEpochSeconds = null;
         if (_preserveCellLevel)
@@ -238,14 +240,25 @@ internal sealed class CdcJsonRowParser
                 continue;
             }
 
-            if (_preserveCellLevel && reader.ValueTextEquals(SysCellLevelWritetimeUtf8))
+            if (reader.ValueTextEquals(SysCellLevelWritetimeUtf8))
             {
+                reader.Read();
+                if (!_preserveCellLevel)
+                {
+                    // Row-level mode only needs the newest cell writetime so
+                    // the whole-row INSERT supersedes earlier copies of the
+                    // row (see CdcRowMetadata.RowWriteTimestampMicros). Stay
+                    // tolerant of any shape here, as this column was
+                    // previously stripped without inspection.
+                    latestCellWritetime = Max(latestCellWritetime, ReadLatestWritetime(ref reader));
+                    continue;
+                }
+
                 // __sys_clts shape: {col: <writetime-micros> | [per-element…]}.
                 // Scalar (and frozen) columns carry a single writetime number;
                 // non-frozen collections carry a per-element array. CQL can
                 // replay the collection as one value only when every element
                 // has the same writetime.
-                reader.Read();
                 if (reader.TokenType == JsonTokenType.StartObject)
                 {
                     while (reader.Read() && reader.TokenType != JsonTokenType.EndObject)
@@ -317,8 +330,43 @@ internal sealed class CdcJsonRowParser
                 rowMarkerExpiryEpochSeconds,
                 cellBaseExpiryEpochSeconds)
             : null;
+        if (_preserveCellLevel)
+        {
+            foreach (var cellWritetime in _colWritetime.Values)
+                latestCellWritetime = Max(latestCellWritetime, cellWritetime);
+        }
         return (cleaned, new CdcRowMetadata(
-            writetime, effectiveExpiryEpochSeconds, perColumn));
+            writetime, effectiveExpiryEpochSeconds, perColumn, latestCellWritetime));
+    }
+
+    private static long? Max(long? a, long? b) =>
+        a is long x && b is long y ? Math.Max(x, y) : a ?? b;
+
+    /// <summary>
+    /// Return the largest integer anywhere in the value the reader is
+    /// positioned on (a writetime, or a map/array of them), leaving the
+    /// reader on that value's last token. Non-numeric tokens are ignored.
+    /// </summary>
+    private static long? ReadLatestWritetime(ref Utf8JsonReader reader)
+    {
+        if (reader.TokenType == JsonTokenType.Number)
+            return reader.TryGetInt64(out long single) ? single : null;
+        if (reader.TokenType is not (JsonTokenType.StartObject or JsonTokenType.StartArray))
+            return null;
+
+        long? latest = null;
+        int depth = reader.CurrentDepth;
+        while (reader.Read())
+        {
+            if (reader.CurrentDepth == depth
+                && reader.TokenType is JsonTokenType.EndObject or JsonTokenType.EndArray)
+                return latest;
+            if (reader.TokenType == JsonTokenType.Number && reader.TryGetInt64(out long value))
+                latest = Max(latest, value);
+        }
+
+        throw new JsonException(
+            $"Malformed row payload: '{SysCellLevelWritetimeColumn}' did not terminate.");
     }
 
     /// <summary>

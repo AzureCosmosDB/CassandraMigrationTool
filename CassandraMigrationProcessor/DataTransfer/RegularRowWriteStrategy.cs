@@ -157,7 +157,7 @@ internal sealed class RegularRowWriteStrategy : IRowWriteStrategy
         }
 
         int ttlSeconds = ResolveTtlSeconds(metadata);
-        long ts = metadata?.WritetimeMicros ?? NowMicros();
+        long ts = metadata?.RowWriteTimestampMicros ?? NowMicros();
         // Bind layout: (envelope, writetime, ttl).
         var bound = _preparedInsertJson.Bind(cleanedJson, ts, ttlSeconds);
         bound.SetReadTimeoutMillis(RowWriteRetry.WriteTimeoutMs);
