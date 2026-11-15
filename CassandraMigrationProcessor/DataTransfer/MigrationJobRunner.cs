@@ -127,21 +127,11 @@ public class MigrationJobRunner : IAsyncDisposable
                 // Nothing left to run. The finally block derives the
                 // final status from table state, so a resume of an
                 // already-copied offline job finalises as Completed.
-                // The one case to fault here is operator input that
-                // resolved to no valid source table (e.g. a typo).
-                bool operatorRequestedTables =
-                    !string.IsNullOrWhiteSpace(job.Namespaces)
-                    || job.Tables.Count > 0;
-                if (operatorRequestedTables && !job.Tables.Any(t => t.IsValid))
+                string? fault = ResolveZeroUnitFault(job);
+                if (fault != null)
                 {
-                    string requested = !string.IsNullOrWhiteSpace(job.Namespaces)
-                        ? job.Namespaces!
-                        : string.Join(", ", job.Tables.Select(t => $"{t.KeyspaceName}.{t.TableName}"));
-                    string msg =
-                        $"Tables To Migrate '{requested}' did not match any source tables. " +
-                        "Check that the keyspace and table names exist on the source cluster.";
-                    _log.WriteLine(msg, LogType.Error);
-                    failure = new InvalidOperationException(msg);
+                    _log.WriteLine(fault, LogType.Error);
+                    failure = new InvalidOperationException(fault);
                 }
                 else
                 {
@@ -283,6 +273,40 @@ public class MigrationJobRunner : IAsyncDisposable
         StampEndedOnIfTerminal(job);
 
         MigrationJobContext.Instance.SaveMigrationJob(job);
+    }
+
+    /// <summary>
+    /// When there are no migration units to run, decides whether that
+    /// is a fault (returns the message) or a legitimate no-op (null):
+    /// operator input that resolved to no valid source table (a typo),
+    /// or tables that still have work but whose persisted migration
+    /// units are missing — resuming them would otherwise silently do
+    /// nothing and leave the job Pending.
+    /// </summary>
+    internal static string? ResolveZeroUnitFault(Job job)
+    {
+        bool operatorRequestedTables =
+            !string.IsNullOrWhiteSpace(job.Namespaces) || job.Tables.Count > 0;
+        if (operatorRequestedTables && !job.Tables.Any(t => t.IsValid))
+        {
+            string requested = !string.IsNullOrWhiteSpace(job.Namespaces)
+                ? job.Namespaces!
+                : string.Join(", ", job.Tables.Select(t => $"{t.KeyspaceName}.{t.TableName}"));
+            return $"Tables To Migrate '{requested}' did not match any source tables. " +
+                   "Check that the keyspace and table names exist on the source cluster.";
+        }
+
+        var orphaned = job.Tables
+            .Where(t => UnitStore.HasRemainingWork(job, t))
+            .Select(t => $"{t.KeyspaceName}.{t.TableName}")
+            .ToList();
+        if (orphaned.Count > 0)
+        {
+            return $"Saved migration state for {string.Join(", ", orphaned)} could not be loaded, " +
+                   "so these tables cannot be resumed. Recreate the job to migrate them.";
+        }
+
+        return null;
     }
 
     /// <summary>
@@ -494,6 +518,13 @@ public class MigrationJobRunner : IAsyncDisposable
             {
                 throw;
             }
+            catch (Exception) when (token.IsCancellationRequested)
+            {
+                // A query that failed because the job was being
+                // cancelled must surface as a cancel, not mark the
+                // table Failed (which would finalise the job Faulted).
+                throw new OperationCanceledException(token);
+            }
             catch (Exception ex)
             {
                 lock (collectLock)
@@ -659,23 +690,25 @@ public class MigrationJobRunner : IAsyncDisposable
         object chunksLock,
         CancellationToken ct)
     {
-        // The driver calls below do not take a token, so check between
-        // steps: a cancel during partitioning must not go on to count
-        // and partition the remaining tables (#208).
-        if (!await SchemaManager.TableExistsAsync(sourceSession, mu.KeyspaceName, mu.TableName))
+        // Every source query below observes the token, and state is
+        // checked again before each table-state mutation, so a cancel
+        // during partitioning stops promptly and never marks a table
+        // NotFound/Failed on its way out.
+        bool exists = await SchemaManager.TableExistsAsync(sourceSession, mu.KeyspaceName, mu.TableName, ct);
+        ct.ThrowIfCancellationRequested();
+        if (!exists)
         {
             MarkUnitFailedAndSave(mu, $"Source table {mu.KeyspaceName}.{mu.TableName} not found.", TableStatus.NotFound);
             return;
         }
-        ct.ThrowIfCancellationRequested();
 
-        var columns = await SchemaManager.GetTableColumnsAsync(sourceSession, mu.KeyspaceName, mu.TableName);
+        var columns = await SchemaManager.GetTableColumnsAsync(sourceSession, mu.KeyspaceName, mu.TableName, ct);
+        ct.ThrowIfCancellationRequested();
         if (columns.Count == 0)
         {
             MarkUnitFailedAndSave(mu, $"No columns for {mu.KeyspaceName}.{mu.TableName}", TableStatus.Failed);
             return;
         }
-        ct.ThrowIfCancellationRequested();
         mu.IsCounterTable = CassandraQueries.IsCounterTable(columns);
 
         bool isOnline = job.IsOnline;
@@ -721,7 +754,7 @@ public class MigrationJobRunner : IAsyncDisposable
         // hands back descriptors for still-pending ranges.
         // TableResources and Partition materialization stay here so the
         // partitioner does not need to know about per-table resource wiring.
-        var plan = await partitioner.PartitionAsync(sourceSession, mu, enableReplay: isOnline);
+        var plan = await partitioner.PartitionAsync(sourceSession, mu, enableReplay: isOnline, ct);
         ct.ThrowIfCancellationRequested();
 
         var resources = new TableResources(spec, columns, tracker, plan.TotalFeedRanges);

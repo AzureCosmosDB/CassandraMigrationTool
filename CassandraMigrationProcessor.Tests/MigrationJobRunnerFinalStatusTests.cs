@@ -62,4 +62,33 @@ public sealed class MigrationJobRunnerFinalStatusTests
         Assert.Equal(JobStatus.Faulted,
             MigrationJobRunner.ResolveFinalStatus(job, JobCommand.None, faulted: false));
     }
+
+    [Fact]
+    public void ZeroUnits_FullyCopiedOfflineJob_IsNotAFault()
+    {
+        var job = OfflineJob((true, TableStatus.OK), (true, TableStatus.OK));
+
+        Assert.Null(MigrationJobRunner.ResolveZeroUnitFault(job));
+    }
+
+    [Fact]
+    public void ZeroUnits_TablesThatDoNotExist_IsAFault()
+    {
+        var job = OfflineJob((false, TableStatus.NotFound));
+
+        Assert.Contains("did not match any source tables", MigrationJobRunner.ResolveZeroUnitFault(job));
+    }
+
+    [Theory]
+    [InlineData(CDCMode.Offline, false)]
+    [InlineData(CDCMode.Online, true)]
+    public void ZeroUnits_TableWithRemainingWorkButNoSavedUnit_IsAFault(CDCMode mode, bool copyComplete)
+    {
+        // Units are loaded per eligible table; reaching zero units while a
+        // table still has work means its saved unit could not be loaded.
+        var job = OfflineJob((true, TableStatus.OK), (copyComplete, TableStatus.OK));
+        job.CDCMode = mode;
+
+        Assert.Contains("ks.t1", MigrationJobRunner.ResolveZeroUnitFault(job));
+    }
 }
