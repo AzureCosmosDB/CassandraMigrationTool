@@ -66,7 +66,10 @@ public class MigrationJobRunner : IAsyncDisposable
     /// Asynchronous factory: resolves the pipeline configuration, opens
     /// source and target sessions, and only then materialises the runner.
     /// On any failure during session acquisition all partially-opened
-    /// resources are torn down before the exception propagates.
+    /// resources are torn down before the exception propagates. A
+    /// pause/stop on <paramref name="control"/> abandons a slow or hung
+    /// connect immediately with <see cref="OperationCanceledException"/>;
+    /// sessions that open afterwards are disposed in the background.
     /// </summary>
     public static async Task<MigrationJobRunner> CreateAsync(
         MigrationLog log, Job job, AppSettings config, JobControl control)
@@ -77,6 +80,24 @@ public class MigrationJobRunner : IAsyncDisposable
         ArgumentNullException.ThrowIfNull(control);
 
         var pipelineConfig = PipelineConfig.Resolve(job, config);
+        // Driver connects block synchronously, so run them off-thread to
+        // let the cancel token win the race against a dead contact point.
+        var open = Task.Run(() => OpenSessionsAsync(log, job, pipelineConfig.WorkerCount, control));
+        var (sourceSessions, target) = await AwaitOrAbandonAsync(
+            open,
+            sessions =>
+            {
+                MigrationUtilities.SafeDisposeSession(sessions.Target, "MigrationJobRunner target (abandoned open)");
+                sessions.Source.Dispose();
+            },
+            control.Token);
+        return new MigrationJobRunner(
+            log, job, pipelineConfig, control, sourceSessions, target);
+    }
+
+    private static async Task<(SourceSessionWrapper Source, ISession Target)> OpenSessionsAsync(
+        MigrationLog log, Job job, int workerCount, JobControl control)
+    {
         SourceSessionWrapper? sourceSessions = null;
         ISession? target = null;
         try
@@ -84,16 +105,43 @@ public class MigrationJobRunner : IAsyncDisposable
             sourceSessions = new SourceSessionWrapper(
                 log,
                 job,
-                pipelineConfig.WorkerCount,
+                workerCount,
                 control.ReportFault);
             target = await CassandraClientFactory.CreateTargetSessionAsync(log, job);
-            return new MigrationJobRunner(
-                log, job, pipelineConfig, control, sourceSessions, target);
+            return (sourceSessions, target);
         }
         catch
         {
             MigrationUtilities.SafeDisposeSession(target, "MigrationJobRunner target (CreateAsync rollback)");
             sourceSessions?.Dispose();
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// Awaits <paramref name="work"/> unless <paramref name="cancellationToken"/>
+    /// trips first. On cancellation the work keeps running unobserved;
+    /// if it later succeeds its result is handed to
+    /// <paramref name="disposeLate"/> so nothing leaks.
+    /// </summary>
+    internal static async Task<T> AwaitOrAbandonAsync<T>(
+        Task<T> work, Action<T> disposeLate, CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await work.WaitAsync(cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            _ = work.ContinueWith(
+                t =>
+                {
+                    if (t.IsCompletedSuccessfully) disposeLate(t.Result);
+                    else _ = t.Exception;
+                },
+                CancellationToken.None,
+                TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
             throw;
         }
     }
@@ -194,18 +242,7 @@ public class MigrationJobRunner : IAsyncDisposable
         }
         catch (OperationCanceledException)
         {
-            // Differentiate the operator-facing message based on the
-            // intent captured in JobControl: pause keeps the job
-            // resumable; stop is terminal; bare token cancel (e.g.
-            // process shutdown) falls back to "cancelled".
-            string message = _control.Requested switch
-            {
-                JobCommand.PauseRequested   => "Migration was paused (resumable).",
-                JobCommand.StopRequested    => "Migration was stopped.",
-                JobCommand.CutoverRequested => "Migration was cutover (completed).",
-                _                           => "Migration was cancelled.",
-            };
-            _log.WriteLine(message, LogType.Info);
+            _log.WriteLine(IntentMessage(_control.Requested), LogType.Info);
         }
         catch (Exception ex)
         {
@@ -225,9 +262,51 @@ public class MigrationJobRunner : IAsyncDisposable
             // only release per-run resources scoped to this call.
             MigrationUtilities.SafeDispose(pipeline, "JobPipeline");
 
-            WriteFinalJobStatus(job, _control, failure);
+            WriteFinalJobStatus(_log, job, _control, failure);
         }
     }
+
+    /// <summary>
+    /// Operator-facing message for a run that ended on its cancel token:
+    /// pause keeps the job resumable; stop is terminal; bare token cancel
+    /// (e.g. process shutdown) falls back to "cancelled".
+    /// </summary>
+    private static string IntentMessage(JobCommand requested) => requested switch
+    {
+        JobCommand.PauseRequested   => "Migration was paused (resumable).",
+        JobCommand.StopRequested    => "Migration was stopped.",
+        JobCommand.CutoverRequested => "Migration was cutover (completed).",
+        _                           => "Migration was cancelled.",
+    };
+
+    /// <summary>
+    /// Finalises a run whose <see cref="CreateAsync"/> threw, so
+    /// <see cref="StartAsync"/> (and its finally) never ran. Applies the
+    /// same rules as a started run: a pause/stop that abandoned session
+    /// opening honours the latched intent; any other failure is a fault.
+    /// </summary>
+    public static void FinaliseUnstartedRun(MigrationLog log, Job job, JobControl control, Exception ex)
+    {
+        ArgumentNullException.ThrowIfNull(log);
+        ArgumentNullException.ThrowIfNull(job);
+        ArgumentNullException.ThrowIfNull(control);
+        ArgumentNullException.ThrowIfNull(ex);
+
+        Exception? failure = UnstartedRunFailure(ex, control.Requested);
+        if (failure == null)
+            log.WriteLine(IntentMessage(control.Requested), LogType.Info);
+        else
+            log.WriteLine($"Migration failed: {ex}", LogType.Error);
+
+        WriteFinalJobStatus(log, job, control, failure);
+    }
+
+    /// <summary>
+    /// The fault to record for a run that never started, or null when the
+    /// exception is just the cancel token honouring a latched intent.
+    /// </summary>
+    internal static Exception? UnstartedRunFailure(Exception ex, JobCommand requested) =>
+        ex is OperationCanceledException && requested != JobCommand.None ? null : ex;
 
     /// <summary>
     /// Releases the source / target sessions and stops the AAD
@@ -245,9 +324,10 @@ public class MigrationJobRunner : IAsyncDisposable
     }
 
     /// <summary>
-    /// Single writer of <see cref="Job.Status"/> for a run that
-    /// reached <see cref="StartAsync"/>. Every exit path — full run,
-    /// early return, cancellation, exception — funnels through here,
+    /// Single writer of <see cref="Job.Status"/> for a run. Every exit
+    /// path of <see cref="StartAsync"/> — full run, early return,
+    /// cancellation, exception — funnels through here, as does
+    /// <see cref="FinaliseUnstartedRun"/> when sessions never opened,
     /// and the status is derived by <see cref="ResolveFinalStatus"/>
     /// from the outcome plus persisted table state rather than from
     /// which code path happened to execute.
@@ -260,15 +340,15 @@ public class MigrationJobRunner : IAsyncDisposable
     /// <see cref="TableStatus.Failed"/> stamp (checked inside
     /// <see cref="ResolveFinalStatus"/>).
     /// </summary>
-    private void WriteFinalJobStatus(Job job, JobControl control, Exception? failure)
+    private static void WriteFinalJobStatus(MigrationLog log, Job job, JobControl control, Exception? failure)
     {
         failure ??= control.FirstFault;
         if (failure != null)
-            _log.WriteLine($"Job finalised as Faulted: {failure.GetType().Name}: {failure.Message}", LogType.Error);
+            log.WriteLine($"Job finalised as Faulted: {failure.GetType().Name}: {failure.Message}", LogType.Error);
 
         job.Status = ResolveFinalStatus(job, control.Requested, faulted: failure != null);
         if (job.Status == JobStatus.Completed)
-            _log.WriteLine($"Job {job.Id} Completed", LogType.Info);
+            log.WriteLine($"Job {job.Id} Completed", LogType.Info);
 
         StampEndedOnIfTerminal(job);
 

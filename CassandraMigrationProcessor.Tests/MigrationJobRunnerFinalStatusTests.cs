@@ -80,6 +80,65 @@ public sealed class MigrationJobRunnerFinalStatusTests
     }
 
     [Theory]
+    [InlineData(JobCommand.StopRequested, JobStatus.Cancelled)]
+    [InlineData(JobCommand.PauseRequested, JobStatus.Paused)]
+    public void UnstartedRun_CancelledByIntent_HonoursIntent(JobCommand requested, JobStatus expected)
+    {
+        // A cancel/pause that abandoned session opening is not a fault.
+        var job = OfflineJob((false, TableStatus.OK));
+        var failure = MigrationJobRunner.UnstartedRunFailure(new OperationCanceledException(), requested);
+
+        Assert.Null(failure);
+        Assert.Equal(expected,
+            MigrationJobRunner.ResolveFinalStatus(job, requested, faulted: failure != null));
+    }
+
+    [Theory]
+    [InlineData(JobCommand.None)]
+    [InlineData(JobCommand.StopRequested)]
+    public void UnstartedRun_ConnectFailure_IsFaultEvenIfCancelled(JobCommand requested)
+    {
+        var ex = new InvalidOperationException("Failed to connect");
+
+        Assert.Same(ex, MigrationJobRunner.UnstartedRunFailure(ex, requested));
+    }
+
+    [Fact]
+    public void UnstartedRun_BareCancelWithoutIntent_IsFault()
+    {
+        var ex = new OperationCanceledException();
+
+        Assert.Same(ex, MigrationJobRunner.UnstartedRunFailure(ex, JobCommand.None));
+    }
+
+    [Fact]
+    public async Task AwaitOrAbandon_CancelDuringHungOpen_ThrowsPromptlyAndDisposesLateResult()
+    {
+        var open = new TaskCompletionSource<object>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var disposed = new TaskCompletionSource<object>(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var cts = new CancellationTokenSource();
+
+        var wait = MigrationJobRunner.AwaitOrAbandonAsync(open.Task, r => disposed.TrySetResult(r), cts.Token);
+        cts.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => wait);
+        Assert.False(disposed.Task.IsCompleted);
+
+        var late = new object();
+        open.SetResult(late);
+        Assert.Same(late, await disposed.Task.WaitAsync(TimeSpan.FromSeconds(5)));
+    }
+
+    [Fact]
+    public async Task AwaitOrAbandon_WithoutCancel_ReturnsResult()
+    {
+        var result = await MigrationJobRunner.AwaitOrAbandonAsync(
+            Task.FromResult(42), _ => throw new InvalidOperationException("must not dispose"), CancellationToken.None);
+
+        Assert.Equal(42, result);
+    }
+
+    [Theory]
     [InlineData(CDCMode.Offline, false)]
     [InlineData(CDCMode.Online, true)]
     public void ZeroUnits_TableWithRemainingWorkButNoSavedUnit_IsAFault(CDCMode mode, bool copyComplete)

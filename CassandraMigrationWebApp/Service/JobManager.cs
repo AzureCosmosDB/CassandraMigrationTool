@@ -407,12 +407,27 @@ public class JobManager
                 }
                 await runner.StartAsync();
             }
+            catch (Exception ex) when (runner == null)
+            {
+                // Sessions never opened (bad credentials, unreachable
+                // host, or a pause/stop that abandoned the connect), so
+                // the runner's own finally never ran. Let it apply the
+                // same intent/fault rules instead of forcing Faulted.
+                Console.WriteLine($"Migration failed to start for Job ID: {job.Id}: {ex.Message}");
+                try
+                {
+                    MigrationJobRunner.FinaliseUnstartedRun(runLog!, job, runControl!, ex);
+                }
+                catch (Exception finaliseEx)
+                {
+                    Console.WriteLine($"[Manager] FinaliseUnstartedRun threw for {job.Id}: {finaliseEx}");
+                }
+            }
             catch (Exception ex)
             {
                 // Defensive: StartAsync handles its own failures. This
-                // catch only exists to keep an unexpected escape (e.g.
-                // failure during CreateAsync session acquisition) from
-                // leaving the job stuck in Running.
+                // catch only keeps an unexpected escape from leaving the
+                // job stuck in Running.
                 Console.WriteLine($"Migration unexpectedly threw for Job ID: {job.Id}: {ex}");
                 runLog!.WriteLine($"Migration unexpectedly threw: {ex}", LogType.Error);
                 // Ensure escaped exceptions always produce persisted terminal metadata.
@@ -422,8 +437,8 @@ public class JobManager
                 {
                     job.Status = JobStatus.Faulted;
                 }
-                // Stamp EndedOn here too: if CreateAsync throws before StartAsync runs,
-                // the runner's StampEndedOnIfTerminal never fires.
+                // StartAsync stamps EndedOn on its normal terminal path;
+                // an escape may have skipped it.
                 if (!job.EndedOn.HasValue)
                     job.EndedOn = DateTime.UtcNow;
                 _context.SaveMigrationJob(job);
