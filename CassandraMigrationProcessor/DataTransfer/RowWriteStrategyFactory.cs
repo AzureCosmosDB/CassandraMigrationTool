@@ -32,7 +32,6 @@ internal static class RowWriteStrategyFactory
         string targetKeyspace, string targetTable, int maxWriteRetries,
         bool isCounterTable,
         ConsistencyLevel targetWriteConsistencyLevel,
-        bool preserveCellTtl,
         bool useJsonCopy)
     {
         // Simulated run: target is a NullSession that cannot prepare.
@@ -60,7 +59,7 @@ internal static class RowWriteStrategyFactory
 
         return await RegularRowWriteStrategy.CreateAsync(
             log, targetSession, columns, targetKeyspace, targetTable,
-            retryPolicy, targetWriteConsistencyLevel, preserveCellTtl);
+            retryPolicy, targetWriteConsistencyLevel);
     }
 
     /// <summary>

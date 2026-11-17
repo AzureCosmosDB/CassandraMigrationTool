@@ -88,10 +88,15 @@ CassandraMigrationTool/
 | `IsSimulatedRun` | false | Dry run — validate without writing |
 | `AppendMode` | false | Append to existing target data instead of failing on duplicates |
 | `DropTargetTableBeforeStart` | false | Drop and recreate target tables from source schema |
-| `UseJsonCopy` | true | **Data copy mode** for regular (non-counter) tables. `true` = preserve TTL & writetime (`SELECT JSON *` → `INSERT … JSON ? USING TIMESTAMP ? AND TTL ?`). Each row is written at its row writetime, and cells changed by a later UPDATE are replayed at their own writetime, so a replayed UPDATE always supersedes the earlier copy; enable `PreserveCellTtlAndWritetime` to also keep each cell's exact TTL. `false` = fast binary copy (`SELECT *` → typed `INSERT`), materially faster but **does not preserve TTL or writetime** and is incompatible with per-cell preservation. Counter tables always use the typed UPDATE path. |
-| `PreserveCellTtlAndWritetime` | false | Preserve *per-cell* (per-column) writetime/TTL instead of a single row-level value; divergent rows are split into one partial `INSERT … JSON DEFAULT UNSET USING TIMESTAMP … AND TTL …` per distinct (writetime, TTL) group. Requires `UseJsonCopy = true`. |
+| `UseJsonCopy` | true | **Data copy mode** for regular (non-counter) tables. `true` = preserve TTL & writetime (`SELECT JSON *` including the source's per-cell metadata → `INSERT … JSON` / `UPDATE … USING TIMESTAMP ? AND TTL ?`). Every cell is written at its own source writetime and remaining TTL, including heterogeneous element TTLs inside non-frozen sets, maps and UDTs. `false` = fast binary copy (`SELECT *` → typed `INSERT`), materially faster but **does not preserve TTL or writetime**. Counter tables always use the typed UPDATE path. |
+| `PreserveCellTtlAndWritetime` | — | **Obsolete and ignored.** Per-cell TTL/writetime is now always preserved by the JSON copy mode. The field is still accepted so existing job definitions keep loading. |
 
 > **Choosing a copy mode:** the default JSON path preserves TTL and writetime end-to-end but does more per-row server work. If your workload does not rely on TTL or on source writetime (LWW) ordering, the **fast binary copy** mode (`UseJsonCopy = false`) is significantly faster on large datasets. It cannot preserve TTL/writetime, so use it only when those semantics don't matter for the target.
+
+> **TTL/writetime notes (JSON copy mode):**
+> - Non-frozen **list** values are rewritten at a fresh, monotonically increasing timestamp (element TTLs are preserved). Cassandra stores list element positions in the cell timestamp, so the source list writetime cannot be reproduced without risking duplicated elements on replay.
+> - Partitions that contain only static columns (no clustering rows) are copied as static-only writes; no empty clustering row is created on the target.
+> - TTLs are capped at Cassandra's 20-year maximum. On targets older than Cassandra 5.0, expiries are also clamped to before 2038-01-19 (the legacy expiry limit) and a warning is logged once per table.
 
 ## Migration Modes
 

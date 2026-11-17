@@ -112,8 +112,7 @@ public class Job
     /// materially less per-row work, but it <em>cannot</em> preserve TTL or
     /// writetime — the <c>SELECT *</c> projection strips the synthetic
     /// <c>__sys_*</c> metadata columns the writer needs — so rows land on
-    /// the target with the write's wall-clock timestamp and no TTL. It is
-    /// therefore incompatible with <see cref="PreserveCellTtlAndWritetime"/>.
+    /// the target with the write's wall-clock timestamp and no TTL.
     /// </para>
     /// Counter tables always use the typed UPDATE path and are unaffected by
     /// this flag. Defaults to <c>true</c> so existing jobs keep the current
@@ -122,17 +121,9 @@ public class Job
     public bool UseJsonCopy { get; set; } = true;
 
     /// <summary>
-    /// When true, preserve <em>per-column</em> (per-cell) writetime and
-    /// TTL rather than a single row-level value. Rows whose columns were
-    /// written at different times or with different TTLs use one partial
-    /// <c>INSERT … JSON DEFAULT UNSET</c> for the row-level metadata,
-    /// followed by timestamped/TTL-bearing UPDATE statements for divergent
-    /// cells. This preserves both each cell's metadata and the source
-    /// row-liveness marker. Opt-in (default false): it requires JSON copy
-    /// support and issues extra writes for divergent rows. Non-frozen
-    /// collection element-level TTLs cannot be reconstructed via CQL and
-    /// still fall back to the row-level TTL. Uniform rows are written
-    /// exactly as before, unaffected by this flag.
+    /// Obsolete and ignored. The JSON copy path now always preserves
+    /// per-cell writetime and TTL. Kept so previously saved jobs still
+    /// deserialize.
     /// </summary>
     public bool PreserveCellTtlAndWritetime { get; set; }
 

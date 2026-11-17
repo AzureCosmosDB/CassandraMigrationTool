@@ -112,6 +112,7 @@ internal sealed class TypedRegularRowWriteStrategy : IRowWriteStrategy
         string cleanedJson,
         WriteCounters counters,
         CdcRowMetadata? metadata,
+        bool isReplay,
         CancellationToken cancellationToken)
         => throw new NotSupportedException(
             "The typed binary copy path writes via WriteRowAsync; " +

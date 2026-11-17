@@ -4,227 +4,87 @@ using CassandraMigrationProcessor.DataTransfer;
 
 namespace CassandraMigrationProcessor.Tests;
 
-public sealed class RegularRowWriteStrategyTests
+public sealed class CdcJsonRowParserTests
 {
-    private static readonly CassandraColumn[] PrimaryKeyColumns =
-    [
-        new("tenant_id", "text", "partition_key", "none", 0),
-        new("cat_id", "text", "clustering", "asc", 0)
-    ];
-
-    private static readonly HashSet<string> PrimaryKeyColumnNames =
-        new(PrimaryKeyColumns.Select(c => c.Name), StringComparer.Ordinal);
-
-    private static readonly CassandraColumn FavoriteToyColumn =
-        new("favorite_toy", "text", "regular", "none", -1);
-
-    private static readonly CassandraColumn MetadataColumn =
-        new("metadata", "text", "static", "none", -1);
-
-    private static readonly Dictionary<string, CassandraColumn> ColumnsByName =
-        PrimaryKeyColumns
-            .Append(FavoriteToyColumn)
-            .Append(MetadataColumn)
-            .Append(new CassandraColumn("name", "text", "regular", "none", -1))
-            .Append(new CassandraColumn("vaccinated", "boolean", "regular", "none", -1))
-            .ToDictionary(c => c.Name, StringComparer.Ordinal);
+    // Payloads below were captured from a Cosmos DB Cassandra API source for
+    // CREATE TABLE t (id text PRIMARY KEY, a text, b text, l list<int>,
+    //   s set<int>, m map<text,int>, u addr) with a non-frozen UDT addr.
 
     [Fact]
-    public void BuildSplitWritePlan_KeepsRowMetadataColumnsInBaselineInsert()
+    public void Parse_UniformUdtRowHasNoDivergence()
     {
-        const string json =
-            """
-            {
-              "cat_id": "cat-1",
-              "favorite_toy": "Ball",
-              "tenant_id": "tenant-1",
-              "name": "Milo",
-              "vaccinated": null
-            }
-            """;
-        var metadata = new CdcRowMetadata(
-            WritetimeMicros: 100,
-            ExpiryEpochSeconds: null,
-            PerColumn: new Dictionary<string, CdcCellMetadata>
-            {
-                ["favorite_toy"] = new(200, 300)
-            });
+        const string json = """{"id": "udt1", "a": null, "b": null, "l": null, "s": null, "m": null, "u": {"street": "s", "zip": 1}, "__sys_clts": {"a": null, "b": null, "l": null, "s": null, "m": null, "u": {"street": 1794900042988616, "zip": 1794900042988616}}, "__sys_rw_ts": 1794900042988616, "__sys_clts_tmbstn": {"a": null, "b": null, "l": null, "s": null, "m": null, "u": [1794900042988615, {"street": null, "zip": null}]}, "__sys_rw_tmbstn": null, "__sys_clttl": [0, {"a": null, "b": null, "l": null, "s": null, "m": null, "u": {"street": [0, 0], "zip": [0, 0]}}], "__sys_rw_ttl": [0, 0], "__sys_clts_listorder": null}""";
 
-        var plan = RegularRowWriteStrategy.BuildSplitWritePlan(
-            json,
-            metadata,
-            PrimaryKeyColumns,
-            PrimaryKeyColumnNames,
-            ColumnsByName);
+        var (cleaned, metadata) = CdcJsonRowParser.ParseOnce(json);
 
-        using var baseline = JsonDocument.Parse(plan.BaselineJson);
-        var root = baseline.RootElement;
-        Assert.Equal("tenant-1", root.GetProperty("tenant_id").GetString());
-        Assert.Equal("cat-1", root.GetProperty("cat_id").GetString());
-        Assert.Equal("Milo", root.GetProperty("name").GetString());
-        Assert.Equal(JsonValueKind.Null, root.GetProperty("vaccinated").ValueKind);
-        Assert.False(root.TryGetProperty("favorite_toy", out _));
-
-        Assert.Equal(["\"tenant-1\"", "\"cat-1\""], plan.PrimaryKeyValues);
-        Assert.True(plan.WriteBaseline);
-        var update = Assert.Single(plan.CellWrites);
-        Assert.Equal(FavoriteToyColumn, update.Column);
-        Assert.Equal("\"Ball\"", update.JsonValue);
-        Assert.Equal(new RegularRowWriteStrategy.GroupKey(200, 300), update.Key);
+        Assert.Equal(1794900042988616, metadata.WritetimeMicros);
+        Assert.Null(metadata.ExpiryEpochSeconds);
+        Assert.Null(metadata.PerColumn);
+        Assert.DoesNotContain("__sys_", cleaned, StringComparison.Ordinal);
+        Assert.Contains("\"u\":{\"street\":\"s\",\"zip\":1}", cleaned, StringComparison.Ordinal);
     }
 
     [Fact]
-    public void BuildSplitWritePlan_CreatesKeyOnlyBaselineWhenEveryCellDiverges()
+    public void Parse_UdtFieldsWithDifferentTtlsReportFieldExpiries()
     {
-        const string json =
-            """
-            {
-              "tenant_id": "tenant-1",
-              "cat_id": "cat-1",
-              "favorite_toy": "Ball"
-            }
-            """;
-        var metadata = new CdcRowMetadata(
-            WritetimeMicros: 100,
-            ExpiryEpochSeconds: null,
-            PerColumn: new Dictionary<string, CdcCellMetadata>
-            {
-                ["favorite_toy"] = new(200, 300)
-            });
+        const string json = """{"id": "udt2", "a": null, "b": null, "l": null, "s": null, "m": null, "u": {"street": "s", "zip": 2}, "__sys_clts": {"a": null, "b": null, "l": null, "s": null, "m": null, "u": {"street": 1794900043317551, "zip": 1794900043405062}}, "__sys_rw_ts": 1794900043317551, "__sys_clts_tmbstn": {"a": null, "b": null, "l": null, "s": null, "m": null, "u": [1794900043317550, {"street": null, "zip": null}]}, "__sys_rw_tmbstn": null, "__sys_clttl": [1794903043, {"a": null, "b": null, "l": null, "s": null, "m": null, "u": {"street": [0, 0], "zip": [3000, 0]}}], "__sys_rw_ttl": [0, 0], "__sys_clts_listorder": null}""";
 
-        var plan = RegularRowWriteStrategy.BuildSplitWritePlan(
-            json,
-            metadata,
-            PrimaryKeyColumns,
-            PrimaryKeyColumnNames,
-            ColumnsByName);
+        var (_, metadata) = CdcJsonRowParser.ParseOnce(json);
 
-        using var baseline = JsonDocument.Parse(plan.BaselineJson);
-        Assert.True(plan.WriteBaseline);
-        Assert.Equal(2, baseline.RootElement.EnumerateObject().Count());
-        Assert.True(baseline.RootElement.TryGetProperty("tenant_id", out _));
-        Assert.True(baseline.RootElement.TryGetProperty("cat_id", out _));
+        var u = Assert.Single(metadata.PerColumn!);
+        Assert.Equal("u", u.Key);
+        Assert.Equal(1794900043405062, u.Value.WritetimeMicros);
+        Assert.Null(u.Value.ExpiryEpochSeconds);
+        Assert.Null(u.Value.ElementExpiries);
+        Assert.Equal(2, u.Value.FieldExpiries!.Count);
+        Assert.Null(u.Value.FieldExpiries["street"]);
+        Assert.Equal(1794903043, u.Value.FieldExpiries["zip"]);
     }
 
     [Fact]
-    public void BuildSplitWritePlan_UpdateOnlyRowSkipsBaselineAndUpdatesEveryValue()
+    public void Parse_CollectionElementsWithDifferentTtlsReportElementExpiries()
     {
-        const string json =
-            """
-            {
-              "tenant_id": "tenant-1",
-              "cat_id": "cat-1",
-              "favorite_toy": "Ball",
-              "name": "Milo"
-            }
-            """;
-        var metadata = new CdcRowMetadata(
-            WritetimeMicros: null,
-            ExpiryEpochSeconds: null,
-            PerColumn: new Dictionary<string, CdcCellMetadata>
-            {
-                ["favorite_toy"] = new(200, 300)
-            });
+        const string json = """{"id": "coll1", "a": null, "b": null, "l": [1, 2, 3], "s": [1, 2, 3], "m": {"a": 1, "b": 2, "c": 3}, "u": null, "__sys_clts": {"a": null, "b": null, "l": [1794900043519733, 1794900043622825, 1794900043721403], "s": [1794900043519733, 1794900043622825, 1794900043721403], "m": [1794900043519733, 1794900043622825, 1794900043721403], "u": null}, "__sys_rw_ts": 1794900043519733, "__sys_clts_tmbstn": {"a": null, "b": null, "l": [1794900043519732, {}], "s": [1794900043519732, {}], "m": [1794900043519732, {}], "u": null}, "__sys_rw_tmbstn": null, "__sys_clttl": [1794903043, {"a": null, "b": null, "l": [[0, 0], [0, 0], [3000, 0]], "s": [[0, 0], [0, 0], [3000, 0]], "m": [[0, 0], [0, 0], [3000, 0]], "u": null}], "__sys_rw_ttl": [0, 0], "__sys_clts_listorder": {"l": ["0x0111f1e257668da787a6018127caed028f", "0x0111f1e257669c9eee8dbbf5a780cb9971", "0x0111f1e25766aa02b09ed0dd391377bc27"]}}""";
 
-        var plan = RegularRowWriteStrategy.BuildSplitWritePlan(
-            json,
-            metadata,
-            PrimaryKeyColumns,
-            PrimaryKeyColumnNames,
-            ColumnsByName);
+        var (cleaned, metadata) = CdcJsonRowParser.ParseOnce(json);
 
-        Assert.False(plan.WriteBaseline);
-        Assert.Equal(2, plan.CellWrites.Count);
-        Assert.Contains(
-            plan.CellWrites,
-            write => write.Column.Name == "favorite_toy"
-                && write.Key == new RegularRowWriteStrategy.GroupKey(200, 300));
-        Assert.Contains(
-            plan.CellWrites,
-            write => write.Column.Name == "name"
-                && write.Key == new RegularRowWriteStrategy.GroupKey(null, null));
+        Assert.Equal(3, metadata.PerColumn!.Count);
+        foreach (var column in new[] { "l", "s", "m" })
+        {
+            var cell = metadata.PerColumn[column];
+            Assert.Equal(1794900043721403, cell.WritetimeMicros);
+            Assert.Null(cell.ExpiryEpochSeconds);
+            Assert.Equal(new long?[] { null, null, 1794903043 }, cell.ElementExpiries);
+        }
+        Assert.DoesNotContain("__sys_", cleaned, StringComparison.Ordinal);
     }
 
     [Fact]
-    public void BuildSplitWritePlan_NormalizesQuotedJsonIdentifiers()
+    public void Parse_UpdateOnlyRowReportsEveryLiveCell()
     {
-        CassandraColumn[] quotedKeyColumns =
-        [
-            new("TenantId", "text", "partition_key", "none", 0),
-            new("CatId", "text", "clustering", "asc", 0)
-        ];
-        var quotedKeyNames = new HashSet<string>(
-            quotedKeyColumns.Select(c => c.Name),
-            StringComparer.Ordinal);
-        var columnsByName = quotedKeyColumns
-            .Append(new CassandraColumn(
-                "FavoriteToy", "text", "regular", "none", -1))
-            .ToDictionary(c => c.Name, StringComparer.Ordinal);
-        const string json =
-            """
-            {
-              "\"TenantId\"": "tenant-1",
-              "\"CatId\"": "cat-1",
-              "\"FavoriteToy\"": "Ball"
-            }
-            """;
-        var metadata = new CdcRowMetadata(
-            WritetimeMicros: 100,
-            ExpiryEpochSeconds: null,
-            PerColumn: new Dictionary<string, CdcCellMetadata>
-            {
-                ["FavoriteToy"] = new(200, 300)
-            });
+        const string json = """{"id": "updonly", "a": null, "b": null, "l": [9], "s": null, "m": null, "u": null, "__sys_clts": {"a": null, "b": null, "l": [1794900043808113], "s": null, "m": null, "u": null}, "__sys_rw_ts": null, "__sys_clts_tmbstn": null, "__sys_rw_tmbstn": null, "__sys_clttl": [1794902043, {"a": null, "b": null, "l": [[2000, 0]], "s": null, "m": null, "u": null}], "__sys_rw_ttl": null, "__sys_clts_listorder": {"l": ["0x0111f1e25766b73c14ba578bfdc45797fa"]}}""";
 
-        var plan = RegularRowWriteStrategy.BuildSplitWritePlan(
-            json,
-            metadata,
-            quotedKeyColumns,
-            quotedKeyNames,
-            columnsByName);
+        var (_, metadata) = CdcJsonRowParser.ParseOnce(json);
 
-        Assert.Equal(["\"tenant-1\"", "\"cat-1\""], plan.PrimaryKeyValues);
-        using var baseline = JsonDocument.Parse(plan.BaselineJson);
-        Assert.True(baseline.RootElement.TryGetProperty("\"TenantId\"", out _));
-        Assert.True(baseline.RootElement.TryGetProperty("\"CatId\"", out _));
-        var update = Assert.Single(plan.CellWrites);
-        Assert.Equal("FavoriteToy", update.Column.Name);
+        Assert.False(metadata.HasRowMarker);
+        Assert.Equal(1794900043808113, metadata.RowWriteTimestampMicros);
+        var l = Assert.Single(metadata.PerColumn!);
+        Assert.Equal("l", l.Key);
+        Assert.Equal(new CdcCellMetadata(1794900043808113, 1794902043), l.Value);
     }
 
     [Fact]
-    public void BuildUpdateJsonColumnCql_UsesUpdateAndJsonConversionForKeysAndValue()
+    public void Parse_CellsKeepTheirOwnTtlWhenTheyDifferFromTheRow()
     {
-        var cql = CassandraQueries.BuildUpdateJsonColumnCql(
-            "ttl_liveness_repro",
-            "cats",
-            FavoriteToyColumn,
-            PrimaryKeyColumns);
+        const string json = """{"id": "ttlmix", "a": "x", "b": "immortal", "l": null, "s": null, "m": null, "u": null, "__sys_clts": {"a": 1794900043895627, "b": 1794900043982718, "l": null, "s": null, "m": null, "u": null}, "__sys_rw_ts": 1794900043895627, "__sys_clts_tmbstn": null, "__sys_rw_tmbstn": null, "__sys_clttl": [1794904043, {"a": [4000, 0], "b": [0, 0], "l": null, "s": null, "m": null, "u": null}], "__sys_rw_ttl": [4000, 0], "__sys_clts_listorder": null}""";
 
-        Assert.Equal(
-            "UPDATE \"ttl_liveness_repro\".\"cats\" " +
-            "USING TIMESTAMP ? AND TTL ? " +
-            "SET \"favorite_toy\" = fromJson(?) " +
-            "WHERE \"tenant_id\" = fromJson(?) AND \"cat_id\" = fromJson(?)",
-            cql);
-        Assert.DoesNotContain("INSERT", cql, StringComparison.OrdinalIgnoreCase);
-    }
+        var (_, metadata) = CdcJsonRowParser.ParseOnce(json);
 
-    [Fact]
-    public void BuildUpdateJsonColumnCql_StaticColumnUsesPartitionKeyOnly()
-    {
-        var cql = CassandraQueries.BuildUpdateJsonColumnCql(
-            "ttl_liveness_repro",
-            "cats",
-            MetadataColumn,
-            PrimaryKeyColumns);
-
-        Assert.Equal(
-            "UPDATE \"ttl_liveness_repro\".\"cats\" " +
-            "USING TIMESTAMP ? AND TTL ? " +
-            "SET \"metadata\" = fromJson(?) " +
-            "WHERE \"tenant_id\" = fromJson(?)",
-            cql);
-        Assert.DoesNotContain("\"cat_id\"", cql, StringComparison.Ordinal);
+        Assert.Equal(1794900043895627, metadata.WritetimeMicros);
+        Assert.Equal(1794904043, metadata.ExpiryEpochSeconds);
+        var b = Assert.Single(metadata.PerColumn!);
+        Assert.Equal("b", b.Key);
+        Assert.Equal(new CdcCellMetadata(1794900043982718, null), b.Value);
     }
 
     [Fact]
@@ -233,25 +93,15 @@ public sealed class RegularRowWriteStrategyTests
         const string json =
             """
             {
-              "tenant_id": "tenant-1",
-              "cat_id": "cat-1",
-              "name": "Milo",
-              "favorite_toy": "Ball",
+              "tenant_id": "tenant-1", "cat_id": "cat-1", "name": "Milo", "favorite_toy": "Ball",
               "__sys_rw_ts": 100,
               "__sys_rw_ttl": [0, 0],
-              "__sys_clttl": [2000, {
-                "name": [0, 0],
-                "favorite_toy": [30, 0]
-              }],
-              "__sys_clts": {
-                "name": 100,
-                "favorite_toy": 200
-              }
+              "__sys_clttl": [2000, { "name": [0, 0], "favorite_toy": [30, 0] }],
+              "__sys_clts": { "name": 100, "favorite_toy": 200 }
             }
             """;
 
-        var (_, metadata) = CdcJsonRowParser.ParseOnce(
-            json, preserveCellLevel: true);
+        var (_, metadata) = CdcJsonRowParser.ParseOnce(json);
 
         Assert.Null(metadata.ExpiryEpochSeconds);
         var favoriteToy = Assert.Single(metadata.PerColumn!);
@@ -262,30 +112,18 @@ public sealed class RegularRowWriteStrategyTests
     [Fact]
     public void Parse_NullCellMetadataForUnsetColumnIsIgnored()
     {
-        // Regression for #79: an unset nullable column is reported with
-        // null cell metadata and must not fail the row.
         const string json =
             """
             {
-              "tenant_id": "tenant-1",
-              "cat_id": "cat-1",
-              "name": "Milo",
-              "compromised": null,
+              "tenant_id": "tenant-1", "cat_id": "cat-1", "name": "Milo", "compromised": null,
               "__sys_rw_ts": 100,
               "__sys_rw_ttl": [0, 0],
-              "__sys_clttl": [0, {
-                "name": [0, 0],
-                "compromised": null
-              }],
-              "__sys_clts": {
-                "name": 100,
-                "compromised": null
-              }
+              "__sys_clttl": [0, { "name": [0, 0], "compromised": null }],
+              "__sys_clts": { "name": 100, "compromised": null }
             }
             """;
 
-        var (cleaned, metadata) = CdcJsonRowParser.ParseOnce(
-            json, preserveCellLevel: true);
+        var (cleaned, metadata) = CdcJsonRowParser.ParseOnce(json);
 
         Assert.Contains("\"compromised\":null", cleaned);
         Assert.Equal(100, metadata.WritetimeMicros);
@@ -293,188 +131,42 @@ public sealed class RegularRowWriteStrategyTests
     }
 
     [Fact]
-    public void Parse_CellBaseExpiryIsRetainedWhenPerCellPreservationIsDisabled()
+    public void Parse_RowMarkerExpiryUsesCellBase()
     {
         const string json =
             """
             {
-              "tenant_id": "tenant-1",
-              "cat_id": "cat-1",
-              "favorite_toy": "Ball",
-              "__sys_rw_ts": 100,
-              "__sys_rw_ttl": [0, 0],
-              "__sys_clttl": [2000, {
-                "favorite_toy": [30, 0]
-              }],
-              "__sys_clts": {
-                "favorite_toy": 200
-              }
-            }
-            """;
-
-        var (_, metadata) = CdcJsonRowParser.ParseOnce(
-            json, preserveCellLevel: false);
-
-        Assert.Equal(2000, metadata.ExpiryEpochSeconds);
-        // Row-level mode keeps the row expiry and ignores the per-cell TTL,
-        // but still replays the newer cell at its own writetime.
-        var cell = Assert.Single(metadata.PerColumn!);
-        Assert.Equal("favorite_toy", cell.Key);
-        Assert.Equal(new CdcCellMetadata(200, 2000), cell.Value);
-    }
-
-    [Fact]
-    public void Parse_RowMarkerExpiryUsesCellBaseWhenRowTtlIsPresent()
-    {
-        const string json =
-            """
-            {
-              "tenant_id": "tenant-1",
-              "cat_id": "cat-1",
-              "favorite_toy": "Ball",
+              "tenant_id": "tenant-1", "cat_id": "cat-1", "favorite_toy": "Ball",
               "__sys_rw_ts": 100,
               "__sys_rw_ttl": [30, 0],
-              "__sys_clttl": [2000, {
-                "favorite_toy": [30, 0]
-              }],
-              "__sys_clts": {
-                "favorite_toy": 100
-              }
+              "__sys_clttl": [2000, { "favorite_toy": [30, 0] }],
+              "__sys_clts": { "favorite_toy": 100 }
             }
             """;
 
-        var (_, metadata) = CdcJsonRowParser.ParseOnce(
-            json, preserveCellLevel: true);
+        var (_, metadata) = CdcJsonRowParser.ParseOnce(json);
 
         Assert.Equal(2000, metadata.ExpiryEpochSeconds);
         Assert.Null(metadata.PerColumn);
     }
 
     [Fact]
-    public void Parse_NonFrozenCollectionUsesUniformElementMetadata()
+    public void Parse_TtlWithoutExpiryBaseIsAnchoredOnCellWritetime()
     {
+        // Static cells can be reported with an expiry base of 0.
         const string json =
             """
             {
-              "tenant_id": "tenant-1",
-              "cat_id": "cat-1",
-              "tags": ["friendly", "indoor"],
-              "__sys_rw_ts": 100,
-              "__sys_rw_ttl": [0, 0],
-              "__sys_clttl": [2000, {
-                "tags": [[300, 300], [300, 300]]
-              }],
-              "__sys_clts": {
-                "tags": [200, 200]
-              }
+              "pk": "p", "ck": null, "st": "x",
+              "__sys_rw_ts": null,
+              "__sys_clttl": [0, { "st": [30, 0] }],
+              "__sys_clts": { "st": 2000000000 }
             }
             """;
 
-        var (_, metadata) = CdcJsonRowParser.ParseOnce(
-            json, preserveCellLevel: true);
+        var (_, metadata) = CdcJsonRowParser.ParseOnce(json);
 
-        Assert.Null(metadata.ExpiryEpochSeconds);
-        var tags = Assert.Single(metadata.PerColumn!);
-        Assert.Equal("tags", tags.Key);
-        Assert.Equal(new CdcCellMetadata(200, 2300), tags.Value);
-    }
-
-    [Fact]
-    public void Parse_NonFrozenCollectionsRetainDifferentColumnTtls()
-    {
-        const string json =
-            """
-            {
-              "tenant_id": "tenant-1",
-              "cat_id": "cat-1",
-              "short_list": ["a", "b"],
-              "long_set": ["c", "d"],
-              "permanent_map": {"e": "f"},
-              "__sys_rw_ts": 100,
-              "__sys_rw_ttl": [0, 0],
-              "__sys_clttl": [2000, {
-                "short_list": [[300, 0], [300, 0]],
-                "long_set": [[600, 300], [600, 300]],
-                "permanent_map": [[0, 0], [0, 0]]
-              }],
-              "__sys_clts": {
-                "short_list": [200, 200],
-                "long_set": [300, 300],
-                "permanent_map": [400, 400]
-              }
-            }
-            """;
-
-        var (_, metadata) = CdcJsonRowParser.ParseOnce(
-            json, preserveCellLevel: true);
-
-        Assert.Null(metadata.ExpiryEpochSeconds);
-        Assert.Equal(3, metadata.PerColumn!.Count);
-        Assert.Equal(
-            new CdcCellMetadata(200, 2000),
-            metadata.PerColumn["short_list"]);
-        Assert.Equal(
-            new CdcCellMetadata(300, 2300),
-            metadata.PerColumn["long_set"]);
-        Assert.Equal(
-            new CdcCellMetadata(400, null),
-            metadata.PerColumn["permanent_map"]);
-    }
-
-    [Fact]
-    public void Parse_NonFrozenCollectionWithDifferentElementTtlsFails()
-    {
-        const string json =
-            """
-            {
-              "tenant_id": "tenant-1",
-              "cat_id": "cat-1",
-              "tags": ["friendly", "indoor"],
-              "__sys_rw_ts": 100,
-              "__sys_rw_ttl": [0, 0],
-              "__sys_clttl": [2000, {
-                "tags": [[300, 0], [600, 300]]
-              }],
-              "__sys_clts": {
-                "tags": [200, 200]
-              }
-            }
-            """;
-
-        var exception = Assert.Throws<NotSupportedException>(
-            () => CdcJsonRowParser.ParseOnce(
-                json, preserveCellLevel: true));
-
-        Assert.Contains("tags", exception.Message);
-        Assert.Contains("different expiries", exception.Message);
-    }
-
-    [Fact]
-    public void Parse_NonFrozenCollectionWithDifferentElementWritetimesFails()
-    {
-        const string json =
-            """
-            {
-              "tenant_id": "tenant-1",
-              "cat_id": "cat-1",
-              "tags": ["friendly", "indoor"],
-              "__sys_rw_ts": 100,
-              "__sys_rw_ttl": [0, 0],
-              "__sys_clttl": [2000, {
-                "tags": [[300, 0], [300, 0]]
-              }],
-              "__sys_clts": {
-                "tags": [200, 300]
-              }
-            }
-            """;
-
-        var exception = Assert.Throws<NotSupportedException>(
-            () => CdcJsonRowParser.ParseOnce(
-                json, preserveCellLevel: true));
-
-        Assert.Contains("tags", exception.Message);
-        Assert.Contains("different writetimes", exception.Message);
+        Assert.Equal(new CdcCellMetadata(2000000000, 2030), metadata.PerColumn!["st"]);
     }
 
     [Fact]
@@ -483,77 +175,49 @@ public sealed class RegularRowWriteStrategyTests
         const string json =
             """
             {
-              "tenant_id": "tenant-1",
-              "cat_id": "cat-1",
-              "tags": [],
+              "tenant_id": "tenant-1", "cat_id": "cat-1", "tags": [],
               "__sys_rw_ts": 100,
               "__sys_rw_ttl": [0, 0],
-              "__sys_clttl": [2000, {
-                "tags": []
-              }],
-              "__sys_clts": {
-                "tags": []
-              }
+              "__sys_clttl": [2000, { "tags": [] }],
+              "__sys_clts": { "tags": [] }
             }
             """;
 
-        var (_, metadata) = CdcJsonRowParser.ParseOnce(
-            json, preserveCellLevel: true);
+        var (_, metadata) = CdcJsonRowParser.ParseOnce(json);
 
         Assert.Null(metadata.ExpiryEpochSeconds);
         Assert.Null(metadata.PerColumn);
     }
 
     [Fact]
-    public void Parse_RowLevelReplaysUpdatedCellsAtTheirOwnWritetime()
+    public void Parse_UpdatedCellsUseTheirNewestWritetime()
     {
-        // Source: INSERT at 100, then an UPDATE at 300 that sets "name" to a
-        // value sorting lower than the original. __sys_rw_ts stays at 100.
         const string json =
             """
             {
-              "tenant_id": "tenant-1",
-              "cat_id": "cat-1",
-              "name": "Alpha",
-              "favorite_toy": "Ball",
-              "tags": ["a", "b"],
+              "tenant_id": "tenant-1", "cat_id": "cat-1", "name": "Alpha", "favorite_toy": "Ball", "tags": ["a", "b"],
               "__sys_rw_ts": 100,
               "__sys_rw_ttl": [0, 0],
               "__sys_clttl": [0, {}],
-              "__sys_clts": {
-                "name": 300,
-                "favorite_toy": 100,
-                "tags": [100, 250]
-              }
+              "__sys_clts": { "name": 300, "favorite_toy": 100, "tags": [100, 250] }
             }
             """;
 
-        var (cleaned, metadata) = CdcJsonRowParser.ParseOnce(json);
+        var (_, metadata) = CdcJsonRowParser.ParseOnce(json);
 
-        Assert.Equal(100, metadata.WritetimeMicros);
-        Assert.True(metadata.HasRowMarker);
         Assert.Equal(300, metadata.RowWriteTimestampMicros);
-        Assert.NotNull(metadata.PerColumn);
-        Assert.Equal(2, metadata.PerColumn.Count);
+        Assert.Equal(2, metadata.PerColumn!.Count);
         Assert.Equal(new CdcCellMetadata(300, null), metadata.PerColumn["name"]);
         Assert.Equal(new CdcCellMetadata(250, null), metadata.PerColumn["tags"]);
-        Assert.DoesNotContain("__sys_", cleaned, StringComparison.Ordinal);
     }
 
     [Fact]
-    public void Parse_RowLevelDivergentCellKeepsRowExpiry()
+    public void Parse_DivergentCellWithoutTtlDetailKeepsRowExpiry()
     {
-        // Source row inserted at 1000 with a row TTL; "payload" was last
-        // written at 500, before the row was re-inserted. Writing the row at
-        // a single timestamp would lift "payload" above concurrent changes
-        // or tie it with a newer destination value.
         const string json =
             """
             {
-              "tenant_id": "tenant-1",
-              "cat_id": "cat-1",
-              "payload": "old",
-              "other": "new",
+              "tenant_id": "tenant-1", "cat_id": "cat-1", "payload": "old", "other": "new",
               "__sys_rw_ts": 1000,
               "__sys_rw_ttl": [86400, 0],
               "__sys_clttl": [1780655059, {}],
@@ -569,71 +233,12 @@ public sealed class RegularRowWriteStrategyTests
         Assert.Equal(new CdcCellMetadata(500, 1780655059), cell.Value);
     }
 
-    [Fact]
-    public void BuildSplitWritePlan_RowLevelUpdateOnlyRowKeepsBaseline()
-    {
-        const string json =
-            """
-            {
-              "tenant_id": "tenant-1",
-              "cat_id": "cat-1",
-              "favorite_toy": "Ball",
-              "name": "Milo"
-            }
-            """;
-        var metadata = new CdcRowMetadata(
-            WritetimeMicros: null,
-            ExpiryEpochSeconds: null,
-            PerColumn: new Dictionary<string, CdcCellMetadata>
-            {
-                ["favorite_toy"] = new(200, null)
-            },
-            LatestCellWritetimeMicros: 500);
-
-        var plan = RegularRowWriteStrategy.BuildSplitWritePlan(
-            json,
-            metadata,
-            PrimaryKeyColumns,
-            PrimaryKeyColumnNames,
-            ColumnsByName,
-            writeBaseline: true);
-
-        Assert.True(plan.WriteBaseline);
-        using var baseline = JsonDocument.Parse(plan.BaselineJson);
-        Assert.Equal("Milo", baseline.RootElement.GetProperty("name").GetString());
-        Assert.False(baseline.RootElement.TryGetProperty("favorite_toy", out _));
-        var update = Assert.Single(plan.CellWrites);
-        Assert.Equal("favorite_toy", update.Column.Name);
-        Assert.Equal(new RegularRowWriteStrategy.GroupKey(200, null), update.Key);
-    }
-
-    [Fact]
-    public void Parse_RowLevelUpdateOnlyRowUsesCellWritetime()
-    {
-        const string json =
-            """
-            {
-              "tenant_id": "tenant-1",
-              "cat_id": "cat-1",
-              "name": "Milo",
-              "__sys_rw_ts": null,
-              "__sys_clts": { "name": 500 }
-            }
-            """;
-
-        var (_, metadata) = CdcJsonRowParser.ParseOnce(json);
-
-        Assert.False(metadata.HasRowMarker);
-        Assert.Equal(500, metadata.RowWriteTimestampMicros);
-        Assert.Null(metadata.PerColumn);
-    }
-
     [Theory]
     [InlineData("null")]
     [InlineData("{}")]
     [InlineData("""{ "name": null, "tags": [] }""")]
     [InlineData("\"unexpected\"")]
-    public void Parse_RowLevelToleratesCellWritetimeShapesWithoutValues(string clts)
+    public void Parse_ToleratesCellWritetimeShapesWithoutValues(string clts)
     {
         var json =
             "{\"tenant_id\":\"tenant-1\",\"cat_id\":\"cat-1\",\"name\":\"Milo\"," +
@@ -646,26 +251,277 @@ public sealed class RegularRowWriteStrategyTests
     }
 
     [Fact]
-    public void Parse_CellLevelReportsNewestCellWritetime()
+    public void Parse_NegativeTtlDurationIsRejected()
     {
         const string json =
-            """
-            {
-              "tenant_id": "tenant-1",
-              "cat_id": "cat-1",
-              "name": "Milo",
-              "favorite_toy": "Ball",
-              "__sys_rw_ts": 100,
-              "__sys_rw_ttl": [0, 0],
-              "__sys_clttl": [0, {}],
-              "__sys_clts": { "name": 100, "favorite_toy": 200 }
-            }
-            """;
+            """{"id":"x","a":"v","__sys_rw_ts":100,"__sys_clttl":[0,{"a":[-1,0]}]}""";
 
-        var (_, metadata) = CdcJsonRowParser.ParseOnce(json, preserveCellLevel: true);
+        Assert.Throws<JsonException>(() => CdcJsonRowParser.ParseOnce(json));
+    }
+}
 
-        Assert.Equal(100, metadata.WritetimeMicros);
-        Assert.Equal(200, metadata.RowWriteTimestampMicros);
-        Assert.Equal(new CdcCellMetadata(200, null), metadata.PerColumn!["favorite_toy"]);
+public sealed class RegularRowWriteStrategyTests
+{
+    private const long Now = 1_000_000_000;
+
+    private static readonly CassandraColumn[] PrimaryKeyColumns =
+    [
+        new("pk", "text", "partition_key", "none", 0),
+        new("ck", "int", "clustering", "asc", 0)
+    ];
+
+    private static readonly Dictionary<string, CassandraColumn> ColumnsByName =
+        PrimaryKeyColumns
+            .Append(new CassandraColumn("v", "text", "regular", "none", -1))
+            .Append(new CassandraColumn("w", "text", "regular", "none", -1))
+            .Append(new CassandraColumn("st", "text", "static", "none", -1))
+            .Append(new CassandraColumn("l", "list<int>", "regular", "none", -1))
+            .Append(new CassandraColumn("fl", "frozen<list<int>>", "regular", "none", -1))
+            .Append(new CassandraColumn("s", "set<int>", "regular", "none", -1))
+            .Append(new CassandraColumn("m", "map<text, int>", "regular", "none", -1))
+            .Append(new CassandraColumn("u", "addr", "regular", "none", -1))
+            .ToDictionary(c => c.Name, StringComparer.Ordinal);
+
+    private static RegularRowWriteStrategy.RowWritePlan Plan(
+        string json, CdcRowMetadata metadata, bool isReplay = false) =>
+        RegularRowWriteStrategy.BuildRowWritePlan(
+            json, metadata, isReplay, PrimaryKeyColumns, ColumnsByName, Now);
+
+    private static Dictionary<string, CdcCellMetadata> Cells(
+        params (string Name, CdcCellMetadata Cell)[] cells) =>
+        cells.ToDictionary(c => c.Name, c => c.Cell, StringComparer.Ordinal);
+
+    [Fact]
+    public void UniformRowWithMarkerIsOneFullInsert()
+    {
+        var plan = Plan(
+            """{"pk":"p","ck":1,"v":"a","w":null,"st":"s","fl":[1,2]}""",
+            new CdcRowMetadata(100, 2000));
+
+        Assert.True(plan.UseFullInsert);
+        Assert.False(plan.IsStaticOnly);
+        Assert.Equal(100, plan.BaselineWritetimeMicros);
+        Assert.Equal(2000, plan.BaselineExpiryEpochSeconds);
+        using var baseline = JsonDocument.Parse(plan.BaselineJson!);
+        Assert.Equal(6, baseline.RootElement.EnumerateObject().Count());
+        Assert.Empty(plan.Groups);
+    }
+
+    [Fact]
+    public void DivergentCellIsWrittenSeparatelyFromBaseline()
+    {
+        var plan = Plan(
+            """{"pk":"p","ck":1,"v":"a","w":null}""",
+            new CdcRowMetadata(100, null, Cells(("v", new CdcCellMetadata(200, 300)))));
+
+        Assert.False(plan.UseFullInsert);
+        using var baseline = JsonDocument.Parse(plan.BaselineJson!);
+        Assert.False(baseline.RootElement.TryGetProperty("v", out _));
+        Assert.Equal(JsonValueKind.Null, baseline.RootElement.GetProperty("w").ValueKind);
+        Assert.Equal(["\"p\"", "1"], plan.PrimaryKeyValues);
+
+        var group = Assert.Single(plan.Groups);
+        Assert.Equal(200, group.WritetimeMicros);
+        Assert.Equal(300, group.ExpiryEpochSeconds);
+        Assert.False(group.IsStatic);
+        Assert.Equal("v", Assert.Single(group.Columns).Name);
+        Assert.Equal("\"a\"", Assert.Single(group.JsonValues));
+    }
+
+    [Fact]
+    public void RowWithoutMarkerIsWrittenWithUpdatesOnly()
+    {
+        var plan = Plan(
+            """{"pk":"p","ck":1,"v":"a","w":null}""",
+            new CdcRowMetadata(null, null, Cells(("v", new CdcCellMetadata(500, 900))), 500));
+
+        Assert.Null(plan.BaselineJson);
+        Assert.False(plan.UseFullInsert);
+        Assert.Equal(2, plan.Groups.Count);
+        Assert.Contains(plan.Groups, g =>
+            g.Columns.Single().Name == "v" && g.WritetimeMicros == 500 && g.ExpiryEpochSeconds == 900);
+        Assert.Contains(plan.Groups, g =>
+            g.Columns.Single().Name == "w" && g.WritetimeMicros == 500 && g.ExpiryEpochSeconds is null);
+    }
+
+    [Fact]
+    public void CellsSharingWritetimeAndTtlAreGroupedButStaticCellsAreNot()
+    {
+        var cell = new CdcCellMetadata(200, 300);
+        var plan = Plan(
+            """{"pk":"p","ck":1,"v":"a","w":"b","st":"s"}""",
+            new CdcRowMetadata(100, null, Cells(("v", cell), ("w", cell), ("st", cell))));
+
+        Assert.Equal(2, plan.Groups.Count);
+        var regular = plan.Groups.Single(g => !g.IsStatic);
+        Assert.Equal(["v", "w"], regular.Columns.Select(c => c.Name));
+        var stat = plan.Groups.Single(g => g.IsStatic);
+        Assert.Equal("st", stat.Columns.Single().Name);
+        Assert.Equal(["\"p\""], plan.KeyValuesFor(isStatic: true));
+        Assert.Equal(["\"p\"", "1"], plan.KeyValuesFor(isStatic: false));
+    }
+
+    [Fact]
+    public void StaticOnlyPartitionWritesOnlyStaticCellsWithoutBaseline()
+    {
+        var plan = Plan(
+            """{"pk":"p","ck":null,"v":null,"st":"s"}""",
+            new CdcRowMetadata(null, null, Cells(("st", new CdcCellMetadata(200, 2030))), 200));
+
+        Assert.True(plan.IsStaticOnly);
+        Assert.Null(plan.BaselineJson);
+        Assert.False(plan.UseFullInsert);
+        Assert.Equal(["\"p\""], plan.PrimaryKeyValues);
+        var group = Assert.Single(plan.Groups);
+        Assert.True(group.IsStatic);
+        Assert.Equal(2030, group.ExpiryEpochSeconds);
+    }
+
+    [Fact]
+    public void NonFrozenListIsSplitIntoRunsOfEqualExpiry()
+    {
+        var plan = Plan(
+            """{"pk":"p","ck":1,"v":"a","l":[1,2,3,4]}""",
+            new CdcRowMetadata(100, null, Cells(
+                ("l", new CdcCellMetadata(150, null, ElementExpiries: [null, null, 900, null])))));
+
+        Assert.False(plan.UseFullInsert);
+        var list = Assert.Single(plan.Lists);
+        Assert.Equal("l", list.Column.Name);
+        Assert.Equal(150, list.SourceWritetimeMicros);
+        Assert.Equal(
+            [new(null, "[1,2]"), new(900, "[3]"), new(null, "[4]")],
+            list.Runs);
+    }
+
+    [Fact]
+    public void UniformListIsStillRewrittenAsAList()
+    {
+        var plan = Plan(
+            """{"pk":"p","ck":1,"l":[1,2]}""",
+            new CdcRowMetadata(100, 2000));
+
+        Assert.False(plan.UseFullInsert);
+        var run = Assert.Single(Assert.Single(plan.Lists).Runs);
+        Assert.Equal(2000, run.ExpiryEpochSeconds);
+        Assert.Equal("[1,2]", run.JsonValue);
+        using var baseline = JsonDocument.Parse(plan.BaselineJson!);
+        Assert.False(baseline.RootElement.TryGetProperty("l", out _));
+    }
+
+    [Fact]
+    public void NullListIsClearedExplicitlyOnlyOnReplay()
+    {
+        const string json = """{"pk":"p","ck":1,"v":"a","l":null}""";
+        var metadata = new CdcRowMetadata(100, null);
+
+        var bulk = Plan(json, metadata);
+        Assert.True(bulk.UseFullInsert);
+        Assert.Empty(bulk.Lists);
+
+        var replay = Plan(json, metadata, isReplay: true);
+        Assert.False(replay.UseFullInsert);
+        Assert.Empty(Assert.Single(replay.Lists).Runs);
+    }
+
+    [Fact]
+    public void SetAndMapElementsWithDifferentTtlsAreAddedSeparately()
+    {
+        var plan = Plan(
+            """{"pk":"p","ck":1,"s":[1,2,3],"m":{"a":1,"b":2,"c":3}}""",
+            new CdcRowMetadata(100, null, Cells(
+                ("s", new CdcCellMetadata(150, null, ElementExpiries: [null, 900, null])),
+                ("m", new CdcCellMetadata(150, null, ElementExpiries: [900, null, 900])))));
+
+        Assert.Equal(2, plan.Groups.Count);
+        var set = plan.Groups.Single(g => g.Columns.Single().Name == "s");
+        Assert.Null(set.ExpiryEpochSeconds);
+        Assert.Equal("[1,3]", set.JsonValues.Single());
+        var map = plan.Groups.Single(g => g.Columns.Single().Name == "m");
+        Assert.Equal(900, map.ExpiryEpochSeconds);
+        Assert.Equal("""{"a":1,"c":3}""", map.JsonValues.Single());
+        Assert.Equal(2, plan.Adds.Count);
+        Assert.Contains(plan.Adds, a => a.Column.Name == "s" && a.ExpiryEpochSeconds == 900 && a.JsonValue == "[2]");
+        Assert.Contains(plan.Adds, a => a.Column.Name == "m" && a.ExpiryEpochSeconds is null && a.JsonValue == """{"b":2}""");
+    }
+
+    [Fact]
+    public void ElementCountMismatchFallsBackToUniformWrite()
+    {
+        var plan = Plan(
+            """{"pk":"p","ck":1,"s":[1,2,3]}""",
+            new CdcRowMetadata(100, null, Cells(
+                ("s", new CdcCellMetadata(150, 900, ElementExpiries: [null, 900])))));
+
+        var group = Assert.Single(plan.Groups);
+        Assert.Equal(900, group.ExpiryEpochSeconds);
+        Assert.Equal("[1,2,3]", Assert.Single(group.JsonValues));
+        Assert.Empty(plan.Adds);
+    }
+
+    [Fact]
+    public void UdtFieldsWithDifferentTtlsAreWrittenPerField()
+    {
+        var plan = Plan(
+            """{"pk":"p","ck":1,"u":{"street":"s","zip":2,"note":null}}""",
+            new CdcRowMetadata(100, null, Cells(
+                ("u", new CdcCellMetadata(150, null,
+                    FieldExpiries: new Dictionary<string, long?> { ["street"] = null, ["zip"] = 900 })))));
+
+        var group = Assert.Single(plan.Groups);
+        Assert.Null(group.ExpiryEpochSeconds);
+        Assert.Equal("""{"street":"s","note":null}""", Assert.Single(group.JsonValues));
+        var field = Assert.Single(plan.FieldWrites);
+        Assert.Equal("zip", field.Field);
+        Assert.Equal(900, field.ExpiryEpochSeconds);
+        Assert.Equal("2", field.JsonValue);
+        Assert.Equal(150, field.WritetimeMicros);
+    }
+
+    [Fact]
+    public void UnknownColumnIsRejected()
+    {
+        Assert.Throws<JsonException>(() =>
+            Plan("""{"pk":"p","ck":1,"nope":1}""", new CdcRowMetadata(100, null)));
+    }
+
+    [Theory]
+    [InlineData(null, 0, false)]
+    [InlineData(Now - 5, 1, false)]
+    [InlineData(Now + 60, 60, false)]
+    [InlineData(Now + 700_000_000L, RegularRowWriteStrategy.MaxTtlSeconds, true)]
+    public void ResolveTtlSecondsHandlesExpiredImmortalAndOversizedTtls(
+        long? expiry, int expected, bool expectedClamped)
+    {
+        int ttl = RegularRowWriteStrategy.ResolveTtlSeconds(expiry, Now, clampToLegacyExpiry: false, out bool clamped);
+
+        Assert.Equal(expected, ttl);
+        Assert.Equal(expectedClamped, clamped);
+    }
+
+    [Fact]
+    public void ResolveTtlSecondsClampsExpiryBefore2038ForLegacyTargets()
+    {
+        long now = 2_000_000_000;
+        long expiry = now + 400_000_000;
+
+        int ttl = RegularRowWriteStrategy.ResolveTtlSeconds(expiry, now, clampToLegacyExpiry: true, out bool clamped);
+
+        Assert.True(clamped);
+        Assert.True(now + ttl < int.MaxValue);
+        Assert.Equal(400_000_000,
+            RegularRowWriteStrategy.ResolveTtlSeconds(expiry, now, clampToLegacyExpiry: false, out _));
+    }
+
+    [Fact]
+    public void MonotonicTimestampNeverRepeatsAndHonoursFloor()
+    {
+        long floor = MonotonicTimestamp.NowMicros() + 10_000_000;
+
+        long first = MonotonicTimestamp.Reserve(floor, 3);
+        long next = MonotonicTimestamp.Reserve(0, 1);
+
+        Assert.True(first >= floor);
+        Assert.True(next > first + 2);
     }
 }

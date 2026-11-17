@@ -219,45 +219,93 @@ public static class CassandraQueries
     }
 
     /// <summary>
-    /// Build a prepared UPDATE for one column whose value is supplied in
-    /// Cassandra's JSON representation. Using UPDATE is important here:
-    /// unlike a partial INSERT, it does not replace the row-liveness marker
-    /// when a newer TTL-bearing cell is replayed. Bind order is
+    /// UPDATE that assigns one column from its JSON representation. Using
+    /// UPDATE is important: unlike INSERT it never creates or replaces the
+    /// row-liveness marker. Bind order is
     /// (writetime, ttl, jsonValue, primary-key JSON values in key order).
+    /// Static columns are addressed by the partition key only.
     /// </summary>
-    public static async Task<PreparedStatement>
-        PrepareUpdateJsonColumnAsync(
-            ISession session,
-            string keyspace,
-            string table,
-            CassandraColumn column,
-            IReadOnlyList<CassandraColumn> primaryKeyColumns)
-    {
-        if (primaryKeyColumns.Count == 0)
-            throw new ArgumentException(
-                $"Cannot prepare UPDATE for {keyspace}.{table} without primary-key columns.",
-                nameof(primaryKeyColumns));
-
-        var cql = BuildUpdateJsonColumnCql(
-            keyspace, table, column, primaryKeyColumns);
-        return await session.PrepareAsync(cql);
-    }
-
     internal static string BuildUpdateJsonColumnCql(
         string keyspace,
         string table,
         CassandraColumn column,
         IReadOnlyList<CassandraColumn> primaryKeyColumns)
+        => BuildUpdateJsonColumnsCql(keyspace, table, [column], primaryKeyColumns);
+
+    /// <summary>
+    /// UPDATE that assigns several columns sharing one writetime/TTL. Bind
+    /// order is (writetime, ttl, one JSON value per column, key values). All
+    /// columns must be static, or all non-static.
+    /// </summary>
+    internal static string BuildUpdateJsonColumnsCql(
+        string keyspace,
+        string table,
+        IReadOnlyList<CassandraColumn> columns,
+        IReadOnlyList<CassandraColumn> primaryKeyColumns)
     {
-        var restrictedKeys = column.Kind == "static"
+        if (columns.Count == 0)
+            throw new ArgumentException("At least one column is required.", nameof(columns));
+        bool isStatic = columns[0].Kind == "static";
+        if (columns.Any(c => (c.Kind == "static") != isStatic))
+            throw new ArgumentException(
+                "Static and non-static columns cannot share one UPDATE.", nameof(columns));
+        var setClause = string.Join(", ",
+            columns.Select(c => $"{CqlIdentifier.Quote(c.Name)} = fromJson(?)"));
+        return BuildUpdateCql(keyspace, table, setClause, isStatic, primaryKeyColumns);
+    }
+
+    /// <summary>
+    /// UPDATE that adds elements to a non-frozen collection
+    /// (<c>c = c + fromJson(?)</c>). Bind order matches
+    /// <see cref="BuildUpdateJsonColumnCql"/>.
+    /// </summary>
+    internal static string BuildAddJsonColumnCql(
+        string keyspace,
+        string table,
+        CassandraColumn column,
+        IReadOnlyList<CassandraColumn> primaryKeyColumns)
+    {
+        var quoted = CqlIdentifier.Quote(column.Name);
+        return BuildUpdateCql(keyspace, table,
+            $"{quoted} = {quoted} + fromJson(?)",
+            column.Kind == "static", primaryKeyColumns);
+    }
+
+    /// <summary>
+    /// UPDATE that assigns one field of a non-frozen UDT
+    /// (<c>u.f = fromJson(?)</c>). Bind order matches
+    /// <see cref="BuildUpdateJsonColumnCql"/>.
+    /// </summary>
+    internal static string BuildUpdateJsonUdtFieldCql(
+        string keyspace,
+        string table,
+        CassandraColumn column,
+        string field,
+        IReadOnlyList<CassandraColumn> primaryKeyColumns)
+        => BuildUpdateCql(keyspace, table,
+            $"{CqlIdentifier.Quote(column.Name)}.{CqlIdentifier.Quote(field)} = fromJson(?)",
+            column.Kind == "static", primaryKeyColumns);
+
+    private static string BuildUpdateCql(
+        string keyspace,
+        string table,
+        string setClause,
+        bool isStatic,
+        IReadOnlyList<CassandraColumn> primaryKeyColumns)
+    {
+        if (primaryKeyColumns.Count == 0)
+            throw new ArgumentException(
+                $"Cannot build UPDATE for {keyspace}.{table} without primary-key columns.",
+                nameof(primaryKeyColumns));
+        var restrictedKeys = isStatic
             ? primaryKeyColumns.Where(c => c.Kind == "partition_key")
             : primaryKeyColumns;
         var whereClause = string.Join(" AND ",
-            restrictedKeys.Select(c => $"\"{c.Name}\" = fromJson(?)"));
+            restrictedKeys.Select(c => $"{CqlIdentifier.Quote(c.Name)} = fromJson(?)"));
         return
-            $"UPDATE \"{keyspace}\".\"{table}\" " +
+            $"UPDATE {CqlIdentifier.Quote(keyspace)}.{CqlIdentifier.Quote(table)} " +
             $"USING TIMESTAMP ? AND TTL ? " +
-            $"SET \"{column.Name}\" = fromJson(?) WHERE {whereClause}";
+            $"SET {setClause} WHERE {whereClause}";
     }
 
     /// <summary>

@@ -42,6 +42,7 @@ internal interface IRowWriteStrategy
         string cleanedJson,
         WriteCounters counters,
         CdcRowMetadata? metadata,
+        bool isReplay,
         CancellationToken cancellationToken);
 }
 

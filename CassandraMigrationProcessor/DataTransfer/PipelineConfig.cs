@@ -18,7 +18,6 @@ public record PipelineConfig(
     int MaxReadRetries,
     int MaxWriteRetries,
     ConsistencyLevel TargetWriteConsistencyLevel,
-    bool PreserveCellTtlAndWritetime,
     bool UseJsonCopy)
 {
     /// <summary>
@@ -60,17 +59,6 @@ public record PipelineConfig(
                 "Unsupported target write consistency level. Expected one of: " +
                 string.Join(", ", Enum.GetNames<JobWriteConsistencyLevel>()) + ".");
 
-        // Cell-level TTL/writetime preservation depends on the JSON copy
-        // path (SELECT JSON * surfaces the per-cell __sys_* metadata and
-        // INSERT JSON honours USING TIMESTAMP/TTL). The typed binary path
-        // cannot carry that metadata, so the combination is invalid.
-        if (!job.UseJsonCopy && job.PreserveCellTtlAndWritetime)
-            throw new ArgumentException(
-                "PreserveCellTtlAndWritetime requires the JSON copy path " +
-                "(UseJsonCopy = true); the typed binary copy path cannot " +
-                "preserve per-cell TTL/writetime.",
-                nameof(job.PreserveCellTtlAndWritetime));
-
         return new PipelineConfig(
             WorkerCount: workerCount,
             PageSize: pageSize,
@@ -79,7 +67,6 @@ public record PipelineConfig(
             MaxWriteRetries: maxWriteRetries,
             TargetWriteConsistencyLevel: ToDriverConsistencyLevel(
                 job.TargetWriteConsistencyLevel),
-            PreserveCellTtlAndWritetime: job.PreserveCellTtlAndWritetime,
             UseJsonCopy: job.UseJsonCopy);
     }
 
