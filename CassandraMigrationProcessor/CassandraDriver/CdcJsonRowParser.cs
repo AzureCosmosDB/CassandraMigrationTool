@@ -252,6 +252,10 @@ internal sealed class CdcJsonRowParser
                     {
                         string col = CqlIdentifier.Unquote(reader.GetString());
                         reader.Read();
+                        // Null = the column has no live cell (e.g. an unset
+                        // nullable column); it carries no writetime to preserve.
+                        if (reader.TokenType == JsonTokenType.Null)
+                            continue;
                         if (reader.TokenType == JsonTokenType.Number)
                             _colWritetime[col] = reader.GetInt64();
                         else if (reader.TokenType == JsonTokenType.StartArray)
@@ -341,6 +345,9 @@ internal sealed class CdcJsonRowParser
         {
             string col = CqlIdentifier.Unquote(reader.GetString());
             reader.Read();
+            // Null = the column has no live cell; it carries no TTL.
+            if (reader.TokenType == JsonTokenType.Null)
+                continue;
             if (reader.TokenType != JsonTokenType.StartArray)
             {
                 throw new JsonException(
