@@ -260,6 +260,39 @@ public sealed class RegularRowWriteStrategyTests
     }
 
     [Fact]
+    public void Parse_NullCellMetadataForUnsetColumnIsIgnored()
+    {
+        // Regression for #79: an unset nullable column is reported with
+        // null cell metadata and must not fail the row.
+        const string json =
+            """
+            {
+              "tenant_id": "tenant-1",
+              "cat_id": "cat-1",
+              "name": "Milo",
+              "compromised": null,
+              "__sys_rw_ts": 100,
+              "__sys_rw_ttl": [0, 0],
+              "__sys_clttl": [0, {
+                "name": [0, 0],
+                "compromised": null
+              }],
+              "__sys_clts": {
+                "name": 100,
+                "compromised": null
+              }
+            }
+            """;
+
+        var (cleaned, metadata) = CdcJsonRowParser.ParseOnce(
+            json, preserveCellLevel: true);
+
+        Assert.Contains("\"compromised\":null", cleaned);
+        Assert.Equal(100, metadata.WritetimeMicros);
+        Assert.Null(metadata.PerColumn);
+    }
+
+    [Fact]
     public void Parse_CellBaseExpiryIsRetainedWhenPerCellPreservationIsDisabled()
     {
         const string json =
