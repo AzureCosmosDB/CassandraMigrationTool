@@ -93,23 +93,36 @@ internal sealed record CdcRowMetadata(
 /// <c>__sys_clttl</c>.
 /// </summary>
 /// <param name="WritetimeMicros">Cell writetime; the newest element/field
-/// writetime for non-frozen collections and UDTs. CQL cannot set element
-/// writetimes individually, so the column is replayed at this value.</param>
+/// writetime for non-frozen collections and UDTs.</param>
 /// <param name="ExpiryEpochSeconds">Absolute expiry shared by the whole
 /// column, or <c>null</c> for no TTL. When elements/fields have differing
 /// expiries this is the longest one (<c>null</c> if any is immortal) and is
 /// only used as a fallback.</param>
 /// <param name="ElementExpiries">Per-element expiries, in value order, when a
-/// non-frozen list/set/map has elements with differing expiries.</param>
-/// <param name="FieldExpiries">Per-field expiries (bare field names) when a
-/// non-frozen UDT has fields with differing expiries.</param>
+/// non-frozen list/set/map has elements with differing expiries or
+/// writetimes.</param>
+/// <param name="FieldExpiries">Per-field expiries (bare field names, fields
+/// with a cell only) when a non-frozen UDT has fields with differing
+/// expiries or writetimes.</param>
+/// <param name="ElementWritetimes">Per-element writetimes matching
+/// <paramref name="ElementExpiries"/>; <c>null</c> means every element was
+/// written at <paramref name="WritetimeMicros"/>.</param>
+/// <param name="FieldWritetimes">Per-field writetimes matching
+/// <paramref name="FieldExpiries"/>; <c>null</c> means every field was
+/// written at <paramref name="WritetimeMicros"/>.</param>
 internal readonly record struct CdcCellMetadata(
     long? WritetimeMicros,
     long? ExpiryEpochSeconds,
     IReadOnlyList<long?>? ElementExpiries = null,
-    IReadOnlyDictionary<string, long?>? FieldExpiries = null)
+    IReadOnlyDictionary<string, long?>? FieldExpiries = null,
+    IReadOnlyList<long?>? ElementWritetimes = null,
+    IReadOnlyDictionary<string, long?>? FieldWritetimes = null)
 {
-    public bool HasHeterogeneousExpiry =>
+    /// <summary>
+    /// True when elements or fields cannot all be written with one
+    /// writetime and TTL.
+    /// </summary>
+    public bool HasPerElementMetadata =>
         ElementExpiries is not null || FieldExpiries is not null;
 }
 

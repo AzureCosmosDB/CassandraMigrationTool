@@ -153,13 +153,14 @@ internal sealed class RegularRowWriteStrategy : IRowWriteStrategy
 
         if (!_needsPlanForEveryRow
             && metadata.HasRowMarker
-            && !metadata.HasPerColumnDivergence)
+            && !metadata.HasPerColumnDivergence
+            && metadata.Deletions is null)
         {
             return WriteFullInsertAsync(cleanedJson, metadata, counters, cancellationToken);
         }
 
         var plan = BuildRowWritePlan(
-            cleanedJson, metadata, isReplay, _primaryKeyColumns, _columnsByName, NowMicros());
+            cleanedJson, metadata, _primaryKeyColumns, _columnsByName, NowMicros());
         if (plan.UseFullInsert)
             return WriteFullInsertAsync(cleanedJson, metadata, counters, cancellationToken);
         return WritePlanAsync(plan, counters, cancellationToken);
@@ -393,7 +394,6 @@ internal sealed class RegularRowWriteStrategy : IRowWriteStrategy
     internal static RowWritePlan BuildRowWritePlan(
         string cleanedJson,
         CdcRowMetadata metadata,
-        bool isReplay,
         IReadOnlyList<CassandraColumn> primaryKeyColumns,
         IReadOnlyDictionary<string, CassandraColumn> columnsByName,
         long nowMicros)
@@ -485,9 +485,10 @@ internal sealed class RegularRowWriteStrategy : IRowWriteStrategy
             }
             long wt = cell.WritetimeMicros ?? rowWritetime;
 
-            // A null list is cleared explicitly on replay: the target copy was
-            // written at a fresh timestamp no source-writetime tombstone wins.
-            if (IsNonFrozenList(column) && (!isNull || isReplay))
+            // Non-frozen lists are always rewritten at fresh timestamps
+            // (a null list is cleared explicitly), so the destination's own
+            // copy, which was also written at a fresh timestamp, is replaced.
+            if (IsNonFrozenList(column))
             {
                 lists.Add(new ListWrite(column, isNull ? [] : BuildListRuns(value, cell)));
                 continue;
@@ -496,15 +497,17 @@ internal sealed class RegularRowWriteStrategy : IRowWriteStrategy
             // Write high enough to also cover the column's newest source
             // deletion, so a value, element or field deleted after it was
             // copied is removed on the destination too. A live simple cell is
-            // always newer than its own deletion and keeps its writetime; a
-            // multi-cell column is rewritten just above the deletion.
+            // always newer than its own deletion and keeps its writetime; in a
+            // multi-cell column only elements/fields older than the deletion
+            // are lifted just above it.
+            long floor = long.MinValue;
             if (metadata.Deletions is { } deletions
                 && deletions.TryGetValue(column.Name, out var deletion)
-                && (isNull || deletion.IsComplex)
-                && deletion.CoveringWriteMicros > wt)
+                && (isNull || deletion.IsComplex))
             {
-                wt = deletion.CoveringWriteMicros;
+                floor = deletion.CoveringWriteMicros;
             }
+            wt = Math.Max(wt, floor);
 
             if (writeBaseline && !hasCell && wt == rowWritetime)
             {
@@ -512,22 +515,26 @@ internal sealed class RegularRowWriteStrategy : IRowWriteStrategy
                 continue;
             }
 
+            // The assignment carries the oldest writetime: its complex
+            // deletion (written just below it) must not hide older elements.
+            long defaultWt = cell.WritetimeMicros ?? rowWritetime;
             if (!isNull && cell.ElementExpiries is { } elementExpiries
-                && TrySplitElements(value, elementExpiries, out var elementGroups))
+                && TrySplitElements(value, elementExpiries, cell.ElementWritetimes,
+                    defaultWt, floor, out var elementGroups))
             {
-                AddToGroup(wt, elementGroups[0].Expiry, column, elementGroups[0].Json);
+                AddToGroup(elementGroups[0].Wt, elementGroups[0].Expiry, column, elementGroups[0].Json);
                 for (int i = 1; i < elementGroups.Count; i++)
-                    adds.Add(new AddWrite(column, wt, elementGroups[i].Expiry, elementGroups[i].Json));
+                    adds.Add(new AddWrite(column, elementGroups[i].Wt, elementGroups[i].Expiry, elementGroups[i].Json));
                 continue;
             }
 
             if (!isNull && cell.FieldExpiries is { } fieldExpiries
-                && TrySplitFields(value, fieldExpiries,
-                    out var baseFields, out var baseExpiry, out var extraFields))
+                && TrySplitFields(value, fieldExpiries, cell.FieldWritetimes, defaultWt, floor,
+                    out var baseFields, out var baseWt, out var baseExpiry, out var extraFields))
             {
-                AddToGroup(wt, baseExpiry, column, baseFields);
-                foreach (var (field, expiry, json) in extraFields)
-                    fieldWrites.Add(new FieldWrite(column, field, wt, expiry, json));
+                AddToGroup(baseWt, baseExpiry, column, baseFields);
+                foreach (var (field, fieldWt, expiry, json) in extraFields)
+                    fieldWrites.Add(new FieldWrite(column, field, fieldWt, expiry, json));
                 continue;
             }
 
@@ -579,52 +586,71 @@ internal sealed class RegularRowWriteStrategy : IRowWriteStrategy
 
     /// <summary>
     /// Group the elements of a set (JSON array) or map (JSON object) by
-    /// expiry, in first-appearance order. Fails when the element count does
-    /// not match the metadata, in which case the column is written uniformly.
+    /// writetime (lifted to at least <paramref name="floor"/>) and expiry,
+    /// ordered by writetime. Fails when the element count does not match the
+    /// metadata, in which case the column is written uniformly.
     /// </summary>
     private static bool TrySplitElements(
         JsonElement value,
         IReadOnlyList<long?> expiries,
-        out List<(long? Expiry, string Json)> groups)
+        IReadOnlyList<long?>? writetimes,
+        long defaultWt,
+        long floor,
+        out List<(long Wt, long? Expiry, string Json)> groups)
     {
         groups = [];
+        int count = value.ValueKind switch
+        {
+            JsonValueKind.Array => value.GetArrayLength(),
+            JsonValueKind.Object => value.EnumerateObject().Count(),
+            _ => -1,
+        };
+        if (count != expiries.Count || (writetimes is not null && writetimes.Count != count))
+            return false;
+
+        var keys = new (long Wt, long? Expiry)[count];
+        for (int i = 0; i < count; i++)
+            keys[i] = (Math.Max(writetimes?[i] ?? defaultWt, floor), expiries[i]);
+        var distinct = keys.Distinct().OrderBy(k => k.Wt).ToList();
+
         if (value.ValueKind == JsonValueKind.Array)
         {
-            if (value.GetArrayLength() != expiries.Count) return false;
             var elements = value.EnumerateArray().ToArray();
-            foreach (var expiry in DistinctInOrder(expiries))
-                groups.Add((expiry, WriteArray(elements.Where((_, i) => expiries[i] == expiry))));
-            return true;
+            foreach (var key in distinct)
+                groups.Add((key.Wt, key.Expiry, WriteArray(elements.Where((_, i) => keys[i] == key))));
         }
-
-        if (value.ValueKind == JsonValueKind.Object)
+        else
         {
             var entries = value.EnumerateObject().ToArray();
-            if (entries.Length != expiries.Count) return false;
-            foreach (var expiry in DistinctInOrder(expiries))
-                groups.Add((expiry, WriteObject(entries.Where((_, i) => expiries[i] == expiry))));
-            return true;
+            foreach (var key in distinct)
+                groups.Add((key.Wt, key.Expiry, WriteObject(entries.Where((_, i) => keys[i] == key))));
         }
-
-        return false;
+        return true;
     }
 
     /// <summary>
-    /// Split a non-frozen UDT into the fields assigned together (the first
-    /// field's expiry group plus every field without a cell) and the
-    /// remaining fields, which are written one by one with their own TTL.
+    /// Split a non-frozen UDT into the fields assigned together (the oldest
+    /// writetime/expiry group plus every field without a cell) and the
+    /// remaining fields, which are written one by one with their own
+    /// writetime and TTL. Writetimes are lifted to at least
+    /// <paramref name="floor"/>.
     /// </summary>
     private static bool TrySplitFields(
         JsonElement value,
         IReadOnlyDictionary<string, long?> fieldExpiries,
+        IReadOnlyDictionary<string, long?>? fieldWritetimes,
+        long defaultWt,
+        long floor,
         out string baseJson,
+        out long baseWt,
         out long? baseExpiry,
-        out List<(string Field, long? Expiry, string Json)> extraFields)
+        out List<(string Field, long Wt, long? Expiry, string Json)> extraFields)
     {
         baseJson = string.Empty;
+        baseWt = 0;
         baseExpiry = null;
         extraFields = [];
-        if (value.ValueKind != JsonValueKind.Object) return false;
+        if (value.ValueKind != JsonValueKind.Object || fieldExpiries.Count == 0) return false;
 
         var fields = value.EnumerateObject()
             .Select(p => (Prop: p, Name: CqlIdentifier.Unquote(p.Name)))
@@ -632,27 +658,32 @@ internal sealed class RegularRowWriteStrategy : IRowWriteStrategy
         if (fields.Count(f => fieldExpiries.ContainsKey(f.Name)) != fieldExpiries.Count)
             return false;
 
-        baseExpiry = fieldExpiries[fields.First(f => fieldExpiries.ContainsKey(f.Name)).Name];
+        (long Wt, long? Expiry) KeyOf(string name) =>
+            (Math.Max(fieldWritetimes?.GetValueOrDefault(name) ?? defaultWt, floor), fieldExpiries[name]);
+
+        var baseKey = fields
+            .Where(f => fieldExpiries.ContainsKey(f.Name))
+            .Select(f => KeyOf(f.Name))
+            .OrderBy(k => k.Wt)
+            .First();
+        (baseWt, baseExpiry) = baseKey;
+
         var baseProps = new List<JsonProperty>();
         foreach (var (prop, name) in fields)
         {
-            if (!fieldExpiries.TryGetValue(name, out var expiry) || expiry == baseExpiry)
+            if (!fieldExpiries.ContainsKey(name))
+            {
+                baseProps.Add(prop);
+                continue;
+            }
+            var key = KeyOf(name);
+            if (key == baseKey)
                 baseProps.Add(prop);
             else
-                extraFields.Add((name, expiry, prop.Value.GetRawText()));
+                extraFields.Add((name, key.Wt, key.Expiry, prop.Value.GetRawText()));
         }
         baseJson = WriteObject(baseProps);
         return true;
-    }
-
-    private static IEnumerable<long?> DistinctInOrder(IReadOnlyList<long?> values)
-    {
-        var seen = new HashSet<long?>();
-        foreach (var v in values)
-        {
-            if (seen.Add(v))
-                yield return v;
-        }
     }
 
     private static string WriteObject(IEnumerable<JsonProperty> props)

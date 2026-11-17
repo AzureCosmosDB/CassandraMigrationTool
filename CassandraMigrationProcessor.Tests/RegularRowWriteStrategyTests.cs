@@ -55,6 +55,9 @@ public sealed class CdcJsonRowParserTests
             Assert.Equal(1794900043721403, cell.WritetimeMicros);
             Assert.Null(cell.ExpiryEpochSeconds);
             Assert.Equal(new long?[] { null, null, 1794903043 }, cell.ElementExpiries);
+            Assert.Equal(
+                new long?[] { 1794900043519733, 1794900043622825, 1794900043721403 },
+                cell.ElementWritetimes);
         }
         Assert.DoesNotContain("__sys_", cleaned, StringComparison.Ordinal);
     }
@@ -208,7 +211,50 @@ public sealed class CdcJsonRowParserTests
         Assert.Equal(300, metadata.RowWriteTimestampMicros);
         Assert.Equal(2, metadata.PerColumn!.Count);
         Assert.Equal(new CdcCellMetadata(300, null), metadata.PerColumn["name"]);
-        Assert.Equal(new CdcCellMetadata(250, null), metadata.PerColumn["tags"]);
+        var tags = metadata.PerColumn["tags"];
+        Assert.Equal(250, tags.WritetimeMicros);
+        Assert.Null(tags.ExpiryEpochSeconds);
+        Assert.Equal(new long?[] { 100, 250 }, tags.ElementWritetimes);
+        Assert.Equal(new long?[] { null, null }, tags.ElementExpiries);
+    }
+
+    [Fact]
+    public void Parse_UdtFieldWritetimesAreReportedPerField()
+    {
+        const string json =
+            """
+            {
+              "tenant_id": "tenant-1", "cat_id": "cat-1", "addr": {"street": "s", "zip": 2, "note": null},
+              "__sys_rw_ts": 100,
+              "__sys_rw_ttl": [0, 0],
+              "__sys_clts": { "addr": {"street": 100, "zip": 300, "note": null} }
+            }
+            """;
+
+        var (_, metadata) = CdcJsonRowParser.ParseOnce(json);
+
+        var addr = metadata.PerColumn!["addr"];
+        Assert.Equal(300, addr.WritetimeMicros);
+        Assert.Equal(new Dictionary<string, long?> { ["street"] = 100, ["zip"] = 300 }, addr.FieldWritetimes);
+        Assert.Equal(new Dictionary<string, long?> { ["street"] = null, ["zip"] = null }, addr.FieldExpiries);
+    }
+
+    [Fact]
+    public void Parse_ElementsSharingWritetimeAndTtlStayUniform()
+    {
+        const string json =
+            """
+            {
+              "tenant_id": "tenant-1", "cat_id": "cat-1", "tags": ["a", "b"],
+              "__sys_rw_ts": 100,
+              "__sys_rw_ttl": [0, 0],
+              "__sys_clts": { "tags": [200, 200] }
+            }
+            """;
+
+        var (_, metadata) = CdcJsonRowParser.ParseOnce(json);
+
+        Assert.Equal(new CdcCellMetadata(200, null), metadata.PerColumn!["tags"]);
     }
 
     [Fact]
@@ -331,9 +377,9 @@ public sealed class RegularRowWriteStrategyTests
             .ToDictionary(c => c.Name, StringComparer.Ordinal);
 
     private static RegularRowWriteStrategy.RowWritePlan Plan(
-        string json, CdcRowMetadata metadata, bool isReplay = false) =>
+        string json, CdcRowMetadata metadata) =>
         RegularRowWriteStrategy.BuildRowWritePlan(
-            json, metadata, isReplay, PrimaryKeyColumns, ColumnsByName, Now);
+            json, metadata, PrimaryKeyColumns, ColumnsByName, Now);
 
     private static Dictionary<string, CdcCellMetadata> Cells(
         params (string Name, CdcCellMetadata Cell)[] cells) =>
@@ -457,18 +503,72 @@ public sealed class RegularRowWriteStrategyTests
     }
 
     [Fact]
-    public void NullListIsClearedExplicitlyOnlyOnReplay()
+    public void NullListIsClearedExplicitly()
     {
-        const string json = """{"pk":"p","ck":1,"v":"a","l":null}""";
-        var metadata = new CdcRowMetadata(100, null);
+        var plan = Plan(
+            """{"pk":"p","ck":1,"v":"a","l":null}""",
+            new CdcRowMetadata(100, null));
 
-        var bulk = Plan(json, metadata);
-        Assert.True(bulk.UseFullInsert);
-        Assert.Empty(bulk.Lists);
+        Assert.False(plan.UseFullInsert);
+        Assert.Empty(Assert.Single(plan.Lists).Runs);
+        using var baseline = JsonDocument.Parse(plan.BaselineJson!);
+        Assert.False(baseline.RootElement.TryGetProperty("l", out _));
+    }
 
-        var replay = Plan(json, metadata, isReplay: true);
-        Assert.False(replay.UseFullInsert);
-        Assert.Empty(Assert.Single(replay.Lists).Runs);
+    [Fact]
+    public void SetElementsWithDifferentWritetimesAreAddedAtTheirOwnWritetime()
+    {
+        var plan = Plan(
+            """{"pk":"p","ck":1,"s":[1,2,3]}""",
+            new CdcRowMetadata(100, null, Cells(
+                ("s", new CdcCellMetadata(300, null,
+                    ElementExpiries: [null, null, null], ElementWritetimes: [300, 100, 300])))));
+
+        var group = Assert.Single(plan.Groups);
+        Assert.Equal(100, group.WritetimeMicros);
+        Assert.Equal("[2]", group.JsonValues.Single());
+        var add = Assert.Single(plan.Adds);
+        Assert.Equal(300, add.WritetimeMicros);
+        Assert.Null(add.ExpiryEpochSeconds);
+        Assert.Equal("[1,3]", add.JsonValue);
+    }
+
+    [Fact]
+    public void OnlyElementsOlderThanACollectionDeletionAreLiftedAboveIt()
+    {
+        var plan = Plan(
+            """{"pk":"p","ck":1,"m":{"a":1,"b":2,"c":3}}""",
+            new CdcRowMetadata(100, null,
+                Cells(("m", new CdcCellMetadata(300, null,
+                    ElementExpiries: [null, null, 900], ElementWritetimes: [100, 300, 150]))),
+                Deletions: new Dictionary<string, CdcCellDeletion> { ["m"] = new(200, IsComplex: true) }));
+
+        var group = Assert.Single(plan.Groups);
+        Assert.Equal(201, group.WritetimeMicros);
+        Assert.Null(group.ExpiryEpochSeconds);
+        Assert.Equal("""{"a":1}""", group.JsonValues.Single());
+        Assert.Equal(2, plan.Adds.Count);
+        Assert.Contains(plan.Adds, a => a.WritetimeMicros == 201 && a.ExpiryEpochSeconds == 900 && a.JsonValue == """{"c":3}""");
+        Assert.Contains(plan.Adds, a => a.WritetimeMicros == 300 && a.ExpiryEpochSeconds is null && a.JsonValue == """{"b":2}""");
+    }
+
+    [Fact]
+    public void UdtFieldsWithDifferentWritetimesAreWrittenPerField()
+    {
+        var plan = Plan(
+            """{"pk":"p","ck":1,"u":{"street":"s","zip":2,"note":null}}""",
+            new CdcRowMetadata(100, null, Cells(
+                ("u", new CdcCellMetadata(300, null,
+                    FieldExpiries: new Dictionary<string, long?> { ["street"] = null, ["zip"] = null },
+                    FieldWritetimes: new Dictionary<string, long?> { ["street"] = 300, ["zip"] = 150 })))));
+
+        var group = Assert.Single(plan.Groups);
+        Assert.Equal(150, group.WritetimeMicros);
+        Assert.Equal("""{"zip":2,"note":null}""", Assert.Single(group.JsonValues));
+        var field = Assert.Single(plan.FieldWrites);
+        Assert.Equal("street", field.Field);
+        Assert.Equal(300, field.WritetimeMicros);
+        Assert.Equal("\"s\"", field.JsonValue);
     }
 
     [Fact]

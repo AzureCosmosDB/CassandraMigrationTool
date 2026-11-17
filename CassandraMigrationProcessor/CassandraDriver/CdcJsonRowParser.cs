@@ -55,6 +55,8 @@ internal sealed class CdcJsonRowParser
 
     // Per-row scratch state, cleared (not reallocated) for every row.
     private readonly Dictionary<string, long> _colWritetime = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, List<long?>> _colElementWritetimes = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, Dictionary<string, long?>> _colFieldWritetimes = new(StringComparer.Ordinal);
     private readonly Dictionary<string, TtlEntry> _colTtl = new(StringComparer.Ordinal);
     private readonly HashSet<string> _absentCells = new(StringComparer.Ordinal);
     private readonly Dictionary<string, CdcCellDeletion> _colDeletion = new(StringComparer.Ordinal);
@@ -99,6 +101,8 @@ internal sealed class CdcJsonRowParser
         long? latestCellWritetime = null;
         long ttlBase = 0;
         _colWritetime.Clear();
+        _colElementWritetimes.Clear();
+        _colFieldWritetimes.Clear();
         _colTtl.Clear();
         _absentCells.Clear();
         _colDeletion.Clear();
@@ -180,9 +184,9 @@ internal sealed class CdcJsonRowParser
 
             if (reader.ValueTextEquals(SysCellLevelWritetimeUtf8))
             {
-                // {col: micros | [element micros] | {field: micros}}. CQL cannot
-                // set element/field writetimes individually, so each column is
-                // reduced to its newest writetime.
+                // {col: micros | [element micros] | {field: micros}}. Element
+                // and field writetimes are kept so they can be replayed
+                // individually; the column's newest writetime is also kept.
                 reader.Read();
                 if (reader.TokenType == JsonTokenType.StartObject)
                 {
@@ -195,7 +199,7 @@ internal sealed class CdcJsonRowParser
                             _absentCells.Add(col);
                             continue;
                         }
-                        if (ReadLatestWritetime(ref reader) is long cellWritetime)
+                        if (ReadCellWritetimes(ref reader, col) is long cellWritetime)
                             _colWritetime[col] = cellWritetime;
                     }
                 }
@@ -326,6 +330,51 @@ internal sealed class CdcJsonRowParser
 
         throw new JsonException(
             $"Malformed row payload: '{SysCellLevelWritetimeColumn}' did not terminate.");
+    }
+
+    /// <summary>
+    /// Read one <c>__sys_clts</c> column entry, recording element (array) or
+    /// field (object) writetimes, and return the column's newest writetime.
+    /// Unexpected nested shapes fall back to the newest number found.
+    /// </summary>
+    private long? ReadCellWritetimes(ref Utf8JsonReader reader, string col)
+    {
+        if (reader.TokenType is not (JsonTokenType.StartArray or JsonTokenType.StartObject))
+            return ReadLatestWritetime(ref reader);
+
+        var scan = reader;
+        long? latest = ReadLatestWritetime(ref reader);
+
+        if (scan.TokenType == JsonTokenType.StartArray)
+        {
+            var elements = new List<long?>();
+            while (scan.Read() && scan.TokenType != JsonTokenType.EndArray)
+            {
+                if (scan.TokenType == JsonTokenType.Number && scan.TryGetInt64(out long t))
+                    elements.Add(t);
+                else if (scan.TokenType == JsonTokenType.Null)
+                    elements.Add(null);
+                else
+                    return latest;
+            }
+            _colElementWritetimes[col] = elements;
+            return latest;
+        }
+
+        var fields = new Dictionary<string, long?>(StringComparer.Ordinal);
+        while (scan.Read() && scan.TokenType == JsonTokenType.PropertyName)
+        {
+            string field = CqlIdentifier.Unquote(scan.GetString());
+            scan.Read();
+            if (scan.TokenType == JsonTokenType.Number && scan.TryGetInt64(out long t))
+                fields[field] = t;
+            else if (scan.TokenType == JsonTokenType.Null)
+                fields[field] = null;
+            else
+                return latest;
+        }
+        _colFieldWritetimes[col] = fields;
+        return latest;
     }
 
     /// <summary>
@@ -472,16 +521,13 @@ internal sealed class CdcJsonRowParser
         foreach (var col in EnumerateCellColumns())
         {
             long? wt = _colWritetime.TryGetValue(col, out var w) ? w : markerWritetime;
-            CdcCellMetadata cell;
-            if (_colTtl.TryGetValue(col, out var ttl))
-                cell = ResolveCell(ttl, wt, ttlBase, nowEpochSeconds);
-            else
-                cell = new CdcCellMetadata(wt, hasMarker ? markerExpiry : null);
+            var cell = ResolveCell(
+                col, wt, hasMarker ? markerExpiry : null, ttlBase, nowEpochSeconds);
 
             if (hasMarker
                 && cell.WritetimeMicros == markerWritetime
                 && cell.ExpiryEpochSeconds == markerExpiry
-                && !cell.HasHeterogeneousExpiry)
+                && !cell.HasPerElementMetadata)
                 continue;
 
             result ??= new Dictionary<string, CdcCellMetadata>(StringComparer.Ordinal);
@@ -491,31 +537,77 @@ internal sealed class CdcJsonRowParser
         return result;
     }
 
-    private static CdcCellMetadata ResolveCell(
-        TtlEntry ttl, long? wt, long ttlBase, long nowEpochSeconds)
+    /// <summary>
+    /// Resolve one column's writetime and expiry. Collection elements and
+    /// UDT fields are reported individually only when they do not all share
+    /// one writetime and expiry.
+    /// </summary>
+    private CdcCellMetadata ResolveCell(
+        string col, long? wt, long? defaultExpiry, long ttlBase, long nowEpochSeconds)
     {
-        if (ttl.Scalar is TtlPair pair)
+        bool hasTtl = _colTtl.TryGetValue(col, out var ttl);
+        if (hasTtl && ttl.Scalar is TtlPair pair)
             return new CdcCellMetadata(wt, ResolveExpiry(pair, ttlBase, wt, nowEpochSeconds));
 
-        if (ttl.Elements is { } elements)
+        var elementTtls = hasTtl ? ttl.Elements : null;
+        var elementWts = _colElementWritetimes.GetValueOrDefault(col);
+        if (elementTtls is not null || elementWts is not null)
         {
-            var expiries = new long?[elements.Count];
-            for (int i = 0; i < elements.Count; i++)
-                expiries[i] = ResolveExpiry(elements[i], ttlBase, wt, nowEpochSeconds);
-            return Uniform(expiries, out var common)
-                ? new CdcCellMetadata(wt, common)
-                : new CdcCellMetadata(wt, Longest(expiries), ElementExpiries: expiries);
+            int count = elementTtls?.Count ?? elementWts!.Count;
+            if (count == 0)
+                return new CdcCellMetadata(wt, defaultExpiry);
+            if (elementWts is not null && elementWts.Count != count)
+                elementWts = null;
+
+            var writetimes = new long?[count];
+            var expiries = new long?[count];
+            for (int i = 0; i < count; i++)
+            {
+                writetimes[i] = elementWts?[i] ?? wt;
+                expiries[i] = elementTtls is null
+                    ? defaultExpiry
+                    : ResolveExpiry(elementTtls[i], ttlBase, writetimes[i], nowEpochSeconds);
+            }
+            if (Uniform(expiries, out var common) && Uniform(writetimes, out _))
+                return new CdcCellMetadata(wt, common);
+            return new CdcCellMetadata(wt, Longest(expiries),
+                ElementExpiries: expiries, ElementWritetimes: writetimes);
         }
 
+        var fieldTtls = hasTtl ? ttl.Fields : null;
+        var fieldWts = _colFieldWritetimes.GetValueOrDefault(col);
+        if (fieldTtls is null && fieldWts is null)
+            return new CdcCellMetadata(wt, defaultExpiry);
+
+        // Only fields with a live cell are reported.
         var fieldExpiries = new Dictionary<string, long?>(StringComparer.Ordinal);
-        foreach (var (field, fieldPair) in ttl.Fields!)
+        var fieldWritetimes = new Dictionary<string, long?>(StringComparer.Ordinal);
+        if (fieldTtls is not null)
         {
-            if (fieldPair is TtlPair fp)
-                fieldExpiries[field] = ResolveExpiry(fp, ttlBase, wt, nowEpochSeconds);
+            foreach (var (field, fieldPair) in fieldTtls)
+            {
+                if (fieldPair is not TtlPair fp)
+                    continue;
+                long? fieldWt = fieldWts?.GetValueOrDefault(field) ?? wt;
+                fieldWritetimes[field] = fieldWt;
+                fieldExpiries[field] = ResolveExpiry(fp, ttlBase, fieldWt, nowEpochSeconds);
+            }
         }
-        return Uniform(fieldExpiries.Values, out var fieldCommon)
+        else
+        {
+            foreach (var (field, fieldWt) in fieldWts!)
+            {
+                if (fieldWt is null)
+                    continue;
+                fieldWritetimes[field] = fieldWt;
+                fieldExpiries[field] = defaultExpiry;
+            }
+        }
+
+        return Uniform(fieldExpiries.Values, out var fieldCommon) && Uniform(fieldWritetimes.Values, out _)
             ? new CdcCellMetadata(wt, fieldCommon)
-            : new CdcCellMetadata(wt, Longest(fieldExpiries.Values), FieldExpiries: fieldExpiries);
+            : new CdcCellMetadata(wt, Longest(fieldExpiries.Values),
+                FieldExpiries: fieldExpiries, FieldWritetimes: fieldWritetimes);
     }
 
     private static bool Uniform(IEnumerable<long?> values, out long? common)
