@@ -71,9 +71,11 @@ internal sealed class CdcJsonRowParser
     // (__sys_clttl[1]) maps and, when they diverge from the row-level
     // values, exposes them on CdcRowMetadata.PerColumn so the writer can
     // re-apply each cell's own USING TIMESTAMP / USING TTL. When disabled
-    // (the default) the parser behaves exactly as the row-level decoder:
-    // these maps fall through to the __sys_* stripping branch at zero
-    // added cost. The two scratch dictionaries are reused across rows
+    // (the default) the parser reduces each __sys_clts entry to that
+    // column's newest writetime and reports columns whose writetime differs
+    // from the row's, so the writer can replay them at their own timestamp
+    // while every cell keeps the row-level TTL; the TTL detail map is
+    // stripped. The scratch dictionaries are reused across rows
     // (cleared, not reallocated) so a page of divergent rows does not
     // allocate a fresh map per row.
     private readonly bool _preserveCellLevel;
@@ -85,15 +87,12 @@ internal sealed class CdcJsonRowParser
         _writer = new Utf8JsonWriter(_buffer,
             new JsonWriterOptions { SkipValidation = true });
         _preserveCellLevel = preserveCellLevel;
-        _colWritetime = preserveCellLevel
-            ? new Dictionary<string, long>(StringComparer.Ordinal)
-            : EmptyWritetime;
+        _colWritetime = new Dictionary<string, long>(StringComparer.Ordinal);
         _colExpiry = preserveCellLevel
             ? new Dictionary<string, long?>(StringComparer.Ordinal)
             : EmptyExpiry;
     }
 
-    private static readonly Dictionary<string, long> EmptyWritetime = new();
     private static readonly Dictionary<string, long?> EmptyExpiry = new();
 
     /// <summary>
@@ -120,13 +119,12 @@ internal sealed class CdcJsonRowParser
         int len = Encoding.UTF8.GetBytes(jsonRow, _utf8);
 
         long? writetime = null;
+        long? latestCellWritetime = null;
         long? rowTtlDurationSeconds = null;
         long? cellBaseExpiryEpochSeconds = null;
+        _colWritetime.Clear();
         if (_preserveCellLevel)
-        {
-            _colWritetime.Clear();
             _colExpiry.Clear();
-        }
 
         _buffer.Clear();
         _writer.Reset(_buffer);
@@ -238,14 +236,38 @@ internal sealed class CdcJsonRowParser
                 continue;
             }
 
-            if (_preserveCellLevel && reader.ValueTextEquals(SysCellLevelWritetimeUtf8))
+            if (reader.ValueTextEquals(SysCellLevelWritetimeUtf8))
             {
+                reader.Read();
+                if (!_preserveCellLevel)
+                {
+                    // Row-level mode keeps one writetime per column (the newest
+                    // element for collections) so cells changed by an UPDATE
+                    // can be replayed at their own timestamp. Stay tolerant of
+                    // any shape here, as this column was previously stripped
+                    // without inspection.
+                    if (reader.TokenType == JsonTokenType.StartObject)
+                    {
+                        while (reader.Read() && reader.TokenType == JsonTokenType.PropertyName)
+                        {
+                            string col = CqlIdentifier.Unquote(reader.GetString());
+                            reader.Read();
+                            if (ReadLatestWritetime(ref reader) is long cellWritetime)
+                                _colWritetime[col] = cellWritetime;
+                        }
+                    }
+                    else
+                    {
+                        latestCellWritetime = Max(latestCellWritetime, ReadLatestWritetime(ref reader));
+                    }
+                    continue;
+                }
+
                 // __sys_clts shape: {col: <writetime-micros> | [per-element…]}.
                 // Scalar (and frozen) columns carry a single writetime number;
                 // non-frozen collections carry a per-element array. CQL can
                 // replay the collection as one value only when every element
                 // has the same writetime.
-                reader.Read();
                 if (reader.TokenType == JsonTokenType.StartObject)
                 {
                     while (reader.Read() && reader.TokenType != JsonTokenType.EndObject)
@@ -315,14 +337,48 @@ internal sealed class CdcJsonRowParser
         long? effectiveExpiryEpochSeconds = _preserveCellLevel
             ? rowMarkerExpiryEpochSeconds
             : cellBaseExpiryEpochSeconds;
+        foreach (var cellWritetime in _colWritetime.Values)
+            latestCellWritetime = Max(latestCellWritetime, cellWritetime);
         var perColumn = _preserveCellLevel
             ? BuildPerColumnDivergence(
                 writetime,
                 rowMarkerExpiryEpochSeconds,
                 cellBaseExpiryEpochSeconds)
-            : null;
+            : BuildRowLevelWritetimeDivergence(
+                writetime ?? latestCellWritetime,
+                cellBaseExpiryEpochSeconds);
         return (cleaned, new CdcRowMetadata(
-            writetime, effectiveExpiryEpochSeconds, perColumn));
+            writetime, effectiveExpiryEpochSeconds, perColumn, latestCellWritetime));
+    }
+
+    private static long? Max(long? a, long? b) =>
+        a is long x && b is long y ? Math.Max(x, y) : a ?? b;
+
+    /// <summary>
+    /// Return the largest integer anywhere in the value the reader is
+    /// positioned on (a writetime, or a map/array of them), leaving the
+    /// reader on that value's last token. Non-numeric tokens are ignored.
+    /// </summary>
+    private static long? ReadLatestWritetime(ref Utf8JsonReader reader)
+    {
+        if (reader.TokenType == JsonTokenType.Number)
+            return reader.TryGetInt64(out long single) ? single : null;
+        if (reader.TokenType is not (JsonTokenType.StartObject or JsonTokenType.StartArray))
+            return null;
+
+        long? latest = null;
+        int depth = reader.CurrentDepth;
+        while (reader.Read())
+        {
+            if (reader.CurrentDepth == depth
+                && reader.TokenType is JsonTokenType.EndObject or JsonTokenType.EndArray)
+                return latest;
+            if (reader.TokenType == JsonTokenType.Number && reader.TryGetInt64(out long value))
+                latest = Max(latest, value);
+        }
+
+        throw new JsonException(
+            $"Malformed row payload: '{SysCellLevelWritetimeColumn}' did not terminate.");
     }
 
     /// <summary>
@@ -549,6 +605,28 @@ internal sealed class CdcJsonRowParser
             }
         }
 
+        return diverged;
+    }
+
+    /// <summary>
+    /// Row-level counterpart of <see cref="BuildPerColumnDivergence"/>:
+    /// returns the columns whose writetime differs from
+    /// <paramref name="baselineWritetime"/>, each carrying the row-level
+    /// expiry so TTL semantics stay identical to a single whole-row INSERT.
+    /// <c>null</c> when every cell matches, keeping the single-statement path.
+    /// </summary>
+    private Dictionary<string, CdcCellMetadata>? BuildRowLevelWritetimeDivergence(
+        long? baselineWritetime,
+        long? rowExpiry)
+    {
+        Dictionary<string, CdcCellMetadata>? diverged = null;
+        foreach (var (col, cellWt) in _colWritetime)
+        {
+            if (cellWt == baselineWritetime)
+                continue;
+            diverged ??= new Dictionary<string, CdcCellMetadata>(StringComparer.Ordinal);
+            diverged[col] = new CdcCellMetadata(cellWt, rowExpiry);
+        }
         return diverged;
     }
 
