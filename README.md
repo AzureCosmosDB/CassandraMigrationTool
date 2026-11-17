@@ -97,6 +97,9 @@ CassandraMigrationTool/
 > - Non-frozen **list** values are rewritten at a fresh, monotonically increasing timestamp (element TTLs are preserved). Cassandra stores list element positions in the cell timestamp, so the source list writetime cannot be reproduced without risking duplicated elements on replay.
 > - Partitions that contain only static columns (no clustering rows) are copied as static-only writes; no empty clustering row is created on the target.
 > - TTLs are capped at Cassandra's 20-year maximum. On targets older than Cassandra 5.0, expiries are also clamped to before 2038-01-19 (the legacy expiry limit) and a warning is logged once per table.
+> - Cell, collection and element deletions recorded by the source are applied at the source deletion timestamp, so values removed after they were first copied are also removed on the target. A non-frozen set, map or UDT that had elements/fields removed is rewritten just above the newest removal timestamp.
+> - Azure Cosmos DB for Apache Cassandra sources do not emit change-feed events for updates that modify **only static columns**. Such updates are picked up in online mode only when a row in the same partition is changed afterwards.
+> - Azure Cosmos DB for Apache Cassandra returns an empty value (`[]`/`{}`) for a frozen collection that was never written. Such columns are copied as `null` (no cell), matching Cassandra semantics and avoiding rows that would otherwise outlive their TTL; explicitly written empty frozen collections are copied as empty.
 
 ## Migration Modes
 

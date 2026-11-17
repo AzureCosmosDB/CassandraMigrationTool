@@ -29,6 +29,10 @@ namespace CassandraMigrationProcessor.CassandraDriver;
 ///         <c>[duration, offset]</c> pair in <c>detail</c> (mirroring the
 ///         <c>__sys_clts</c> shape) expires at <c>base + offset</c> when
 ///         <c>duration &gt; 0</c>. A zero duration means "no TTL".</item>
+///   <item><c>__sys_clts_tmbstn</c> — per-column deletion timestamps: a
+///         number for simple and frozen columns, and
+///         <c>[collectionDeletion, {element: micros}]</c> for non-frozen
+///         collections.</item>
 /// </list>
 /// </remarks>
 /// <param name="WritetimeMicros">Row-marker writetime, or <c>null</c> when the
@@ -39,11 +43,14 @@ namespace CassandraMigrationProcessor.CassandraDriver;
 /// marker, or whose elements/fields carry differing expiries. Every live
 /// column is listed when the row has no marker.</param>
 /// <param name="LatestCellWritetimeMicros">Newest cell writetime in the row.</param>
+/// <param name="Deletions">Newest source deletion per column, decoded from
+/// <c>__sys_clts_tmbstn</c>; <c>null</c> when no column carries one.</param>
 internal sealed record CdcRowMetadata(
     long? WritetimeMicros,
     long? ExpiryEpochSeconds,
     IReadOnlyDictionary<string, CdcCellMetadata>? PerColumn = null,
-    long? LatestCellWritetimeMicros = null)
+    long? LatestCellWritetimeMicros = null,
+    IReadOnlyDictionary<string, CdcCellDeletion>? Deletions = null)
 {
     /// <summary>
     /// Newest of the marker writetime and every cell writetime; <c>null</c>
@@ -104,4 +111,22 @@ internal readonly record struct CdcCellMetadata(
 {
     public bool HasHeterogeneousExpiry =>
         ElementExpiries is not null || FieldExpiries is not null;
+}
+
+/// <summary>
+/// Newest deletion recorded by the source for one column.
+/// </summary>
+/// <param name="DeletedAtMicros">Deletion timestamp; for multi-cell columns
+/// the newest of the collection deletion and every element/field deletion.</param>
+/// <param name="IsComplex">True for a non-frozen collection or UDT, whose
+/// deletions cover individual elements/fields rather than a single cell.</param>
+internal readonly record struct CdcCellDeletion(long DeletedAtMicros, bool IsComplex)
+{
+    /// <summary>
+    /// Smallest write timestamp whose implicit overwrite covers this
+    /// deletion: a simple cell is deleted by a tombstone at the same
+    /// timestamp, while assigning a multi-cell column deletes its previous
+    /// contents at <c>timestamp - 1</c>.
+    /// </summary>
+    public long CoveringWriteMicros => IsComplex ? DeletedAtMicros + 1 : DeletedAtMicros;
 }

@@ -258,6 +258,54 @@ public sealed class CdcJsonRowParserTests
 
         Assert.Throws<JsonException>(() => CdcJsonRowParser.ParseOnce(json));
     }
+
+    // Captured for CREATE TABLE f (id text PRIMARY KEY, fl frozen<list<int>>,
+    //   fm frozen<map<text,text>>, l list<text>, v text).
+    [Fact]
+    public void Parse_FrozenCollectionWithoutCellIsNullNotEmpty()
+    {
+        const string json = """{"id": "nomarker", "fl": [], "fm": {}, "l": ["t"], "v": null, "__sys_clts": {"fl": null, "fm": null, "l": [1794902238466226], "v": null}, "__sys_rw_ts": null, "__sys_clts_tmbstn": null, "__sys_rw_tmbstn": null, "__sys_clttl": [1794905238, {"fl": null, "fm": null, "l": [[3000, 0]], "v": null}], "__sys_rw_ttl": null, "__sys_clts_listorder": {"l": ["0x0111f1e25c82da73469e652b80cacab028"]}}""";
+
+        var (cleaned, _) = CdcJsonRowParser.ParseOnce(json);
+
+        using var doc = JsonDocument.Parse(cleaned);
+        Assert.Equal(JsonValueKind.Null, doc.RootElement.GetProperty("fl").ValueKind);
+        Assert.Equal(JsonValueKind.Null, doc.RootElement.GetProperty("fm").ValueKind);
+        Assert.Equal("[\"t\"]", doc.RootElement.GetProperty("l").GetRawText());
+        Assert.Equal("\"nomarker\"", doc.RootElement.GetProperty("id").GetRawText());
+    }
+
+    [Fact]
+    public void Parse_ExplicitlyEmptyFrozenCollectionIsKept()
+    {
+        const string json = """{"id": "empty", "fl": [], "fm": {}, "l": null, "v": "x", "__sys_clts": {"fl": 1794902238251749, "fm": 1794902238251749, "l": null, "v": 1794902238251749}, "__sys_rw_ts": 1794902238251749, "__sys_clts_tmbstn": null, "__sys_rw_tmbstn": null, "__sys_clttl": [0, {"fl": [0, 0], "fm": [0, 0], "l": null, "v": [0, 0]}], "__sys_rw_ttl": [0, 0], "__sys_clts_listorder": null}""";
+
+        var (cleaned, _) = CdcJsonRowParser.ParseOnce(json);
+
+        using var doc = JsonDocument.Parse(cleaned);
+        Assert.Equal("[]", doc.RootElement.GetProperty("fl").GetRawText());
+        Assert.Equal("{}", doc.RootElement.GetProperty("fm").GetRawText());
+    }
+
+    // Captured for CREATE TABLE d (id text PRIMARY KEY, a text, b text,
+    //   s set<int>, m map<text,int>, fl frozen<list<int>>, u frozen<list<int>>)
+    // after: INSERT all; SET b = null; s = s - {2}, m = m - {'y'}; DELETE fl.
+    [Fact]
+    public void Parse_DeletionsReportNewestTombstonePerColumn()
+    {
+        const string json = """{"id": "r1", "a": "a", "b": null, "s": [1], "m": {"x": 1}, "fl": [], "u": [], "__sys_clts": {"a": 1794902680767536, "b": null, "s": [1794902680767536], "m": [1794902680767536], "fl": null, "u": null}, "__sys_rw_ts": 1794902680767536, "__sys_clts_tmbstn": {"a": null, "b": 1794902680992867, "s": [1794902680767535, {"2": 1794902681088410}], "m": [1794902680767535, {"y": 1794902681088410}], "fl": 1794902681190639, "u": null}, "__sys_rw_tmbstn": null, "__sys_clttl": [0, {"a": [0, 0], "b": null, "s": [[0, 0]], "m": [[0, 0]], "fl": null, "u": null}], "__sys_rw_ttl": [0, 0]}""";
+
+        var (cleaned, metadata) = CdcJsonRowParser.ParseOnce(json);
+
+        var deletions = Assert.IsAssignableFrom<IReadOnlyDictionary<string, CdcCellDeletion>>(metadata.Deletions);
+        Assert.Equal(new CdcCellDeletion(1794902680992867, false), deletions["b"]);
+        Assert.Equal(new CdcCellDeletion(1794902681088410, true), deletions["s"]);
+        Assert.Equal(new CdcCellDeletion(1794902681088410, true), deletions["m"]);
+        Assert.Equal(new CdcCellDeletion(1794902681190639, false), deletions["fl"]);
+        Assert.False(deletions.ContainsKey("a"));
+        Assert.False(deletions.ContainsKey("u"));
+        Assert.DoesNotContain("__sys_", cleaned, StringComparison.Ordinal);
+    }
 }
 
 public sealed class RegularRowWriteStrategyTests
@@ -388,7 +436,6 @@ public sealed class RegularRowWriteStrategyTests
         Assert.False(plan.UseFullInsert);
         var list = Assert.Single(plan.Lists);
         Assert.Equal("l", list.Column.Name);
-        Assert.Equal(150, list.SourceWritetimeMicros);
         Assert.Equal(
             [new(null, "[1,2]"), new(900, "[3]"), new(null, "[4]")],
             list.Runs);
@@ -479,6 +526,51 @@ public sealed class RegularRowWriteStrategyTests
     }
 
     [Fact]
+    public void DeletedCellsAreWrittenAtTheSourceDeletionTimestamp()
+    {
+        var plan = Plan(
+            """{"pk":"p","ck":1,"v":null,"w":null,"fl":null,"s":null}""",
+            new CdcRowMetadata(100, null, Deletions: new Dictionary<string, CdcCellDeletion>
+            {
+                ["v"] = new(300, IsComplex: false),
+                ["w"] = new(50, IsComplex: false),
+                ["s"] = new(400, IsComplex: true),
+            }));
+
+        using var baseline = JsonDocument.Parse(plan.BaselineJson!);
+        Assert.False(baseline.RootElement.TryGetProperty("v", out _));
+        Assert.False(baseline.RootElement.TryGetProperty("s", out _));
+        Assert.Equal(JsonValueKind.Null, baseline.RootElement.GetProperty("w").ValueKind);
+        Assert.Equal(JsonValueKind.Null, baseline.RootElement.GetProperty("fl").ValueKind);
+        Assert.Contains(plan.Groups, g =>
+            g.Columns.Single().Name == "v" && g.WritetimeMicros == 300 && g.JsonValues.Single() == "null");
+        Assert.Contains(plan.Groups, g =>
+            g.Columns.Single().Name == "s" && g.WritetimeMicros == 401 && g.JsonValues.Single() == "null");
+    }
+
+    [Fact]
+    public void CollectionIsRewrittenAboveItsNewestElementDeletion()
+    {
+        var plan = Plan(
+            """{"pk":"p","ck":1,"v":"a","s":[1],"m":{"x":1}}""",
+            new CdcRowMetadata(100, null, Deletions: new Dictionary<string, CdcCellDeletion>
+            {
+                ["v"] = new(90, IsComplex: false),
+                ["s"] = new(500, IsComplex: true),
+                ["m"] = new(99, IsComplex: true),
+            }));
+
+        using var baseline = JsonDocument.Parse(plan.BaselineJson!);
+        Assert.Equal("\"a\"", baseline.RootElement.GetProperty("v").GetRawText());
+        Assert.Equal("{\"x\":1}", baseline.RootElement.GetProperty("m").GetRawText());
+        Assert.False(baseline.RootElement.TryGetProperty("s", out _));
+        var group = Assert.Single(plan.Groups);
+        Assert.Equal("s", group.Columns.Single().Name);
+        Assert.Equal(501, group.WritetimeMicros);
+        Assert.Equal("[1]", group.JsonValues.Single());
+    }
+
+    [Fact]
     public void UnknownColumnIsRejected()
     {
         Assert.Throws<JsonException>(() =>
@@ -514,14 +606,14 @@ public sealed class RegularRowWriteStrategyTests
     }
 
     [Fact]
-    public void MonotonicTimestampNeverRepeatsAndHonoursFloor()
+    public void MonotonicTimestampNeverRepeatsAndIsNotBehindWallClock()
     {
-        long floor = MonotonicTimestamp.NowMicros() + 10_000_000;
+        long before = MonotonicTimestamp.NowMicros();
 
-        long first = MonotonicTimestamp.Reserve(floor, 3);
-        long next = MonotonicTimestamp.Reserve(0, 1);
+        long first = MonotonicTimestamp.Reserve(3);
+        long next = MonotonicTimestamp.Reserve(1);
 
-        Assert.True(first >= floor);
+        Assert.True(first >= before);
         Assert.True(next > first + 2);
     }
 }

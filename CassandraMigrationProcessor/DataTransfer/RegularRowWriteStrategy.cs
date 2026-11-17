@@ -295,8 +295,7 @@ internal sealed class RegularRowWriteStrategy : IRowWriteStrategy
         IReadOnlyList<string> keys,
         CancellationToken cancellationToken)
     {
-        long start = MonotonicTimestamp.Reserve(
-            list.SourceWritetimeMicros, Math.Max(1, list.Runs.Count));
+        long start = MonotonicTimestamp.Reserve(Math.Max(1, list.Runs.Count));
         long nowEpochSeconds = NowEpochSeconds();
 
         if (list.Runs.Count == 0)
@@ -368,7 +367,7 @@ internal sealed class RegularRowWriteStrategy : IRowWriteStrategy
 
     /// <summary>A list rewrite; no runs means "set the list to null".</summary>
     internal sealed record ListWrite(
-        CassandraColumn Column, long SourceWritetimeMicros, IReadOnlyList<ListRun> Runs);
+        CassandraColumn Column, IReadOnlyList<ListRun> Runs);
 
     internal sealed record RowWritePlan(
         bool UseFullInsert,
@@ -490,11 +489,24 @@ internal sealed class RegularRowWriteStrategy : IRowWriteStrategy
             // written at a fresh timestamp no source-writetime tombstone wins.
             if (IsNonFrozenList(column) && (!isNull || isReplay))
             {
-                lists.Add(new ListWrite(column, wt, isNull ? [] : BuildListRuns(value, cell)));
+                lists.Add(new ListWrite(column, isNull ? [] : BuildListRuns(value, cell)));
                 continue;
             }
 
-            if (writeBaseline && !hasCell)
+            // Write high enough to also cover the column's newest source
+            // deletion, so a value, element or field deleted after it was
+            // copied is removed on the destination too. A live simple cell is
+            // always newer than its own deletion and keeps its writetime; a
+            // multi-cell column is rewritten just above the deletion.
+            if (metadata.Deletions is { } deletions
+                && deletions.TryGetValue(column.Name, out var deletion)
+                && (isNull || deletion.IsComplex)
+                && deletion.CoveringWriteMicros > wt)
+            {
+                wt = deletion.CoveringWriteMicros;
+            }
+
+            if (writeBaseline && !hasCell && wt == rowWritetime)
             {
                 baselineProps.Add(prop);
                 continue;
@@ -840,8 +852,10 @@ internal sealed class RegularRowWriteStrategy : IRowWriteStrategy
 
 /// <summary>
 /// Process-wide strictly increasing microsecond timestamps that are never
-/// behind wall-clock time or a supplied floor. Used for writes that must
-/// supersede every earlier attempt of the same write.
+/// behind wall-clock time. Used for writes that must supersede every earlier
+/// attempt of the same write. Source writetimes are deliberately not used as
+/// a floor: one future-skewed source cell would otherwise push every later
+/// reservation in the process into the future.
 /// </summary>
 internal static class MonotonicTimestamp
 {
@@ -853,15 +867,15 @@ internal static class MonotonicTimestamp
     /// <summary>
     /// Reserve <paramref name="count"/> consecutive timestamps and return the
     /// first, which is greater than every previously reserved timestamp and
-    /// at least max(now, <paramref name="floorMicros"/>).
+    /// not behind wall-clock time.
     /// </summary>
-    public static long Reserve(long floorMicros, int count)
+    public static long Reserve(int count)
     {
         if (count < 1) throw new ArgumentOutOfRangeException(nameof(count));
         while (true)
         {
             long last = Interlocked.Read(ref _last);
-            long start = Math.Max(Math.Max(NowMicros(), floorMicros), last + 1);
+            long start = Math.Max(NowMicros(), last + 1);
             if (Interlocked.CompareExchange(ref _last, start + count - 1, last) == last)
                 return start;
         }

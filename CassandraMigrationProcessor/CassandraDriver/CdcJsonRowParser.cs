@@ -33,6 +33,7 @@ internal sealed class CdcJsonRowParser
     internal const string SysRwTtlColumn = "__sys_rw_ttl";
     internal const string SysCellLevelTtlColumn = "__sys_clttl";
     internal const string SysCellLevelWritetimeColumn = "__sys_clts";
+    internal const string SysCellTombstoneColumn = "__sys_clts_tmbstn";
 
     private static readonly byte[] SysRwTimestampUtf8 =
         Encoding.UTF8.GetBytes(SysRwTimestampColumn);
@@ -42,6 +43,8 @@ internal sealed class CdcJsonRowParser
         Encoding.UTF8.GetBytes(SysCellLevelTtlColumn);
     private static readonly byte[] SysCellLevelWritetimeUtf8 =
         Encoding.UTF8.GetBytes(SysCellLevelWritetimeColumn);
+    private static readonly byte[] SysCellTombstoneUtf8 =
+        Encoding.UTF8.GetBytes(SysCellTombstoneColumn);
     private static ReadOnlySpan<byte> SysColumnPrefixUtf8 => "__sys_"u8;
 
     private readonly ArrayBufferWriter<byte> _buffer = new(initialCapacity: 4096);
@@ -53,6 +56,11 @@ internal sealed class CdcJsonRowParser
     // Per-row scratch state, cleared (not reallocated) for every row.
     private readonly Dictionary<string, long> _colWritetime = new(StringComparer.Ordinal);
     private readonly Dictionary<string, TtlEntry> _colTtl = new(StringComparer.Ordinal);
+    private readonly HashSet<string> _absentCells = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, CdcCellDeletion> _colDeletion = new(StringComparer.Ordinal);
+    private readonly List<string> _containerColumns = new();
+    private ArrayBufferWriter<byte>? _rewriteBuffer;
+    private Utf8JsonWriter? _rewriteWriter;
 
     /// <summary><c>[duration, offset]</c> as reported by the source.</summary>
     private readonly record struct TtlPair(long Duration, long Offset);
@@ -92,6 +100,9 @@ internal sealed class CdcJsonRowParser
         long ttlBase = 0;
         _colWritetime.Clear();
         _colTtl.Clear();
+        _absentCells.Clear();
+        _colDeletion.Clear();
+        _containerColumns.Clear();
 
         _buffer.Clear();
         _writer.Reset(_buffer);
@@ -179,6 +190,11 @@ internal sealed class CdcJsonRowParser
                     {
                         string col = CqlIdentifier.Unquote(reader.GetString());
                         reader.Read();
+                        if (reader.TokenType == JsonTokenType.Null)
+                        {
+                            _absentCells.Add(col);
+                            continue;
+                        }
                         if (ReadLatestWritetime(ref reader) is long cellWritetime)
                             _colWritetime[col] = cellWritetime;
                     }
@@ -186,6 +202,31 @@ internal sealed class CdcJsonRowParser
                 else
                 {
                     latestCellWritetime = Max(latestCellWritetime, ReadLatestWritetime(ref reader));
+                }
+                continue;
+            }
+
+            if (reader.ValueTextEquals(SysCellTombstoneUtf8))
+            {
+                // {col: micros | [complexDeletion, {element: micros}] | {field: micros}}.
+                // Only the newest deletion per column is needed: the writer
+                // covers it by writing at (or just above) that timestamp.
+                reader.Read();
+                if (reader.TokenType == JsonTokenType.StartObject)
+                {
+                    while (reader.Read() && reader.TokenType == JsonTokenType.PropertyName)
+                    {
+                        string col = CqlIdentifier.Unquote(reader.GetString());
+                        reader.Read();
+                        bool isComplex = reader.TokenType
+                            is JsonTokenType.StartArray or JsonTokenType.StartObject;
+                        if (ReadLatestWritetime(ref reader) is long deletedAt)
+                            _colDeletion[col] = new CdcCellDeletion(deletedAt, isComplex);
+                    }
+                }
+                else
+                {
+                    reader.Skip();
                 }
                 continue;
             }
@@ -202,8 +243,11 @@ internal sealed class CdcJsonRowParser
                 continue;
             }
 
+            var nameReader = reader;
             WritePropertyName(ref reader, _writer);
             reader.Read();
+            if (reader.TokenType is JsonTokenType.StartArray or JsonTokenType.StartObject)
+                _containerColumns.Add(CqlIdentifier.Unquote(nameReader.GetString()));
             CopyValue(ref reader, _writer);
         }
 
@@ -215,7 +259,9 @@ internal sealed class CdcJsonRowParser
         if (reader.Read())
             throw new JsonException("Unexpected trailing content after row object.");
 
-        var cleaned = Encoding.UTF8.GetString(_buffer.WrittenSpan);
+        var cleaned = NeedsAbsentCellRewrite()
+            ? RewriteAbsentCellsAsNull(_buffer.WrittenSpan)
+            : Encoding.UTF8.GetString(_buffer.WrittenSpan);
 
         foreach (var cellWritetime in _colWritetime.Values)
             latestCellWritetime = Max(latestCellWritetime, cellWritetime);
@@ -228,7 +274,10 @@ internal sealed class CdcJsonRowParser
         var perColumn = BuildPerColumn(
             markerWritetime, markerExpiry, ttlBase, nowEpochSeconds);
         return (cleaned, new CdcRowMetadata(
-            markerWritetime, markerExpiry, perColumn, latestCellWritetime));
+            markerWritetime, markerExpiry, perColumn, latestCellWritetime,
+            _colDeletion.Count == 0
+                ? null
+                : new Dictionary<string, CdcCellDeletion>(_colDeletion, StringComparer.Ordinal)));
     }
 
     private static long? Max(long? a, long? b) =>
@@ -512,6 +561,58 @@ internal sealed class CdcJsonRowParser
         }
     }
 
+
+    /// <summary>
+    /// The source renders a column without a live cell as an empty
+    /// collection (<c>[]</c>/<c>{}</c>) for frozen collections, but reports
+    /// its <c>__sys_clts</c> entry as <c>null</c>. Writing that rendering
+    /// back would create a live, non-null empty value on the destination
+    /// (keeping an otherwise-expired row alive), so such columns are nulled.
+    /// </summary>
+    private bool NeedsAbsentCellRewrite()
+    {
+        if (_absentCells.Count == 0)
+            return false;
+        foreach (var col in _containerColumns)
+        {
+            if (_absentCells.Contains(col))
+                return true;
+        }
+        return false;
+    }
+
+    private string RewriteAbsentCellsAsNull(ReadOnlySpan<byte> json)
+    {
+        _rewriteBuffer ??= new ArrayBufferWriter<byte>(json.Length);
+        _rewriteBuffer.Clear();
+        if (_rewriteWriter is null)
+            _rewriteWriter = new Utf8JsonWriter(_rewriteBuffer,
+                new JsonWriterOptions { SkipValidation = true });
+        else
+            _rewriteWriter.Reset(_rewriteBuffer);
+
+        var reader = new Utf8JsonReader(json);
+        reader.Read();
+        _rewriteWriter.WriteStartObject();
+        while (reader.Read() && reader.TokenType == JsonTokenType.PropertyName)
+        {
+            bool absent = _absentCells.Contains(CqlIdentifier.Unquote(reader.GetString()));
+            WritePropertyName(ref reader, _rewriteWriter);
+            reader.Read();
+            if (absent)
+            {
+                reader.Skip();
+                _rewriteWriter.WriteNullValue();
+            }
+            else
+            {
+                CopyValue(ref reader, _rewriteWriter);
+            }
+        }
+        _rewriteWriter.WriteEndObject();
+        _rewriteWriter.Flush();
+        return Encoding.UTF8.GetString(_rewriteBuffer.WrittenSpan);
+    }
 
     /// <summary>
     /// Write the property name the reader is currently positioned on. In the
