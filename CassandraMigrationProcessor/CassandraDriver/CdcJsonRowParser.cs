@@ -71,10 +71,11 @@ internal sealed class CdcJsonRowParser
     // (__sys_clttl[1]) maps and, when they diverge from the row-level
     // values, exposes them on CdcRowMetadata.PerColumn so the writer can
     // re-apply each cell's own USING TIMESTAMP / USING TTL. When disabled
-    // (the default) the parser only reduces __sys_clts to its newest
-    // writetime (so the whole-row INSERT supersedes earlier copies of an
-    // updated row) and strips the TTL detail map. The two
-    // scratch dictionaries are reused across rows
+    // (the default) the parser reduces each __sys_clts entry to that
+    // column's newest writetime and reports columns whose writetime differs
+    // from the row's, so the writer can replay them at their own timestamp
+    // while every cell keeps the row-level TTL; the TTL detail map is
+    // stripped. The scratch dictionaries are reused across rows
     // (cleared, not reallocated) so a page of divergent rows does not
     // allocate a fresh map per row.
     private readonly bool _preserveCellLevel;
@@ -86,15 +87,12 @@ internal sealed class CdcJsonRowParser
         _writer = new Utf8JsonWriter(_buffer,
             new JsonWriterOptions { SkipValidation = true });
         _preserveCellLevel = preserveCellLevel;
-        _colWritetime = preserveCellLevel
-            ? new Dictionary<string, long>(StringComparer.Ordinal)
-            : EmptyWritetime;
+        _colWritetime = new Dictionary<string, long>(StringComparer.Ordinal);
         _colExpiry = preserveCellLevel
             ? new Dictionary<string, long?>(StringComparer.Ordinal)
             : EmptyExpiry;
     }
 
-    private static readonly Dictionary<string, long> EmptyWritetime = new();
     private static readonly Dictionary<string, long?> EmptyExpiry = new();
 
     /// <summary>
@@ -124,11 +122,9 @@ internal sealed class CdcJsonRowParser
         long? latestCellWritetime = null;
         long? rowTtlDurationSeconds = null;
         long? cellBaseExpiryEpochSeconds = null;
+        _colWritetime.Clear();
         if (_preserveCellLevel)
-        {
-            _colWritetime.Clear();
             _colExpiry.Clear();
-        }
 
         _buffer.Clear();
         _writer.Reset(_buffer);
@@ -245,12 +241,25 @@ internal sealed class CdcJsonRowParser
                 reader.Read();
                 if (!_preserveCellLevel)
                 {
-                    // Row-level mode only needs the newest cell writetime so
-                    // the whole-row INSERT supersedes earlier copies of the
-                    // row (see CdcRowMetadata.RowWriteTimestampMicros). Stay
-                    // tolerant of any shape here, as this column was
-                    // previously stripped without inspection.
-                    latestCellWritetime = Max(latestCellWritetime, ReadLatestWritetime(ref reader));
+                    // Row-level mode keeps one writetime per column (the newest
+                    // element for collections) so cells changed by an UPDATE
+                    // can be replayed at their own timestamp. Stay tolerant of
+                    // any shape here, as this column was previously stripped
+                    // without inspection.
+                    if (reader.TokenType == JsonTokenType.StartObject)
+                    {
+                        while (reader.Read() && reader.TokenType == JsonTokenType.PropertyName)
+                        {
+                            string col = CqlIdentifier.Unquote(reader.GetString());
+                            reader.Read();
+                            if (ReadLatestWritetime(ref reader) is long cellWritetime)
+                                _colWritetime[col] = cellWritetime;
+                        }
+                    }
+                    else
+                    {
+                        latestCellWritetime = Max(latestCellWritetime, ReadLatestWritetime(ref reader));
+                    }
                     continue;
                 }
 
@@ -324,17 +333,16 @@ internal sealed class CdcJsonRowParser
         long? effectiveExpiryEpochSeconds = _preserveCellLevel
             ? rowMarkerExpiryEpochSeconds
             : cellBaseExpiryEpochSeconds;
+        foreach (var cellWritetime in _colWritetime.Values)
+            latestCellWritetime = Max(latestCellWritetime, cellWritetime);
         var perColumn = _preserveCellLevel
             ? BuildPerColumnDivergence(
                 writetime,
                 rowMarkerExpiryEpochSeconds,
                 cellBaseExpiryEpochSeconds)
-            : null;
-        if (_preserveCellLevel)
-        {
-            foreach (var cellWritetime in _colWritetime.Values)
-                latestCellWritetime = Max(latestCellWritetime, cellWritetime);
-        }
+            : BuildRowLevelWritetimeDivergence(
+                writetime ?? latestCellWritetime,
+                cellBaseExpiryEpochSeconds);
         return (cleaned, new CdcRowMetadata(
             writetime, effectiveExpiryEpochSeconds, perColumn, latestCellWritetime));
     }
@@ -590,6 +598,28 @@ internal sealed class CdcJsonRowParser
             }
         }
 
+        return diverged;
+    }
+
+    /// <summary>
+    /// Row-level counterpart of <see cref="BuildPerColumnDivergence"/>:
+    /// returns the columns whose writetime differs from
+    /// <paramref name="baselineWritetime"/>, each carrying the row-level
+    /// expiry so TTL semantics stay identical to a single whole-row INSERT.
+    /// <c>null</c> when every cell matches, keeping the single-statement path.
+    /// </summary>
+    private Dictionary<string, CdcCellMetadata>? BuildRowLevelWritetimeDivergence(
+        long? baselineWritetime,
+        long? rowExpiry)
+    {
+        Dictionary<string, CdcCellMetadata>? diverged = null;
+        foreach (var (col, cellWt) in _colWritetime)
+        {
+            if (cellWt == baselineWritetime)
+                continue;
+            diverged ??= new Dictionary<string, CdcCellMetadata>(StringComparer.Ordinal);
+            diverged[col] = new CdcCellMetadata(cellWt, rowExpiry);
+        }
         return diverged;
     }
 

@@ -26,9 +26,9 @@ namespace CassandraMigrationProcessor.CassandraDriver;
 /// <list type="bullet">
 ///   <item><c>__sys_rw_ts</c> — row-liveness marker writetime,
 ///         microseconds since Unix epoch. An UPDATE does not advance it,
-///         so the whole-row INSERT uses the newest of this and the
-///         <c>__sys_clts</c> cell writetimes
-///         (<see cref="RowWriteTimestampMicros"/>).</item>
+///         so cells whose <c>__sys_clts</c> writetime differs are
+///         replayed separately at their own timestamp
+///         (<see cref="PerColumn"/>).</item>
 ///   <item><c>__sys_clts</c> — per-cell writetime map
 ///         <c>{col: micros | [per-element micros]}</c>.</item>
 ///   <item><c>__sys_rw_ttl[0]</c> identifies whether the row-liveness
@@ -55,13 +55,11 @@ internal sealed record CdcRowMetadata(
     /// <summary>
     /// Timestamp for a single-statement whole-row write: the newest of the
     /// row-marker writetime (<c>__sys_rw_ts</c>) and every cell writetime
-    /// (<c>__sys_clts</c>). An UPDATE advances only the cells it touches, not
-    /// the row marker, so writing the row at <c>__sys_rw_ts</c> alone would
-    /// give the updated cells the same timestamp as the copy already on the
-    /// destination; Cassandra then breaks the tie by value and can keep the
-    /// stale cell. Using the newest writetime guarantees the replayed row
-    /// supersedes earlier copies of it. <c>null</c> when the source exposed
-    /// neither value.
+    /// (<c>__sys_clts</c>). Rows whose cell writetimes diverge are split
+    /// (<see cref="HasPerColumnDivergence"/>), so on the single-statement
+    /// path this normally equals <c>__sys_rw_ts</c>; it supplies the
+    /// timestamp for UPDATE-only rows that have no row marker. <c>null</c>
+    /// when the source exposed neither value.
     /// </summary>
     public long? RowWriteTimestampMicros =>
         (WritetimeMicros, LatestCellWritetimeMicros) switch
@@ -81,16 +79,19 @@ internal sealed record CdcRowMetadata(
     public bool HasRowMarker => WritetimeMicros.HasValue;
 
     /// <summary>
-    /// True when the source row carries per-column writetime/TTL that
-    /// diverges from the row-level values and cell-level preservation is
-    /// enabled. When false the writer takes the single-statement fast
+    /// True when the source row carries per-column metadata that diverges
+    /// from the row-level values: writetime and TTL with cell-level
+    /// preservation, writetime only (with the row TTL) in row-level mode.
+    /// When false the writer takes the single-statement fast
     /// path (one <c>INSERT … JSON ? USING TIMESTAMP ? AND TTL ?</c>);
     /// when true it restores the row-level liveness marker with one
     /// partial INSERT and applies divergent cells with UPDATE statements
-    /// so each cell lands with its own timestamp and TTL without replacing
-    /// that marker. <see cref="PerColumn"/> is populated only for the
-    /// columns whose metadata differs; every other column remains in the
-    /// row-level INSERT.
+    /// so each cell lands with its own timestamp without replacing
+    /// that marker. Writing such a row at one timestamp would either tie
+    /// an UPDATE-changed cell with its stale copy on the destination or
+    /// lift untouched cells above concurrent changes. <see cref="PerColumn"/>
+    /// is populated only for the columns whose metadata differs; every
+    /// other column remains in the row-level INSERT.
     /// </summary>
     public bool HasPerColumnDivergence => PerColumn is { Count: > 0 };
 
@@ -132,8 +133,9 @@ internal sealed record CdcRowMetadata(
 /// <summary>
 /// Per-column (per-cell) change-feed metadata decoded from the source's
 /// <c>__sys_clts</c> (writetime) and <c>__sys_clttl[1]</c> (per-column TTL)
-/// maps. Only populated when cell-level preservation is enabled and the
-/// row actually diverges from its row-level metadata.
+/// maps. Populated only when the row actually diverges from its row-level
+/// metadata; in row-level mode only writetime is compared and every cell
+/// carries the row-level expiry.
 /// </summary>
 /// <remarks>
 /// Non-frozen collection columns expose <em>per-element</em> writetime/TTL
