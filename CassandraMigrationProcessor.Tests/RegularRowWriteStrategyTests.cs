@@ -154,6 +154,19 @@ public sealed class CdcJsonRowParserTests
     }
 
     [Fact]
+    public void Parse_StaticTtlWithZeroBaseUsesTheOffsetAsExpiry()
+    {
+        // Captured from Azure Cosmos DB for Apache Cassandra: static written
+        // USING TIMESTAMP one hour in the past AND TTL 3600.
+        const string json = """{"pk": 1, "ck": 1, "st": "static-old-ts", "ss": [5], "v": "r", "__sys_clts": {"st": 1795064288000000, "ss": [1795064288000000], "v": 1795067888000000}, "__sys_rw_ts": 1795067888000000, "__sys_clts_tmbstn": null, "__sys_rw_tmbstn": null, "__sys_clttl": [0, {"st": [3600, 1795071542], "ss": [[7200, 1795075143]], "v": [0, 0]}], "__sys_rw_ttl": [0, 0]}""";
+
+        var (_, metadata) = CdcJsonRowParser.ParseOnce(json);
+
+        Assert.Equal(new CdcCellMetadata(1795064288000000, 1795071542), metadata.PerColumn!["st"]);
+        Assert.Equal(1795075143, metadata.PerColumn!["ss"].ExpiryEpochSeconds);
+    }
+
+    [Fact]
     public void Parse_TtlWithoutExpiryBaseCountsTheDurationFromNow()
     {
         // Static cells can be reported with an expiry base of 0. The cell's
@@ -759,6 +772,47 @@ public sealed class RegularRowWriteStrategyTests
         var column = new CassandraColumn("c", type, "regular", "none", -1);
 
         Assert.Equal(expected, RegularRowWriteStrategy.RenderElementKeys(column, [key]));
+    }
+
+    [Fact]
+    public void CapturedElementRemovalsOfEveryKeyTypeAreReplayed()
+    {
+        // Captured from Azure Cosmos DB for Apache Cassandra after removing one
+        // element from each set/map at T + 1000 (mi at T + 2000) and nulling
+        // u.zip at T + 3000. The target accepted every key below via fromJson.
+        const long T = 1795064288000000;
+        const string json = """{"k": 1, "si": [1, 3], "st": ["a", "d\"q"], "sts": ["2026-01-01 00:00:00.000Z"], "su": ["11111111-1111-1111-1111-111111111111"], "sb": ["0x01"], "sbo": [true], "sd": [1.5], "sdec": [1.10], "stup": [[1, "x"]], "mi": {"1": "one"}, "mts": {"2026-01-01 00:00:00.000Z": 1}, "mfu": {"[1, \"x\"]": 1}, "u": {"street": "s", "zip": null}, "__sys_clts": {"si": [1795064288000000, 1795064288000000], "st": [1795064288000000, 1795064288000000], "sts": [1795064288000000], "su": [1795064288000000], "sb": [1795064288000000], "sbo": [1795064288000000], "sd": [1795064288000000], "sdec": [1795064288000000], "stup": [1795064288000000], "mi": [1795064288000000], "mts": [1795064288000000], "mfu": [1795064288000000], "u": {"street": 1795064288000000, "zip": null}}, "__sys_rw_ts": 1795064288000000, "__sys_clts_tmbstn": {"si": [1795064287999999, {"2": 1795064288001000}], "st": [1795064287999999, {"b c": 1795064288001000}], "sts": [1795064287999999, {"2026-02-01 00:00:00.000Z": 1795064288001000}], "su": [1795064287999999, {"22222222-2222-2222-2222-222222222222": 1795064288001000}], "sb": [1795064287999999, {"0x0203": 1795064288001000}], "sbo": [1795064287999999, {"false": 1795064288001000}], "sd": [1795064287999999, {"2.25": 1795064288001000}], "sdec": [1795064287999999, {"2.5": 1795064288001000}], "stup": [1795064287999999, {"[2, \"y y\"]": 1795064288001000}], "mi": [1795064287999999, {"2": 1795064288002000}], "mts": [1795064287999999, {"2026-03-01 00:00:00.000Z": 1795064288001000}], "mfu": [1795064287999999, {"[2, \"y\"]": 1795064288001000}], "u": [1795064287999999, {"street": null, "zip": 1795064288003000}]}, "__sys_rw_tmbstn": null, "__sys_clttl": [0, {"si": [[0, 0], [0, 0]], "st": [[0, 0], [0, 0]], "sts": [[0, 0]], "su": [[0, 0]], "sb": [[0, 0]], "sbo": [[0, 0]], "sd": [[0, 0]], "sdec": [[0, 0]], "stup": [[0, 0]], "mi": [[0, 0]], "mts": [[0, 0]], "mfu": [[0, 0]], "u": {"street": [0, 0], "zip": null}}], "__sys_rw_ttl": [0, 0]}""";
+        CassandraColumn[] pk = [new("k", "int", "partition_key", "none", 0)];
+        var columns = pk.Concat(new (string Name, string Type)[]
+            {
+                ("si", "set<int>"), ("st", "set<text>"), ("sts", "set<timestamp>"), ("su", "set<uuid>"),
+                ("sb", "set<blob>"), ("sbo", "set<boolean>"), ("sd", "set<double>"), ("sdec", "set<decimal>"),
+                ("stup", "set<frozen<tuple<int, text>>>"), ("mi", "map<int, text>"),
+                ("mts", "map<timestamp, int>"), ("mfu", "map<frozen<tuple<int, text>>, int>"), ("u", "addr"),
+            }.Select(c => new CassandraColumn(c.Name, c.Type, "regular", "none", -1)))
+            .ToDictionary(c => c.Name, StringComparer.Ordinal);
+
+        var (row, metadata) = CdcJsonRowParser.ParseOnce(json);
+        var plan = RegularRowWriteStrategy.BuildRowWritePlan(row, metadata, pk, columns, Now);
+
+        Assert.Equal(
+            new Dictionary<string, (long, string)>
+            {
+                ["si"] = (T + 1000, """["2"]"""),
+                ["st"] = (T + 1000, """["b c"]"""),
+                ["sts"] = (T + 1000, """["2026-02-01 00:00:00.000Z"]"""),
+                ["su"] = (T + 1000, """["22222222-2222-2222-2222-222222222222"]"""),
+                ["sb"] = (T + 1000, """["0x0203"]"""),
+                ["sbo"] = (T + 1000, """["false"]"""),
+                ["sd"] = (T + 1000, """["2.25"]"""),
+                ["sdec"] = (T + 1000, """["2.5"]"""),
+                ["stup"] = (T + 1000, """[[2,"y y"]]"""),
+                ["mi"] = (T + 2000, """["2"]"""),
+                ["mts"] = (T + 1000, """["2026-03-01 00:00:00.000Z"]"""),
+                ["mfu"] = (T + 1000, """[[2,"y"]]"""),
+            },
+            plan.Removes.ToDictionary(r => r.Column.Name, r => (r.WritetimeMicros, r.KeysJson)));
+        Assert.Contains(plan.FieldWrites, f => f.Field == "zip" && f.WritetimeMicros == T + 3000 && f.JsonValue == "null");
     }
 
     [Fact]
