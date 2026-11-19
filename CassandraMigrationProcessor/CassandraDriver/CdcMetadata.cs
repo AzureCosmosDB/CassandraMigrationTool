@@ -43,7 +43,7 @@ namespace CassandraMigrationProcessor.CassandraDriver;
 /// marker, or whose elements/fields carry differing expiries. Every live
 /// column is listed when the row has no marker.</param>
 /// <param name="LatestCellWritetimeMicros">Newest cell writetime in the row.</param>
-/// <param name="Deletions">Newest source deletion per column, decoded from
+/// <param name="Deletions">Source deletions per column, decoded from
 /// <c>__sys_clts_tmbstn</c>; <c>null</c> when no column carries one.</param>
 internal sealed record CdcRowMetadata(
     long? WritetimeMicros,
@@ -127,19 +127,23 @@ internal readonly record struct CdcCellMetadata(
 }
 
 /// <summary>
-/// Newest deletion recorded by the source for one column.
+/// Deletions recorded by the source for one column.
 /// </summary>
-/// <param name="DeletedAtMicros">Deletion timestamp; for multi-cell columns
-/// the newest of the collection deletion and every element/field deletion.</param>
+/// <param name="DeletedAtMicros">Newest deletion timestamp: the cell
+/// tombstone of a simple or frozen column, or the newest of the collection
+/// deletion and every element/field deletion of a multi-cell column.</param>
 /// <param name="IsComplex">True for a non-frozen collection or UDT, whose
-/// deletions cover individual elements/fields rather than a single cell.</param>
-internal readonly record struct CdcCellDeletion(long DeletedAtMicros, bool IsComplex)
-{
-    /// <summary>
-    /// Smallest write timestamp whose implicit overwrite covers this
-    /// deletion: a simple cell is deleted by a tombstone at the same
-    /// timestamp, while assigning a multi-cell column deletes its previous
-    /// contents at <c>timestamp - 1</c>.
-    /// </summary>
-    public long CoveringWriteMicros => IsComplex ? DeletedAtMicros + 1 : DeletedAtMicros;
-}
+/// deletions cover the whole column and individual elements/fields rather
+/// than a single cell.</param>
+/// <param name="CollectionDeletionMicros">Multi-cell columns: timestamp of the
+/// deletion of the whole column (every element/field written at or before it
+/// is removed), or <c>null</c> when there is none. Assigning a multi-cell
+/// column records one at <c>timestamp - 1</c>.</param>
+/// <param name="KeyDeletions">Multi-cell columns: removed set elements, map
+/// keys or UDT fields, as rendered by the source, with the timestamp of each
+/// removal.</param>
+internal readonly record struct CdcCellDeletion(
+    long DeletedAtMicros,
+    bool IsComplex,
+    long? CollectionDeletionMicros = null,
+    IReadOnlyList<KeyValuePair<string, long>>? KeyDeletions = null);

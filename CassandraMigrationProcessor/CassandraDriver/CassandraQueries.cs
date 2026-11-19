@@ -272,6 +272,24 @@ public static class CassandraQueries
     }
 
     /// <summary>
+    /// UPDATE that removes elements or keys from a non-frozen set or map
+    /// (<c>c = c - fromJson(?)</c>, the JSON value being an array of the
+    /// elements or keys). Bind order matches
+    /// <see cref="BuildUpdateJsonColumnCql"/>.
+    /// </summary>
+    internal static string BuildSubtractJsonColumnCql(
+        string keyspace,
+        string table,
+        CassandraColumn column,
+        IReadOnlyList<CassandraColumn> primaryKeyColumns)
+    {
+        var quoted = CqlIdentifier.Quote(column.Name);
+        return BuildUpdateCql(keyspace, table,
+            $"{quoted} = {quoted} - fromJson(?)",
+            column.Kind == "static", primaryKeyColumns);
+    }
+
+    /// <summary>
     /// UPDATE that assigns one field of a non-frozen UDT
     /// (<c>u.f = fromJson(?)</c>). Bind order matches
     /// <see cref="BuildUpdateJsonColumnCql"/>.

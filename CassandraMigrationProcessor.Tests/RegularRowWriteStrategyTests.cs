@@ -154,22 +154,27 @@ public sealed class CdcJsonRowParserTests
     }
 
     [Fact]
-    public void Parse_TtlWithoutExpiryBaseIsAnchoredOnCellWritetime()
+    public void Parse_TtlWithoutExpiryBaseCountsTheDurationFromNow()
     {
-        // Static cells can be reported with an expiry base of 0.
+        // Static cells can be reported with an expiry base of 0. The cell's
+        // USING TIMESTAMP says nothing about when its TTL started.
         const string json =
             """
             {
               "pk": "p", "ck": null, "st": "x",
               "__sys_rw_ts": null,
               "__sys_clttl": [0, { "st": [30, 0] }],
-              "__sys_clts": { "st": 2000000000 }
+              "__sys_clts": { "st": 1000000000000000 }
             }
             """;
 
+        long before = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
         var (_, metadata) = CdcJsonRowParser.ParseOnce(json);
+        long after = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
 
-        Assert.Equal(new CdcCellMetadata(2000000000, 2030), metadata.PerColumn!["st"]);
+        var cell = metadata.PerColumn!["st"];
+        Assert.Equal(1000000000000000, cell.WritetimeMicros);
+        Assert.InRange(cell.ExpiryEpochSeconds!.Value, before + 30, after + 30);
     }
 
     [Fact]
@@ -337,7 +342,7 @@ public sealed class CdcJsonRowParserTests
     //   s set<int>, m map<text,int>, fl frozen<list<int>>, u frozen<list<int>>)
     // after: INSERT all; SET b = null; s = s - {2}, m = m - {'y'}; DELETE fl.
     [Fact]
-    public void Parse_DeletionsReportNewestTombstonePerColumn()
+    public void Parse_DeletionsKeepEveryTombstoneTimestamp()
     {
         const string json = """{"id": "r1", "a": "a", "b": null, "s": [1], "m": {"x": 1}, "fl": [], "u": [], "__sys_clts": {"a": 1794902680767536, "b": null, "s": [1794902680767536], "m": [1794902680767536], "fl": null, "u": null}, "__sys_rw_ts": 1794902680767536, "__sys_clts_tmbstn": {"a": null, "b": 1794902680992867, "s": [1794902680767535, {"2": 1794902681088410}], "m": [1794902680767535, {"y": 1794902681088410}], "fl": 1794902681190639, "u": null}, "__sys_rw_tmbstn": null, "__sys_clttl": [0, {"a": [0, 0], "b": null, "s": [[0, 0]], "m": [[0, 0]], "fl": null, "u": null}], "__sys_rw_ttl": [0, 0]}""";
 
@@ -345,12 +350,30 @@ public sealed class CdcJsonRowParserTests
 
         var deletions = Assert.IsAssignableFrom<IReadOnlyDictionary<string, CdcCellDeletion>>(metadata.Deletions);
         Assert.Equal(new CdcCellDeletion(1794902680992867, false), deletions["b"]);
-        Assert.Equal(new CdcCellDeletion(1794902681088410, true), deletions["s"]);
-        Assert.Equal(new CdcCellDeletion(1794902681088410, true), deletions["m"]);
         Assert.Equal(new CdcCellDeletion(1794902681190639, false), deletions["fl"]);
+        foreach (var (col, key) in new[] { ("s", "2"), ("m", "y") })
+        {
+            var d = deletions[col];
+            Assert.True(d.IsComplex);
+            Assert.Equal(1794902681088410, d.DeletedAtMicros);
+            Assert.Equal(1794902680767535, d.CollectionDeletionMicros);
+            Assert.Equal([new(key, 1794902681088410)], d.KeyDeletions!);
+        }
         Assert.False(deletions.ContainsKey("a"));
         Assert.False(deletions.ContainsKey("u"));
         Assert.DoesNotContain("__sys_", cleaned, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Parse_UdtFieldDeletionsSkipFieldsWithoutTombstone()
+    {
+        const string json = """{"id": "r1", "u": {"street": "s", "zip": null}, "__sys_rw_ts": 100, "__sys_clts_tmbstn": {"u": [99, {"street": null, "zip": 300}]}}""";
+
+        var (_, metadata) = CdcJsonRowParser.ParseOnce(json);
+
+        var d = metadata.Deletions!["u"];
+        Assert.Equal(new CdcCellDeletion(300, true, 99, d.KeyDeletions), d);
+        Assert.Equal([new("zip", 300L)], d.KeyDeletions!);
     }
 }
 
@@ -384,6 +407,13 @@ public sealed class RegularRowWriteStrategyTests
     private static Dictionary<string, CdcCellMetadata> Cells(
         params (string Name, CdcCellMetadata Cell)[] cells) =>
         cells.ToDictionary(c => c.Name, c => c.Cell, StringComparer.Ordinal);
+
+    /// <summary>Multi-cell deletion: whole-column deletion plus key removals.</summary>
+    private static CdcCellDeletion Complex(long? collection, params (string Key, long At)[] keys) =>
+        new(Math.Max(collection ?? long.MinValue, keys.Length == 0 ? long.MinValue : keys.Max(k => k.At)),
+            true,
+            collection,
+            keys.Length == 0 ? null : keys.Select(k => KeyValuePair.Create(k.Key, k.At)).ToList());
 
     [Fact]
     public void UniformRowWithMarkerIsOneFullInsert()
@@ -520,9 +550,10 @@ public sealed class RegularRowWriteStrategyTests
     {
         var plan = Plan(
             """{"pk":"p","ck":1,"s":[1,2,3]}""",
-            new CdcRowMetadata(100, null, Cells(
-                ("s", new CdcCellMetadata(300, null,
-                    ElementExpiries: [null, null, null], ElementWritetimes: [300, 100, 300])))));
+            new CdcRowMetadata(100, null,
+                Cells(("s", new CdcCellMetadata(300, null,
+                    ElementExpiries: [null, null, null], ElementWritetimes: [300, 100, 300]))),
+                Deletions: new Dictionary<string, CdcCellDeletion> { ["s"] = Complex(99) }));
 
         var group = Assert.Single(plan.Groups);
         Assert.Equal(100, group.WritetimeMicros);
@@ -531,25 +562,42 @@ public sealed class RegularRowWriteStrategyTests
         Assert.Equal(300, add.WritetimeMicros);
         Assert.Null(add.ExpiryEpochSeconds);
         Assert.Equal("[1,3]", add.JsonValue);
+        Assert.Empty(plan.Removes);
     }
 
     [Fact]
-    public void OnlyElementsOlderThanACollectionDeletionAreLiftedAboveIt()
+    public void SetWithoutCollectionDeletionIsOnlyAdded()
     {
         var plan = Plan(
-            """{"pk":"p","ck":1,"m":{"a":1,"b":2,"c":3}}""",
-            new CdcRowMetadata(100, null,
-                Cells(("m", new CdcCellMetadata(300, null,
-                    ElementExpiries: [null, null, 900], ElementWritetimes: [100, 300, 150]))),
-                Deletions: new Dictionary<string, CdcCellDeletion> { ["m"] = new(200, IsComplex: true) }));
+            """{"pk":"p","ck":1,"s":[1,2]}""",
+            new CdcRowMetadata(100, null, Cells(
+                ("s", new CdcCellMetadata(300, null,
+                    ElementExpiries: [null, null], ElementWritetimes: [200, 300])))));
 
+        Assert.Empty(plan.Groups);
+        Assert.Equal(
+            [(200L, "[1]"), (300L, "[2]")],
+            plan.Adds.Select(a => (a.WritetimeMicros, a.JsonValue)));
+    }
+
+    [Fact]
+    public void CollectionDeletionNotImpliedByTheOldestElementIsReplayedExactly()
+    {
+        var plan = Plan(
+            """{"pk":"p","ck":1,"m":{"a":1,"b":2}}""",
+            new CdcRowMetadata(100, null,
+                Cells(("m", new CdcCellMetadata(400, null,
+                    ElementExpiries: [null, 900], ElementWritetimes: [300, 400]))),
+                Deletions: new Dictionary<string, CdcCellDeletion> { ["m"] = Complex(200) }));
+
+        // SET m = null at C + 1 records the collection deletion at exactly C.
         var group = Assert.Single(plan.Groups);
         Assert.Equal(201, group.WritetimeMicros);
         Assert.Null(group.ExpiryEpochSeconds);
-        Assert.Equal("""{"a":1}""", group.JsonValues.Single());
+        Assert.Equal("null", group.JsonValues.Single());
         Assert.Equal(2, plan.Adds.Count);
-        Assert.Contains(plan.Adds, a => a.WritetimeMicros == 201 && a.ExpiryEpochSeconds == 900 && a.JsonValue == """{"c":3}""");
-        Assert.Contains(plan.Adds, a => a.WritetimeMicros == 300 && a.ExpiryEpochSeconds is null && a.JsonValue == """{"b":2}""");
+        Assert.Contains(plan.Adds, a => a.WritetimeMicros == 300 && a.ExpiryEpochSeconds is null && a.JsonValue == """{"a":1}""");
+        Assert.Contains(plan.Adds, a => a.WritetimeMicros == 400 && a.ExpiryEpochSeconds == 900 && a.JsonValue == """{"b":2}""");
     }
 
     [Fact]
@@ -576,9 +624,11 @@ public sealed class RegularRowWriteStrategyTests
     {
         var plan = Plan(
             """{"pk":"p","ck":1,"s":[1,2,3],"m":{"a":1,"b":2,"c":3}}""",
-            new CdcRowMetadata(100, null, Cells(
-                ("s", new CdcCellMetadata(150, null, ElementExpiries: [null, 900, null])),
-                ("m", new CdcCellMetadata(150, null, ElementExpiries: [900, null, 900])))));
+            new CdcRowMetadata(100, null,
+                Cells(
+                    ("s", new CdcCellMetadata(150, null, ElementExpiries: [null, 900, null])),
+                    ("m", new CdcCellMetadata(150, null, ElementExpiries: [900, null, 900]))),
+                Deletions: new Dictionary<string, CdcCellDeletion> { ["s"] = Complex(149), ["m"] = Complex(149) }));
 
         Assert.Equal(2, plan.Groups.Count);
         var set = plan.Groups.Single(g => g.Columns.Single().Name == "s");
@@ -597,8 +647,9 @@ public sealed class RegularRowWriteStrategyTests
     {
         var plan = Plan(
             """{"pk":"p","ck":1,"s":[1,2,3]}""",
-            new CdcRowMetadata(100, null, Cells(
-                ("s", new CdcCellMetadata(150, 900, ElementExpiries: [null, 900])))));
+            new CdcRowMetadata(100, null,
+                Cells(("s", new CdcCellMetadata(150, 900, ElementExpiries: [null, 900]))),
+                Deletions: new Dictionary<string, CdcCellDeletion> { ["s"] = Complex(149) }));
 
         var group = Assert.Single(plan.Groups);
         Assert.Equal(900, group.ExpiryEpochSeconds);
@@ -634,40 +685,80 @@ public sealed class RegularRowWriteStrategyTests
             {
                 ["v"] = new(300, IsComplex: false),
                 ["w"] = new(50, IsComplex: false),
-                ["s"] = new(400, IsComplex: true),
+                ["s"] = Complex(400, ("1", 300), ("2", 450)),
             }));
 
         using var baseline = JsonDocument.Parse(plan.BaselineJson!);
         Assert.False(baseline.RootElement.TryGetProperty("v", out _));
+        Assert.False(baseline.RootElement.TryGetProperty("w", out _));
         Assert.False(baseline.RootElement.TryGetProperty("s", out _));
-        Assert.Equal(JsonValueKind.Null, baseline.RootElement.GetProperty("w").ValueKind);
         Assert.Equal(JsonValueKind.Null, baseline.RootElement.GetProperty("fl").ValueKind);
+        // Tombstones keep the source timestamp even when it is older than the row.
         Assert.Contains(plan.Groups, g =>
             g.Columns.Single().Name == "v" && g.WritetimeMicros == 300 && g.JsonValues.Single() == "null");
         Assert.Contains(plan.Groups, g =>
+            g.Columns.Single().Name == "w" && g.WritetimeMicros == 50 && g.JsonValues.Single() == "null");
+        // SET s = null at C + 1 records the collection deletion at exactly C;
+        // only removals newer than C are replayed.
+        Assert.Contains(plan.Groups, g =>
             g.Columns.Single().Name == "s" && g.WritetimeMicros == 401 && g.JsonValues.Single() == "null");
+        var remove = Assert.Single(plan.Removes);
+        Assert.Equal(450, remove.WritetimeMicros);
+        Assert.Equal("""["2"]""", remove.KeysJson);
     }
 
     [Fact]
-    public void CollectionIsRewrittenAboveItsNewestElementDeletion()
+    public void ElementRemovalsAreReplayedAtTheirOwnTimestamps()
     {
+        // {1,2,3} inserted at 100; 2 removed at 500, then 1 removed at 400.
         var plan = Plan(
-            """{"pk":"p","ck":1,"v":"a","s":[1],"m":{"x":1}}""",
+            """{"pk":"p","ck":1,"v":"a","s":[3],"m":{"x":1}}""",
             new CdcRowMetadata(100, null, Deletions: new Dictionary<string, CdcCellDeletion>
             {
                 ["v"] = new(90, IsComplex: false),
-                ["s"] = new(500, IsComplex: true),
-                ["m"] = new(99, IsComplex: true),
+                ["s"] = Complex(99, ("2", 500), ("1", 400)),
+                ["m"] = Complex(99),
             }));
 
         using var baseline = JsonDocument.Parse(plan.BaselineJson!);
         Assert.Equal("\"a\"", baseline.RootElement.GetProperty("v").GetRawText());
+        Assert.Equal("[3]", baseline.RootElement.GetProperty("s").GetRawText());
         Assert.Equal("{\"x\":1}", baseline.RootElement.GetProperty("m").GetRawText());
-        Assert.False(baseline.RootElement.TryGetProperty("s", out _));
+        Assert.Empty(plan.Groups);
+        Assert.Empty(plan.Adds);
+        Assert.Equal(
+            [(500L, """["2"]"""), (400L, """["1"]""")],
+            plan.Removes.Select(r => (r.WritetimeMicros, r.KeysJson)));
+    }
+
+    [Fact]
+    public void UdtFieldDeletionsAreReplayedAsNullFields()
+    {
+        var plan = Plan(
+            """{"pk":"p","ck":1,"u":{"street":"s","zip":null}}""",
+            new CdcRowMetadata(100, null,
+                Cells(("u", new CdcCellMetadata(200, null,
+                    FieldExpiries: new Dictionary<string, long?> { ["street"] = null },
+                    FieldWritetimes: new Dictionary<string, long?> { ["street"] = 200 }))),
+                Deletions: new Dictionary<string, CdcCellDeletion> { ["u"] = Complex(50, ("zip", 300)) }));
+
         var group = Assert.Single(plan.Groups);
-        Assert.Equal("s", group.Columns.Single().Name);
-        Assert.Equal(501, group.WritetimeMicros);
-        Assert.Equal("[1]", group.JsonValues.Single());
+        Assert.Equal(51, group.WritetimeMicros);
+        Assert.Equal("null", group.JsonValues.Single());
+        Assert.Equal(
+            [("street", 200L, "\"s\""), ("zip", 300L, "null")],
+            plan.FieldWrites.Select(f => (f.Field, f.WritetimeMicros, f.JsonValue)));
+    }
+
+    [Theory]
+    [InlineData("set<int>", "2", """["2"]""")]
+    [InlineData("map<text, int>", "a \"q\"", """["a \u0022q\u0022"]""")]
+    [InlineData("set<frozen<tuple<int, text>>>", """[1, "x"]""", """[[1,"x"]]""")]
+    public void RemovedKeysAreRenderedForFromJson(string type, string key, string expected)
+    {
+        var column = new CassandraColumn("c", type, "regular", "none", -1);
+
+        Assert.Equal(expected, RegularRowWriteStrategy.RenderElementKeys(column, [key]));
     }
 
     [Fact]

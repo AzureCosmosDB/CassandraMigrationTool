@@ -212,9 +212,9 @@ internal sealed class CdcJsonRowParser
 
             if (reader.ValueTextEquals(SysCellTombstoneUtf8))
             {
-                // {col: micros | [complexDeletion, {element: micros}] | {field: micros}}.
-                // Only the newest deletion per column is needed: the writer
-                // covers it by writing at (or just above) that timestamp.
+                // {col: micros | [collectionDeletion, {element|field: micros}]}.
+                // Every deletion is kept with its own timestamp so the writer
+                // can replay each one exactly.
                 reader.Read();
                 if (reader.TokenType == JsonTokenType.StartObject)
                 {
@@ -222,10 +222,8 @@ internal sealed class CdcJsonRowParser
                     {
                         string col = CqlIdentifier.Unquote(reader.GetString());
                         reader.Read();
-                        bool isComplex = reader.TokenType
-                            is JsonTokenType.StartArray or JsonTokenType.StartObject;
-                        if (ReadLatestWritetime(ref reader) is long deletedAt)
-                            _colDeletion[col] = new CdcCellDeletion(deletedAt, isComplex);
+                        if (ReadDeletion(ref reader) is { } deletion)
+                            _colDeletion[col] = deletion;
                     }
                 }
                 else
@@ -272,7 +270,7 @@ internal sealed class CdcJsonRowParser
 
         long nowEpochSeconds = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
         long? markerExpiry = markerWritetime.HasValue && markerTtl is TtlPair mt
-            ? ResolveExpiry(mt, ttlBase, markerWritetime, nowEpochSeconds)
+            ? ResolveExpiry(mt, ttlBase, nowEpochSeconds)
             : null;
 
         var perColumn = BuildPerColumn(
@@ -291,18 +289,16 @@ internal sealed class CdcJsonRowParser
     /// Absolute expiry of one <c>[duration, offset]</c> pair: <c>base +
     /// offset</c> when the duration is positive, <c>null</c> (no TTL)
     /// otherwise. If the source reports a positive duration without a usable
-    /// base, the expiry is anchored on the cell writetime instead of failing.
+    /// base, the time the TTL was applied is unknown (it is unrelated to the
+    /// cell's <c>USING TIMESTAMP</c>), so the full duration is counted from
+    /// now: the cell then never expires before it does on the source.
     /// </summary>
-    private static long? ResolveExpiry(
-        TtlPair pair, long ttlBase, long? writetimeMicros, long nowEpochSeconds)
+    private static long? ResolveExpiry(TtlPair pair, long ttlBase, long nowEpochSeconds)
     {
         if (pair.Duration <= 0)
             return null;
         long expiry = ttlBase + pair.Offset;
-        if (expiry > 0)
-            return expiry;
-        long anchor = writetimeMicros is long wt ? wt / 1_000_000 : nowEpochSeconds;
-        return anchor + pair.Duration;
+        return expiry > 0 ? expiry : nowEpochSeconds + pair.Duration;
     }
 
     /// <summary>
@@ -330,6 +326,68 @@ internal sealed class CdcJsonRowParser
 
         throw new JsonException(
             $"Malformed row payload: '{SysCellLevelWritetimeColumn}' did not terminate.");
+    }
+
+    /// <summary>
+    /// Decode one <c>__sys_clts_tmbstn</c> column entry: a number for a
+    /// simple or frozen cell, <c>[collectionDeletion, {key: micros}]</c> for
+    /// a non-frozen collection or UDT (keys are elements, map keys or field
+    /// names), or a bare <c>{key: micros}</c> object. Null timestamps mean
+    /// "no deletion". Returns <c>null</c> when the entry holds no deletion.
+    /// </summary>
+    private static CdcCellDeletion? ReadDeletion(ref Utf8JsonReader reader)
+    {
+        if (reader.TokenType == JsonTokenType.Number)
+            return reader.TryGetInt64(out long simple) ? new CdcCellDeletion(simple, false) : null;
+        if (reader.TokenType is not (JsonTokenType.StartArray or JsonTokenType.StartObject))
+        {
+            reader.Skip();
+            return null;
+        }
+
+        long? collectionDeletion = null;
+        List<KeyValuePair<string, long>>? keyDeletions = null;
+
+        void ReadKeys(ref Utf8JsonReader r)
+        {
+            while (r.Read() && r.TokenType == JsonTokenType.PropertyName)
+            {
+                string key = r.GetString()!;
+                r.Read();
+                if (r.TokenType == JsonTokenType.Number && r.TryGetInt64(out long micros))
+                    (keyDeletions ??= []).Add(new(key, micros));
+                else
+                    r.Skip();
+            }
+        }
+
+        if (reader.TokenType == JsonTokenType.StartObject)
+        {
+            ReadKeys(ref reader);
+        }
+        else
+        {
+            bool first = true;
+            while (reader.Read() && reader.TokenType != JsonTokenType.EndArray)
+            {
+                if (first && reader.TokenType == JsonTokenType.Number
+                    && reader.TryGetInt64(out long collection))
+                    collectionDeletion = collection;
+                else if (reader.TokenType == JsonTokenType.StartObject)
+                    ReadKeys(ref reader);
+                else
+                    reader.Skip();
+                first = false;
+            }
+        }
+
+        if (collectionDeletion is null && keyDeletions is null)
+            return null;
+        long latest = collectionDeletion ?? long.MinValue;
+        if (keyDeletions is not null)
+            foreach (var d in keyDeletions)
+                latest = Math.Max(latest, d.Value);
+        return new CdcCellDeletion(latest, true, collectionDeletion, keyDeletions);
     }
 
     /// <summary>
@@ -547,7 +605,7 @@ internal sealed class CdcJsonRowParser
     {
         bool hasTtl = _colTtl.TryGetValue(col, out var ttl);
         if (hasTtl && ttl.Scalar is TtlPair pair)
-            return new CdcCellMetadata(wt, ResolveExpiry(pair, ttlBase, wt, nowEpochSeconds));
+            return new CdcCellMetadata(wt, ResolveExpiry(pair, ttlBase, nowEpochSeconds));
 
         var elementTtls = hasTtl ? ttl.Elements : null;
         var elementWts = _colElementWritetimes.GetValueOrDefault(col);
@@ -566,7 +624,7 @@ internal sealed class CdcJsonRowParser
                 writetimes[i] = elementWts?[i] ?? wt;
                 expiries[i] = elementTtls is null
                     ? defaultExpiry
-                    : ResolveExpiry(elementTtls[i], ttlBase, writetimes[i], nowEpochSeconds);
+                    : ResolveExpiry(elementTtls[i], ttlBase, nowEpochSeconds);
             }
             if (Uniform(expiries, out var common) && Uniform(writetimes, out _))
                 return new CdcCellMetadata(wt, common);
@@ -590,7 +648,7 @@ internal sealed class CdcJsonRowParser
                     continue;
                 long? fieldWt = fieldWts?.GetValueOrDefault(field) ?? wt;
                 fieldWritetimes[field] = fieldWt;
-                fieldExpiries[field] = ResolveExpiry(fp, ttlBase, fieldWt, nowEpochSeconds);
+                fieldExpiries[field] = ResolveExpiry(fp, ttlBase, nowEpochSeconds);
             }
         }
         else

@@ -172,16 +172,18 @@ internal sealed class RegularRowWriteStrategy : IRowWriteStrategy
         WriteCounters counters,
         CancellationToken cancellationToken)
     {
-        // Bind layout: (envelope, writetime, ttl).
-        var bound = _preparedInsertJson.Bind(
-            cleanedJson,
-            metadata.WritetimeMicros ?? metadata.RowWriteTimestampMicros ?? NowMicros(),
-            ResolveTtlSeconds(metadata.ExpiryEpochSeconds, NowEpochSeconds()));
-        bound.SetReadTimeoutMillis(RowWriteRetry.WriteTimeoutMs);
-        bound.SetConsistencyLevel(_writeConsistencyLevel);
+        long writetime = metadata.WritetimeMicros ?? metadata.RowWriteTimestampMicros ?? NowMicros();
 
+        // Bind layout: (envelope, writetime, ttl). The remaining TTL is
+        // recomputed on every attempt so a retried write keeps the source
+        // expiry instead of extending it by the time spent retrying.
         return RowWriteRetry.ExecuteAsync(
-            attempt: () => _targetSession.ExecuteAsync(bound).WaitAsync(cancellationToken),
+            attempt: () => ExecuteAsync(
+                _preparedInsertJson.Bind(
+                    cleanedJson,
+                    writetime,
+                    ResolveTtlSeconds(metadata.ExpiryEpochSeconds, NowEpochSeconds())),
+                cancellationToken),
             policy: _retryPolicy,
             log: _log, rowKind: _rowKind,
             counters: counters,
@@ -190,32 +192,30 @@ internal sealed class RegularRowWriteStrategy : IRowWriteStrategy
 
     /// <summary>
     /// Execute a multi-statement plan. Statements run sequentially (baseline,
-    /// grouped assignments, element additions, UDT field updates, then list
-    /// rewrites) and count as one row.
+    /// grouped assignments, element additions, UDT field updates, element
+    /// removals, then list rewrites) and count as one row. Each statement is
+    /// bound on every attempt so its remaining TTL is computed at send time.
     /// </summary>
     private async Task<WriteOutcome> WritePlanAsync(
         RowWritePlan plan,
         WriteCounters counters,
         CancellationToken cancellationToken)
     {
-        long nowEpochSeconds = NowEpochSeconds();
         var attempts = new List<Func<Task>>();
 
         if (plan.BaselineJson is not null)
         {
             var partial = await GetPreparedInsertJsonPartialAsync(cancellationToken);
-            AddAttempt(attempts,
-                partial.Bind(
+            AddAttempt(attempts, now => partial.Bind(
                     plan.BaselineJson,
                     plan.BaselineWritetimeMicros,
-                    ResolveTtlSeconds(plan.BaselineExpiryEpochSeconds, nowEpochSeconds)),
+                    ResolveTtlSeconds(plan.BaselineExpiryEpochSeconds, now)),
                 cancellationToken);
         }
 
         foreach (var group in plan.Groups)
         {
             var keys = plan.KeyValuesFor(group.IsStatic);
-            int ttl = ResolveTtlSeconds(group.ExpiryEpochSeconds, nowEpochSeconds);
             string key = GroupStatementKey(group.IsStatic, group.Columns);
             if (group.Columns.Count == 1
                 || _preparedUpdates.ContainsKey(key)
@@ -225,8 +225,10 @@ internal sealed class RegularRowWriteStrategy : IRowWriteStrategy
                     () => CassandraQueries.BuildUpdateJsonColumnsCql(
                         _targetKeyspace, _targetTable, group.Columns, _primaryKeyColumns),
                     cancellationToken);
-                AddAttempt(attempts,
-                    ps.Bind(BuildBindValues(group.WritetimeMicros, ttl, group.JsonValues, keys)),
+                AddAttempt(attempts, now => ps.Bind(BuildBindValues(
+                        group.WritetimeMicros,
+                        ResolveTtlSeconds(group.ExpiryEpochSeconds, now),
+                        group.JsonValues, keys)),
                     cancellationToken);
                 continue;
             }
@@ -234,8 +236,11 @@ internal sealed class RegularRowWriteStrategy : IRowWriteStrategy
             for (int i = 0; i < group.Columns.Count; i++)
             {
                 var ps = await GetColumnUpdateAsync(group.Columns[i], cancellationToken);
-                AddAttempt(attempts,
-                    ps.Bind(BuildBindValues(group.WritetimeMicros, ttl, [group.JsonValues[i]], keys)),
+                string json = group.JsonValues[i];
+                AddAttempt(attempts, now => ps.Bind(BuildBindValues(
+                        group.WritetimeMicros,
+                        ResolveTtlSeconds(group.ExpiryEpochSeconds, now),
+                        [json], keys)),
                     cancellationToken);
             }
         }
@@ -243,12 +248,11 @@ internal sealed class RegularRowWriteStrategy : IRowWriteStrategy
         foreach (var add in plan.Adds)
         {
             var ps = await GetAddUpdateAsync(add.Column, cancellationToken);
-            AddAttempt(attempts,
-                ps.Bind(BuildBindValues(
+            var keys = plan.KeyValuesFor(add.Column.Kind == "static");
+            AddAttempt(attempts, now => ps.Bind(BuildBindValues(
                     add.WritetimeMicros,
-                    ResolveTtlSeconds(add.ExpiryEpochSeconds, nowEpochSeconds),
-                    [add.JsonValue],
-                    plan.KeyValuesFor(add.Column.Kind == "static"))),
+                    ResolveTtlSeconds(add.ExpiryEpochSeconds, now),
+                    [add.JsonValue], keys)),
                 cancellationToken);
         }
 
@@ -259,12 +263,24 @@ internal sealed class RegularRowWriteStrategy : IRowWriteStrategy
                 () => CassandraQueries.BuildUpdateJsonUdtFieldCql(
                     _targetKeyspace, _targetTable, field.Column, field.Field, _primaryKeyColumns),
                 cancellationToken);
-            AddAttempt(attempts,
-                ps.Bind(BuildBindValues(
+            var keys = plan.KeyValuesFor(field.Column.Kind == "static");
+            AddAttempt(attempts, now => ps.Bind(BuildBindValues(
                     field.WritetimeMicros,
-                    ResolveTtlSeconds(field.ExpiryEpochSeconds, nowEpochSeconds),
-                    [field.JsonValue],
-                    plan.KeyValuesFor(field.Column.Kind == "static"))),
+                    ResolveTtlSeconds(field.ExpiryEpochSeconds, now),
+                    [field.JsonValue], keys)),
+                cancellationToken);
+        }
+
+        foreach (var remove in plan.Removes)
+        {
+            var ps = await GetPreparedUpdateAsync(
+                "-\0" + remove.Column.Name,
+                () => CassandraQueries.BuildSubtractJsonColumnCql(
+                    _targetKeyspace, _targetTable, remove.Column, _primaryKeyColumns),
+                cancellationToken);
+            var keys = plan.KeyValuesFor(remove.Column.Kind == "static");
+            AddAttempt(attempts, _ => ps.Bind(BuildBindValues(
+                    remove.WritetimeMicros, 0, [remove.KeysJson], keys)),
                 cancellationToken);
         }
 
@@ -297,7 +313,6 @@ internal sealed class RegularRowWriteStrategy : IRowWriteStrategy
         CancellationToken cancellationToken)
     {
         long start = MonotonicTimestamp.Reserve(Math.Max(1, list.Runs.Count));
-        long nowEpochSeconds = NowEpochSeconds();
 
         if (list.Runs.Count == 0)
         {
@@ -312,7 +327,7 @@ internal sealed class RegularRowWriteStrategy : IRowWriteStrategy
             await ExecuteAsync(
                 ps.Bind(BuildBindValues(
                     start + i,
-                    ResolveTtlSeconds(run.ExpiryEpochSeconds, nowEpochSeconds),
+                    ResolveTtlSeconds(run.ExpiryEpochSeconds, NowEpochSeconds()),
                     [run.JsonValue],
                     keys)),
                 cancellationToken);
@@ -327,11 +342,11 @@ internal sealed class RegularRowWriteStrategy : IRowWriteStrategy
     }
 
     private void AddAttempt(
-        List<Func<Task>> attempts, BoundStatement bound, CancellationToken cancellationToken)
+        List<Func<Task>> attempts,
+        Func<long, BoundStatement> bind,
+        CancellationToken cancellationToken)
     {
-        bound.SetReadTimeoutMillis(RowWriteRetry.WriteTimeoutMs);
-        bound.SetConsistencyLevel(_writeConsistencyLevel);
-        attempts.Add(() => _targetSession.ExecuteAsync(bound).WaitAsync(cancellationToken));
+        attempts.Add(() => ExecuteAsync(bind(NowEpochSeconds()), cancellationToken));
     }
 
     private static object?[] BuildBindValues(
@@ -366,6 +381,13 @@ internal sealed class RegularRowWriteStrategy : IRowWriteStrategy
 
     internal readonly record struct ListRun(long? ExpiryEpochSeconds, string JsonValue);
 
+    /// <summary>
+    /// Removal of set elements or map keys (<paramref name="KeysJson"/>, a
+    /// JSON array) at the source deletion timestamp.
+    /// </summary>
+    internal readonly record struct RemoveWrite(
+        CassandraColumn Column, long WritetimeMicros, string KeysJson);
+
     /// <summary>A list rewrite; no runs means "set the list to null".</summary>
     internal sealed record ListWrite(
         CassandraColumn Column, IReadOnlyList<ListRun> Runs);
@@ -381,7 +403,8 @@ internal sealed class RegularRowWriteStrategy : IRowWriteStrategy
         IReadOnlyList<GroupWrite> Groups,
         IReadOnlyList<AddWrite> Adds,
         IReadOnlyList<FieldWrite> FieldWrites,
-        IReadOnlyList<ListWrite> Lists)
+        IReadOnlyList<ListWrite> Lists,
+        IReadOnlyList<RemoveWrite> Removes)
     {
         public IReadOnlyList<string> KeyValuesFor(bool isStatic) =>
             isStatic ? PartitionKeyValues : PrimaryKeyValues;
@@ -450,6 +473,7 @@ internal sealed class RegularRowWriteStrategy : IRowWriteStrategy
         var adds = new List<AddWrite>();
         var fieldWrites = new List<FieldWrite>();
         var lists = new List<ListWrite>();
+        var removes = new List<RemoveWrite>();
 
         void AddToGroup(long wt, long? expiry, CassandraColumn column, string json)
         {
@@ -494,55 +518,153 @@ internal sealed class RegularRowWriteStrategy : IRowWriteStrategy
                 continue;
             }
 
-            // Write high enough to also cover the column's newest source
-            // deletion, so a value, element or field deleted after it was
-            // copied is removed on the destination too. A live simple cell is
-            // always newer than its own deletion and keeps its writetime; in a
-            // multi-cell column only elements/fields older than the deletion
-            // are lifted just above it.
-            long floor = long.MinValue;
-            if (metadata.Deletions is { } deletions
-                && deletions.TryGetValue(column.Name, out var deletion)
-                && (isNull || deletion.IsComplex))
-            {
-                floor = deletion.CoveringWriteMicros;
-            }
-            wt = Math.Max(wt, floor);
+            CdcCellDeletion deletion = default;
+            bool hasDeletion = metadata.Deletions is { } deletions
+                && deletions.TryGetValue(column.Name, out deletion);
+            bool isSetOrMap = IsNonFrozenSetOrMap(column);
+            bool isMultiCell = isSetOrMap
+                || (hasDeletion && deletion.IsComplex)
+                || cell.FieldExpiries is not null;
 
-            if (writeBaseline && !hasCell && wt == rowWritetime)
+            if (!isMultiCell)
             {
-                baselineProps.Add(prop);
+                // A deleted simple or frozen cell is replayed as a tombstone
+                // at the source deletion timestamp.
+                if (isNull && hasDeletion)
+                {
+                    AddToGroup(deletion.DeletedAtMicros, null, column, "null");
+                    continue;
+                }
+                if (writeBaseline && !hasCell && wt == rowWritetime)
+                {
+                    baselineProps.Add(prop);
+                    continue;
+                }
+                AddToGroup(wt, cell.ExpiryEpochSeconds, column, value.GetRawText());
                 continue;
             }
 
-            // The assignment carries the oldest writetime: its complex
-            // deletion (written just below it) must not hide older elements.
-            long defaultWt = cell.WritetimeMicros ?? rowWritetime;
-            if (!isNull && cell.ElementExpiries is { } elementExpiries
-                && TrySplitElements(value, elementExpiries, cell.ElementWritetimes,
-                    defaultWt, floor, out var elementGroups))
+            // Multi-cell column (non-frozen set, map or UDT). Every element/
+            // field keeps its own writetime and every source deletion is
+            // replayed at its own timestamp:
+            //  - the whole-column deletion C: assigning the column at T
+            //    records it at T - 1, so the oldest elements are assigned
+            //    when C is exactly one below them; otherwise C is written
+            //    explicitly (SET c = null at C + 1 records it at C) and the
+            //    elements are added;
+            //  - element/field removals newer than C are replayed one by one.
+            long? collectionDeletion = hasDeletion ? deletion.CollectionDeletionMicros : null;
+            var keyDeletions = hasDeletion ? deletion.KeyDeletions : null;
+
+            if (isNull)
             {
-                AddToGroup(elementGroups[0].Wt, elementGroups[0].Expiry, column, elementGroups[0].Json);
-                for (int i = 1; i < elementGroups.Count; i++)
+                if (collectionDeletion is long cd)
+                    AddToGroup(cd + 1, null, column, "null");
+                else if (!hasDeletion)
+                {
+                    if (writeBaseline && !hasCell && wt == rowWritetime)
+                        baselineProps.Add(prop);
+                    else
+                        AddToGroup(wt, cell.ExpiryEpochSeconds, column, "null");
+                }
+                AddKeyRemovals(column, isSetOrMap, keyDeletions, collectionDeletion);
+                continue;
+            }
+
+            if (isSetOrMap)
+            {
+                List<(long Wt, long? Expiry, string Json)> elementGroups =
+                    cell.ElementExpiries is { } elementExpiries
+                    && TrySplitElements(value, elementExpiries, cell.ElementWritetimes, wt, out var elementSplit)
+                        ? elementSplit
+                        : [(wt, cell.ExpiryEpochSeconds, value.GetRawText())];
+
+                long oldest = elementGroups[0].Wt;
+                bool assign = collectionDeletion == oldest - 1;
+                if (!assign && collectionDeletion is long cd)
+                    AddToGroup(cd + 1, null, column, "null");
+
+                int firstAdd = 0;
+                if (assign)
+                {
+                    firstAdd = 1;
+                    if (writeBaseline && !hasCell && oldest == rowWritetime && elementGroups.Count == 1)
+                        baselineProps.Add(prop);
+                    else
+                        AddToGroup(oldest, elementGroups[0].Expiry, column, elementGroups[0].Json);
+                }
+                for (int i = firstAdd; i < elementGroups.Count; i++)
                     adds.Add(new AddWrite(column, elementGroups[i].Wt, elementGroups[i].Expiry, elementGroups[i].Json));
+                AddKeyRemovals(column, true, keyDeletions, collectionDeletion);
                 continue;
             }
 
-            if (!isNull && cell.FieldExpiries is { } fieldExpiries
-                && TrySplitFields(value, fieldExpiries, cell.FieldWritetimes, defaultWt, floor,
-                    out var baseFields, out var baseWt, out var baseExpiry, out var extraFields))
+            // Non-frozen UDT.
+            string baseFields = string.Empty;
+            long baseWt = 0;
+            long? baseExpiry = null;
+            List<(string Field, long Wt, long? Expiry, string Json)> extraFields = [];
+            bool fieldSplit = cell.FieldExpiries is { } fieldExpiries
+                && TrySplitFields(value, fieldExpiries, cell.FieldWritetimes, wt,
+                    out baseFields, out baseWt, out baseExpiry, out extraFields);
+            long oldestField = fieldSplit ? baseWt : wt;
+            if (collectionDeletion is null || collectionDeletion == oldestField - 1)
             {
-                AddToGroup(baseWt, baseExpiry, column, baseFields);
-                foreach (var (field, fieldWt, expiry, json) in extraFields)
-                    fieldWrites.Add(new FieldWrite(column, field, fieldWt, expiry, json));
-                continue;
+                if (fieldSplit)
+                {
+                    AddToGroup(baseWt, baseExpiry, column, baseFields);
+                    foreach (var (field, fieldWt, expiry, json) in extraFields)
+                        fieldWrites.Add(new FieldWrite(column, field, fieldWt, expiry, json));
+                }
+                else if (writeBaseline && !hasCell && wt == rowWritetime)
+                    baselineProps.Add(prop);
+                else
+                    AddToGroup(wt, cell.ExpiryEpochSeconds, column, value.GetRawText());
             }
+            else
+            {
+                AddToGroup(collectionDeletion.Value + 1, null, column, "null");
+                if (value.ValueKind == JsonValueKind.Object)
+                {
+                    foreach (var field in value.EnumerateObject())
+                    {
+                        if (field.Value.ValueKind == JsonValueKind.Null) continue;
+                        string name = CqlIdentifier.Unquote(field.Name);
+                        fieldWrites.Add(new FieldWrite(column, name,
+                            cell.FieldWritetimes?.GetValueOrDefault(name) ?? wt,
+                            cell.FieldExpiries is { } fe && fe.TryGetValue(name, out var fx)
+                                ? fx
+                                : cell.ExpiryEpochSeconds,
+                            field.Value.GetRawText()));
+                    }
+                }
+            }
+            AddKeyRemovals(column, false, keyDeletions, collectionDeletion);
+        }
 
-            AddToGroup(wt, cell.ExpiryEpochSeconds, column, value.GetRawText());
+        void AddKeyRemovals(
+            CassandraColumn column,
+            bool isSetOrMap,
+            IReadOnlyList<KeyValuePair<string, long>>? keyDeletions,
+            long? collectionDeletion)
+        {
+            if (keyDeletions is null) return;
+            // Removals at or before the whole-column deletion are already covered by it.
+            var pending = keyDeletions.Where(d => collectionDeletion is not long cd || d.Value > cd);
+            if (!isSetOrMap)
+            {
+                foreach (var d in pending)
+                    fieldWrites.Add(new FieldWrite(column, CqlIdentifier.Unquote(d.Key), d.Value, null, "null"));
+                return;
+            }
+            foreach (var byTimestamp in pending.GroupBy(d => d.Value))
+                removes.Add(new RemoveWrite(column, byTimestamp.Key,
+                    RenderElementKeys(column, byTimestamp.Select(d => d.Key))));
         }
 
         bool useFullInsert = writeBaseline
-            && groups.Count == 0 && adds.Count == 0 && fieldWrites.Count == 0 && lists.Count == 0;
+            && groups.Count == 0 && adds.Count == 0 && fieldWrites.Count == 0
+            && lists.Count == 0 && removes.Count == 0;
 
         return new RowWritePlan(
             useFullInsert,
@@ -555,7 +677,8 @@ internal sealed class RegularRowWriteStrategy : IRowWriteStrategy
             groups,
             adds,
             fieldWrites,
-            lists);
+            lists,
+            removes);
     }
 
     /// <summary>
@@ -586,44 +709,46 @@ internal sealed class RegularRowWriteStrategy : IRowWriteStrategy
 
     /// <summary>
     /// Group the elements of a set (JSON array) or map (JSON object) by
-    /// writetime (lifted to at least <paramref name="floor"/>) and expiry,
-    /// ordered by writetime. Fails when the element count does not match the
-    /// metadata, in which case the column is written uniformly.
+    /// writetime and expiry, ordered by writetime. Fails when the element
+    /// count does not match the metadata, in which case the column is
+    /// written uniformly.
     /// </summary>
     private static bool TrySplitElements(
         JsonElement value,
         IReadOnlyList<long?> expiries,
         IReadOnlyList<long?>? writetimes,
         long defaultWt,
-        long floor,
         out List<(long Wt, long? Expiry, string Json)> groups)
     {
         groups = [];
-        int count = value.ValueKind switch
-        {
-            JsonValueKind.Array => value.GetArrayLength(),
-            JsonValueKind.Object => value.EnumerateObject().Count(),
-            _ => -1,
-        };
+        bool isArray = value.ValueKind == JsonValueKind.Array;
+        if (!isArray && value.ValueKind != JsonValueKind.Object)
+            return false;
+        var elements = isArray ? value.EnumerateArray().ToArray() : null;
+        var entries = isArray ? null : value.EnumerateObject().ToArray();
+        int count = elements?.Length ?? entries!.Length;
         if (count != expiries.Count || (writetimes is not null && writetimes.Count != count))
             return false;
 
-        var keys = new (long Wt, long? Expiry)[count];
+        var buckets = new Dictionary<(long Wt, long? Expiry), List<int>>();
+        var order = new List<(long Wt, long? Expiry)>();
         for (int i = 0; i < count; i++)
-            keys[i] = (Math.Max(writetimes?[i] ?? defaultWt, floor), expiries[i]);
-        var distinct = keys.Distinct().OrderBy(k => k.Wt).ToList();
-
-        if (value.ValueKind == JsonValueKind.Array)
         {
-            var elements = value.EnumerateArray().ToArray();
-            foreach (var key in distinct)
-                groups.Add((key.Wt, key.Expiry, WriteArray(elements.Where((_, i) => keys[i] == key))));
+            var key = (writetimes?[i] ?? defaultWt, expiries[i]);
+            if (!buckets.TryGetValue(key, out var indices))
+            {
+                buckets[key] = indices = [];
+                order.Add(key);
+            }
+            indices.Add(i);
         }
-        else
+
+        foreach (var key in order.OrderBy(k => k.Wt))
         {
-            var entries = value.EnumerateObject().ToArray();
-            foreach (var key in distinct)
-                groups.Add((key.Wt, key.Expiry, WriteObject(entries.Where((_, i) => keys[i] == key))));
+            var indices = buckets[key];
+            groups.Add((key.Wt, key.Expiry, isArray
+                ? WriteArray(indices.Select(i => elements![i]))
+                : WriteObject(indices.Select(i => entries![i]))));
         }
         return true;
     }
@@ -632,15 +757,13 @@ internal sealed class RegularRowWriteStrategy : IRowWriteStrategy
     /// Split a non-frozen UDT into the fields assigned together (the oldest
     /// writetime/expiry group plus every field without a cell) and the
     /// remaining fields, which are written one by one with their own
-    /// writetime and TTL. Writetimes are lifted to at least
-    /// <paramref name="floor"/>.
+    /// writetime and TTL.
     /// </summary>
     private static bool TrySplitFields(
         JsonElement value,
         IReadOnlyDictionary<string, long?> fieldExpiries,
         IReadOnlyDictionary<string, long?>? fieldWritetimes,
         long defaultWt,
-        long floor,
         out string baseJson,
         out long baseWt,
         out long? baseExpiry,
@@ -659,7 +782,7 @@ internal sealed class RegularRowWriteStrategy : IRowWriteStrategy
             return false;
 
         (long Wt, long? Expiry) KeyOf(string name) =>
-            (Math.Max(fieldWritetimes?.GetValueOrDefault(name) ?? defaultWt, floor), fieldExpiries[name]);
+            (fieldWritetimes?.GetValueOrDefault(name) ?? defaultWt, fieldExpiries[name]);
 
         var baseKey = fields
             .Where(f => fieldExpiries.ContainsKey(f.Name))
@@ -716,6 +839,57 @@ internal sealed class RegularRowWriteStrategy : IRowWriteStrategy
     /// </summary>
     internal static bool IsNonFrozenList(CassandraColumn column) =>
         column.Type.StartsWith("list<", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>True for a non-frozen set or map.</summary>
+    internal static bool IsNonFrozenSetOrMap(CassandraColumn column) =>
+        column.Type.StartsWith("set<", StringComparison.OrdinalIgnoreCase)
+        || column.Type.StartsWith("map<", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Render removed set elements or map keys, as reported by the source,
+    /// as a JSON array for <c>fromJson</c>. Scalar keys are passed as JSON
+    /// strings, which <c>fromJson</c> accepts for every scalar type; keys of
+    /// a frozen tuple/UDT/collection type are embedded as the JSON they
+    /// already are.
+    /// </summary>
+    internal static string RenderElementKeys(CassandraColumn column, IEnumerable<string> keys)
+    {
+        string type = column.Type;
+        int open = type.IndexOf('<');
+        string elementType = open < 0 ? string.Empty : type[(open + 1)..].TrimStart();
+        bool complexKey = elementType.StartsWith("frozen<", StringComparison.OrdinalIgnoreCase)
+            || elementType.StartsWith("tuple<", StringComparison.OrdinalIgnoreCase);
+
+        var buffer = new ArrayBufferWriter<byte>(64);
+        using (var writer = new Utf8JsonWriter(buffer))
+        {
+            writer.WriteStartArray();
+            foreach (var key in keys)
+            {
+                if (complexKey && TryParseJson(key, out var raw))
+                    raw.WriteTo(writer);
+                else
+                    writer.WriteStringValue(key);
+            }
+            writer.WriteEndArray();
+        }
+        return Encoding.UTF8.GetString(buffer.WrittenSpan);
+    }
+
+    private static bool TryParseJson(string text, out JsonElement element)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(text);
+            element = doc.RootElement.Clone();
+            return element.ValueKind is JsonValueKind.Array or JsonValueKind.Object;
+        }
+        catch (JsonException)
+        {
+            element = default;
+            return false;
+        }
+    }
 
     private static IReadOnlyList<CassandraColumn> OrderPrimaryKey(IEnumerable<CassandraColumn> columns) =>
         columns
