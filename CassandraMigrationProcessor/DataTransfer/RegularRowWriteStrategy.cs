@@ -523,6 +523,7 @@ internal sealed class RegularRowWriteStrategy : IRowWriteStrategy
                 && deletions.TryGetValue(column.Name, out deletion);
             bool isSetOrMap = IsNonFrozenSetOrMap(column);
             bool isMultiCell = isSetOrMap
+                || IsNonFrozenUdtValue(column, value)
                 || (hasDeletion && deletion.IsComplex)
                 || cell.FieldExpiries is not null;
 
@@ -599,7 +600,12 @@ internal sealed class RegularRowWriteStrategy : IRowWriteStrategy
                 continue;
             }
 
-            // Non-frozen UDT.
+            // Non-frozen UDT. Assigning the whole value records a deletion at
+            // T - 1, so it is used only when the source has exactly that
+            // deletion (INSERT or whole-value assignment), or when the column
+            // carries no metadata of its own. A UDT written through field
+            // updates has its own writetime but no deletion: it gets field
+            // writes so no deletion the source lacks is recorded.
             string baseFields = string.Empty;
             long baseWt = 0;
             long? baseExpiry = null;
@@ -608,7 +614,7 @@ internal sealed class RegularRowWriteStrategy : IRowWriteStrategy
                 && TrySplitFields(value, fieldExpiries, cell.FieldWritetimes, wt,
                     out baseFields, out baseWt, out baseExpiry, out extraFields);
             long oldestField = fieldSplit ? baseWt : wt;
-            if (collectionDeletion is null || collectionDeletion == oldestField - 1)
+            if (collectionDeletion == oldestField - 1 || (collectionDeletion is null && !hasCell))
             {
                 if (fieldSplit)
                 {
@@ -623,7 +629,8 @@ internal sealed class RegularRowWriteStrategy : IRowWriteStrategy
             }
             else
             {
-                AddToGroup(collectionDeletion.Value + 1, null, column, "null");
+                if (collectionDeletion is long cd)
+                    AddToGroup(cd + 1, null, column, "null");
                 if (value.ValueKind == JsonValueKind.Object)
                 {
                     foreach (var field in value.EnumerateObject())
@@ -839,6 +846,15 @@ internal sealed class RegularRowWriteStrategy : IRowWriteStrategy
     /// </summary>
     internal static bool IsNonFrozenList(CassandraColumn column) =>
         column.Type.StartsWith("list<", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// True for a live non-frozen UDT value: an object that is neither a map
+    /// nor a frozen type.
+    /// </summary>
+    internal static bool IsNonFrozenUdtValue(CassandraColumn column, JsonElement value) =>
+        value.ValueKind == JsonValueKind.Object
+        && !IsNonFrozenSetOrMap(column)
+        && !column.Type.StartsWith("frozen<", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>True for a non-frozen set or map.</summary>
     internal static bool IsNonFrozenSetOrMap(CassandraColumn column) =>

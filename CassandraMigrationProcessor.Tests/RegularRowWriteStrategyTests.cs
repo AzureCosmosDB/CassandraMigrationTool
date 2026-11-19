@@ -621,7 +621,8 @@ public sealed class RegularRowWriteStrategyTests
             new CdcRowMetadata(100, null, Cells(
                 ("u", new CdcCellMetadata(300, null,
                     FieldExpiries: new Dictionary<string, long?> { ["street"] = null, ["zip"] = null },
-                    FieldWritetimes: new Dictionary<string, long?> { ["street"] = 300, ["zip"] = 150 })))));
+                    FieldWritetimes: new Dictionary<string, long?> { ["street"] = 300, ["zip"] = 150 }))),
+                Deletions: new Dictionary<string, CdcCellDeletion> { ["u"] = Complex(149) }));
 
         var group = Assert.Single(plan.Groups);
         Assert.Equal(150, group.WritetimeMicros);
@@ -677,7 +678,8 @@ public sealed class RegularRowWriteStrategyTests
             """{"pk":"p","ck":1,"u":{"street":"s","zip":2,"note":null}}""",
             new CdcRowMetadata(100, null, Cells(
                 ("u", new CdcCellMetadata(150, null,
-                    FieldExpiries: new Dictionary<string, long?> { ["street"] = null, ["zip"] = 900 })))));
+                    FieldExpiries: new Dictionary<string, long?> { ["street"] = null, ["zip"] = 900 }))),
+                Deletions: new Dictionary<string, CdcCellDeletion> { ["u"] = Complex(149) }));
 
         var group = Assert.Single(plan.Groups);
         Assert.Null(group.ExpiryEpochSeconds);
@@ -813,6 +815,48 @@ public sealed class RegularRowWriteStrategyTests
             },
             plan.Removes.ToDictionary(r => r.Column.Name, r => (r.WritetimeMicros, r.KeysJson)));
         Assert.Contains(plan.FieldWrites, f => f.Field == "zip" && f.WritetimeMicros == T + 3000 && f.JsonValue == "null");
+    }
+
+    [Theory]
+    // Captured from Azure Cosmos DB for Apache Cassandra after
+    // UPDATE ... SET u.street = 'x' USING TIMESTAMP T on a new row.
+    [InlineData("""{"k": 1, "u": {"street": "x", "zip": null}, "__sys_clts": {"u": {"street": 1795061515000300, "zip": null}}, "__sys_rw_ts": null, "__sys_clts_tmbstn": null, "__sys_rw_tmbstn": null, "__sys_clttl": [0, {"u": {"street": [0, 0], "zip": null}}], "__sys_rw_ttl": null}""",
+        new[] { "street" })]
+    // ... SET u.street = 'x', u.zip = 5 USING TIMESTAMP T (uniform fields).
+    [InlineData("""{"k": 1, "u": {"street": "x", "zip": 5}, "__sys_clts": {"u": {"street": 1795061515000300, "zip": 1795061515000300}}, "__sys_rw_ts": null, "__sys_clts_tmbstn": null, "__sys_rw_tmbstn": null, "__sys_clttl": [0, {"u": {"street": [0, 0], "zip": [0, 0]}}], "__sys_rw_ttl": null}""",
+        new[] { "street", "zip" })]
+    public void CapturedFieldOnlyUdtIsWrittenPerFieldWithoutDeletion(string json, string[] fields)
+    {
+        // Assigning the whole UDT would record a deletion the source does not
+        // have and hide later source field writes with lower timestamps.
+        const long T = 1795061515000300;
+        CassandraColumn[] pk = [new("k", "int", "partition_key", "none", 0)];
+        var columns = pk.Append(new CassandraColumn("u", "addr", "regular", "none", -1))
+            .ToDictionary(c => c.Name, StringComparer.Ordinal);
+
+        var (row, metadata) = CdcJsonRowParser.ParseOnce(json);
+        var plan = RegularRowWriteStrategy.BuildRowWritePlan(row, metadata, pk, columns, Now);
+
+        Assert.Empty(plan.Groups);
+        Assert.Null(plan.BaselineJson);
+        Assert.Equal(fields, plan.FieldWrites.Select(f => f.Field));
+        Assert.All(plan.FieldWrites, f =>
+        {
+            Assert.Equal(T, f.WritetimeMicros);
+            Assert.Null(f.ExpiryEpochSeconds);
+        });
+    }
+
+    [Fact]
+    public void UdtWithoutMetadataIsAssignedWithTheRow()
+    {
+        var plan = Plan(
+            """{"pk":"p","ck":1,"v":"a","u":{"street":"s","zip":2}}""",
+            new CdcRowMetadata(100, null, Cells(("v", new CdcCellMetadata(200, null)))));
+
+        using var baseline = JsonDocument.Parse(plan.BaselineJson!);
+        Assert.Equal("""{"street":"s","zip":2}""", baseline.RootElement.GetProperty("u").GetRawText());
+        Assert.Empty(plan.FieldWrites);
     }
 
     [Fact]
