@@ -36,11 +36,10 @@ internal sealed class JobPipeline : IDisposable, IAsyncDisposable
             _control.Token,
             _control);
         var readerConfig = new ReaderConfig(pipelineConfig.PageSize, pipelineConfig.MaxReadRetries,
-            pipelineConfig.PreserveCellTtlAndWritetime, pipelineConfig.UseJsonCopy);
+            pipelineConfig.UseJsonCopy);
         var writerConfig = new WriterConfig(
             pipelineConfig.MaxWriteRetries,
             pipelineConfig.TargetWriteConsistencyLevel,
-            pipelineConfig.PreserveCellTtlAndWritetime,
             pipelineConfig.UseJsonCopy);
 
         Context = new PipelineContext(

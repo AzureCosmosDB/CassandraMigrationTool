@@ -14,7 +14,6 @@ namespace CassandraMigrationProcessor.DataTransfer;
 internal record WriterConfig(
     int MaxWriteRetries,
     ConsistencyLevel TargetWriteConsistencyLevel,
-    bool PreserveCellTtlAndWritetime = false,
     bool UseJsonCopy = true);
 
 /// <summary>
@@ -31,7 +30,6 @@ internal sealed class PageWriter : IDisposable
     private readonly ISession _targetSession;
     private readonly int _maxWriteRetries;
     private readonly ConsistencyLevel _targetWriteConsistencyLevel;
-    private readonly bool _preserveCellTtl;
     private readonly bool _useJsonCopy;
     private readonly ConcurrentDictionary<string, Task<IRowWriteStrategy>> _strategyCache = new();
     private readonly ConcurrentDictionary<string, Task> _udtRegistrations = new();
@@ -53,7 +51,6 @@ internal sealed class PageWriter : IDisposable
         _ct = cancellationToken;
         _maxWriteRetries = config.MaxWriteRetries;
         _targetWriteConsistencyLevel = config.TargetWriteConsistencyLevel;
-        _preserveCellTtl = config.PreserveCellTtlAndWritetime;
         _useJsonCopy = config.UseJsonCopy;
         _targetSession = targetSession;
     }
@@ -82,7 +79,6 @@ internal sealed class PageWriter : IDisposable
                 _maxWriteRetries,
                 partition.Table.IsCounterTable,
                 _targetWriteConsistencyLevel,
-                _preserveCellTtl,
                 _useJsonCopy);
         });
     }
@@ -154,6 +150,7 @@ internal sealed class PageWriter : IDisposable
         var writeTasks = new List<Task<WriteOutcome>>(rowCount);
 
         bool aborted = false;
+        bool isReplay = partition.Phase == PartitionPhase.Replay;
         for (int i = 0; i < rowCount; i++)
         {
             if (_ct.IsCancellationRequested
@@ -170,7 +167,7 @@ internal sealed class PageWriter : IDisposable
             // via the same LWW path the source took.
             var meta = metadata?[i];
             writeTasks.Add(jsonRows != null
-                ? strategy.WriteJsonRowAsync(jsonRows[i], counters, meta, _ct)
+                ? strategy.WriteJsonRowAsync(jsonRows[i], counters, meta, isReplay, _ct)
                 : strategy.WriteRowAsync(rows[i], counters, meta, _ct));
         }
 

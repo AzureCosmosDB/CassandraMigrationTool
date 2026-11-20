@@ -2,64 +2,59 @@ namespace CassandraMigrationProcessor.CassandraDriver;
 
 /// <summary>
 /// Per-row change-feed system metadata extracted from a
-/// <c>SELECT JSON *</c> response. The source surfaces these
-/// system columns only when both <c>JSON</c> projection and a
-/// change-feed clause (e.g. <c>COSMOS_CHANGEFEED_FROM_START()</c>)
-/// are present on the query. Plain <c>SELECT *</c> over the change
-/// feed strips them, which is why migrations historically lost TTL
-/// and writetime on every replicated row.
+/// <c>SELECT JSON *</c> response. The source surfaces these system columns
+/// only when both <c>JSON</c> projection and a change-feed clause are present
+/// on the query.
 /// </summary>
 /// <remarks>
-/// JSON shape (sampled from a live Cosmos source):
+/// JSON shape (sampled from a live source):
 /// <code>
 /// {
-///   "id":"...",
+///   "id":"...", "a":"x", "b":"y", "l":[1,2],
 ///   "__sys_rw_ts":1780568659180854,
-///   "__sys_clts":{"payload":1780568659180854},
-///   "__sys_rw_ttl":[86400,0],
-///   "__sys_clttl":[1780655059,{"payload":[86400,0]}],
-///   "__sys_rw_tmbstn":null,
-///   "__sys_clts_tmbstn":null
+///   "__sys_rw_ttl":[4000,0],
+///   "__sys_clts":{"a":1780568659180854,"b":1780568660000000,"l":[t1,t2],"u":{"f":t}},
+///   "__sys_clttl":[1780572659,{"a":[4000,0],"b":[0,0],"l":[[0,0],[300,-3700]],"u":{"f":[0,0]}}]
 /// }
 /// </code>
-/// Field semantics:
 /// <list type="bullet">
-///   <item><c>__sys_rw_ts</c> — row-liveness marker writetime,
-///         microseconds since Unix epoch. An UPDATE does not advance it,
-///         so cells whose <c>__sys_clts</c> writetime differs are
-///         replayed separately at their own timestamp
-///         (<see cref="PerColumn"/>).</item>
-///   <item><c>__sys_clts</c> — per-cell writetime map
-///         <c>{col: micros | [per-element micros]}</c>.</item>
-///   <item><c>__sys_rw_ttl[0]</c> identifies whether the row-liveness
-///         marker itself has a TTL. When it is positive,
-///         <c>__sys_clttl[0]</c> supplies its absolute expiry epoch.
-///         When it is zero, the row marker is permanent even if
-///         individual cells have TTLs.</item>
-///   <item><c>__sys_clttl[0]</c> is the absolute cell-expiry base in
-///         seconds. It is also the row-marker expiry only when
-///         <c>__sys_rw_ttl[0]</c> is positive. The destination's
-///         <c>USING TTL</c> takes a duration, so the writer computes
-///         <c>remaining = expiry - now_epoch_seconds</c>.</item>
-///   <item>Both <c>*ttl</c> arrays are <c>[0, 0]</c> when the source
-///         row has no TTL — that's how we distinguish "no expiry"
-///         from "already expired".</item>
+///   <item><c>__sys_rw_ts</c> — row-liveness (primary-key) marker writetime in
+///         microseconds. <c>null</c> for rows created only by UPDATE.</item>
+///   <item><c>__sys_rw_ttl</c> — <c>[duration, offset]</c> of the marker;
+///         <c>null</c> when there is no marker.</item>
+///   <item><c>__sys_clts</c> — per-cell writetime: a number for simple and
+///         frozen columns, an element array for non-frozen collections, and a
+///         field object for non-frozen UDTs.</item>
+///   <item><c>__sys_clttl</c> — <c>[base, detail]</c>; every
+///         <c>[duration, offset]</c> pair in <c>detail</c> (mirroring the
+///         <c>__sys_clts</c> shape) expires at <c>base + offset</c> when
+///         <c>duration &gt; 0</c>. A zero duration means "no TTL".</item>
+///   <item><c>__sys_clts_tmbstn</c> — per-column deletion timestamps: a
+///         number for simple and frozen columns, and
+///         <c>[collectionDeletion, {element: micros}]</c> for non-frozen
+///         collections.</item>
 /// </list>
 /// </remarks>
+/// <param name="WritetimeMicros">Row-marker writetime, or <c>null</c> when the
+/// source row has no marker.</param>
+/// <param name="ExpiryEpochSeconds">Row-marker absolute expiry, or <c>null</c>
+/// when the marker has no TTL (or there is no marker).</param>
+/// <param name="PerColumn">Columns whose writetime/expiry differ from the
+/// marker, or whose elements/fields carry differing expiries. Every live
+/// column is listed when the row has no marker.</param>
+/// <param name="LatestCellWritetimeMicros">Newest cell writetime in the row.</param>
+/// <param name="Deletions">Source deletions per column, decoded from
+/// <c>__sys_clts_tmbstn</c>; <c>null</c> when no column carries one.</param>
 internal sealed record CdcRowMetadata(
     long? WritetimeMicros,
     long? ExpiryEpochSeconds,
     IReadOnlyDictionary<string, CdcCellMetadata>? PerColumn = null,
-    long? LatestCellWritetimeMicros = null)
+    long? LatestCellWritetimeMicros = null,
+    IReadOnlyDictionary<string, CdcCellDeletion>? Deletions = null)
 {
     /// <summary>
-    /// Timestamp for a single-statement whole-row write: the newest of the
-    /// row-marker writetime (<c>__sys_rw_ts</c>) and every cell writetime
-    /// (<c>__sys_clts</c>). Rows whose cell writetimes diverge are split
-    /// (<see cref="HasPerColumnDivergence"/>), so on the single-statement
-    /// path this normally equals <c>__sys_rw_ts</c>; it supplies the
-    /// timestamp for UPDATE-only rows that have no row marker. <c>null</c>
-    /// when the source exposed neither value.
+    /// Newest of the marker writetime and every cell writetime; <c>null</c>
+    /// when the source exposed neither.
     /// </summary>
     public long? RowWriteTimestampMicros =>
         (WritetimeMicros, LatestCellWritetimeMicros) switch
@@ -71,58 +66,21 @@ internal sealed record CdcRowMetadata(
         };
 
     /// <summary>
-    /// True when the source row has a row-liveness marker. A null
-    /// <c>__sys_rw_ts</c> denotes an UPDATE-only row whose cells must be
-    /// replayed without an INSERT, otherwise the destination would gain a
-    /// marker that outlives its cells.
+    /// True when the source row has a row-liveness marker. Rows without one
+    /// are replayed through UPDATE only, so the destination does not gain a
+    /// marker that would keep an otherwise empty row alive.
     /// </summary>
     public bool HasRowMarker => WritetimeMicros.HasValue;
 
-    /// <summary>
-    /// True when the source row carries per-column metadata that diverges
-    /// from the row-level values: writetime and TTL with cell-level
-    /// preservation, writetime only (with the row TTL) in row-level mode.
-    /// When false the writer takes the single-statement fast
-    /// path (one <c>INSERT … JSON ? USING TIMESTAMP ? AND TTL ?</c>);
-    /// when true it restores the row-level liveness marker with one
-    /// partial INSERT and applies divergent cells with UPDATE statements
-    /// so each cell lands with its own timestamp without replacing
-    /// that marker. Writing such a row at one timestamp would either tie
-    /// an UPDATE-changed cell with its stale copy on the destination or
-    /// lift untouched cells above concurrent changes. <see cref="PerColumn"/>
-    /// is populated only for the columns whose metadata differs; every
-    /// other column remains in the row-level INSERT.
-    /// </summary>
+    /// <summary>True when at least one column diverges from the marker.</summary>
     public bool HasPerColumnDivergence => PerColumn is { Count: > 0 };
 
-    /// <summary>
-    /// Sentinel used to mark rows that have no TTL on the source.
-    /// Distinct from "expired" so the writer can omit <c>USING TTL</c>
-    /// entirely instead of writing with a positive (and therefore
-    /// incorrect) duration.
-    /// </summary>
+    /// <summary>True when the row marker carries a TTL.</summary>
     public bool HasTtl => ExpiryEpochSeconds.HasValue;
 
-    /// <summary>
-    /// True iff the source row's expiry has already elapsed by
-    /// <paramref name="nowEpochSeconds"/>. Callers in the bulk-copy
-    /// phase typically skip such rows; replay-phase callers write
-    /// them with <c>TTL 1</c> + source <c>USING TIMESTAMP</c> so the
-    /// destination converges on the expired state (see Option B
-    /// discussion in the PR description).
-    /// </summary>
     public bool IsExpiredAt(long nowEpochSeconds) =>
         HasTtl && ExpiryEpochSeconds!.Value <= nowEpochSeconds;
 
-    /// <summary>
-    /// Duration (seconds) to bind into the destination INSERT's
-    /// <c>USING TTL ?</c>. Returns <c>null</c> when the source row had
-    /// no TTL (caller should bind <c>0</c> to mean "no TTL" or, if the
-    /// prepared statement was built without the TTL slot, skip
-    /// binding). For expired rows the caller chooses between skipping
-    /// (bulk) and clamping to 1 (replay) — this method just reports
-    /// the raw signed remainder so the caller's intent is explicit.
-    /// </summary>
     public long? ComputeRemainingTtlSeconds(long nowEpochSeconds)
     {
         if (!HasTtl) return null;
@@ -131,24 +89,61 @@ internal sealed record CdcRowMetadata(
 }
 
 /// <summary>
-/// Per-column (per-cell) change-feed metadata decoded from the source's
-/// <c>__sys_clts</c> (writetime) and <c>__sys_clttl[1]</c> (per-column TTL)
-/// maps. Populated only when the row actually diverges from its row-level
-/// metadata; in row-level mode only writetime is compared and every cell
-/// carries the row-level expiry.
+/// Per-column change-feed metadata decoded from <c>__sys_clts</c> and
+/// <c>__sys_clttl</c>.
 /// </summary>
-/// <remarks>
-/// Non-frozen collection columns expose <em>per-element</em> writetime/TTL
-/// (arrays rather than scalars in those maps). CQL cannot re-apply that
-/// metadata per element, so they use the cell-expiry base as a
-/// whole-column TTL approximation and are replayed through UPDATE.
-/// </remarks>
-/// <param name="WritetimeMicros">Cell writetime in microseconds since the
-/// Unix epoch (from <c>__sys_clts[col]</c>), or <c>null</c> to inherit the
-/// row writetime.</param>
-/// <param name="ExpiryEpochSeconds">Absolute expiry epoch in seconds for
-/// the cell (<c>__sys_clttl[0] + offset</c>), or <c>null</c> when the cell
-/// has no TTL.</param>
+/// <param name="WritetimeMicros">Cell writetime; the newest element/field
+/// writetime for non-frozen collections and UDTs.</param>
+/// <param name="ExpiryEpochSeconds">Absolute expiry shared by the whole
+/// column, or <c>null</c> for no TTL. When elements/fields have differing
+/// expiries this is the longest one (<c>null</c> if any is immortal) and is
+/// only used as a fallback.</param>
+/// <param name="ElementExpiries">Per-element expiries, in value order, when a
+/// non-frozen list/set/map has elements with differing expiries or
+/// writetimes.</param>
+/// <param name="FieldExpiries">Per-field expiries (bare field names, fields
+/// with a cell only) when a non-frozen UDT has fields with differing
+/// expiries or writetimes.</param>
+/// <param name="ElementWritetimes">Per-element writetimes matching
+/// <paramref name="ElementExpiries"/>; <c>null</c> means every element was
+/// written at <paramref name="WritetimeMicros"/>.</param>
+/// <param name="FieldWritetimes">Per-field writetimes matching
+/// <paramref name="FieldExpiries"/>; <c>null</c> means every field was
+/// written at <paramref name="WritetimeMicros"/>.</param>
 internal readonly record struct CdcCellMetadata(
     long? WritetimeMicros,
-    long? ExpiryEpochSeconds);
+    long? ExpiryEpochSeconds,
+    IReadOnlyList<long?>? ElementExpiries = null,
+    IReadOnlyDictionary<string, long?>? FieldExpiries = null,
+    IReadOnlyList<long?>? ElementWritetimes = null,
+    IReadOnlyDictionary<string, long?>? FieldWritetimes = null)
+{
+    /// <summary>
+    /// True when elements or fields cannot all be written with one
+    /// writetime and TTL.
+    /// </summary>
+    public bool HasPerElementMetadata =>
+        ElementExpiries is not null || FieldExpiries is not null;
+}
+
+/// <summary>
+/// Deletions recorded by the source for one column.
+/// </summary>
+/// <param name="DeletedAtMicros">Newest deletion timestamp: the cell
+/// tombstone of a simple or frozen column, or the newest of the collection
+/// deletion and every element/field deletion of a multi-cell column.</param>
+/// <param name="IsComplex">True for a non-frozen collection or UDT, whose
+/// deletions cover the whole column and individual elements/fields rather
+/// than a single cell.</param>
+/// <param name="CollectionDeletionMicros">Multi-cell columns: timestamp of the
+/// deletion of the whole column (every element/field written at or before it
+/// is removed), or <c>null</c> when there is none. Assigning a multi-cell
+/// column records one at <c>timestamp - 1</c>.</param>
+/// <param name="KeyDeletions">Multi-cell columns: removed set elements, map
+/// keys or UDT fields, as rendered by the source, with the timestamp of each
+/// removal.</param>
+internal readonly record struct CdcCellDeletion(
+    long DeletedAtMicros,
+    bool IsComplex,
+    long? CollectionDeletionMicros = null,
+    IReadOnlyList<KeyValuePair<string, long>>? KeyDeletions = null);

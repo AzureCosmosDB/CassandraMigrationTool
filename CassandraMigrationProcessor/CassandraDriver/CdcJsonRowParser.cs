@@ -5,7 +5,7 @@ using System.Text.Json;
 namespace CassandraMigrationProcessor.CassandraDriver;
 
 /// <summary>
-/// Extracts CDC metadata (writetime + per-row TTL expiry) from a
+/// Extracts CDC metadata (row-marker and per-cell writetime/TTL) from a
 /// source <c>SELECT JSON *</c> envelope and returns the same envelope
 /// stripped of the synthetic <c>__sys_*</c> system columns so the
 /// destination can re-insert it via <c>INSERT INTO ... JSON ?</c>
@@ -13,35 +13,28 @@ namespace CassandraMigrationProcessor.CassandraDriver;
 /// </summary>
 /// <remarks>
 /// <para>
-/// The source surfaces per-row TTL and writetime only when both
-/// <c>JSON</c> projection and a change-feed clause are present on the
-/// query. Once the reader switches to <c>SELECT JSON *</c>, all type
-/// marshalling — including UDTs, tuples, decimals, varints, durations,
-/// and nested collections — is delegated to the destination Cassandra
-/// server via <c>INSERT JSON</c>, so this class no longer has to
-/// understand or re-implement CQL value coercion.
+/// Every row is decoded at cell granularity. The row-liveness marker
+/// (<c>__sys_rw_ts</c>/<c>__sys_rw_ttl</c>) is reported separately from the
+/// cells, and only columns whose writetime or expiry differs from the marker
+/// (or whose elements/fields expire at different times) are listed in
+/// <see cref="CdcRowMetadata.PerColumn"/>. Uniform rows therefore keep the
+/// single-statement fast path in the writer.
 /// </para>
 /// <para>
-/// Performance: metadata extraction and system-column stripping are
-/// done in a <em>single</em> traversal of the parsed row, writing the
-/// cleaned envelope into a reused buffer instead of a fresh
-/// <c>MemoryStream</c> per row. Instances are cheap and intended to be
-/// reused across all rows in a page (they are not thread-safe — use one
-/// per reading loop).
+/// Performance: metadata extraction and system-column stripping are done in
+/// a single forward-only traversal, writing the cleaned envelope into a
+/// reused buffer. Instances are cheap and intended to be reused across all
+/// rows in a page (they are not thread-safe — use one per reading loop).
 /// </para>
 /// </remarks>
 internal sealed class CdcJsonRowParser
 {
-    // System metadata column names emitted by the source when JSON +
-    // changefeed are both requested. Kept here (not as a Constants
-    // class) because they are an implementation contract of THIS
-    // decoder, not of the rest of the codebase.
     internal const string SysRwTimestampColumn = "__sys_rw_ts";
     internal const string SysRwTtlColumn = "__sys_rw_ttl";
     internal const string SysCellLevelTtlColumn = "__sys_clttl";
     internal const string SysCellLevelWritetimeColumn = "__sys_clts";
+    internal const string SysCellTombstoneColumn = "__sys_clts_tmbstn";
 
-    // Zero-alloc UTF-8 keys for property-name comparison on the hot path.
     private static readonly byte[] SysRwTimestampUtf8 =
         Encoding.UTF8.GetBytes(SysRwTimestampColumn);
     private static readonly byte[] SysRwTtlUtf8 =
@@ -50,81 +43,70 @@ internal sealed class CdcJsonRowParser
         Encoding.UTF8.GetBytes(SysCellLevelTtlColumn);
     private static readonly byte[] SysCellLevelWritetimeUtf8 =
         Encoding.UTF8.GetBytes(SysCellLevelWritetimeColumn);
+    private static readonly byte[] SysCellTombstoneUtf8 =
+        Encoding.UTF8.GetBytes(SysCellTombstoneColumn);
     private static ReadOnlySpan<byte> SysColumnPrefixUtf8 => "__sys_"u8;
 
-    // Reused across rows in a page: the output buffer and the writer are
-    // reset (not reallocated) per row, so a page of N rows allocates
-    // these once instead of N times. Validation is skipped because this
-    // writer only ever emits tokens copied from an already-parsed,
-    // structurally-valid source envelope.
     private readonly ArrayBufferWriter<byte> _buffer = new(initialCapacity: 4096);
     private readonly Utf8JsonWriter _writer;
 
-    // Reusable scratch buffers, grown on demand and kept for the life of
-    // the parser instance (i.e. one page), so hot-loop transcoding and
-    // raw-token reconstruction do not allocate per row.
     private byte[] _utf8 = new byte[8192];
     private byte[] _scratch = new byte[1024];
 
-    // Cell-level preservation. When enabled, the parser additionally
-    // decodes the per-column writetime (__sys_clts) and per-column TTL
-    // (__sys_clttl[1]) maps and, when they diverge from the row-level
-    // values, exposes them on CdcRowMetadata.PerColumn so the writer can
-    // re-apply each cell's own USING TIMESTAMP / USING TTL. When disabled
-    // (the default) the parser reduces each __sys_clts entry to that
-    // column's newest writetime and reports columns whose writetime differs
-    // from the row's, so the writer can replay them at their own timestamp
-    // while every cell keeps the row-level TTL; the TTL detail map is
-    // stripped. The scratch dictionaries are reused across rows
-    // (cleared, not reallocated) so a page of divergent rows does not
-    // allocate a fresh map per row.
-    private readonly bool _preserveCellLevel;
-    private readonly Dictionary<string, long> _colWritetime;
-    private readonly Dictionary<string, long?> _colExpiry;
+    // Per-row scratch state, cleared (not reallocated) for every row.
+    private readonly Dictionary<string, long> _colWritetime = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, List<long?>> _colElementWritetimes = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, Dictionary<string, long?>> _colFieldWritetimes = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, TtlEntry> _colTtl = new(StringComparer.Ordinal);
+    private readonly HashSet<string> _absentCells = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, CdcCellDeletion> _colDeletion = new(StringComparer.Ordinal);
+    private readonly List<string> _containerColumns = new();
+    private ArrayBufferWriter<byte>? _rewriteBuffer;
+    private Utf8JsonWriter? _rewriteWriter;
 
-    public CdcJsonRowParser(bool preserveCellLevel = false)
+    /// <summary><c>[duration, offset]</c> as reported by the source.</summary>
+    private readonly record struct TtlPair(long Duration, long Offset);
+
+    /// <summary>
+    /// Raw TTL detail of one column: a single pair (simple/frozen), one pair
+    /// per element (non-frozen collection) or one pair per field (non-frozen
+    /// UDT; <c>null</c> for fields without a cell).
+    /// </summary>
+    private readonly record struct TtlEntry(
+        TtlPair? Scalar,
+        List<TtlPair>? Elements,
+        List<KeyValuePair<string, TtlPair?>>? Fields);
+
+    public CdcJsonRowParser()
     {
         _writer = new Utf8JsonWriter(_buffer,
             new JsonWriterOptions { SkipValidation = true });
-        _preserveCellLevel = preserveCellLevel;
-        _colWritetime = new Dictionary<string, long>(StringComparer.Ordinal);
-        _colExpiry = preserveCellLevel
-            ? new Dictionary<string, long?>(StringComparer.Ordinal)
-            : EmptyExpiry;
     }
 
-    private static readonly Dictionary<string, long?> EmptyExpiry = new();
-
     /// <summary>
-    /// Parse one <c>SELECT JSON *</c> row payload (the single
-    /// <c>[json]</c> column the driver returns), extract the CDC
-    /// metadata, and return a cleaned JSON envelope that contains
-    /// every regular column from the source row but none of the
-    /// <c>__sys_*</c> system columns (which the destination table
-    /// does not define and would reject on <c>INSERT JSON</c>).
-    /// Metadata capture and stripping happen in one forward-only pass
-    /// over the row bytes — no intermediate document tree is built.
+    /// Parse one <c>SELECT JSON *</c> row payload, extract the CDC metadata,
+    /// and return a cleaned JSON envelope without the <c>__sys_*</c> columns.
     /// </summary>
-    /// <exception cref="JsonException">The driver returned a JSON
-    /// payload we cannot parse, or the row root was not a JSON object.</exception>
+    /// <exception cref="JsonException">The payload is not valid JSON, the row
+    /// root is not an object, or a system column has an unexpected shape.</exception>
     public (string CleanedJson, CdcRowMetadata Metadata) Parse(string jsonRow)
     {
-        // Transcode the driver's UTF-16 string into a reused UTF-8 buffer
-        // once, then read forward-only. This is the same single transcode
-        // JsonDocument.Parse(string) performs internally, but without the
-        // per-row document tree, LINQ closures, or MemoryStream/ToArray copy.
         int maxBytes = Encoding.UTF8.GetMaxByteCount(jsonRow.Length);
         if (_utf8.Length < maxBytes)
             _utf8 = new byte[Math.Max(maxBytes, _utf8.Length * 2)];
         int len = Encoding.UTF8.GetBytes(jsonRow, _utf8);
 
-        long? writetime = null;
+        long? markerWritetime = null;
+        TtlPair? markerTtl = null;
         long? latestCellWritetime = null;
-        long? rowTtlDurationSeconds = null;
-        long? cellBaseExpiryEpochSeconds = null;
+        long ttlBase = 0;
         _colWritetime.Clear();
-        if (_preserveCellLevel)
-            _colExpiry.Clear();
+        _colElementWritetimes.Clear();
+        _colFieldWritetimes.Clear();
+        _colTtl.Clear();
+        _absentCells.Clear();
+        _colDeletion.Clear();
+        _containerColumns.Clear();
 
         _buffer.Clear();
         _writer.Reset(_buffer);
@@ -140,19 +122,14 @@ internal sealed class CdcJsonRowParser
             if (reader.ValueTextEquals(SysRwTimestampUtf8))
             {
                 reader.Read();
-                // A JSON null (or an absent column) is the source's legitimate
-                // "no writetime" signal for this row — tolerate it and fall
-                // back to the default, exactly as pre-streaming versions did.
-                // Only a present, non-null value of the wrong shape means the
-                // source envelope violated the contract we depend on, and only
-                // that case fails loudly rather than dropping the metadata.
+                // null = the row has no liveness marker (UPDATE-only row).
                 if (reader.TokenType == JsonTokenType.Null)
                     continue;
                 if (reader.TokenType != JsonTokenType.Number)
                     throw new JsonException(
                         $"Malformed row payload: '{SysRwTimestampColumn}' was " +
                         $"{reader.TokenType}, expected a Number or Null.");
-                writetime = reader.GetInt64();
+                markerWritetime = reader.GetInt64();
                 continue;
             }
 
@@ -165,34 +142,15 @@ internal sealed class CdcJsonRowParser
                     throw new JsonException(
                         $"Malformed row payload: '{SysRwTtlColumn}' was " +
                         $"{reader.TokenType}, expected an array or Null.");
-
-                if (!reader.Read() || reader.TokenType != JsonTokenType.Number)
-                    throw new JsonException(
-                        $"Malformed row payload: '{SysRwTtlColumn}'[0] " +
-                        "must be the row TTL duration as a Number.");
-                long duration = reader.GetInt64();
-                if (duration > 0) rowTtlDurationSeconds = duration;
-
-                while (reader.Read() && reader.TokenType != JsonTokenType.EndArray)
-                    reader.Skip();
-                if (reader.TokenType != JsonTokenType.EndArray)
-                    throw new JsonException(
-                        $"Malformed row payload: '{SysRwTtlColumn}' did not terminate.");
+                markerTtl = ParseTtlPair(ref reader, SysRwTtlColumn);
                 continue;
             }
 
             if (reader.ValueTextEquals(SysCellLevelTtlUtf8))
             {
-                // __sys_clttl shape: [<expiry-epoch-seconds-or-0>, {<details>}]
-                // [0, ...] means the row has no TTL. Walk the whole array so
-                // stripping stays correct regardless of the column's position
-                // (SELECT JSON * does not guarantee __sys_* columns come last).
+                // [base, {col: detail}] — walk the whole array so stripping
+                // stays correct regardless of the column's position.
                 reader.Read();
-                // A JSON null (or an absent column) means the row has no
-                // cell-level TTL — the source emits this for rows without a
-                // TTL. Tolerate it (no expiry) as pre-streaming versions did;
-                // only a present, non-null value that is not the expected
-                // array is a contract violation worth failing on.
                 if (reader.TokenType == JsonTokenType.Null)
                     continue;
                 if (reader.TokenType != JsonTokenType.StartArray)
@@ -201,35 +159,23 @@ internal sealed class CdcJsonRowParser
                         $"{reader.TokenType}, expected an array or Null.");
 
                 bool first = true;
-                long baseExpiry = 0;
                 while (reader.Read() && reader.TokenType != JsonTokenType.EndArray)
                 {
                     if (first)
                     {
-                        // First element must be the expiry epoch (number).
                         if (reader.TokenType != JsonTokenType.Number)
                             throw new JsonException(
                                 $"Malformed row payload: '{SysCellLevelTtlColumn}'[0] " +
-                                $"was {reader.TokenType}, expected the expiry epoch as a Number.");
-                        baseExpiry = reader.GetInt64();
-                        if (baseExpiry > 0)
-                            cellBaseExpiryEpochSeconds = baseExpiry;
+                                $"was {reader.TokenType}, expected the expiry base as a Number.");
+                        ttlBase = reader.GetInt64();
                         first = false;
                     }
-                    else if (_preserveCellLevel
-                             && reader.TokenType == JsonTokenType.StartObject)
+                    else if (reader.TokenType == JsonTokenType.StartObject)
                     {
-                        // Second element is the per-column TTL detail map
-                        // {col:[ttl_duration_sec, expiry_offset_from_base_sec]}.
-                        // Decode it only in cell-level mode; otherwise it is
-                        // opaque and skipped below.
-                        ParseCellTtlDetail(ref reader, baseExpiry);
+                        ParseCellTtlDetail(ref reader);
                     }
                     else
                     {
-                        // Remaining elements are an opaque detail object we do
-                        // not consume; skipping them is intentional, not an
-                        // error path.
                         reader.Skip();
                     }
                 }
@@ -238,70 +184,57 @@ internal sealed class CdcJsonRowParser
 
             if (reader.ValueTextEquals(SysCellLevelWritetimeUtf8))
             {
+                // {col: micros | [element micros] | {field: micros}}. Element
+                // and field writetimes are kept so they can be replayed
+                // individually; the column's newest writetime is also kept.
                 reader.Read();
-                if (!_preserveCellLevel)
-                {
-                    // Row-level mode keeps one writetime per column (the newest
-                    // element for collections) so cells changed by an UPDATE
-                    // can be replayed at their own timestamp. Stay tolerant of
-                    // any shape here, as this column was previously stripped
-                    // without inspection.
-                    if (reader.TokenType == JsonTokenType.StartObject)
-                    {
-                        while (reader.Read() && reader.TokenType == JsonTokenType.PropertyName)
-                        {
-                            string col = CqlIdentifier.Unquote(reader.GetString());
-                            reader.Read();
-                            if (ReadLatestWritetime(ref reader) is long cellWritetime)
-                                _colWritetime[col] = cellWritetime;
-                        }
-                    }
-                    else
-                    {
-                        latestCellWritetime = Max(latestCellWritetime, ReadLatestWritetime(ref reader));
-                    }
-                    continue;
-                }
-
-                // __sys_clts shape: {col: <writetime-micros> | [per-element…]}.
-                // Scalar (and frozen) columns carry a single writetime number;
-                // non-frozen collections carry a per-element array. CQL can
-                // replay the collection as one value only when every element
-                // has the same writetime.
                 if (reader.TokenType == JsonTokenType.StartObject)
                 {
-                    while (reader.Read() && reader.TokenType != JsonTokenType.EndObject)
+                    while (reader.Read() && reader.TokenType == JsonTokenType.PropertyName)
                     {
                         string col = CqlIdentifier.Unquote(reader.GetString());
                         reader.Read();
-                        // Null = the column has no live cell (e.g. an unset
-                        // nullable column); it carries no writetime to preserve.
                         if (reader.TokenType == JsonTokenType.Null)
+                        {
+                            _absentCells.Add(col);
                             continue;
-                        if (reader.TokenType == JsonTokenType.Number)
-                            _colWritetime[col] = reader.GetInt64();
-                        else if (reader.TokenType == JsonTokenType.StartArray)
-                            ParseCollectionWritetime(ref reader, col);
-                        else
-                            throw new JsonException(
-                                $"Malformed row payload: '{SysCellLevelWritetimeColumn}' " +
-                                $"detail for '{col}' was {reader.TokenType}, expected a " +
-                                "Number or per-element array.");
+                        }
+                        if (ReadCellWritetimes(ref reader, col) is long cellWritetime)
+                            _colWritetime[col] = cellWritetime;
                     }
                 }
-                else if (reader.TokenType != JsonTokenType.Null)
+                else
                 {
-                    throw new JsonException(
-                        $"Malformed row payload: '{SysCellLevelWritetimeColumn}' was " +
-                        $"{reader.TokenType}, expected an object or Null.");
+                    latestCellWritetime = Max(latestCellWritetime, ReadLatestWritetime(ref reader));
                 }
                 continue;
             }
 
-            // Defensive: drop any future server-added __sys_* column so it
-            // cannot leak into the destination INSERT as an unknown column.
-            // Regular column names never start with "__sys_". Consume the
-            // value regardless of its position or shape.
+            if (reader.ValueTextEquals(SysCellTombstoneUtf8))
+            {
+                // {col: micros | [collectionDeletion, {element|field: micros}]}.
+                // Every deletion is kept with its own timestamp so the writer
+                // can replay each one exactly.
+                reader.Read();
+                if (reader.TokenType == JsonTokenType.StartObject)
+                {
+                    while (reader.Read() && reader.TokenType == JsonTokenType.PropertyName)
+                    {
+                        string col = CqlIdentifier.Unquote(reader.GetString());
+                        reader.Read();
+                        if (ReadDeletion(ref reader) is { } deletion)
+                            _colDeletion[col] = deletion;
+                    }
+                }
+                else
+                {
+                    reader.Skip();
+                }
+                continue;
+            }
+
+            // Drop any other server-added __sys_* column so it cannot leak into
+            // the destination INSERT as an unknown column.
             var name = reader.ValueSpan;
             if (name.Length >= SysColumnPrefixUtf8.Length
                 && name.Slice(0, SysColumnPrefixUtf8.Length)
@@ -312,47 +245,61 @@ internal sealed class CdcJsonRowParser
                 continue;
             }
 
-            // Regular column: emit name + value into the cleaned envelope.
+            var nameReader = reader;
             WritePropertyName(ref reader, _writer);
             reader.Read();
+            if (reader.TokenType is JsonTokenType.StartArray or JsonTokenType.StartObject)
+                _containerColumns.Add(CqlIdentifier.Unquote(nameReader.GetString()));
             CopyValue(ref reader, _writer);
         }
 
         _writer.WriteEndObject();
         _writer.Flush();
 
-        // Guard against trailing content after the root object. Unlike
-        // JsonDocument.Parse, a forward-only reader would otherwise silently
-        // ignore a second value or stray non-whitespace bytes.
         if (reader.TokenType != JsonTokenType.EndObject)
             throw new JsonException("Malformed row payload: unterminated root object.");
         if (reader.Read())
             throw new JsonException("Unexpected trailing content after row object.");
 
-        var cleaned = Encoding.UTF8.GetString(_buffer.WrittenSpan);
-        long? rowMarkerExpiryEpochSeconds =
-            rowTtlDurationSeconds.HasValue && cellBaseExpiryEpochSeconds.HasValue
-                ? cellBaseExpiryEpochSeconds
-                : null;
-        long? effectiveExpiryEpochSeconds = _preserveCellLevel
-            ? rowMarkerExpiryEpochSeconds
-            : cellBaseExpiryEpochSeconds;
+        var cleaned = NeedsAbsentCellRewrite()
+            ? RewriteAbsentCellsAsNull(_buffer.WrittenSpan)
+            : Encoding.UTF8.GetString(_buffer.WrittenSpan);
+
         foreach (var cellWritetime in _colWritetime.Values)
             latestCellWritetime = Max(latestCellWritetime, cellWritetime);
-        var perColumn = _preserveCellLevel
-            ? BuildPerColumnDivergence(
-                writetime,
-                rowMarkerExpiryEpochSeconds,
-                cellBaseExpiryEpochSeconds)
-            : BuildRowLevelWritetimeDivergence(
-                writetime ?? latestCellWritetime,
-                cellBaseExpiryEpochSeconds);
+
+        long nowEpochSeconds = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        long? markerExpiry = markerWritetime.HasValue && markerTtl is TtlPair mt
+            ? ResolveExpiry(mt, ttlBase, nowEpochSeconds)
+            : null;
+
+        var perColumn = BuildPerColumn(
+            markerWritetime, markerExpiry, ttlBase, nowEpochSeconds);
         return (cleaned, new CdcRowMetadata(
-            writetime, effectiveExpiryEpochSeconds, perColumn, latestCellWritetime));
+            markerWritetime, markerExpiry, perColumn, latestCellWritetime,
+            _colDeletion.Count == 0
+                ? null
+                : new Dictionary<string, CdcCellDeletion>(_colDeletion, StringComparer.Ordinal)));
     }
 
     private static long? Max(long? a, long? b) =>
         a is long x && b is long y ? Math.Max(x, y) : a ?? b;
+
+    /// <summary>
+    /// Absolute expiry of one <c>[duration, offset]</c> pair: <c>base +
+    /// offset</c> when the duration is positive, <c>null</c> (no TTL)
+    /// otherwise. If the source reports a positive duration without a usable
+    /// base, the time the TTL was applied is unknown (it is unrelated to the
+    /// cell's <c>USING TIMESTAMP</c>), so the full duration is counted from
+    /// now: the cell then never expires before it does on the source.
+    /// </summary>
+    private static long? ResolveExpiry(TtlPair pair, long ttlBase, long nowEpochSeconds)
+    {
+        if (pair.Duration <= 0)
+            return null;
+        long expiry = ttlBase + pair.Offset;
+        return expiry > 0 ? expiry : nowEpochSeconds + pair.Duration;
+    }
 
     /// <summary>
     /// Return the largest integer anywhere in the value the reader is
@@ -382,37 +329,141 @@ internal sealed class CdcJsonRowParser
     }
 
     /// <summary>
-    /// Decode the <c>__sys_clttl</c> detail object
-    /// <c>{col:[ttl_duration_sec, expiry_offset_from_base_sec]}</c> into
-    /// <see cref="_colExpiry"/>. A per-column absolute expiry is
-    /// <c>baseExpiry + offset</c>; a duration of <c>0</c> means that column
-    /// has no TTL (recorded as a present-but-null entry so it is
-    /// distinguishable from "inherit the row expiry"). Non-frozen
-    /// collection columns present an array-of-arrays instead of a
-    /// <c>[dur, offset]</c> pair. They are collapsed to one column expiry only
-    /// when every element has the same expiry; heterogeneous element expiry
-    /// cannot be represented by one CQL UPDATE and fails explicitly.
-    /// The reader is positioned on the detail <c>StartObject</c> and is left
-    /// on its matching <c>EndObject</c>.
+    /// Decode one <c>__sys_clts_tmbstn</c> column entry: a number for a
+    /// simple or frozen cell, <c>[collectionDeletion, {key: micros}]</c> for
+    /// a non-frozen collection or UDT (keys are elements, map keys or field
+    /// names), or a bare <c>{key: micros}</c> object. Null timestamps mean
+    /// "no deletion". Returns <c>null</c> when the entry holds no deletion.
     /// </summary>
-    private void ParseCellTtlDetail(ref Utf8JsonReader reader, long baseExpiry)
+    private static CdcCellDeletion? ReadDeletion(ref Utf8JsonReader reader)
+    {
+        if (reader.TokenType == JsonTokenType.Number)
+            return reader.TryGetInt64(out long simple) ? new CdcCellDeletion(simple, false) : null;
+        if (reader.TokenType is not (JsonTokenType.StartArray or JsonTokenType.StartObject))
+        {
+            reader.Skip();
+            return null;
+        }
+
+        long? collectionDeletion = null;
+        List<KeyValuePair<string, long>>? keyDeletions = null;
+
+        void ReadKeys(ref Utf8JsonReader r)
+        {
+            while (r.Read() && r.TokenType == JsonTokenType.PropertyName)
+            {
+                string key = r.GetString()!;
+                r.Read();
+                if (r.TokenType == JsonTokenType.Number && r.TryGetInt64(out long micros))
+                    (keyDeletions ??= []).Add(new(key, micros));
+                else
+                    r.Skip();
+            }
+        }
+
+        if (reader.TokenType == JsonTokenType.StartObject)
+        {
+            ReadKeys(ref reader);
+        }
+        else
+        {
+            bool first = true;
+            while (reader.Read() && reader.TokenType != JsonTokenType.EndArray)
+            {
+                if (first && reader.TokenType == JsonTokenType.Number
+                    && reader.TryGetInt64(out long collection))
+                    collectionDeletion = collection;
+                else if (reader.TokenType == JsonTokenType.StartObject)
+                    ReadKeys(ref reader);
+                else
+                    reader.Skip();
+                first = false;
+            }
+        }
+
+        if (collectionDeletion is null && keyDeletions is null)
+            return null;
+        long latest = collectionDeletion ?? long.MinValue;
+        if (keyDeletions is not null)
+            foreach (var d in keyDeletions)
+                latest = Math.Max(latest, d.Value);
+        return new CdcCellDeletion(latest, true, collectionDeletion, keyDeletions);
+    }
+
+    /// <summary>
+    /// Read one <c>__sys_clts</c> column entry, recording element (array) or
+    /// field (object) writetimes, and return the column's newest writetime.
+    /// Unexpected nested shapes fall back to the newest number found.
+    /// </summary>
+    private long? ReadCellWritetimes(ref Utf8JsonReader reader, string col)
+    {
+        if (reader.TokenType is not (JsonTokenType.StartArray or JsonTokenType.StartObject))
+            return ReadLatestWritetime(ref reader);
+
+        var scan = reader;
+        long? latest = ReadLatestWritetime(ref reader);
+
+        if (scan.TokenType == JsonTokenType.StartArray)
+        {
+            var elements = new List<long?>();
+            while (scan.Read() && scan.TokenType != JsonTokenType.EndArray)
+            {
+                if (scan.TokenType == JsonTokenType.Number && scan.TryGetInt64(out long t))
+                    elements.Add(t);
+                else if (scan.TokenType == JsonTokenType.Null)
+                    elements.Add(null);
+                else
+                    return latest;
+            }
+            _colElementWritetimes[col] = elements;
+            return latest;
+        }
+
+        var fields = new Dictionary<string, long?>(StringComparer.Ordinal);
+        while (scan.Read() && scan.TokenType == JsonTokenType.PropertyName)
+        {
+            string field = CqlIdentifier.Unquote(scan.GetString());
+            scan.Read();
+            if (scan.TokenType == JsonTokenType.Number && scan.TryGetInt64(out long t))
+                fields[field] = t;
+            else if (scan.TokenType == JsonTokenType.Null)
+                fields[field] = null;
+            else
+                return latest;
+        }
+        _colFieldWritetimes[col] = fields;
+        return latest;
+    }
+
+    /// <summary>
+    /// Decode the <c>__sys_clttl</c> detail object. Each column is a
+    /// <c>[duration, offset]</c> pair, an array of pairs (one per collection
+    /// element) or an object of pairs (one per UDT field). The reader is
+    /// positioned on the detail <c>StartObject</c> and is left on its
+    /// matching <c>EndObject</c>.
+    /// </summary>
+    private void ParseCellTtlDetail(ref Utf8JsonReader reader)
     {
         while (reader.Read() && reader.TokenType != JsonTokenType.EndObject)
         {
             string col = CqlIdentifier.Unquote(reader.GetString());
             reader.Read();
-            // Null = the column has no live cell; it carries no TTL.
-            if (reader.TokenType == JsonTokenType.Null)
-                continue;
-            if (reader.TokenType != JsonTokenType.StartArray)
+            switch (reader.TokenType)
             {
-                throw new JsonException(
-                    $"Malformed row payload: '{SysCellLevelTtlColumn}' detail " +
-                    $"for '{col}' was {reader.TokenType}, expected an array.");
+                case JsonTokenType.Null:
+                    continue;
+                case JsonTokenType.StartObject:
+                    _colTtl[col] = new TtlEntry(null, null, ParseFieldTtls(ref reader, col));
+                    continue;
+                case JsonTokenType.StartArray:
+                    break;
+                default:
+                    throw new JsonException(
+                        $"Malformed row payload: '{SysCellLevelTtlColumn}' detail " +
+                        $"for '{col}' was {reader.TokenType}, expected an array or object.");
             }
 
-            // Peek the first array element on a copy of the reader to tell a
-            // scalar [dur, offset] pair from a collection [[dur,off],…].
+            // Peek on a copy of the reader to tell [dur, off] from [[dur,off],…].
             var peek = reader;
             if (!peek.Read())
                 throw new JsonException(
@@ -425,218 +476,292 @@ internal sealed class CdcJsonRowParser
                 continue;
             }
 
-            if (peek.TokenType == JsonTokenType.StartArray)
+            if (peek.TokenType == JsonTokenType.Number)
             {
-                ParseCollectionTtl(ref reader, col, baseExpiry);
+                _colTtl[col] = new TtlEntry(ParseTtlPair(ref reader, col), null, null);
                 continue;
             }
 
-            if (peek.TokenType != JsonTokenType.Number)
+            if (peek.TokenType != JsonTokenType.StartArray)
                 throw new JsonException(
                     $"Malformed row payload: '{SysCellLevelTtlColumn}' detail " +
                     $"for '{col}' began with {peek.TokenType}, expected a TTL " +
                     "duration or per-element array.");
 
-            _colExpiry[col] = ParseTtlPair(ref reader, col, baseExpiry);
-        }
-    }
-
-    /// <summary>
-    /// Collapse a non-frozen collection's per-element writetimes to one
-    /// column writetime. A heterogeneous collection cannot be reconstructed
-    /// exactly through one whole-column UPDATE, so fail instead of silently
-    /// changing last-write-wins semantics.
-    /// </summary>
-    private void ParseCollectionWritetime(
-        ref Utf8JsonReader reader,
-        string col)
-    {
-        bool hasValue = false;
-        long commonWritetime = 0;
-
-        while (reader.Read())
-        {
-            if (reader.TokenType == JsonTokenType.EndArray)
+            var elements = new List<TtlPair>();
+            while (reader.Read() && reader.TokenType != JsonTokenType.EndArray)
             {
-                if (hasValue)
-                    _colWritetime[col] = commonWritetime;
-                return;
+                if (reader.TokenType != JsonTokenType.StartArray)
+                    throw new JsonException(
+                        $"Malformed row payload: '{SysCellLevelTtlColumn}' element " +
+                        $"metadata for '{col}' was {reader.TokenType}, expected an array.");
+                elements.Add(ParseTtlPair(ref reader, col));
             }
-
-            if (reader.TokenType != JsonTokenType.Number)
-                throw new JsonException(
-                    $"Malformed row payload: '{SysCellLevelWritetimeColumn}' " +
-                    $"element metadata for '{col}' was {reader.TokenType}, " +
-                    "expected a Number.");
-
-            long elementWritetime = reader.GetInt64();
-            if (!hasValue)
-            {
-                commonWritetime = elementWritetime;
-                hasValue = true;
-            }
-            else if (elementWritetime != commonWritetime)
-            {
-                throw new NotSupportedException(
-                    $"Cannot preserve element-level writetimes for non-frozen " +
-                    $"collection column '{col}' because its elements have " +
-                    "different writetimes.");
-            }
-        }
-
-        throw new JsonException(
-            $"Malformed row payload: '{SysCellLevelWritetimeColumn}' element " +
-            $"metadata for '{col}' did not terminate.");
-    }
-
-    /// <summary>
-    /// Collapse a non-frozen collection's per-element TTL pairs to one
-    /// absolute column expiry, retaining each pair's offset from the shared
-    /// base. Empty collections contribute no cell metadata.
-    /// </summary>
-    private void ParseCollectionTtl(
-        ref Utf8JsonReader reader,
-        string col,
-        long baseExpiry)
-    {
-        bool hasValue = false;
-        long? commonExpiry = null;
-
-        while (reader.Read())
-        {
-            if (reader.TokenType == JsonTokenType.EndArray)
-            {
-                if (hasValue)
-                    _colExpiry[col] = commonExpiry;
-                return;
-            }
-
-            if (reader.TokenType != JsonTokenType.StartArray)
+            if (reader.TokenType != JsonTokenType.EndArray)
                 throw new JsonException(
                     $"Malformed row payload: '{SysCellLevelTtlColumn}' element " +
-                    $"metadata for '{col}' was {reader.TokenType}, expected an array.");
-
-            long? elementExpiry = ParseTtlPair(ref reader, col, baseExpiry);
-            if (!hasValue)
-            {
-                commonExpiry = elementExpiry;
-                hasValue = true;
-            }
-            else if (elementExpiry != commonExpiry)
-            {
-                throw new NotSupportedException(
-                    $"Cannot preserve element-level TTL for non-frozen collection " +
-                    $"column '{col}' because its elements have different expiries.");
-            }
+                    $"metadata for '{col}' did not terminate.");
+            _colTtl[col] = new TtlEntry(null, elements, null);
         }
+    }
 
-        throw new JsonException(
-            $"Malformed row payload: '{SysCellLevelTtlColumn}' element metadata " +
-            $"for '{col}' did not terminate.");
+    private static List<KeyValuePair<string, TtlPair?>> ParseFieldTtls(
+        ref Utf8JsonReader reader, string col)
+    {
+        var fields = new List<KeyValuePair<string, TtlPair?>>();
+        while (reader.Read() && reader.TokenType == JsonTokenType.PropertyName)
+        {
+            string field = CqlIdentifier.Unquote(reader.GetString());
+            reader.Read();
+            if (reader.TokenType == JsonTokenType.Null)
+            {
+                fields.Add(new(field, null));
+                continue;
+            }
+            if (reader.TokenType != JsonTokenType.StartArray)
+                throw new JsonException(
+                    $"Malformed row payload: '{SysCellLevelTtlColumn}' field " +
+                    $"metadata for '{col}.{field}' was {reader.TokenType}, expected an array.");
+            fields.Add(new(field, ParseTtlPair(ref reader, $"{col}.{field}")));
+        }
+        if (reader.TokenType != JsonTokenType.EndObject)
+            throw new JsonException(
+                $"Malformed row payload: '{SysCellLevelTtlColumn}' field " +
+                $"metadata for '{col}' did not terminate.");
+        return fields;
     }
 
     /// <summary>
     /// Parse one <c>[duration, offset]</c> pair. The reader starts on the
     /// pair's <c>StartArray</c> and ends on its <c>EndArray</c>.
     /// </summary>
-    private static long? ParseTtlPair(
-        ref Utf8JsonReader reader,
-        string col,
-        long baseExpiry)
+    private static TtlPair ParseTtlPair(ref Utf8JsonReader reader, string col)
     {
         if (!reader.Read() || reader.TokenType != JsonTokenType.Number)
             throw new JsonException(
-                $"Malformed row payload: '{SysCellLevelTtlColumn}' TTL duration " +
-                $"for '{col}' must be a Number.");
+                $"Malformed row payload: TTL duration for '{col}' must be a Number.");
         long duration = reader.GetInt64();
         if (duration < 0)
             throw new JsonException(
-                $"Malformed row payload: '{SysCellLevelTtlColumn}' TTL duration " +
-                $"for '{col}' cannot be negative.");
+                $"Malformed row payload: TTL duration for '{col}' cannot be negative.");
 
         if (!reader.Read() || reader.TokenType != JsonTokenType.Number)
             throw new JsonException(
-                $"Malformed row payload: '{SysCellLevelTtlColumn}' expiry offset " +
-                $"for '{col}' must be a Number.");
+                $"Malformed row payload: TTL expiry offset for '{col}' must be a Number.");
         long offset = reader.GetInt64();
 
         if (!reader.Read() || reader.TokenType != JsonTokenType.EndArray)
             throw new JsonException(
-                $"Malformed row payload: '{SysCellLevelTtlColumn}' TTL detail " +
-                $"for '{col}' must contain exactly two numbers.");
+                $"Malformed row payload: TTL detail for '{col}' must contain exactly two numbers.");
 
-        if (duration == 0)
-            return null;
-        if (baseExpiry <= 0)
-            throw new JsonException(
-                $"Malformed row payload: '{SysCellLevelTtlColumn}' has a positive " +
-                $"TTL for '{col}' but no positive base expiry.");
-        return checked(baseExpiry + offset);
+        return new TtlPair(duration, offset);
     }
 
     /// <summary>
-    /// Fold the decoded per-column writetime/TTL maps into a divergence
-    /// map. Only columns whose resolved (writetime, expiry) differs from
-    /// the row-level values are returned; when every scalar column matches
-    /// the row level (the overwhelmingly common case) the result is
-    /// <c>null</c> and the writer keeps its single-statement fast path.
+    /// Resolve every column's writetime and expiry and return those that
+    /// cannot be written together with the row marker: a different
+    /// writetime or expiry, or elements/fields with differing expiries.
+    /// Without a marker every live column is returned. <c>null</c> when
+    /// nothing diverges.
     /// </summary>
-    private Dictionary<string, CdcCellMetadata>? BuildPerColumnDivergence(
-        long? rowWritetime,
-        long? rowExpiry,
-        long? cellBaseExpiry)
+    private Dictionary<string, CdcCellMetadata>? BuildPerColumn(
+        long? markerWritetime,
+        long? markerExpiry,
+        long ttlBase,
+        long nowEpochSeconds)
     {
-        if (_colWritetime.Count == 0 && _colExpiry.Count == 0)
+        if (_colWritetime.Count == 0 && _colTtl.Count == 0)
             return null;
 
-        Dictionary<string, CdcCellMetadata>? diverged = null;
+        bool hasMarker = markerWritetime.HasValue;
+        Dictionary<string, CdcCellMetadata>? result = null;
 
         foreach (var col in EnumerateCellColumns())
         {
-            long? cellWt = _colWritetime.TryGetValue(col, out var wt) ? wt : rowWritetime;
-            long? cellExp = _colExpiry.TryGetValue(col, out var exp)
-                ? exp
-                : cellBaseExpiry;
+            long? wt = _colWritetime.TryGetValue(col, out var w) ? w : markerWritetime;
+            var cell = ResolveCell(
+                col, wt, hasMarker ? markerExpiry : null, ttlBase, nowEpochSeconds);
 
-            if (cellWt != rowWritetime || cellExp != rowExpiry)
-            {
-                diverged ??= new Dictionary<string, CdcCellMetadata>(StringComparer.Ordinal);
-                diverged[col] = new CdcCellMetadata(cellWt, cellExp);
-            }
+            if (hasMarker
+                && cell.WritetimeMicros == markerWritetime
+                && cell.ExpiryEpochSeconds == markerExpiry
+                && !cell.HasPerElementMetadata)
+                continue;
+
+            result ??= new Dictionary<string, CdcCellMetadata>(StringComparer.Ordinal);
+            result[col] = cell;
         }
 
-        return diverged;
+        return result;
     }
 
     /// <summary>
-    /// Row-level counterpart of <see cref="BuildPerColumnDivergence"/>:
-    /// returns the columns whose writetime differs from
-    /// <paramref name="baselineWritetime"/>, each carrying the row-level
-    /// expiry so TTL semantics stay identical to a single whole-row INSERT.
-    /// <c>null</c> when every cell matches, keeping the single-statement path.
+    /// Resolve one column's writetime and expiry. Collection elements and
+    /// UDT fields are reported individually only when they do not all share
+    /// one writetime and expiry.
     /// </summary>
-    private Dictionary<string, CdcCellMetadata>? BuildRowLevelWritetimeDivergence(
-        long? baselineWritetime,
-        long? rowExpiry)
+    private CdcCellMetadata ResolveCell(
+        string col, long? wt, long? defaultExpiry, long ttlBase, long nowEpochSeconds)
     {
-        Dictionary<string, CdcCellMetadata>? diverged = null;
-        foreach (var (col, cellWt) in _colWritetime)
+        bool hasTtl = _colTtl.TryGetValue(col, out var ttl);
+        if (hasTtl && ttl.Scalar is TtlPair pair)
+            return new CdcCellMetadata(wt, ResolveExpiry(pair, ttlBase, nowEpochSeconds));
+
+        var elementTtls = hasTtl ? ttl.Elements : null;
+        var elementWts = _colElementWritetimes.GetValueOrDefault(col);
+        if (elementTtls is not null || elementWts is not null)
         {
-            if (cellWt == baselineWritetime)
-                continue;
-            diverged ??= new Dictionary<string, CdcCellMetadata>(StringComparer.Ordinal);
-            diverged[col] = new CdcCellMetadata(cellWt, rowExpiry);
+            int count = elementTtls?.Count ?? elementWts!.Count;
+            if (count == 0)
+                return new CdcCellMetadata(wt, defaultExpiry);
+            if (elementWts is not null && elementWts.Count != count)
+                elementWts = null;
+
+            var writetimes = new long?[count];
+            var expiries = new long?[count];
+            for (int i = 0; i < count; i++)
+            {
+                writetimes[i] = elementWts?[i] ?? wt;
+                expiries[i] = elementTtls is null
+                    ? defaultExpiry
+                    : ResolveExpiry(elementTtls[i], ttlBase, nowEpochSeconds);
+            }
+            if (Uniform(expiries, out var common) && Uniform(writetimes, out _))
+                return new CdcCellMetadata(wt, common);
+            return new CdcCellMetadata(wt, Longest(expiries),
+                ElementExpiries: expiries, ElementWritetimes: writetimes);
         }
-        return diverged;
+
+        var fieldTtls = hasTtl ? ttl.Fields : null;
+        var fieldWts = _colFieldWritetimes.GetValueOrDefault(col);
+        if (fieldTtls is null && fieldWts is null)
+            return new CdcCellMetadata(wt, defaultExpiry);
+
+        // Only fields with a live cell are reported.
+        var fieldExpiries = new Dictionary<string, long?>(StringComparer.Ordinal);
+        var fieldWritetimes = new Dictionary<string, long?>(StringComparer.Ordinal);
+        if (fieldTtls is not null)
+        {
+            foreach (var (field, fieldPair) in fieldTtls)
+            {
+                if (fieldPair is not TtlPair fp)
+                    continue;
+                long? fieldWt = fieldWts?.GetValueOrDefault(field) ?? wt;
+                fieldWritetimes[field] = fieldWt;
+                fieldExpiries[field] = ResolveExpiry(fp, ttlBase, nowEpochSeconds);
+            }
+        }
+        else
+        {
+            foreach (var (field, fieldWt) in fieldWts!)
+            {
+                if (fieldWt is null)
+                    continue;
+                fieldWritetimes[field] = fieldWt;
+                fieldExpiries[field] = defaultExpiry;
+            }
+        }
+
+        return Uniform(fieldExpiries.Values, out var fieldCommon) && Uniform(fieldWritetimes.Values, out _)
+            ? new CdcCellMetadata(wt, fieldCommon)
+            : new CdcCellMetadata(wt, Longest(fieldExpiries.Values),
+                FieldExpiries: fieldExpiries, FieldWritetimes: fieldWritetimes);
     }
 
-    /// <summary>Union of the column names seen in either per-column map.</summary>
+    private static bool Uniform(IEnumerable<long?> values, out long? common)
+    {
+        common = null;
+        bool first = true;
+        foreach (var v in values)
+        {
+            if (first)
+            {
+                common = v;
+                first = false;
+            }
+            else if (v != common)
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /// <summary>Longest expiry; <c>null</c> (immortal) wins over any value.</summary>
+    private static long? Longest(IEnumerable<long?> values)
+    {
+        long? longest = null;
+        foreach (var v in values)
+        {
+            if (v is null)
+                return null;
+            longest = Max(longest, v);
+        }
+        return longest;
+    }
+
     private IEnumerable<string> EnumerateCellColumns()
     {
         foreach (var kv in _colWritetime)
             yield return kv.Key;
-        foreach (var kv in _colExpiry.Where(kv => !_colWritetime.ContainsKey(kv.Key)))
-            yield return kv.Key;
+        foreach (var kv in _colTtl)
+        {
+            if (!_colWritetime.ContainsKey(kv.Key))
+                yield return kv.Key;
+        }
+    }
+
+
+    /// <summary>
+    /// The source renders a column without a live cell as an empty
+    /// collection (<c>[]</c>/<c>{}</c>) for frozen collections, but reports
+    /// its <c>__sys_clts</c> entry as <c>null</c>. Writing that rendering
+    /// back would create a live, non-null empty value on the destination
+    /// (keeping an otherwise-expired row alive), so such columns are nulled.
+    /// </summary>
+    private bool NeedsAbsentCellRewrite()
+    {
+        if (_absentCells.Count == 0)
+            return false;
+        foreach (var col in _containerColumns)
+        {
+            if (_absentCells.Contains(col))
+                return true;
+        }
+        return false;
+    }
+
+    private string RewriteAbsentCellsAsNull(ReadOnlySpan<byte> json)
+    {
+        _rewriteBuffer ??= new ArrayBufferWriter<byte>(json.Length);
+        _rewriteBuffer.Clear();
+        if (_rewriteWriter is null)
+            _rewriteWriter = new Utf8JsonWriter(_rewriteBuffer,
+                new JsonWriterOptions { SkipValidation = true });
+        else
+            _rewriteWriter.Reset(_rewriteBuffer);
+
+        var reader = new Utf8JsonReader(json);
+        reader.Read();
+        _rewriteWriter.WriteStartObject();
+        while (reader.Read() && reader.TokenType == JsonTokenType.PropertyName)
+        {
+            bool absent = _absentCells.Contains(CqlIdentifier.Unquote(reader.GetString()));
+            WritePropertyName(ref reader, _rewriteWriter);
+            reader.Read();
+            if (absent)
+            {
+                reader.Skip();
+                _rewriteWriter.WriteNullValue();
+            }
+            else
+            {
+                CopyValue(ref reader, _rewriteWriter);
+            }
+        }
+        _rewriteWriter.WriteEndObject();
+        _rewriteWriter.Flush();
+        return Encoding.UTF8.GetString(_rewriteBuffer.WrittenSpan);
     }
 
     /// <summary>
@@ -733,6 +858,6 @@ internal sealed class CdcJsonRowParser
     /// instance (e.g. unit tests). Allocates a throwaway parser.
     /// </summary>
     public static (string CleanedJson, CdcRowMetadata Metadata) ParseOnce(
-        string jsonRow, bool preserveCellLevel = false)
-        => new CdcJsonRowParser(preserveCellLevel).Parse(jsonRow);
+        string jsonRow)
+        => new CdcJsonRowParser().Parse(jsonRow);
 }

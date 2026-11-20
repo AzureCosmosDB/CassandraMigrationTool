@@ -105,6 +105,7 @@ internal sealed class CounterRowWriteStrategy : IRowWriteStrategy
         string cleanedJson,
         WriteCounters counters,
         CdcRowMetadata? metadata,
+        bool isReplay,
         CancellationToken cancellationToken)
     {
         // Defensive: counter tables should never be routed through the

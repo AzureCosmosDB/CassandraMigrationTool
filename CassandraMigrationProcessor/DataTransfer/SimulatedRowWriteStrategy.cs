@@ -28,6 +28,7 @@ internal sealed class SimulatedRowWriteStrategy : IRowWriteStrategy
         string cleanedJson,
         WriteCounters counters,
         CdcRowMetadata? metadata,
+        bool isReplay,
         CancellationToken cancellationToken)
     {
         if (cancellationToken.IsCancellationRequested)
